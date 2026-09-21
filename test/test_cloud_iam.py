@@ -6,6 +6,17 @@ import json
 
 from kiro_crew.cloud import aws, iam
 
+# The interactive Session Manager documents AWS ships today. These are the concrete
+# sample DenyStartSessionOutsideTheLane's inversion is measured against: none of them
+# is exempt from that Deny, and no Allow grants any of them. The list lives in the
+# test rather than in cloud/iam.py because no production code reads it.
+KNOWN_INTERACTIVE_DOCUMENTS = (
+    "SSM-SessionManagerRunShell",
+    "AWS-StartInteractiveCommand",
+    "AWS-StartSSHSession",
+    "AWS-StartNonInteractiveCommand",
+)
+
 
 class TestPolicyDocument:
     def test_is_valid_policy_shape(self):
@@ -14,24 +25,31 @@ class TestPolicyDocument:
         assert isinstance(doc["Statement"], list)
         for st in doc["Statement"]:
             assert st["Effect"] in {"Allow", "Deny"}
-            assert "Action" in st and "Resource" in st and "Sid" in st
+            assert "Action" in st and "Sid" in st
+            # Exactly one of the two resource forms, never both (IAM rejects a
+            # statement carrying both) and never neither. NotResource is spelled
+            # here rather than assumed absent because DenyStartSessionOutsideTheLane
+            # is inverted; which statements may invert is pinned separately by
+            # test_no_allow_statement_inverts_its_resource_list.
+            assert ("Resource" in st) ^ ("NotResource" in st), st["Sid"]
 
-    def test_the_only_deny_statement_is_the_interactive_document_block(self):
+    def test_the_only_deny_statement_is_the_start_session_lane_block(self):
         """This policy is Allow-only except for one deliberate Deny.
 
         The shape check above accepts the two legal effects rather than asserting
-        every statement is an Allow, because the interactive session documents are
-        denied explicitly: an explicit Deny cannot be overridden by a later Allow,
-        and that is the only construct keeping the container shell closed against an
-        additive edit.
+        every statement is an Allow, because StartSession outside this lane's own
+        resources is denied explicitly: an explicit Deny cannot be overridden by a
+        later Allow, and that is the only construct keeping the container shell
+        closed against an additive edit.
 
         The property that check would otherwise carry is stated here instead -- the
         Deny set is exactly one known Sid. A new Deny has to be argued for, and an
         Allow silently flipped to Deny (which would break the launcher rather than
-        secure it) fails here.
+        secure it) fails here. The Sid names the lane rather than a document set
+        because the statement denies by exemption rather than by enumeration.
         """
         denies = {st["Sid"] for st in iam.policy_document()["Statement"] if st["Effect"] == "Deny"}
-        assert denies == {"DenyInteractiveSessionDocuments"}, denies
+        assert denies == {"DenyStartSessionOutsideTheLane"}, denies
 
     def test_covers_core_launch_actions(self):
         actions = {a for st in iam.policy_document()["Statement"] for a in st["Action"]}
@@ -377,6 +395,10 @@ class TestPolicyDocument:
         # ec2:CreateSecurityGroup on security-group/* WITHOUT the managed
         # request-tag condition — that would re-open untagged-resource creation.
         for st in iam.policy_document()["Statement"]:
+            # Allow only: this guard is about what the policy GRANTS, and the one Deny
+            # carries NotResource rather than Resource.
+            if st["Effect"] != "Allow":
+                continue
             acts = set(st.get("Action", []))
             res_list = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
             cond_tag = (
@@ -412,6 +434,10 @@ class TestPolicyDocument:
         # Guard against a regression that re-adds account-wide SendCommand/
         # StartSession on instance resources without the tag condition.
         for st in iam.policy_document()["Statement"]:
+            # Allow only, for the same reason as the untagged-creation guard above: a
+            # Deny grants nothing, and the one Deny here carries NotResource.
+            if st["Effect"] != "Allow":
+                continue
             acts = set(st.get("Action", []))
             if acts & {"ssm:SendCommand", "ssm:StartSession"}:
                 res = st["Resource"]
@@ -732,44 +758,111 @@ class TestFargateSessionGrants:
         """
         assert self._by_sid("SsmSessionOnCrewTasks")["Action"] == ["ssm:StartSession"]
 
-    def test_the_interactive_documents_are_explicitly_denied(self):
-        """A Deny, not an omission, on every interactive document AWS ships today.
+    def test_the_inverted_deny_names_only_this_lane_resources(self):
+        """ALLOW direction: a legitimate port-forward cannot be caught by this Deny.
 
-        An explicit Deny cannot be overridden by any Allow, which is why this is a
-        statement rather than the absence of these documents from the Allow lists.
-        Its LIMIT is asserted rather than implied: the Deny reaches the four names
-        below and nothing else, so it is defense in depth and not the barrier. The
-        barrier is the test beneath this one.
+        The statement denies ``ssm:StartSession`` against everything it does NOT
+        name, so what has to be asserted is the exemption list, not a list of
+        forbidden documents. Every resource a real port-forward presents -- the
+        port-forward document, the EC2 or Fargate target, the session itself -- is
+        named here, which is why the Deny cannot match the call. That argument holds
+        whichever subset of those resources IAM evaluates, and it is the property
+        making the inversion safe to ship.
         """
-        statement = self._by_sid("DenyInteractiveSessionDocuments")
+        statement = self._by_sid("DenyStartSessionOutsideTheLane")
         assert statement["Effect"] == "Deny"
         assert statement["Action"] == ["ssm:StartSession"]
-        assert set(statement["Resource"]) == {
-            "arn:aws:ssm:*::document/SSM-SessionManagerRunShell",
-            "arn:aws:ssm:*::document/AWS-StartInteractiveCommand",
-            "arn:aws:ssm:*::document/AWS-StartSSHSession",
-            "arn:aws:ssm:*::document/AWS-StartNonInteractiveCommand",
-        }
-        assert len(statement["Resource"]) == 4, "a duplicate would pass the set check"
+        assert "Resource" not in statement, "an inverted statement carries NotResource only"
+        assert set(statement["NotResource"]) == {
+            "arn:aws:ssm:*::document/AWS-StartPortForwardingSession",
+            "arn:aws:ec2:*:*:instance/*",
+            "arn:aws:ecs:*:*:task/kirocrew-crew-*/*",
+            "arn:aws:ssm:*:*:session/*",
+        }, statement["NotResource"]
+        assert len(statement["NotResource"]) == 4, "a duplicate would pass the set check"
+
+    def test_every_start_session_allow_resource_is_exempt_from_the_deny(self):
+        """The lane cannot be broken by an Allow the Deny does not exempt.
+
+        This is the drift the inversion introduces, and the direction it fails in is
+        the reason it needs pinning: an Allow added for a new StartSession target
+        whose resource is not also added to ``NotResource`` is denied, so the lane
+        stops working rather than opening. Fail-closed, but a silent outage, so it
+        fails here instead.
+
+        ``AWS-RunShellScript`` is the one deliberate exception -- a SendCommand
+        document that no StartSession call ever names, so the inversion retiring its
+        StartSession half is the intended narrowing rather than drift.
+        """
+        exempt = set(self._by_sid("DenyStartSessionOutsideTheLane")["NotResource"])
+        deliberately_not_exempt = {"arn:aws:ssm:*::document/AWS-RunShellScript"}
+        granted: set[str] = set()
+        for statement in self._statements():
+            if statement["Effect"] != "Allow":
+                continue
+            if "ssm:StartSession" not in statement["Action"]:
+                continue
+            resources = statement["Resource"]
+            granted.update(resources if isinstance(resources, list) else [resources])
+        assert granted, "no Allow grants StartSession; this test would be vacuous"
+        unexempt = granted - exempt - deliberately_not_exempt
+        assert not unexempt, f"StartSession allowed on {sorted(unexempt)}, denied by the lane"
+
+    def test_no_interactive_document_is_exempt_from_the_deny(self):
+        """DENY direction: every interactive document falls outside the exemption.
+
+        Each name below is denied because it is ABSENT from ``NotResource``, which is
+        the same reason a document AWS ships tomorrow is denied. A list of forbidden
+        names can only ever reach the names on it; an exemption list reaches the class.
+
+        The last two assertions are what keep that true: the only document exempted
+        is the port-forward one, and no entry is a wildcard broad enough to exempt
+        documents as a class. Without them a later ``document/*`` entry would silently
+        re-open everything while the name checks above still passed.
+        """
+        exempt = self._by_sid("DenyStartSessionOutsideTheLane")["NotResource"]
+        rendered = " ".join(exempt)
+        for name in KNOWN_INTERACTIVE_DOCUMENTS:
+            assert name not in rendered, f"{name} is exempt from the lane Deny"
+        documents = {arn.split("document/", 1)[1] for arn in exempt if "document/" in arn}
+        assert documents == {"AWS-StartPortForwardingSession"}, documents
+        for arn in exempt:
+            assert arn != "*", "a bare wildcard would exempt everything"
+            assert not arn.endswith("document/*"), f"{arn} exempts every document"
 
     def test_no_interactive_document_is_allowed_anywhere(self):
-        """The actual barrier: no Allow reaches any of them, so default deny refuses.
+        """The other barrier: no Allow reaches any of them.
 
-        The names are read OFF the Deny statement rather than restated here, so a
-        document added there is checked against every Allow without anyone
-        remembering to extend a second list. That drift is how the enumerated Deny
-        would come to look broader than it is.
+        Default deny refuses an interactive document even without the Deny above, so
+        this property holds independently of it. The names come from the module
+        constant because an inverted statement carries no enumerated resource list to
+        read them off.
         """
-        denied = self._by_sid("DenyInteractiveSessionDocuments")["Resource"]
-        names = [arn.rsplit("/", 1)[-1] for arn in denied]
-        assert len(names) >= 4, names
         for statement in self._statements():
             if statement["Effect"] != "Allow":
                 continue
             resources = statement["Resource"]
             rendered = " ".join(resources) if isinstance(resources, list) else resources
-            for name in names:
+            for name in KNOWN_INTERACTIVE_DOCUMENTS:
                 assert name not in rendered, f"{statement.get('Sid')} allows {name}"
+
+    def test_no_allow_statement_inverts_its_resource_list(self):
+        """Inversion is safe in a Deny and unsafe in an Allow, so only the Deny may.
+
+        ``NotResource`` on a Deny narrows: it denies everything unnamed. The same
+        keyword on an Allow would GRANT everything unnamed, which is the reach the
+        Fargate templates forbid outright in
+        test_no_statement_inverts_the_enumeration. This policy needs the inverted
+        form for its one Deny, so the ban is expressed as a direction rather than as
+        an absence -- and ``NotAction`` stays banned outright, in either effect.
+        """
+        for statement in self._statements():
+            assert "NotAction" not in statement, f"{statement['Sid']} inverts its action list"
+            if statement["Effect"] == "Allow":
+                assert "NotResource" not in statement, (
+                    f"{statement['Sid']} is an Allow with NotResource, which grants "
+                    "every resource it does not name"
+                )
 
     def test_no_policy_grants_ecs_execute_command(self):
         """R1. This is the permission that would hand out a root shell in the task.
@@ -785,8 +878,14 @@ class TestFargateSessionGrants:
         assert not any(a.startswith("ecs:Execute") for a in actions), actions
 
     def test_no_start_session_statement_is_unscoped(self):
-        """R2. No ``Resource: "*"`` on anything that can open a session."""
+        """R2. No ``Resource: "*"`` on anything that can GRANT a session.
+
+        Allow only. The one Deny carries ``NotResource``, and a broad Deny is the
+        point of it rather than a finding against it.
+        """
         for statement in self._statements():
+            if statement["Effect"] != "Allow":
+                continue
             if "ssm:StartSession" not in statement["Action"]:
                 continue
             resources = statement["Resource"]

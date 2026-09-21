@@ -767,45 +767,65 @@ def policy_document() -> dict[str, Any]:
             "Resource": "arn:aws:ecs:*:*:task/kirocrew-crew-*/*",
         },
         {
-            # An explicit Deny on the interactive session documents AWS ships today,
-            # named one by one. An explicit Deny cannot be overridden by any Allow,
-            # which is the reason this is a Deny statement rather than simply the
-            # absence of these documents from the Allow lists above.
+            # StartSession is denied against everything OUTSIDE this lane's own
+            # resources. The inversion is the whole point: an enumeration of forbidden
+            # documents cannot reach a document that does not exist yet, so an
+            # interactive document AWS ships tomorrow falls outside such a list. Here
+            # it is denied because it is ABSENT from NotResource, so the class is
+            # closed by construction rather than by someone remembering to extend a
+            # list.
             #
-            # What it does NOT do, said plainly because an earlier wording here
-            # claimed otherwise: it does not keep the shell closed against a document
-            # nobody has enumerated. AWS can ship a new interactive document tomorrow
-            # and this statement will not name it. So this list is defense in depth,
-            # not the barrier.
+            # DIRECTION IS LOAD-BEARING. NotResource in a Deny narrows (it denies
+            # everything unnamed); the same keyword in an Allow would widen (it would
+            # grant everything unnamed), which is why the Fargate templates forbid it
+            # outright and why this policy permits it in a Deny alone. That asymmetry
+            # is not left to prose: test_no_allow_statement_inverts_its_resource_list
+            # fails if any Allow here grows a NotResource.
             #
-            # The barrier is that NO Allow in this policy grants ANY interactive
-            # document, so IAM's default deny already refuses them. This Deny only
-            # begins to matter on the day an edit adds such an Allow -- which is the
-            # same day its enumeration gap would matter. Closing the gap needs an
-            # inverted Deny (NotResource), and that shape's failure mode is that a new
-            # resource type in the StartSession authorisation context denies the whole
-            # call: fail-closed, but it reads as an outage. That trade needs a
-            # deliberate operational decision with an owner, so this statement
-            # enumerates and the inversion is tracked separately.
+            # The named resources are this lane's entire legitimate StartSession
+            # authorisation context: the port-forward document (the only document
+            # start_session ever names -- cloud/ssm.py's _PORT_FORWARD_DOC), the EC2
+            # and Fargate targets of the two session lanes, and the session resource
+            # itself. Because EVERY resource a real port-forward presents is named
+            # here, this Deny cannot match a legitimate call -- which holds whichever
+            # subset of them IAM evaluates, and is what makes the inversion safe.
+            #
+            # AWS-RunShellScript is deliberately ABSENT. It is a SendCommand document,
+            # this Deny's Action is StartSession alone, so SendCommand is untouched
+            # while the StartSession half of SsmSessionDocuments' StartSession +
+            # SendCommand pairing stops being granted. That pairing was an over-grant
+            # the API already refused; the inversion retires it as a side effect
+            # instead of leaving it to be reasoned about again.
+            #
+            # ACCEPTED RISK, stated rather than papered over: if AWS adds a NEW
+            # RESOURCE TYPE to the StartSession authorisation context, that resource
+            # is not named here, this Deny matches it, and the whole call fails. The
+            # same applies if a future edit adds a legitimate StartSession Allow and
+            # does not name its resource here. Both fail CLOSED -- the correct
+            # direction for a shell boundary -- but they present as an outage rather
+            # than as a refusal. That makes this a deliberate operational trade with an
+            # owner rather than a hardening to slip into an unrelated change.
             #
             # The Fargate task is permanently shell-capable once enableExecuteCommand
             # is set -- the platform bind-mounts its SSM agent in -- so IAM is the
             # only thing between a principal and a root shell in the container. The
             # load-bearing halves of that are the total absence of ecs:ExecuteCommand
-            # and the absence of any interactive-document Allow. Port-forwarding needs
-            # none of these documents: AWS documents stopping non-ECS-Exec sessions
-            # with a Deny on ssm:StartSession scoped to the task, which would be
-            # pointless if ecs:ExecuteCommand gated the path.
-            "Sid": "DenyInteractiveSessionDocuments",
+            # and the absence of any interactive-document Allow; this Deny is now a
+            # third, and unlike the enumerated version it does not depend on having
+            # guessed tomorrow's document names. Port-forwarding needs none of those
+            # documents: AWS documents stopping non-ECS-Exec sessions with a Deny on
+            # ssm:StartSession scoped to the task, which would be pointless if
+            # ecs:ExecuteCommand gated the path.
+            "Sid": "DenyStartSessionOutsideTheLane",
             "Effect": "Deny",
             "Action": [
                 "ssm:StartSession",
             ],
-            "Resource": [
-                "arn:aws:ssm:*::document/SSM-SessionManagerRunShell",
-                "arn:aws:ssm:*::document/AWS-StartInteractiveCommand",
-                "arn:aws:ssm:*::document/AWS-StartSSHSession",
-                "arn:aws:ssm:*::document/AWS-StartNonInteractiveCommand",
+            "NotResource": [
+                "arn:aws:ssm:*::document/AWS-StartPortForwardingSession",
+                "arn:aws:ec2:*:*:instance/*",
+                "arn:aws:ecs:*:*:task/kirocrew-crew-*/*",
+                "arn:aws:ssm:*:*:session/*",
             ],
         },
         {
