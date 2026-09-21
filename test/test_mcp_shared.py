@@ -902,7 +902,7 @@ class TestStdioLoopCallerIdentity:
         seen = []
         harness = _LoopHarness(monkeypatch, lambda _name, _args: "ok")
 
-        def policy(session=""):
+        def policy(session="", **_kwargs):
             seen.append(session)
             return mcp_shared.ToolPolicy(frozenset(), "")
 
@@ -928,6 +928,76 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
+    def test_tools_call_hands_the_caller_block_token_to_the_policy_read(self, monkeypatch):
+        """The policy read runs on the read loop, before the worker installs the
+        caller ContextVar, so ``current_caller()`` is None there. A pooled
+        control-plane backend's only copy of the per-session token is the caller
+        block gatewayd injected; the dispatch must hand it to the resolver, or the
+        gateway answers the read as an unattested caller and refuses every call."""
+        from kiro_crew.mcp_caller import CallerContext, build_caller_meta, current_caller
+
+        seen: list[tuple[str, str, object]] = []
+        harness = _LoopHarness(monkeypatch, lambda _name, _args: "ok")
+
+        def policy(session="", *, caller_token="", **_kwargs):
+            seen.append((session, caller_token, current_caller()))
+            return mcp_shared.ToolPolicy(frozenset(), "")
+
+        monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", policy)
+        try:
+            msg = _tools_call(1, "echo")
+            msg["params"]["_meta"] = build_caller_meta(
+                CallerContext(
+                    session_key="dashboard:carol",
+                    from_gateway=True,
+                    session_token="tok-frame-carol",
+                )
+            )
+            harness.send(msg)
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert seen == [("dashboard:carol", "tok-frame-carol", None)]
+            # And a caller block without a token hands an empty one, never a
+            # stale one from a previous frame.
+            msg = _tools_call(2, "echo")
+            msg["params"]["_meta"] = build_caller_meta(
+                CallerContext(session_key="dashboard:dave", from_gateway=True)
+            )
+            harness.send(msg)
+            assert harness.wait_for(lambda: len(harness.responses) >= 2)
+            assert seen[-1] == ("dashboard:dave", "", None)
+        finally:
+            harness.close()
+
+    def test_identity_unattested_refuses_with_the_identity_message(self, monkeypatch):
+        """The attestation refusal is fail-closed like the unreadable-spec one,
+        but its text names the missing token rather than the agents directory."""
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "identity_unattested"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(51, "echo", "dashboard:chat-11"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == []
+            body = json.dumps(harness.responses[0][1])
+            assert "identity_unattested" in body
+            assert "could not prove which session it acts for" in body
+            assert "carried no session token" in body
+            assert "agents directory" not in body
+            assert "Retry shortly" not in body
+            assert harness.wait_for(
+                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "rejected_policy_unresolved"
+            assert kw["session_key"] == "dashboard:chat-11"
+            assert kw["error"] == "managedToolPolicy.unresolved:identity_unattested"
+        finally:
+            harness.close()
+
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="select interleave uses a POSIX pipe")
     def test_listing_while_busy_does_not_borrow_the_running_members_identity(self, monkeypatch):
         from kiro_crew.mcp_caller import CallerContext, build_caller_meta
@@ -936,7 +1006,7 @@ class TestStdioLoopCallerIdentity:
         seen = []
         harness = _LoopHarness(monkeypatch, call)
 
-        def policy(session=""):
+        def policy(session="", **_kwargs):
             seen.append(session)
             return mcp_shared.ToolPolicy(frozenset(), "")
 

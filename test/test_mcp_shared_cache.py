@@ -61,13 +61,13 @@ def _make_http_response(payload: dict) -> MagicMock:
     return body
 
 
-def _make_http_error(code: int) -> urllib.error.HTTPError:
+def _make_http_error(code: int, body: bytes = b"") -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         url="http://localhost/api/session-tool-policy",
         code=code,
         msg=f"HTTP {code}",
         hdrs=None,
-        fp=io.BytesIO(b""),
+        fp=io.BytesIO(body),
     )
 
 
@@ -327,6 +327,70 @@ class TestLongCacheFailures:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.forbidden" in ops
 
+    def test_409_member_identity_unavailable_is_identity_unattested(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        """The attestation gate's 409 is not the unreadable-spec 409.
+
+        ``internal_memory_scope`` answers 409 ``member_identity_unavailable`` when
+        the declared key reached the gateway without an attestation. No spec was
+        read, so reporting it as ``policy_unreadable`` sends the reader to the
+        agents directory for a token that never left this process. It stays in
+        the refusing set -- the withheld-deny argument is identical -- under its
+        own reason and audit event, and like the spec 409 it is never
+        negative-cached: immediate, and specific to this caller.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-2")
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        body = b'{"error": "The execution identity is unavailable.", "code": "member_identity_unavailable"}'
+        urlopen = MagicMock(side_effect=_make_http_error(409, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.excluded == set()
+        assert policy.unresolved == "identity_unattested"
+        assert policy.unresolved in mcp_shared._UNRESOLVED_REFUSES_CALL
+        audits = [
+            c.kwargs
+            for c in fake_sel.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "tool_policy.unattested"
+        ]
+        assert audits, "the identity refusal must have its own audit event"
+        assert "token=absent" in audits[0]["resources"]
+        ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
+        assert "tool_policy.unreadable" not in ops
+        assert mcp_shared._last_failure_time == 0.0
+        assert mcp_shared._last_startup_race_time == 0.0
+        urlopen.reset_mock()
+        urlopen.side_effect = _make_http_error(409, body)
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            assert mcp_shared._resolve_tool_policy().unresolved == "identity_unattested"
+        assert urlopen.call_count == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"error": "x", "code": "policy_unreadable"}',
+            b"not json at all",
+            b'["a", "list"]',
+            b'{"code": 7}',
+        ],
+        ids=["spec-code", "garbage", "non-object", "non-string-code"],
+    )
+    def test_409_spec_body_or_unreadable_body_stays_policy_unreadable(
+        self, fake_sel, patch_session_setup, monkeypatch, body
+    ):
+        """Only the identity code is narrowed; everything else keeps the status's
+        historical meaning. An unknown or unparseable 409 must not be read as
+        anything more specific than the unreadable-spec refusal it always was."""
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-3")
+        urlopen = MagicMock(side_effect=_make_http_error(409, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.unresolved == "policy_unreadable"
+        ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
+        assert "tool_policy.unreadable" in ops
+        assert "tool_policy.unattested" not in ops
+
     def test_an_unenumerated_4xx_is_permissive_not_an_outage(
         self, fake_sel, patch_session_setup, monkeypatch
     ):
@@ -541,3 +605,93 @@ class TestCachesAreIndependent:
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_tool_policy()
         assert urlopen.call_count == 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The caller block's token reaches the read.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestCallerTokenOnTheRead:
+    """A pooled control-plane backend holds the per-session token in ONE place:
+    the caller block gatewayd injects per frame. It is spawned from the daemon's
+    environment, so ``session_token_header``'s env fallback finds nothing, and
+    the ``tools/call`` dispatch checks the policy BEFORE the worker installs the
+    caller ContextVar, so ``current_caller()`` finds nothing either. The token
+    has to be handed in."""
+
+    @staticmethod
+    def _sent_request(urlopen: MagicMock):
+        req = urlopen.call_args.args[0]
+        assert isinstance(req, mcp_shared.urllib.request.Request)
+        return req
+
+    def test_explicit_caller_token_rides_the_read_with_no_caller_var_set(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        from kiro_crew.mcp_caller import current_caller, set_current_caller
+
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        set_current_caller(None)
+        assert current_caller() is None
+        urlopen = MagicMock(return_value=_make_http_response({"exclude": ["hidden"]}))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy(
+                "dashboard:chat-5", caller_token="tok-from-frame"
+            )
+        assert policy.excluded == {"hidden"}
+        assert policy.unresolved == ""
+        req = self._sent_request(urlopen)
+        assert req.get_header("X-session-token") == "tok-from-frame"
+        assert req.get_header("X-session-key") == "dashboard:chat-5"
+
+    def test_the_caller_var_is_still_the_fallback_when_no_token_is_handed_in(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        from kiro_crew.mcp_caller import CallerContext, set_current_caller
+
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        set_current_caller(
+            CallerContext(
+                session_key="dashboard:chat-6", from_gateway=True, session_token="tok-from-var"
+            )
+        )
+        try:
+            urlopen = MagicMock(return_value=_make_http_response({"exclude": []}))
+            with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+                mcp_shared._resolve_tool_policy("dashboard:chat-6")
+        finally:
+            set_current_caller(None)
+        assert self._sent_request(urlopen).get_header("X-session-token") == "tok-from-var"
+
+    def test_an_explicit_token_outranks_the_caller_var(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        from kiro_crew.mcp_caller import CallerContext, set_current_caller
+
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        set_current_caller(
+            CallerContext(
+                session_key="dashboard:chat-7", from_gateway=True, session_token="tok-stale"
+            )
+        )
+        try:
+            urlopen = MagicMock(return_value=_make_http_response({"exclude": []}))
+            with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+                mcp_shared._resolve_tool_policy("dashboard:chat-7", caller_token="tok-this-call")
+        finally:
+            set_current_caller(None)
+        assert self._sent_request(urlopen).get_header("X-session-token") == "tok-this-call"
+
+    def test_no_token_anywhere_sends_no_token_header(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        from kiro_crew.mcp_caller import set_current_caller
+
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        set_current_caller(None)
+        urlopen = MagicMock(return_value=_make_http_response({"exclude": []}))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            mcp_shared._resolve_tool_policy("dashboard:chat-8")
+        req = self._sent_request(urlopen)
+        assert req.get_header("X-session-token") is None
+        assert req.get_header("X-session-key") == "dashboard:chat-8"

@@ -499,9 +499,34 @@ def _policy_session_key() -> str | None:
         return None
 
 
+def _http_error_code(exc: urllib.error.HTTPError) -> str:
+    """The ``code`` field of a JSON error body, or ``""`` when there is none.
+
+    The gateway's refusals carry ``{"error": ..., "code": "<reason>"}``; the
+    status alone is not enough to tell two of its 409s apart. Never raises: an
+    unreadable or non-JSON body is ``""``, and the caller treats that as the
+    status's historical meaning rather than guessing a narrower one.
+    """
+    try:
+        raw = exc.read()
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    code = payload.get("code")
+    return code if isinstance(code, str) else ""
+
+
 def _resolve_tool_policy(
     caller_session: str = "",
     *,
+    caller_token: str = "",
     ignore_negative_cache: bool = False,
 ) -> ToolPolicy:
     """Query the gateway for the current session's managedToolPolicy.exclude.
@@ -513,6 +538,20 @@ def _resolve_tool_policy(
     RESOLVED session keys the cache either way — the policy returned and the policy
     stored are then the same session's, which is what stops a caller the gateway
     could not name from inheriting a co-tenant's or its own pre-rekey policy.
+
+    ``caller_token`` is that same caller block's ``sessionToken`` -- the signed
+    per-session token gatewayd hands a pooled control-plane backend PER FRAME,
+    because the backend was spawned from the daemon's environment and has no
+    token of its own there. It is passed explicitly rather than read from
+    :func:`current_caller` because the ``tools/call`` dispatch evaluates the
+    policy BEFORE it installs the caller ContextVar (the check runs on the read
+    loop; ``set_current_caller`` runs in the worker), so at this point the
+    ContextVar is still empty. The gateway accepts a declared ``X-Session-Key``
+    only behind an attestation, and a loopback TCP request has none but this
+    header; without it a pooled backend's every read is answered
+    ``member_identity_unavailable`` and every tool call is refused. The
+    ContextVar remains the fallback for a caller that reaches this resolver
+    with the caller already installed.
 
     Returns the set of tool names to hide from this session, together with the
     reason the policy could not be read when it could not. Caches on success
@@ -632,11 +671,16 @@ def _resolve_tool_policy(
         # The declared key needs the attestation that goes with it. Without the
         # token this read is answered as a caller the gateway cannot name, the
         # policy stays unresolved, and the fail-closed branch below then refuses
-        # every tool call for the session.
+        # every tool call for the session. The explicit argument wins: the
+        # ``tools/call`` dispatch checks the policy before it installs the
+        # caller ContextVar, so ``current_caller()`` is None exactly when the
+        # pooled backend most needs the token (see the docstring).
         from kiro_crew.session_token_sig import session_token_header
 
-        _ctx = current_caller()
-        _tok = _ctx.session_token if _ctx is not None and _ctx.from_gateway else ""
+        _tok = caller_token
+        if not _tok:
+            _ctx = current_caller()
+            _tok = _ctx.session_token if _ctx is not None and _ctx.from_gateway else ""
         headers: dict[str, str] = {"X-Internal-Secret": secret, **session_token_header(_tok)}
         headers["X-Session-Key"] = session_key
 
@@ -669,9 +713,35 @@ def _resolve_tool_policy(
                 )
                 return ToolPolicy(frozenset(), "agent_not_resolved")
             if http_exc.code == 409:
+                # Two different refusals share this status, told apart by the
+                # body's ``code`` -- the status alone stopped meaning one thing
+                # when the endpoint grew its attestation gate.
+                _code = _http_error_code(http_exc)
+                if _code == "member_identity_unavailable":
+                    # ``internal_memory_scope`` declined to answer THIS caller:
+                    # the declared ``X-Session-Key`` reached the gateway without
+                    # an attestation (no ``X-Session-Token`` in the request, or
+                    # one that names another key). Nothing about the spec was
+                    # read. Reported as its own reason so the refusal names the
+                    # missing token rather than the agents directory, and so a
+                    # reader of the audit trail can tell "no token reached this
+                    # call" from "the operator's spec is malformed". Not
+                    # negative-cached, for the same reason as the spec case:
+                    # the answer is immediate and specific to this caller.
+                    sel().log_api_access(
+                        caller=session_key,
+                        operation="tool_policy.unattested",
+                        outcome="unresolved",
+                        source="mcp_shared",
+                        resources=f"session_key={session_key},token={'present' if _tok else 'absent'}",
+                    )
+                    return ToolPolicy(frozenset(), "identity_unattested")
                 # The gateway read a spec for this session and could not
                 # determine its policy (unparseable, wrong shape, or two specs
-                # claiming the name). Deliberately NOT negative-cached: the
+                # claiming the name). An unparseable or code-less body takes
+                # this arm too: it is the status the endpoint has always used
+                # for that condition, and an unknown 409 must not be read as
+                # anything narrower. Deliberately NOT negative-cached: the
                 # windows above exist to avoid repeated 5s urlopen timeouts, and
                 # this answer is immediate, so there is nothing to debounce. It
                 # is also specific to THIS session's agent spec, and
@@ -839,6 +909,14 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #
 # * ``policy_unreadable`` -- the gateway found a spec for this session and could
 #   not determine its policy. It emits this for that condition and nothing else.
+# * ``identity_unattested`` -- the gateway would not read the policy for THIS
+#   caller because the declared session key arrived without the attestation
+#   that goes with it (no ``X-Session-Token``, or one naming another key). The
+#   spec was never consulted, so whatever it excludes is unknown here. Refusing
+#   is the same withheld-deny argument as the line above; the reason is kept
+#   separate so the refusal names the missing token, not the agents directory.
+#   A legitimate pooled backend never lands here: it is handed the token per
+#   frame in the caller block and ``_resolve_tool_policy`` sends it.
 # ``resolution_failed`` -- no usable answer, meaning nothing came back or a 5xx
 # said the gateway is broken -- is the one reason where this code says something
 # different from what the security argument alone would say, so the reason is
@@ -875,7 +953,7 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 # silent -- which is what made this condition hard to find. Closing them needs
 # the 404 to distinguish registering from unmappable, which is a change to the
 # endpoint's contract rather than to this read.
-_UNRESOLVED_REFUSES_CALL = frozenset({"policy_unreadable"})
+_UNRESOLVED_REFUSES_CALL = frozenset({"policy_unreadable", "identity_unattested"})
 
 
 def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
@@ -1228,8 +1306,15 @@ def _run_stdio_dispatch_loop(
         The enforcement seam: the ``tools/call`` branch needs the second half
         to tell "the operator excluded nothing" apart from "we could not read
         what the operator excluded".
+
+        The caller block's token rides along explicitly. This runs on the read
+        loop before the worker installs the caller ContextVar, so the resolver
+        cannot find the token there; a pooled backend has it nowhere else.
         """
-        return _resolve_tool_policy(caller.session_key if caller else "")
+        return _resolve_tool_policy(
+            caller.session_key if caller else "",
+            caller_token=caller.session_token if caller else "",
+        )
 
     def _listable_tools(caller: "CallerContext | None") -> list[dict]:
         """The tool list for a ``tools/list``, minus this session's exclusions.
@@ -1575,15 +1660,27 @@ def _run_stdio_dispatch_loop(
                     outcome="rejected_policy_unresolved",
                     error=f"managedToolPolicy.unresolved:{_policy.unresolved}",
                 )
-                respond(
-                    req_id,
-                    build_tool_response(
+                if _policy.unresolved == "identity_unattested":
+                    _refusal = (
+                        f"Error: tool '{tool_name}' is unavailable because this "
+                        f"server could not prove which session it acts for "
+                        f"(identity_unattested): the gateway refused the tool-policy "
+                        f"read for session {_policy_session} because the request "
+                        f"carried no session token, or one that does not vouch for "
+                        f"that session. Refusing the call rather than ignoring an "
+                        f"operator's exclusion list."
+                    )
+                else:
+                    _refusal = (
                         f"Error: tool '{tool_name}' is unavailable because this "
                         f"session's tool policy could not be read "
-                        f"({_policy.unresolved}); refusing the call rather than "
-                        f"ignoring an operator's exclusion list. Retry shortly."
-                    ),
-                )
+                        f"({_policy.unresolved}): the gateway found an agent spec it "
+                        f"could not parse, or a managedToolPolicy of the wrong "
+                        f"shape. Refusing the call rather than ignoring an "
+                        f"operator's exclusion list; fix or remove the unreadable "
+                        f"spec in the agents directory."
+                    )
+                respond(req_id, build_tool_response(_refusal))
             elif tool_name in _policy.excluded:
                 sel().log_tool_invocation(
                     session_key=_policy_session,
