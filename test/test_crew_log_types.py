@@ -9,6 +9,7 @@ while the session families are checked.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -136,6 +137,39 @@ CANONICAL: dict[str, dict] = {
     },
     "model/selected": {"model": "claude-fallback", "source": "fallback", "turn": 3},
     "compaction/applied": {"pct_before": 82.0, "pct_after": 41.0, "freed_pct": 41.0},
+    "plan/updated": {
+        "turn": 3,
+        "items": [
+            {"id": "1", "text": "read the code", "state": "done"},
+            {"id": "2", "text": "write the fix", "state": "open"},
+        ],
+        "total": 9,
+    },
+    "subagent/spawned": {
+        "agent_id": "sub-9",
+        "turn": 3,
+        "agent": "kirocrew-worker",
+        "model": "claude",
+        "scope": {"memory": True, "lessons": True, "project": False},
+    },
+    "subagent/steered": {"agent_id": "sub-9", "mode": "follow_up"},
+    "subagent/completed": {"agent_id": "sub-9", "ms": 41200},
+    "subagent/failed": {
+        "agent_id": "sub-9",
+        "reason": "TimeoutError",
+        "outcome": "stopped",
+        "ms": 1800000,
+    },
+    "background/completed": {
+        "kind": "title",
+        "model": "claude-lite",
+        "provider": "anthropic",
+        "credits": 0.0004,
+        # Only the dimensions this provider billed: the writer drops every zero, so
+        # a half-filled mapping is the ORDINARY shape here, unlike turn/completed's.
+        "tokens": {"input": 611, "output": 12},
+        "ms": 940,
+    },
     "ledger/recorded": {
         "slot": "dashboard:3",
         "goal": "land the projection change",
@@ -188,11 +222,15 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The registry declares the types that HAVE a writer. A type nothing writes
     # would declare a shape no site produces, and the first emitter to land would
     # have to satisfy a contract written without it.
-    assert len(SESSION_ENTRY_TYPES) == 23
-    # Nine types the vocabulary owns that nothing writes, and six more whose
-    # emitters are not wired on this base. Declaring either kind would state a
-    # shape no writer produces, and the first emitter to land would have to satisfy
-    # a contract written without it. They pass through undeclared instead.
+    #
+    # 23 before this count moved: the six the emitter already wrote and the registry
+    # had never declared -- four subagent/*, background/completed and plan/updated --
+    # joined it. The first five stopped a fold outright; plan/updated was skipped
+    # instead, which the class fold reads as damage.
+    assert len(SESSION_ENTRY_TYPES) == 29
+    # Nine types the vocabulary owns that nothing writes. Declaring one would state
+    # a shape no writer produces, and the first emitter to land would have to
+    # satisfy a contract written without it. They pass through undeclared instead.
     no_writer = {
         "session/seeded",
         "message/steered",
@@ -203,16 +241,19 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
         "summary/written",
         "remote/placed",
         "remote/lost",
-        "plan/updated",
-        "background/completed",
-        "subagent/spawned",
-        "subagent/steered",
-        "subagent/completed",
-        "subagent/failed",
     }
     assert no_writer.isdisjoint(SESSION_ENTRY_TYPES)
     # Held to the writers rather than to this list: a type earns a declaration by
     # having a producing site, so wiring an emitter is what makes one legitimate.
+    #
+    # This direction alone is NOT the whole property. It iterates the DECLARED set,
+    # so it can only ever report a subset of it -- a type the writer appends and the
+    # registry never declared is invisible to it by construction, which is exactly
+    # the gap that left six types undeclared. It also decides "has a writer" by a
+    # text search rather than by parsing the call. Both directions are measured from
+    # the writers' syntax trees in
+    # ``test_the_declared_vocabulary_is_exactly_what_the_writers_append``; this one
+    # stays as the cheaper statement of the same half.
     assert set(SESSION_ENTRY_TYPES) == set(_types_with_a_producing_site())
 
 
@@ -231,8 +272,10 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
     # vocabulary that arrives from a provider, the gateway's teardown reasons or a
     # subagent runtime would turn "the upstream set grew" into a lost entry.
     #
-    # The two actor sets, the ledger's event_kind and the observation's producer are
-    # the only ones a producing site clamps. A type with no
+    # The two actor sets, the ledger's event_kind, the observation's producer and a
+    # plan row's state are the only ones a producing site clamps -- the last computed
+    # as done-or-open from one boolean, so a third value has no path to the entry. A
+    # type with no
     # producing site cannot qualify, however small its spec vocabulary looks: there
     # is no code enforcing the set, so the first resolver to report a value outside
     # it would have the entry refused rather than recorded.
@@ -247,9 +290,92 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         ("turn/refused", "actor"),
         ("ledger/recorded", "event_kind"),
         ("object/observed", "producer"),
+        ("plan/updated", "state"),
     }
     emitted = set(_types_with_a_producing_site())
     assert {spec_type for spec_type, _ in closed} <= emitted
+
+
+#: The append primitives in :mod:`kiro_crew.crew_log.emit`, each mapped to the
+#: index of the positional argument that names the entry type.
+#:
+#: Keyed on the CALLEE rather than on any type-shaped literal, because emit.py also
+#: hands an entry type to helpers that append nothing -- ``_entry_line_fits`` is
+#: given ``"plan/updated"`` to measure a line -- and counting those would report a
+#: type as emitted at a site that never appends.
+_EMIT_PRIMITIVES: dict[str, int] = {
+    "_write": 1,
+    "append": 0,
+    "_append_body_entry": 1,
+}
+
+
+def _callee_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _literal_str(node) -> str:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
+
+
+def _is_true(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _types_the_writers_append() -> dict[str, bool]:
+    """Every entry type the WRITERS append under a literal name -> is EVERY append
+    of it ignorable.
+
+    Parsed off the writers' own syntax trees, so a newly wired site is covered the
+    day it lands rather than the day someone remembers to extend a list here. Both
+    writers are read: the emitter, and ``store``'s crash-repair closer, which names
+    its types with a ``type=`` keyword instead. Missing a call shape would
+    under-report the undeclared side -- the direction that breaks folds -- which is
+    why the declared-but-never-appended column below is checked as a control rather
+    than assumed empty.
+
+    Scope, stated because it bounds what a caller may conclude: a type named by a
+    LITERAL. One emitter helper takes its type as a parameter, and both of its call
+    sites pass a literal, so they are seen; a future site that computes a type would
+    not be.
+    """
+    skippable: dict[str, bool] = {}
+
+    def _record(entry_type: str, ignorable: bool) -> None:
+        # A type appended from two sites is skippable only if EVERY site says so:
+        # one non-ignorable append is all it takes to stop a folding reader.
+        skippable[entry_type] = skippable.get(entry_type, True) and ignorable
+
+    for module in (emit, store_mod):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                keywords = {item.arg: item.value for item in node.keywords if item.arg}
+                index = _EMIT_PRIMITIVES.get(_callee_name(node), -1)
+                named = ""
+                if 0 <= index < len(node.args):
+                    named = _literal_str(node.args[index])
+                elif "type" in keywords:
+                    # The closer builds its entries directly: Entry(type="...", ...).
+                    named = _literal_str(keywords["type"])
+                if named:
+                    _record(named, _is_true(keywords.get("ignorable")))
+            elif isinstance(node, ast.Dict):
+                # A batch member, spelled as a literal: {"type": ..., "ignorable": True}.
+                members = {
+                    key.value: value
+                    for key, value in zip(node.keys, node.values)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+                named = _literal_str(members.get("type"))
+                if named:
+                    _record(named, _is_true(members.get("ignorable")))
+    return skippable
 
 
 def _walk(fields):
@@ -271,9 +397,65 @@ def _types_with_a_producing_site():
             yield spec_type
 
 
-def test_the_sampled_type_is_the_ignorable_one():
+def test_the_declared_vocabulary_is_exactly_what_the_writers_append():
+    """The registry and the writers must name the SAME set, in both directions.
+
+    Neither direction is optional, and they fail differently:
+
+    - a type APPENDED and never declared is what breaks readers. A folding reader
+      passes ``known=`` to ``iter_from``, which refuses an entry it does not know
+      unless the writer marked it skippable -- so a non-ignorable one ends every
+      later fold of that log, permanently. A skippable one is not safe either: it is
+      SKIPPED, and a skip is a seq discontinuity, which the class fold reads as
+      damage and ``recorded_class`` then refuses on.
+    - a type DECLARED and never appended states a shape no site produces, so the
+      first emitter to land has to satisfy a contract written without it.
+
+    This is the ratchet the whole class needed: nothing else derives the reader's
+    vocabulary from the writers, so adding an append site is one edit and declaring
+    it is a second, unlinked one. Six types had drifted apart that way.
+    """
+    appended = _types_the_writers_append()
+    declared = set(SESSION_ENTRY_TYPES)
+
+    # Control 1 -- non-empty sides. An extractor that silently stopped matching
+    # reports a clean diff, and an empty declared side would read as "everything is
+    # undeclared": a finding about the instrument, not about the code.
+    assert declared, "the declared side is empty: the registry could not be read"
+    assert appended, "the appended side is empty: the writers could not be parsed"
+
+    # Control 2 -- negative control. Four declarations read by hand, which must come
+    # back as appended AND as declared. This is what an over-matching extractor fails.
+    known_good = {"context/composed", "approval/decided", "tool/called", "session/opened"}
+    assert known_good <= set(appended)
+    assert known_good <= declared
+
+    # Control 3 -- the skippable flag is read, in BOTH values. Without this the flag
+    # could be ignored entirely and every assertion below would still hold.
+    assert appended["plan/updated"] is True, "an ignorable append read as non-ignorable"
+    assert appended["turn/completed"] is False, "a non-ignorable append read as skippable"
+
+    undeclared = sorted(set(appended) - declared)
+    assert not undeclared, (
+        "the writers append these types and the registry does not declare them, so a "
+        f"log holding one cannot be folded, or has a damaged class record: {undeclared}"
+    )
+    # The writer-side completeness control, and it is what licenses reading the
+    # column above as complete: an extractor that misses a call shape under-reports
+    # BOTH columns, and this is the one that goes non-empty when it does.
+    never_appended = sorted(declared - set(appended))
+    assert not never_appended, (
+        "the registry declares these types and no writer appends them, so each states "
+        f"a shape no site produces: {never_appended}"
+    )
+
+
+def test_the_sampled_types_are_the_ignorable_ones():
+    # Both sample a stream, which is the only thing that earns the marker: an
+    # oversize body's slices, and a plan the agent overwrites at will.
     assert {spec.type for spec in SESSION_ENTRY_TYPES.values() if spec.ignorable} == {
         "message/chunk",
+        "plan/updated",
     }
 
 
@@ -580,6 +762,49 @@ def test_every_entry_a_real_turn_produces_validates():
     emit.on_model_selected(SESSION, "claude-fallback", "fallback", turn=1)
     emit.on_compaction_applied(SESSION, pct_before=82.0, pct_after=41.0)
     emit.on_message_queued(SESSION, source="slack", size_bytes=214, queued_seq="q-8")
+    # The six types declared for writers that already had one. Driven here rather
+    # than trusted to a hand-written payload, because declaring a type turns
+    # validation ON for it and a refusal is a permanently DROPPED write, not a
+    # raise -- so the dropped_writes() assertion below is what proves the specs are
+    # not narrower than what production actually emits.
+    emit.on_plan_updated(SESSION, 1, items=[{"id": "1", "text": "read", "completed": True}])
+    # Every other shape this writer produces: a cleared plan, a non-dict task it
+    # skips, and a list long enough to clip, which is the only way `total` appears.
+    emit.on_plan_updated(SESSION, 1, items=[])
+    emit.on_plan_updated(SESSION, 1, items=["not a task", {"id": "2", "text": "write"}])
+    emit.on_plan_updated(
+        SESSION,
+        1,
+        items=[{"id": str(n), "text": f"task {n}"} for n in range(emit._MAX_PLAN_ITEMS + 2)],
+    )
+    emit.on_background_completed(
+        SESSION,
+        kind="title",
+        model="claude-lite",
+        provider="anthropic",
+        credits=0.0004,
+        input_tokens=611,
+        duration_ms=940,
+    )
+    emit.on_subagent_spawned(
+        SESSION,
+        1,
+        agent_id="sub-1",
+        agent="kirocrew-worker",
+        model="claude",
+        scope={"memory": True, "lessons": False, "project": True},
+    )
+    emit.on_subagent_steered(SESSION, agent_id="sub-1", mode="follow_up")
+    emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=41200)
+    emit.on_subagent_failed(
+        SESSION, agent_id="sub-2", reason="TimeoutError", outcome="stopped", duration_ms=1800000
+    )
+    # The turn-less shapes too: a spawn with no asking turn, and closers with
+    # nothing measured, which is what the crash-repair closer resembles.
+    emit.on_subagent_spawned(SESSION, 0, agent_id="sub-3")
+    emit.on_subagent_completed(SESSION, agent_id="sub-3")
+    emit.on_subagent_failed(SESSION, agent_id="sub-4")
+    emit.on_background_completed(SESSION, kind="memory_consolidation")
     emit.on_turn_completed(
         SESSION,
         1,
@@ -596,6 +821,23 @@ def test_every_entry_a_real_turn_produces_validates():
     assert emit.dropped_writes() == 0
     body = _entries()[1:]
     assert body, "the emitter wrote nothing"
+    # A presence control. Without it an emitter that silently returned early would
+    # leave this test green while proving nothing about its declaration, which is the
+    # shape that let six types stay undeclared behind passing tests.
+    produced = {entry["type"] for entry in body}
+    assert {
+        "plan/updated",
+        "background/completed",
+        "subagent/spawned",
+        "subagent/steered",
+        "subagent/completed",
+        "subagent/failed",
+    } <= produced
+    # The clipping shape reached the log too, so `total` was exercised rather than
+    # just declared.
+    assert any(
+        entry["type"] == "plan/updated" and "total" in entry["data"] for entry in body
+    ), "no clipped plan entry, so the total field was never produced"
     for entry in body:
         assert declaration_for("session", entry["type"]) is not None, entry["type"]
         validate_data("session", entry["type"], entry["data"])
@@ -682,8 +924,15 @@ def test_the_markdown_dump_covers_every_type_and_field():
 
 
 def test_the_markdown_dump_marks_the_sampled_types():
+    # Derived from the registry rather than stated: the marker must appear once per
+    # ignorable declaration, so adding one cannot leave the renderer silent about it
+    # and the number here cannot go stale.
+    sampled = [spec for spec in SESSION_ENTRY_TYPES.values() if spec.ignorable]
+    assert sampled, "no ignorable declaration, so this check would pass vacuously"
     rendered = render_markdown()
-    assert rendered.count("Always written with `ignorable: true`.") == 1
+    assert rendered.count("Always written with `ignorable: true`.") == len(sampled)
+    for spec in sampled:
+        assert f"## `{spec.type}`" in rendered
 
 
 def test_the_markdown_dump_is_empty_for_a_kind_with_no_declarations():

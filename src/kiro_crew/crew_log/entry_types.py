@@ -9,13 +9,29 @@ in a spec table describing it, and two statements of one fact drift.
 **What a declaration is derived from.** The WRITER, not the table: every field
 below is read off the site that produces it (:mod:`kiro_crew.crew_log.emit`
 for the ordinary entries, ``store._closer_entries`` for the crash-repair closers).
-A type earns a declaration by having a writer, so the 20 declared here are exactly
-the session types something writes today; a type nothing writes is left undeclared
-and passes through, which is the posture ``message/steered`` already gets. A field
+A type earns a declaration by having a writer, so the types declared here are
+exactly the session types something writes today, whether or not the writer marks
+the entry ignorable. An ignorable write is not exempt: a folding reader SKIPS an
+undeclared ignorable entry, a skip is a gap in the sequence the fold receives, and
+the class fold reads a gap as damage. So ``plan/updated`` is declared like the
+rest, and its write keeps ``ignorable=True`` untouched. A type nothing writes at
+all is left undeclared, which is the posture ``message/steered`` already gets.
+``test_crew_log_types`` pins the two sets equal in both directions -- every
+declared type has a producing site, and every type a writer appends is declared.
+A field
 is ``required`` only when EVERY writer of that type produces it, which is why a few
 fields the spec table marks required are optional here -- the repair closer knows
 the turn and the reason and nothing else, and a required field it cannot supply
 would refuse the one write that closes an interrupted turn.
+
+**A missing declaration is not a passive gap.** A reader that FOLDS state passes
+``known=`` to :meth:`~kiro_crew.crew_log.store.CrewLog.iter_from`, which refuses an
+entry whose type it does not know and which is not marked ignorable -- so a type
+written without a declaration does not merely go uninterpreted, it stops every
+later fold of that log permanently. Declaring a type is therefore what makes a log
+containing it readable at all, and it is independent of whether any fold branches
+on it: a declared type a fold ignores is a fact it chose not to use, while an
+undeclared one is a fact it does not know exists.
 
 **Undeclared keys are refused**, the same posture and for the same reason as
 :func:`~kiro_crew.crew_log.schema.build_header`: a caller that misspells a field
@@ -730,6 +746,225 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             ),
         ),
         note="No turn: the deferred verdict can settle turns later than the compaction.",
+    ),
+    EntryType(
+        "plan/updated",
+        "The agent's task list, as the agent just restated it.",
+        (
+            _turn("The turn the plan was restated in."),
+            Field(
+                "items",
+                JSON_ARRAY,
+                item_type=JSON_OBJECT,
+                required=True,
+                fields=(
+                    Field("id", JSON_STRING, required=True, note="The task's id, clipped."),
+                    Field("text", JSON_STRING, required=True, note="The task's text, clipped."),
+                    Field(
+                        "state",
+                        JSON_STRING,
+                        required=True,
+                        enum=("done", "open"),
+                        enum_closed=True,
+                        note=(
+                            "Closed: the writer computes it as done-or-open from the "
+                            "stream's single completed boolean, so no caller can produce "
+                            "a third value. The backend's todo model carries no "
+                            "in-progress state, so a three-state vocabulary would be "
+                            "invented here."
+                        ),
+                    ),
+                ),
+                note=(
+                    "The plan as of this update, and the FRONT of it when clipped. "
+                    "Required and present even when empty: an empty list is the agent "
+                    "clearing its plan, which is a change and is recorded as one, while "
+                    "an event carrying no list at all writes no entry."
+                ),
+            ),
+            Field(
+                "total",
+                JSON_INT,
+                note=(
+                    "The real task count, written only when items is shorter than it. "
+                    "The list is bounded twice, by count and by serialized bytes, and "
+                    "this is how a clipped record says how much it is not showing."
+                ),
+            ),
+        ),
+        ignorable=True,
+        note=(
+            "A WHOLE list, not a delta: the agent re-sends every task on every change, "
+            "so a reader diffs consecutive entries itself. Written ignorable because it "
+            "samples a stream -- nothing later in the file depends on any single update "
+            "having been read -- but it is declared all the same. An undeclared type is "
+            "SKIPPED by a folding reader rather than refused, and a skip is a seq "
+            "discontinuity: the class fold treats any gap in what it receives as damage "
+            "and recorded_class then refuses, so leaving this undeclared made the class "
+            "record unreadable for every session whose agent touched its task list."
+        ),
+    ),
+    # -- subagent, background ----------------------------------------------- #
+    EntryType(
+        "subagent/spawned",
+        "A child this session dispatched.",
+        (
+            Field("agent_id", JSON_STRING, required=True, note="The child's run id."),
+            Field(
+                "turn",
+                JSON_INT,
+                note=(
+                    "The turn that ASKED, captured where the spawn was accepted. Absent "
+                    "when no turn asked -- a slash command, a cron and a hook all "
+                    "dispatch children of a session with nothing running, and turns are "
+                    "numbered from one, so a literal 0 would name a turn that never "
+                    "existed."
+                ),
+            ),
+            Field("agent", JSON_STRING, note="The child's agent name, when one was resolved."),
+            Field("model", JSON_STRING, note="The child's model, when one was resolved."),
+            Field(
+                "scope",
+                JSON_OBJECT,
+                fields=(
+                    Field("memory", JSON_BOOL, required=True),
+                    Field("lessons", JSON_BOOL, required=True),
+                    Field("project", JSON_BOOL, required=True),
+                ),
+                note=(
+                    "What context the child inherited. The writer builds all three "
+                    "members in one literal, so a present scope always carries them all; "
+                    "the parent field stays optional because a dispatch that passed no "
+                    "scope mapping omits it."
+                ),
+            ),
+        ),
+        note=(
+            "No ref into the child's log: no subagent code path opens one, and a ref "
+            "written now would cite a file that does not exist. Closed by "
+            "subagent/completed or subagent/failed carrying the same agent_id -- which "
+            "crash-repair matches across the WHOLE file, since a child outlives the turn "
+            "that asked for it by design."
+        ),
+    ),
+    EntryType(
+        "subagent/steered",
+        "A correction sent into a running child.",
+        (
+            Field("agent_id", JSON_STRING, required=True, note="The child's run id."),
+            Field(
+                "mode",
+                JSON_STRING,
+                enum=("interrupt", "follow_up"),
+                note=(
+                    "How the correction was delivered: injected into the running turn, or "
+                    "queued for after it. Open -- the emitter passes the caller's word "
+                    "through rather than clamping it, so a third delivery mode must be "
+                    "recorded rather than refused."
+                ),
+            ),
+        ),
+        note=(
+            "Written into the PARENT's log: the parent is what sent it, and the child has "
+            "no crew log to receive it. Opens and closes nothing -- a steer is an event "
+            "about a child, not a state of one."
+        ),
+    ),
+    EntryType(
+        "subagent/completed",
+        "A child closed having finished its work.",
+        (
+            Field("agent_id", JSON_STRING, required=True, note="The child's run id."),
+            Field("ms", JSON_INT, note="Measured run duration; absent when it was not measured."),
+        ),
+        note=(
+            "Only the completed outcome. A stopped or failed child closes through "
+            "subagent/failed, because the runtime's three-way outcome exists precisely to "
+            "stop consumers reading 'no error' as success. No tokens and no credits, and "
+            "their absence is the record: nothing in the subagent runtime measures either, "
+            "so writing zeros would present the absence of a measurement as a measurement "
+            "of zero."
+        ),
+    ),
+    EntryType(
+        "subagent/failed",
+        "A child closed WITHOUT finishing its work.",
+        (
+            Field("agent_id", JSON_STRING, required=True, note="The child's run id."),
+            Field(
+                "reason",
+                JSON_STRING,
+                note=(
+                    "The run's error text, clipped. Absent when the run carried none, and "
+                    "on the crash-repair closer, which knows only that the writer is gone."
+                ),
+            ),
+            Field(
+                "outcome",
+                JSON_STRING,
+                enum=("failed", "stopped", "unknown"),
+                note=(
+                    "WHICH non-success this was: a run the user stopped is not a failure "
+                    "and must not read as one, but it is also not a completion, and the "
+                    "vocabulary offers no third closer. unknown is written only by "
+                    "crash-repair. Open -- the value is the subagent runtime's own, so "
+                    "enforcing the set would turn 'the upstream vocabulary grew' into a "
+                    "lost record."
+                ),
+            ),
+            Field("ms", JSON_INT, note="Measured run duration; absent on the repair closer."),
+        ),
+        note=(
+            "Two writers close a child this way: the runtime's own terminal report, and "
+            "crash-repair. Only agent_id is common to both, so every other field is "
+            "optional -- the repair closer knows the child's id and that nothing will "
+            "report for it."
+        ),
+    ),
+    EntryType(
+        "background/completed",
+        "A model call the gateway made ON this session's behalf, and what it cost.",
+        (
+            Field(
+                "kind",
+                JSON_STRING,
+                required=True,
+                enum=("title", "summary", "memory_consolidation"),
+                note=(
+                    "Which background helper spent the budget. Open: the set grows with "
+                    "each helper wired, and refusing an unrecognized one would drop the "
+                    "only trace of a charge."
+                ),
+            ),
+            Field("model", JSON_STRING, note="Model the call served on."),
+            Field("provider", JSON_STRING, note="Provider."),
+            Field("credits", JSON_FLOAT, note="Present only when this provider billed credits."),
+            Field(
+                "tokens",
+                JSON_OBJECT,
+                fields=(
+                    Field("input", JSON_INT),
+                    Field("output", JSON_INT),
+                    Field("cache_read", JSON_INT),
+                    Field("cache_write", JSON_INT),
+                ),
+                note=(
+                    "Only the dimensions this provider actually billed. Unlike "
+                    "turn/completed's mapping, each member is OPTIONAL: the writer drops "
+                    "every zero, so a call billed on input alone carries input alone, and "
+                    "requiring the four would refuse it. A present dimension is a "
+                    "measurement; an absent one is 'this provider does not bill here'."
+                ),
+            ),
+            Field("ms", JSON_INT, note="Wall clock measured around the call itself."),
+        ),
+        note=(
+            "No turn. The call is not part of one -- it runs after a turn ends, on a "
+            "separate background session -- and naming the turn that happened to be last "
+            "would attribute the cost to work that did not cause it. Titling, summarizing "
+            "and memory consolidation spend the user's budget without the user asking, "
+            "and this is that trace."
+        ),
     ),
     # -- ledger ------------------------------------------------------------- #
     EntryType(

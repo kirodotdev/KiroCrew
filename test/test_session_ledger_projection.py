@@ -455,6 +455,52 @@ def test_a_ledger_entry_with_a_wrong_shape_is_refused_at_the_append():
     del handle
 
 
+def test_a_subagent_entry_does_not_stop_the_fold(caplog):
+    """A log that recorded a dispatched child still folds.
+
+    The regression this pins: every entry the emitter writes reaches the fold through
+    ``known=KNOWN_TYPES``, which refuses a type it does not know and that is not
+    marked ignorable. ``subagent/spawned`` was written non-ignorable and never
+    declared, so one dispatched child made this slot's record unreadable FOREVER --
+    the fold stopped at that entry and ``read_state`` answered with the empty record
+    for the rest of the session's life, while the log itself was perfectly intact.
+
+    Ordered so the READ is what fails: the ledger entry lands first and the child
+    entry after it, so the fold has to walk past the child to finish, and a refusal
+    there loses an entry it had already read. That is the shape the failure takes in
+    the field. The same refusal also makes ``record`` raise, since it folds to
+    compute the state it returns; this asserts the quieter half, because a read that
+    answers empty reports nothing to the caller.
+
+    Driven through ``read_state`` rather than over ``iter_from`` directly: the refusal
+    is caught there and converted to the empty record, so a test that called the
+    reader itself would see an exception where a real caller sees a blank record.
+    """
+    _unit()
+    sl.record(SLOT, session_id=SESSION, goal="ship the declared types")
+    crew_log_emit.on_subagent_spawned(
+        SESSION,
+        3,
+        agent_id="sub-9",
+        agent="kirocrew-worker",
+        model="claude",
+        scope={"memory": True, "lessons": True, "project": False},
+    )
+    crew_log_emit.drain_for_shutdown(timeout=5.0)
+    # Controls: both entries are on disk and the child is AFTER the ledger entry, so
+    # the fold cannot reach the goal without passing it. Without this the test could
+    # pass on a log that never held a child at all.
+    types = [entry.type for entry in _entries()]
+    assert sl.LEDGER_ENTRY_TYPE in types and "subagent/spawned" in types
+    assert types.index("subagent/spawned") > types.index(sl.LEDGER_ENTRY_TYPE)
+
+    sl._fold_cache.clear()
+    with caplog.at_level("WARNING", logger="kiro_crew.session_ledger"):
+        state = sl.read_state(SLOT)
+    assert state.get("goal") == "ship the declared types"
+    assert "folding this slot's crew logs failed" not in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # the registry and the writer agree
 # --------------------------------------------------------------------------- #
