@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,17 @@ _FILENAME = "cloud_launch_state.json"
 #: anything near it is not a record; the bound is here because a reader that trusts a file's
 #: size is a reader an unbounded file can exhaust.
 _MAX_FILE_BYTES = 64 * 1024
+
+#: ``O_NOFOLLOW`` where the platform has it, else nothing. Absent on Windows, which is a
+#: platform ``kirocrew cloud`` really runs on, so this is a ``getattr`` rather than a direct
+#: use. Where it IS present it refuses a symlinked leaf in the kernel, which is stronger than
+#: any check after the open; where it is absent the by-name refusal in
+#: :meth:`LaunchState.load` is what still reports that shape.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+#: ``O_BINARY`` where the platform has it. Windows-only, and required there or the read
+#: translates CRLF and the byte ceiling stops counting the bytes that are on disk.
+_O_BINARY = getattr(os, "O_BINARY", 0)
 
 
 def state_path() -> Path:
@@ -102,23 +114,28 @@ class LaunchState:
         """
         p = path or state_path()
         require_unaliased_launch_state(str(p))
-        return cls._load(p, guard_legacy=True)
+        return cls._load(p, guard_legacy=True, pin_record=True)
 
     @classmethod
     def _load_unguarded(cls, p: Path) -> "LaunchState":
-        """The read itself, with no alias refusal. For :meth:`clear_tag` only.
+        """The read with no alias refusal. For the POST-DESTROY clear only.
 
-        ``clear_tag`` runs AFTER ``destroy`` has already deleted the stack, so nothing it
+        :meth:`clear_tag` runs AFTER ``destroy`` has already deleted the stack, so nothing it
         does may raise: a refusal there would abort a command whose irreversible work is
         done, which is the failure shape this module exists to have removed. The tag it
         compares against came from a consume point that already refused an aliased file, so
         the check is not skipped -- it happened earlier, where its answer could still change
         what the command did.
+
+        That argument is about WHEN the caller runs, and it does not extend to every clear.
+        :meth:`try_clear_tag` runs before provisioning for ``wizard._clear_prior_pointer``,
+        where an abort costs no stack and no bill, so that path guards; see its own docstring.
+        This helper is reached only through the ``require_unaliased=False`` opt-out.
         """
         return cls._load(p, guard_legacy=False)
 
     @classmethod
-    def _load(cls, p: Path, *, guard_legacy: bool) -> "LaunchState":
+    def _load(cls, p: Path, *, guard_legacy: bool, pin_record: bool = False) -> "LaunchState":
         """The document, or the legacy fields when it is not a record.
 
         *guard_legacy* is what tells the two entry points apart, and it exists because the
@@ -129,7 +146,7 @@ class LaunchState:
         forged ``last_tag`` to ``cloud destroy`` and the wrong stack is deleted. The guard
         belongs on both files because either one can be the one the tag came from.
         """
-        data = _read_document(p)
+        data = _read_document(p, pin=pin_record)
         # A document carrying NONE of the three keys is not a record -- it is the empty
         # ``{}`` the sandbox pre-creates so its read-only seal has a file to bind to, and it
         # has to mean what an absent file means or every install whose pointer still lives in
@@ -191,11 +208,19 @@ class LaunchState:
         separate steps the compare answers about a file that has moved on by the time the write
         lands: a launch recording its tag between them is overwritten by the clear, and the
         pointer to a live instance is gone. The lock is what leaves no window between them.
+
+        The clear does NOT refuse an aliased record, and that is scoped to this method's one
+        caller rather than to clears in general: it runs after ``destroy`` has deleted the
+        stack, so there is no decision left for a refusal to change and aborting would only
+        turn a completed removal into a traceback. :meth:`try_clear_tag` is the same operation
+        for a caller that runs BEFORE its irreversible step, and it refuses.
         """
-        return cls.try_clear_tag(expect, path=path)[0]
+        return cls.try_clear_tag(expect, path=path, require_unaliased=False)[0]
 
     @classmethod
-    def try_clear_tag(cls, expect: str, path: Optional[Path] = None) -> "tuple[bool, str]":
+    def try_clear_tag(
+        cls, expect: str, path: Optional[Path] = None, *, require_unaliased: bool = True
+    ) -> "tuple[bool, str]":
         """Clear ``last_tag`` while it still names *expect*, and answer what is saved after.
 
         The same operation as :meth:`clear_tag`, reporting the tag the compare actually saw
@@ -209,11 +234,29 @@ class LaunchState:
         record again afterwards would answer about a file that can have moved on between the
         two reads, and would also be answered by a stubbed reader rather than by the file the
         compare used.
+
+        **This read refuses an alias-backed record, and *require_unaliased* defaults to True
+        so a consume point added later inherits the refusal instead of the exemption.** The
+        record's tag is an input to a security decision here exactly as it is in
+        :meth:`load`: ``wizard._clear_prior_pointer`` provisions or aborts on what this
+        reports, and a forged EMPTY pointer turns a deliberate abort into a launch that leaves
+        a live stack named by a pointer its operator never wrote -- which is the state a later
+        ``destroy`` with no ``--tag`` resolves. The refusal is affordable here for the same
+        reason that abort is: nothing has been provisioned and nothing is billing.
+        ``cli_cloud``'s dispatch already catches ``SandboxCeilingUnsealable`` for every verb,
+        so this prints the file, the shape and the remedy rather than a traceback.
+
+        *require_unaliased=False* is the post-destroy opt-out and has exactly one caller,
+        :meth:`clear_tag`, whose stack is already gone.
         """
         p = path or state_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         with _writer_lock(p):
-            current = cls._load_unguarded(p)
+            if require_unaliased:
+                require_unaliased_launch_state(str(p))
+                current = cls._load(p, guard_legacy=False, pin_record=True)
+            else:
+                current = cls._load_unguarded(p)
             if current.last_tag != expect:
                 return False, current.last_tag
             _write_record(p, profile=current.profile, region=current.region, last_tag="")
@@ -293,7 +336,7 @@ def _writer_lock(p: Path) -> "Iterator[None]":
         yield
 
 
-def _read_document(p: Path) -> "Optional[dict]":
+def _read_document(p: Path, *, pin: bool = False) -> "Optional[dict]":
     """The file as a JSON object, or ``None`` for every way it is not one.
 
     Reads at most one byte PAST the ceiling and decides from that, so an oversized file is
@@ -307,12 +350,41 @@ def _read_document(p: Path) -> "Optional[dict]":
     apart, so an oversized file whose first ``_MAX_FILE_BYTES`` bytes happen to be a complete
     record would pass the check and be adopted -- a truncated prefix read as the whole
     document.
+
+    *pin* re-asks the alias question about the inode these BYTES came from, on the descriptor
+    they were read through, and it is what stops the refusal being a check-then-use. The
+    by-name check in :meth:`LaunchState.load` runs before this and judges whatever the name
+    resolved to then; this one judges what was consumed. Both are wanted: the by-name call is
+    the only one that can refuse a symlinked leaf and print its remedy, and this one is the
+    only one that can say the judged inode is the inode that was read.
+
+    Ordered AFTER the read, deliberately. Verifying first and reading second leaves the read
+    unjudged, which is the shape being removed; verifying second means every alias present
+    from this ``open`` through this ``read`` is refused, and the bytes a refusal was raised
+    over are discarded rather than returned.
+
+    ``O_NOFOLLOW`` is applied only WITH *pin*, so the exempt caller resolves the name exactly
+    as it did before. It follows a symlinked record, which is what lets the post-destroy clear
+    still clear a pointer on a host whose record is a link -- there is nothing left for a
+    refusal to protect there, and declining to clear would leave the stale pointer the clear
+    exists to remove. On the pinned path the flag refuses that shape in the kernel instead, so
+    the descriptor handed to the alias check can never be a link's target.
     """
     try:
-        with open(p, "rb") as fh:
-            raw = fh.read(_MAX_FILE_BYTES + 1)
+        fd = os.open(p, os.O_RDONLY | (_O_NOFOLLOW if pin else 0) | _O_BINARY)
     except OSError:
         return None
+    try:
+        raw = _read_from(fd)
+        if pin:
+            # Raises SandboxCeilingUnsealable, which is a RuntimeError and so is NOT caught by
+            # this module's OSError handling anywhere: an aliased record must refuse the
+            # command, never degrade to "no record" and fall through to the legacy fields.
+            require_unaliased_launch_state(str(p), fd=fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
     if len(raw) > _MAX_FILE_BYTES:
         logger.warning("launch state: %s is larger than %d bytes; ignoring it", p, _MAX_FILE_BYTES)
         return None
@@ -322,3 +394,23 @@ def _read_document(p: Path) -> "Optional[dict]":
         logger.warning("launch state: %s is not a readable JSON document; ignoring it", p)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _read_from(fd: int) -> bytes:
+    """The first ``_MAX_FILE_BYTES + 1`` bytes of *fd*, looping over short reads.
+
+    ``os.read`` may return fewer bytes than asked for without any error, so one call cannot
+    be read as "this is the whole file": a short read would make an oversized document look
+    like it fits the ceiling, and could truncate a legitimate record into unparseable JSON.
+    Loops until the budget is met or the file ends.
+    """
+    budget = _MAX_FILE_BYTES + 1
+    chunks: list[bytes] = []
+    got = 0
+    while got < budget:
+        chunk = os.read(fd, budget - got)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        got += len(chunk)
+    return b"".join(chunks)

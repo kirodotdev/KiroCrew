@@ -1867,7 +1867,9 @@ def _require_real_dir_nofollow(target: str) -> None:
         )
 
 
-def _require_real_file_nofollow(target: str, *, harm: str, remedy: str) -> None:
+def _require_real_file_nofollow(
+    target: str, *, harm: str, remedy: str, fd: "int | None" = None
+) -> None:
     """Confirm *target* is a lone regular file, else refuse. For strict file leaves only.
 
     The file analogue of :func:`_require_real_dir_nofollow`, and stricter than
@@ -1901,24 +1903,46 @@ def _require_real_file_nofollow(target: str, *, harm: str, remedy: str) -> None:
     the dangerous case for exactly this reason; the exemption failed to carry it one step
     further. Any rule that reads the file's current contents has the same hole, because
     contents are what the attacker supplies, so this rule reads no contents at all.
+
+    *fd* is an OPEN descriptor for the file the caller has ALREADY READ, and it changes
+    which inode this answers about. Without it the check ``lstat``s the NAME and the
+    caller then opens that name again, so the inode that was judged and the inode that was
+    consumed are two separate resolutions and nothing ties them together. With it the
+    judgement lands on the very descriptor the bytes came from, so a swap at the name
+    between the two cannot put un-judged content in front of a caller: the alias question
+    is asked about what was read rather than about what the name pointed at earlier.
+
+    The symlink branch is skipped in that mode because it cannot arise there and cannot be
+    answered there: a descriptor obtained with ``O_NOFOLLOW`` refuses a symlinked leaf at
+    ``open`` time with ``ELOOP``, and ``fstat`` on an ordinary descriptor never reports
+    ``S_IFLNK`` in any case. Callers therefore keep the by-name form as well, which is what
+    still produces the symlink refusal and its remedy.
     """
-    try:
-        info = os.lstat(target)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise SandboxCeilingUnsealable(
-            f"cannot stat the strict governance ceiling {target}: {exc}"
-        ) from exc
-    if stat.S_ISLNK(info.st_mode):
-        pointed_at = "(unreadable)"
-        with contextlib.suppress(OSError):
-            pointed_at = os.readlink(target)
-        raise SandboxCeilingUnsealable(
-            f"the strict governance ceiling {target} is a SYMLINK -> {pointed_at}. The seal "
-            "binds the file it resolves to while the link name stays in a writable "
-            f"directory, so a sandboxed process could replace the name and {harm}. {remedy}"
-        )
+    if fd is not None:
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the strict governance ceiling {target}: {exc}"
+            ) from exc
+    else:
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the strict governance ceiling {target}: {exc}"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode):
+            pointed_at = "(unreadable)"
+            with contextlib.suppress(OSError):
+                pointed_at = os.readlink(target)
+            raise SandboxCeilingUnsealable(
+                f"the strict governance ceiling {target} is a SYMLINK -> {pointed_at}. The seal "
+                "binds the file it resolves to while the link name stays in a writable "
+                f"directory, so a sandboxed process could replace the name and {harm}. {remedy}"
+            )
     if not stat.S_ISREG(info.st_mode):
         raise SandboxCeilingUnsealable(
             f"cannot seal {target}: it is not a regular file, so the read-only bind would "
@@ -2183,7 +2207,7 @@ def _delete_file_command(target: str, *, windows: "bool | None" = None) -> str:
     return f"rm {shlex.quote(target)}"
 
 
-def require_unaliased_launch_state(path: str) -> None:
+def require_unaliased_launch_state(path: str, *, fd: "int | None" = None) -> None:
     """Refuse an alias-backed launch record at the point a command consumes its tag.
 
     PUBLIC, and called from ``cloud.launch_state.LaunchState.load`` -- the one read every
@@ -2201,10 +2225,24 @@ def require_unaliased_launch_state(path: str) -> None:
     from one that already exists.
 
     Takes the path being READ rather than deriving it, so the file this checks and the file
-    the caller goes on to consume cannot be two different files. A window still remains
-    between the check and the consume -- an inode swap in between is not visible to any
-    ``lstat``-based rule, and no rule can close the hardlink shape at all -- which is why
-    this is one layer of several rather than the only one.
+    the caller goes on to consume cannot be two different files.
+
+    *fd* is how the check stops being a check-then-use. Without it this ``lstat``s the NAME
+    and the caller opens that name again, so the judged inode and the consumed inode are two
+    resolutions with a window between them. ``LaunchState.load`` therefore calls this twice:
+    once by name, which is what refuses a symlinked leaf and names the remedy, and once on
+    the DESCRIPTOR the record's bytes were actually read from, after the read. The second
+    call is what ties the answer to the inode that was consumed, so content that was never
+    judged cannot be put in front of a caller by swapping the name in between.
+
+    What that does NOT close, stated because the guard's value depends on it: an alias that
+    existed EARLIER, was written through in place, and was unlinked before this read leaves a
+    lone regular file holding forged bytes, and no ``lstat`` or ``fstat`` rule can see that
+    an inode once had a second name. Closing that shape needs the tag verified through a
+    channel the sandbox cannot reach, or the unbounded verb requiring an explicit ``--tag``;
+    both are design choices for the launch lane rather than something this seam can decide.
+    So this remains one layer of several -- what it now guarantees is that the layer answers
+    about the right inode.
 
     NOT added to :data:`_CREW_NOFOLLOW_READONLY_FILE_LEAVES`. That list is walked where a
     spawn is prepared, so a leaf in it refuses every sandboxed spawn on a host whose files
@@ -2222,6 +2260,7 @@ def require_unaliased_launch_state(path: str) -> None:
             f"Remove the aliased name with `{_delete_file_command(path)}`; `kirocrew cloud list` "
             "finds your instance again."
         ),
+        fd=fd,
     )
 
 
