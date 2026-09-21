@@ -92,10 +92,21 @@ jobs:
       # warnings (`W:`) rather than errors, and nothing this lane needs comes
       # from them.
       #
+      # claude.ai and downloads.claude.ai are the second half of that same
+      # bootstrap and are equally load-bearing: the action then installs the CLI
+      # itself with `curl https://claude.ai/install.sh`, and that script reads its
+      # version manifest and binary from `downloads.claude.ai/claude-code-releases`
+      # (its DOWNLOAD_BASE_URL). Blocked, curl exits 7 three times and the lane
+      # fails closed exactly as an apt block does. The two hosts are ordered and
+      # sequential, so an allowlist carrying only the apt half still never reaches
+      # the model -- do not read a green apt phase as proof the bootstrap resolves.
+      # `code.claude.com` and `www.anthropic.com` appear in that script only inside
+      # error messages, are never fetched, and so are NOT added.
+      #
       # Exfil surface: unchanged in practice. The model is granted only the three
       # read tools and no shell, so an injected prompt in the fork's diff has no
-      # way to originate a network request to these or any other endpoint; the
-      # apt fetch happens in the action's bootstrap, before the model call. Keep
+      # way to originate a network request to these or any other endpoint; every
+      # fetch above happens in the action's bootstrap, before the model call. Keep
       # this allowlist minimal for that reason -- it is a blast-radius control,
       # not a convenience list.
       - name: Harden runner (egress allowlist)
@@ -117,6 +128,8 @@ jobs:
             azure.archive.ubuntu.com:80
             archive.ubuntu.com:443
             security.ubuntu.com:443
+            claude.ai:443
+            downloads.claude.ai:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

@@ -77,8 +77,10 @@ jobs:
       # MUST be first: block egress except the endpoints the reviewer needs, so
       # an injection-driven exfil attempt fails at the network layer.
       #
-      # The three ubuntu archive hosts carry claude-code-action's bubblewrap
-      # bootstrap (`apt-get install bubblewrap socat`), which this lane needs
+      # The three ubuntu archive hosts plus claude.ai and downloads.claude.ai
+      # carry claude-code-action's bootstrap (`apt-get install bubblewrap socat`,
+      # then `curl https://claude.ai/install.sh` whose DOWNLOAD_BASE_URL is
+      # `downloads.claude.ai/claude-code-releases`), which this lane needs
       # because it sets `allowed_non_write_users`. Blocked, the install exits 7
       # and this lane publishes `review incomplete (advisory)` on every fork PR
       # -- advisory, so it reads as neutral rather than red and the lane silently
@@ -102,6 +104,8 @@ jobs:
             azure.archive.ubuntu.com:80
             archive.ubuntu.com:443
             security.ubuntu.com:443
+            claude.ai:443
+            downloads.claude.ai:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

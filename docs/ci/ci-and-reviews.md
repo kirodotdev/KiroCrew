@@ -2084,7 +2084,11 @@ Nothing the fork controls can influence these reviews:
   of any prompt injection. That allowlist is coupled to the reviewer's own setup, not
   just to the model call: `allowed_non_write_users` auto-enables the action's
   bubblewrap isolation, which the action bootstraps over apt, so the ubuntu archive
-  hosts are load-bearing. Remove them and the install exits before any model call --
+  hosts are load-bearing -- and it then installs the CLI itself over `claude.ai`
+  and `downloads.claude.ai`, so those are too. The two phases are sequential, so an
+  allowlist carrying only the first still never reaches the model: a green apt phase
+  is not evidence the bootstrap resolves. Remove either and the install exits before
+  any model call --
   the blocking lane then goes red, and an **advisory** lane publishes `review
   incomplete` as a *neutral* check, which is how three reviewers can stop reviewing
   every fork PR without turning anything red (#12099). The endpoints for both that
