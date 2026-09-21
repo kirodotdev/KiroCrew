@@ -109,6 +109,12 @@ design_lane_verdicts = _review_contract.design_lane_verdicts
 unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
 unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
+OVERRIDE_MARKER_RE = _review_contract.OVERRIDE_MARKER_RE
+OVERRIDE_TARGET_ALL = _review_contract.OVERRIDE_TARGET_ALL
+DEFAULT_OVERRIDE_TARGET_KEYS = _review_contract.DEFAULT_OVERRIDE_TARGET_KEYS
+parse_override_record = _review_contract.parse_override_record
+override_reviewer_names = _review_contract.override_reviewer_names
+human_override_actors = _review_contract.human_override_actors
 
 
 # Strip ANSI escape sequences and C0/C1 control chars from untrusted printed
@@ -1001,7 +1007,7 @@ def fetch_bot_comments(repo, number, trusted_authors):
     return None
 
 
-def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
+def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=None):
     """Evaluate reviewer stamps and blocking markers against the current head.
 
     Returns a dict:
@@ -1009,6 +1015,8 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
       stale     -- sorted reviewer names with no fresh stamp for the head
       blocking  -- sorted reviewer names with [BLOCK-MERGE] <current head>
       findings  -- {name: advisory FINDING-line count} for fresh comments
+      overridden -- {name: actor} for lanes a repository writer adjudicated at
+                   this head instead of the model (see human_override_actors)
       pinned    -- whether ``only`` named the fleet. Empty ``stale`` means
                    "every REQUIRED lane stamped this head" only when pinned;
                    in discovery mode it means "every lane that POSTED is
@@ -1029,6 +1037,16 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
     reads as stale, so emitter drift cannot silently un-gate), else every
     BOUND reviewer that posted a comment (discovery mode; a lane that never
     posted is not required, its CI gate covers absence).
+
+    TWO KINDS OF PROOF, and a lane is answered by either. A fresh stamp proves
+    a MODEL produced a verdict for this commit. An accepted human-override
+    record proves a repository WRITER adjudicated it, on a path where the model
+    is deliberately not re-run, so no stamp exists to find. The stamp is
+    reported as ``fresh`` and the record as ``overridden``, never folded
+    together: a reader auditing the head later must be able to tell "a model
+    reviewed this" from "a human cleared this". ``authors`` is the comment-author
+    allowlist the record's authority rests on -- checked here as well as by the
+    caller's fetch, so the function alone refuses a forged record.
     """
     if comments is None or not head_sha:
         return {
@@ -1037,6 +1055,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
             "blocking": [],
             "findings": {},
             "elided": [],
+            "overridden": {},
             "verdicts": {},
             "pinned": only is not None,
         }
@@ -1080,13 +1099,37 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
         for sha in BLOCK_MERGE_RE.findall(body):
             if sha_matches(sha, head_sha):
                 blocking.add(name or "(unattributed)")
-    stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh)
+    # Accepted human overrides for THIS head. A record naming one lane enrols
+    # it, so the answer no longer depends on a stale duplicate comment being
+    # the only thing that put the lane in the set; a `target=all` record
+    # answers for the lanes already under evaluation without inventing any.
+    named_overrides, blanket_actor = human_override_actors(
+        comments,
+        head_sha,
+        bindings,
+        DEFAULT_MARKER_AUTHORS if authors is None else authors,
+    )
+    for name, actor in named_overrides.items():
+        if only is None or name in only:
+            fresh_by_name.setdefault(name, False)
+    overridden = {}
+    for name, fresh in fresh_by_name.items():
+        # A fresh stamp is the stronger statement and stays the reported one:
+        # the model DID run for this commit, so calling the lane overridden
+        # would understate the evidence on the PR.
+        if fresh:
+            continue
+        actor = named_overrides.get(name) or blanket_actor
+        if actor:
+            overridden[name] = actor
+    stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh and n not in overridden)
     return {
         "ok": True,
         "stale": stale,
         "blocking": sorted(blocking),
         "findings": findings,
         "elided": sorted(elided),
+        "overridden": dict(sorted(overridden.items())),
         "verdicts": verdicts,
         "pinned": only is not None,
     }
@@ -1096,8 +1139,9 @@ def reviewer_round_settled(marker_eval):
     """Whether AI review for this head is decided, regardless of the other checks.
 
     True only when the fleet was PINNED (``--reviewers`` / the loop's own
-    profile names), the comments were readable, every pinned lane carries a
-    fresh ``[<NAME>-REVIEWED]`` stamp for this head, and at least one posted
+    profile names), the comments were readable, every pinned lane is answered
+    for this head -- a fresh ``[<NAME>-REVIEWED]`` stamp, or an accepted human
+    override record naming this head -- and at least one posted
     ``[BLOCK-MERGE]``. That combination is terminal for the head: the diff has
     to change, so the tests, packaging and lint runs still in flight are
     running on a commit that is already condemned.
@@ -1259,6 +1303,13 @@ def build_report(
             # of minutes a commit count in the key would reset the stall streak
             # forever. The babysit trigger reads this field; the tripwire does not.
             "green_age": dict(green_age or {"ok": False, "reason": "not measured"}),
+            # {lane: actor} a repository writer adjudicated at this head instead
+            # of the model. Advisory and OUTSIDE progress_key for the same
+            # reason the finding counts are: it is state about the head, not a
+            # thing that moves when the PR makes progress. Separate from
+            # stale_reviewers rather than merged into it -- a reader auditing
+            # this head has to be able to tell a model verdict from a human one.
+            "overridden_reviewers": dict(sorted((marker_eval.get("overridden") or {}).items())),
             "stale_reviewers": sorted(marker_eval.get("stale") or []),
             "unresolved_threads": n_unresolved,
         },
@@ -1678,11 +1729,16 @@ def main(argv):
         head_sha,
         marker_bindings,
         only=reviewers_filter,
+        authors=marker_authors,
     )
     print("-- Reviewer markers (head {}) ".format(sanitize(head_sha[:12]) or "?") + "-" * 20)
     if not marker_eval["ok"]:
         print("  ERROR: bot comments could not be read (fail-closed)")
-    elif not marker_eval["findings"] and not marker_eval["stale"]:
+    elif (
+        not marker_eval["findings"]
+        and not marker_eval["stale"]
+        and not marker_eval.get("overridden")
+    ):
         if reviewers_filter:
             print(
                 "  (no [<NAME>-REVIEWED] stamps found for filter: "
@@ -1725,6 +1781,14 @@ def main(argv):
             )
         for name in marker_eval["stale"]:
             print("  - {}: STALE (stamp names an older head)".format(sanitize(name)))
+        # Named distinctly from `fresh`, because the two are different
+        # evidence: no model verdict exists for this head, and the row must not
+        # read as though one does.
+        for name, actor in sorted((marker_eval.get("overridden") or {}).items()):
+            print(
+                "  - {}: OVERRIDDEN by @{} (human judgment recorded for this head; "
+                "the model was not re-run)".format(sanitize(name), sanitize(actor))
+            )
 
     # Disposition-rule gate: a repository writer's disposition
     # comment must claim exactly one span= finding identity from its own

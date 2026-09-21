@@ -1673,7 +1673,19 @@ silently (zero jobs, nothing on the PR) when any expression-bearing string excee
 /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-head-sha>: <one-sentence reason>
 ```
 
-`scope` targets the [Security Scope Review](#security-scope-review-what-a-tightening-newly-refuses) lanes; every target maps to its like-named reviewer.
+`scope` targets the [Security Scope Review](#security-scope-review-what-a-tightening-newly-refuses) lanes. Each target names a lane by its command spelling, which is resolved to the reviewer through that lane's comment key — so `gpt` is the `codex-ai-review` lane's reviewer `GPT`, and `fable` is the `claude-ai-review` lane's reviewer `OPUS`.
+
+`pr_status.py` reads the marker too, and reports an accepted record as its own row —
+`GPT: OVERRIDDEN by @<actor>` — rather than as a fresh stamp. The two markers prove
+different things: `[<NAME>-REVIEWED] <sha>` is proof a **model** produced a verdict for
+this commit, and the override record is proof a **human** adjudicated it on a path where
+the model is deliberately not re-run, so no stamp exists to find. Before that, an
+accepted override turned the lane's check green while the canonical script still reported
+`stale reviewer stamp(s)` for it. The record must name the head **exactly**: it is written
+by the workflow from `.head.sha`, so the prefix-and-elision tolerance that exists for
+model-transcribed stamps does not apply. A record naming one lane also keeps that lane in
+the evaluation, so deleting the bot comment that carries a stale stamp cannot make the
+reviewer disappear from the check instead of answering for it.
 
 `issue_comment` workflows execute from the trusted default branch, never from the PR
 head. The handler validates the command shape, a 7-to-40-hex SHA that must be the
