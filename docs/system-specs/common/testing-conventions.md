@@ -1922,6 +1922,187 @@ runs KILLED mid-session on the same host (zero of fifty-five floors leaked from 
 finished), and the computer-use host catalog probing `Program Files` at import is the
 product's own capability probe, transient and by design.
 
+### What an eighth five-run pass found (macOS, eight workers, ~121k tests per run)
+
+A Linux pass ran on another machine at the same time and claims the seventh slot
+([#12425](https://github.com/kirodotdev/KiroCrew/pull/12425)); the two overlap on
+three findings and are noted where they do.
+
+Five rounds of backend, vitest and electron on a test-only branch off one commit:
+121,271 / 36,093 / 1,959 tests per round, all five rounds identical, and a backend
+failure set identical across all five (md5 `c911e103` of the sorted `FAILED` node
+ids with the trailing reason text stripped — the reason wording can vary while the
+set does not, so it is the ids that are hashed). **Zero** flaky tests, and zero
+added files in the checkout in every round. Every large cluster the sweep reported
+was its own instrumentation, so this section is mostly about the instrument rather
+than the suite: nine defects in the measurement, one limit disclosed rather than
+closed, and one real defect in the suite. Two of the four always-red tests and one
+of the two `network` findings were the tools, not the tests.
+
+The generalisable lesson: **a probe that observes the suite is itself code under test,
+and its failure mode is a CLEAN report.** A measurement defect does not announce itself
+the way a red test does — it removes signal, or manufactures a cluster large enough that
+nobody reads its members. Every number below was checked against a second witness or a
+negative control before it was believed, and that is what caught them.
+
+#### The findings that were the instrument
+
+- **A green summary line has a different SHAPE from a red one, so a parser derived from a
+  failing run reads every passing run as a killed one.** vitest prints
+  `Tests  36093 passed | 1 expected fail | 2 skipped (36096)` — no `failed` token at all,
+  and `expected fail` is a TWO-WORD label that broke a `(\d+) ([a-z]+)` repetition, so the
+  whole line matched nothing and all five green rounds were reported as runs that never
+  finished (exit 3). electron runs `node --test` under its DEFAULT reporter
+  (`<glyph> pass 1959` / `<glyph> fail 0`), never the TAP `not ok` the parser looked for;
+  the glyph is U+2139, which Python's `\w` matches, so a `[^\w\s]` class for it rejected
+  every real line. Then the electron FIX had the defect it was written to close:
+  `if "pass" not in counts and "fail" not in counts` answered `(1959, 0)` — fully green —
+  for a log truncated after the `pass` line. That reporter emits
+  `tests / suites / pass / fail / cancelled / skipped / todo` as one ordered block, so
+  every column must be present AND reconcile against `tests`. An unreadable summary is not
+  a passing summary.
+- **`os.path.realpath` on a RELATIVE path anchors it at the process cwd, and an xdist
+  worker's cwd is the checkout root.** So every per-test `tmp_path` write of `config.json`,
+  `home`, `memory.db`, `sessions` or `agents` was recorded as a write into the tree under
+  test: 43,316 tests over 1,735 files — the largest class in the report by two orders of
+  magnitude — against a snapshot that saw zero added files in the checkout in all five
+  rounds. Two witnesses disagreeing that far is the tell, and the snapshot was the one
+  telling the truth. A path that cannot be attributed to a root is now its own class and is
+  never asserted to be a checkout write.
+- **Absoluteness is a property of the PATH's own syntax, not of the host reading the
+  report.** The guard asked whether the path starts with `/`, so every `C:\Users\...`
+  record read as relative — and the sweep skill routes Windows through its probe entry
+  point, so that platform's whole host/checkout signal landed in the unattributable class
+  and the report read clean. A backslash is a legal POSIX filename character, so it counts
+  as a separator only for a path that is Windows-shaped. The host that reads a report need
+  not be the host that produced it.
+- **A live gateway writes into its own data home for the whole run, and that is not
+  residue.** Every "new file" in all five rounds was `artifacts/`, `metrics/`, `pw/` or a
+  session `.sig` under the data home — in round 2 the 27 of them included the very report
+  card the finding was delivered in. Anchored on real path COMPONENTS under the data home
+  so a project's own `artifacts/` directory is never swallowed. Residue is 0 in every
+  round.
+- **Signal 0 delivers nothing, and reaping your own child is not a foreign signal.** 1,240
+  recorded signals were zero — the existence probe, which cannot affect its target — and of
+  the 214 tests the class named, 50 sent nothing else, leaving 164. Both are separated out
+  and COUNTED, never silently dropped: a filtered class and an empty class must not look
+  alike.
+- **A repo-relative build-product filter cannot reach a cache the tooling keeps OUTSIDE the
+  repo.** The suite points hypothesis' example database and `PYTHONPYCACHEPREFIX` at
+  `~/.cache/kirocrew/...`, so every property test and every subprocess import wrote there,
+  and the suite's own socket directories added the rest. Sanctioning those two took the
+  class from 331 tests over 85 files to 63, and the 63 that remain are attempts that could
+  not succeed — a write to `/proc/nonexistent`, a path a monkeypatched ingest returned — so
+  read the paths before reading the count as damage.
+- **A probe's stdlib lookups run INSIDE the window the test under measurement has
+  monkeypatched.** `test/test_cli_setup_cov80.py`'s
+  `TestRemoveRetiredConductorSkill::test_the_conductor_directory_is_never_re_resolved_by_name`
+  patches `os.path.realpath` to fail on any path ending in `conductor` — globally, because
+  patching it through a module's `os.path` attribute patches the one shared `os.path` — then
+  removes a `conductor/` directory. The probe normalises every recorded path with
+  `os.path.realpath`, so the PROBE tripped the assertion and the test was red in all five
+  rounds. Negative control: the identical node on the identical tree passes without the
+  probe loaded and fails with it, deterministically. An observer must bind every stdlib
+  callable it uses at IMPORT time; reading one by attribute at call time makes the observer
+  visible to whatever the test patched, and the test cannot tell it apart from the product.
+  The concurrent Linux pass closed the other half in
+  [#12425](https://github.com/kirodotdev/KiroCrew/pull/12425), keying the trap on which
+  module asked so a bystander normalising a path it was handed is not the defect production
+  re-resolving the name is. Both halves are worth having: the test stops accusing observers,
+  and a well-behaved observer stops being visible to tests that patch a stdlib symbol.
+- **A datagram `connect()` sends no packet, so it is a routing-table query and not a network
+  connection.** `src/kiro_crew/security/argv_floor.py`'s own-address enumeration connects a
+  `SOCK_DGRAM` socket to `198.51.100.1:53` and `2001:db8::1:53` — TEST-NET-2 and
+  documentation addresses, contacted by nobody — to learn the primary outbound address per
+  family, and says so in a comment three lines above. The `socket.connect` audit hook never
+  read the socket's `type`, so that recorded as an outbound connection to a non-loopback
+  peer. One of the two `network` findings was this. The same pass also shows why the class
+  needs thread attribution: one of those three events arrived off-thread, from the
+  asynchronous name-resolution worker, and was charged to whichever test was running.
+
+#### The limit disclosed rather than closed
+
+- **The two side-effect witnesses do not cover the same ground, and a reader who assumes
+  they do reads one's silence as the other's corroboration.** The host snapshot walks the
+  data home, `~/.kiro/agents` and the temp roots ONLY. A write to `~/.cache` is invisible to
+  it, so the probe's filter is the single witness for that entire class, and `residue: 0`
+  neither confirms nor denies it. The report now states that in its own header rather than
+  leaving it to be inferred. Widening the snapshot is a separate change.
+
+#### The one defect that was the suite
+
+- **A fixture temp directory with no name cannot be told apart from a leak, and naming the
+  rest by sample got it wrong twice.** About a dozen fixtures cannot use the pinned per-test
+  root — an `AF_UNIX` path is capped at 104 bytes, and a path asserted in message metadata
+  must not trip credential redaction — so they take the shared system temp dir. Six of them
+  passed NO prefix and landed as `tmp<random>`, the stdlib default, which is exactly what an
+  accidental bare `mkdtemp()` also produces: sanctioning that name would go blind to the
+  leaks the class exists to catch. The other six each invented their own (`pw-`, `podapi-`,
+  `kcsock-`, `kcs-`), and enumerating those from one run's records missed `kcs-` on the first
+  attempt and a bare `tmp-` on the second. The rule that follows is the SUITE's, not the
+  filter's: a tool that must recognise the suite's own directories needs the suite to SAY
+  whose they are, because a rule built from a sample of them is wrong by construction the
+  next time a fixture is added. Which name the suite says it with is still open across two
+  PRs — [#12399](https://github.com/kirodotdev/KiroCrew/pull/12399) gives the short-rooted
+  fixtures one new stem of their own,
+  [#12425](https://github.com/kirodotdev/KiroCrew/pull/12425) mints a run-owned short root
+  under the per-run stem the residue guard already recognises. Either satisfies the rule; the
+  second adds no vocabulary, so prefer it unless a fixture needs a name of its own.
+
+#### What the always-red set actually was
+
+Four backend tests failed in all five rounds. The byte-identical failure set is what makes
+each one attributable at all — no re-run can turn a host-shaped red green, so classify
+before rerunning.
+
+- `test/test_kiro_cli_pin.py`'s two `*_never_runs_a_path_shadowed_shim` tests pin `PATH` to a
+  fake shim directory and pass a fake `home`, but the candidate list in
+  `src/kiro_crew/kiro_cli.py` also carries a HARDCODED `/Applications` bundle path that no
+  fixture argument reaches. On a developer machine with the real app installed the product
+  CORRECTLY resolves a pinned absolute path there, and the test's "nothing was spawned"
+  assertion fails. A resolver whose candidate set mixes injectable locations with a fixed
+  system one cannot be fenced by the injectable ones alone — the fixed entry needs the same
+  seam, or the test is a statement about the developer's `/Applications`.
+- `test/test_overload_home_fence.py`'s
+  `test_a_window_alone_still_routes_through_the_extra_paths_launcher` read `cleanup is None`.
+  Not the platform, and the first diagnosis — that a macOS host has no namespace backend to
+  write a launcher for, so the test wants a Linux-only guard — was **wrong**, and requiring
+  Linux would have thrown away coverage the host genuinely has. A macOS kiro-cli spawn is
+  handed to kiro-cli's OWN sandbox when the internal edition's settings ask for it, and Kiro
+  Crew then writes no launcher at all; `is_kiro_cli=True` is what reaches that decision,
+  which is why the sibling seatbelt case never saw it. With the delegation pinned off the
+  launcher IS written on macOS and the window reaches it, so the test now runs there. A
+  settings file the code reads is an input like any other: when a test's subject is the
+  routing and not the operator's configuration, pin the decision rather than skipping the
+  platform. The tell that the first diagnosis was wrong is cheap to get — force the suspected
+  gate off in a five-line probe and see whether the assertion's own subject appears.
+- the fourth was the probe's `os.path.realpath`, above.
+
+#### The one real network finding
+
+`test/test_skill_provider_github.py`'s `TestNetworkGuards::test_commit_resolution_asks_for_the_sha_media_type`
+patches that module's JSON and text fetch helpers and NOT its bytes helper, so the search it
+drives fetched real bytes from `raw.githubusercontent.com` in every round — inside a class
+whose entire subject is that module's network boundary. Measured: as written, one TCP connect
+to a real GitHub address; with the bytes helper also patched, zero connects, and the test's
+own assertion still holds. A test that fences a module's network access must patch EVERY
+fetch entry point the module exposes, found by grepping the module for its fetch helpers —
+not the subset the assertion happens to read. The concurrent Linux pass reached the same
+test independently and its fix lands in
+[#12425](https://github.com/kirodotdev/KiroCrew/pull/12425), which also refuses the shared
+opener for the whole module so an unrouted seam raises instead of requesting — the stronger
+shape, because it does not depend on the next author grepping.
+
+#### What not to re-derive
+
+Two classes looked large and were dispatched to nobody, because their thresholds and their
+attribution have to be fixed before a member means anything. Of 204 tests in the
+descriptor-leak class, 140 had a maximum delta of EXACTLY the threshold of 5 — a bounded
+five-descriptor pool, not a leak — and the rest ran 6 to 21. In the thread-leak class 4 of
+14 tests had a NEGATIVE delta in some round (−9, −10): a previous test's threads were reaped
+during this one, so the counter crosses test boundaries and a delta is not that test's doing.
+The `spawn_no_cwd` class (531 tests) is real and advisory only.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run before a commit is the change-related set on both surfaces,
