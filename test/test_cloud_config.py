@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,10 @@ from kiro_crew.cloud.config import (
     CloudConfig,
     FargateConfig,
 )
+
+#: Anchored to the repo root rather than to the process CWD, per the repo's
+#: testing conventions, so the spec read below cannot depend on where pytest ran.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The model-credential secret as a conforming ``(name, ARN)`` pair: the name is
 #: ``kirocrew/crew/<crew>/<ENV>`` and the ARN is that name plus one six-character
@@ -226,6 +231,165 @@ class TestFargateConfig:
 
         expected = {f.name for f in fields(FargateConfig) if isinstance(f.default, str)}
         assert set(_STRING_FIELD_DEFAULTS) == expected
+
+    def test_an_omitted_bound_takes_the_engine_default(self):
+        """The default lives in the ENGINE, and this asserts against it, not a copy.
+
+        Writing six hours out here would be a second answer to "how long", which is the
+        thing the ``None`` default exists to avoid. Read from the engine, this also fails
+        if that constant moves without this lane following it.
+        """
+        from kiro_crew.cloud.fargate_engine import (
+            DEFAULT_MAX_RUNNING_TASKS,
+            DEFAULT_TASK_TTL_SECONDS,
+        )
+
+        config = FargateConfig.from_mapping(COMPLETE_FARGATE)
+        assert config is not None
+        assert config.task_ttl_seconds is None, "an omitted key must stay unset, not defaulted"
+        bounds = config.task_bounds()
+        assert bounds.ttl_seconds == DEFAULT_TASK_TTL_SECONDS
+        assert bounds.max_running == DEFAULT_MAX_RUNNING_TASKS
+
+    def test_a_supplied_bound_reaches_the_engine_dataclass(self):
+        """The point of the field: asking for longer without editing Python.
+
+        The cap is asserted UNCHANGED in the same case, so overriding the lifetime
+        cannot quietly move the population ceiling with it: the two travel in one
+        dataclass and only one of them is operator-reachable.
+        """
+        from kiro_crew.cloud.fargate_engine import (
+            DEFAULT_MAX_RUNNING_TASKS,
+            DEFAULT_TASK_TTL_SECONDS,
+        )
+
+        longer = DEFAULT_TASK_TTL_SECONDS * 4
+        # Derived from the engine's default so the case cannot pass by coincidence if
+        # that default ever becomes this number.
+        assert longer != DEFAULT_TASK_TTL_SECONDS
+        config = FargateConfig.from_mapping({**COMPLETE_FARGATE, "task_ttl_seconds": longer})
+        assert config is not None
+        bounds = config.task_bounds()
+        assert bounds.ttl_seconds == longer
+        assert bounds.max_running == DEFAULT_MAX_RUNNING_TASKS
+
+    @pytest.mark.parametrize(
+        "huge",
+        [
+            86_400,  # a day
+            604_800,  # a week
+            31_536_000,  # a year
+            10**12,  # far past any plausible clamp
+        ],
+    )
+    def test_no_ceiling_is_imposed_on_the_lifetime(self, huge: int):
+        """``cloud.md`` states the absence of a TTL ceiling as a DECISION, so pin it.
+
+        The spec says a very large value is an operator asking for effectively no
+        lifetime bound, and that the engine's fixed cap still holds the population. That
+        is prose, and prose cannot fail: someone adding a plausible-looking maximum
+        later -- a day, a week, a year -- would falsify the spec with every test still
+        green. So each of those thresholds is a case here, and the assertion runs
+        through the PRODUCTION path (``from_mapping`` decides the block, then
+        ``task_bounds`` hands the number to the engine's own dataclass) rather than
+        calling a helper directly, because a ceiling could be added at either step.
+
+        ``TaskBounds`` raises ``ValueError`` for a number it rejects, so reaching a
+        bound at all is the engine's acceptance, not merely this module's.
+        """
+        config = FargateConfig.from_mapping({**COMPLETE_FARGATE, "task_ttl_seconds": huge})
+        assert config is not None, f"a ceiling now drops the block at {huge}"
+        assert config.task_bounds().ttl_seconds == huge
+
+    def test_the_spec_and_this_module_track_the_engine_numbers(self):
+        """The spec's guarantees are pinned to the CODE, not to its own wording.
+
+        Asserting a paragraph's sentences would redden on any rewording while catching
+        no real drift, so this follows the pattern ``test_context_management_doc.py``
+        already uses: every assertion is derived from a constant or a symbol, so the
+        thing that reddens is the code moving out from under the prose.
+
+        Three properties. The spec must NAME both engine constants, so renaming one
+        reddens here instead of leaving the paragraph pointing at a symbol that no
+        longer exists. The spec must NAME the test that pins the no-ceiling decision, so
+        that citation cannot rot into a reference to a deleted test. And neither the spec
+        nor ``cloud/config.py`` may contain the TTL default's VALUE, which is the "single
+        answer" guarantee stated as a check: the number lives in the engine, and a copy
+        anywhere here is the drift the guarantee exists to forbid.
+
+        The cap's value is deliberately NOT asserted absent. It is ``10``, which occurs
+        legitimately in ordinary prose and in unrelated numbers, so an absence assertion
+        on it would pass for reasons unrelated to the property and prove nothing.
+        """
+        from kiro_crew.cloud.fargate_engine import (
+            DEFAULT_MAX_RUNNING_TASKS,
+            DEFAULT_TASK_TTL_SECONDS,
+        )
+
+        spec = (_REPO_ROOT / "docs/system-specs/modules/cloud.md").read_text(encoding="utf-8")
+        module_src = (_REPO_ROOT / "src/kiro_crew/cloud/config.py").read_text(encoding="utf-8")
+
+        assert "DEFAULT_TASK_TTL_SECONDS" in spec
+        assert "DEFAULT_MAX_RUNNING_TASKS" in spec
+        assert "test_no_ceiling_is_imposed_on_the_lifetime" in spec
+
+        ttl_value = str(DEFAULT_TASK_TTL_SECONDS)
+        assert ttl_value not in module_src, f"this module now copies the TTL default {ttl_value}"
+        assert ttl_value not in spec, f"the spec now copies the TTL default {ttl_value}"
+        assert DEFAULT_MAX_RUNNING_TASKS > 0, "the cap is read so a rename reddens here too"
+
+    @pytest.mark.parametrize(
+        "bad", [True, False, None, 1.5, "21600", "", [], {}, [1], {"a": 1}, 0, -1]
+    )
+    def test_no_bound_field_accepts_anything_but_a_positive_whole_number(self, bad: object):
+        """Every bound field, derived from the dataclass, not a list someone maintains.
+
+        ``True`` and ``False`` are in the set because ``bool`` is a subclass of ``int``:
+        with no explicit refusal, ``true`` reads as a lifetime of one second, which is a
+        task stopped the moment it starts. ``None`` is here because an explicit JSON
+        ``null`` is a PRESENT value of the wrong type, which this module drops a block
+        for wherever it appears -- ``assign_public_ip: null`` already does.
+
+        ``0`` and ``-1`` are the range half, and they must drop the block rather than
+        raise: a lane carrying a bound the engine refuses has to read as no lane, not as
+        a lane that raises out of ``TaskBounds`` on its first launch.
+        """
+        from kiro_crew.cloud.config import _INT_FIELD_NAMES
+
+        assert _INT_FIELD_NAMES, "the field derivation must not be empty"
+        for field_name in _INT_FIELD_NAMES:
+            block = {**COMPLETE_FARGATE, field_name: bad}
+            assert FargateConfig.from_mapping(block) is None, f"{field_name}={bad!r}"
+
+    def test_the_bound_field_list_matches_the_dataclass(self):
+        """Pins the derivation, so a bound cannot silently leave the type check.
+
+        Two assertions, because a derivation compared only against its own predicate
+        agrees unconditionally. The first says every name it yields is really a field
+        defaulting to ``None``; the second names the exact set, so a bound added later
+        has to be acknowledged here instead of joining in silence.
+        """
+        from dataclasses import fields
+
+        from kiro_crew.cloud.config import _INT_FIELD_NAMES
+
+        declared = {f.name: f for f in fields(FargateConfig)}
+        for name in _INT_FIELD_NAMES:
+            assert name in declared, name
+            assert declared[name].default is None, name
+        assert set(_INT_FIELD_NAMES) == {"task_ttl_seconds"}
+
+    def test_the_range_refusal_comes_from_the_engine(self):
+        """The range rule has ONE home, and this reads the engine's own words.
+
+        Constructed directly rather than through ``from_mapping``, which answers ``None``
+        for such a block and so cannot show whose refusal fired. If this module grew its
+        own copy of "a lifetime of zero or less is not a lifetime", the message would
+        stop being the engine's and this would fail -- which is the drift the delegation
+        exists to make impossible.
+        """
+        with pytest.raises(ValueError, match="is not a lifetime"):
+            FargateConfig(task_ttl_seconds=0).task_bounds()
 
 
 class TestAConcurrentEditIsNeverLost:

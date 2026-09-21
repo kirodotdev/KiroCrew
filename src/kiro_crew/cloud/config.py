@@ -25,6 +25,7 @@ from kiro_crew.cloud.fargate.taskdef import credential_recipient as _render_cred
 from kiro_crew.cloud.fargate.taskdef import (
     secret_destinations_for,
 )
+from kiro_crew.cloud.fargate_engine import TaskBounds
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,14 @@ def tag_is_wellformed(tag: str) -> bool:
 _MAX_LIST_ITEMS = 64
 _MAX_STRING_LEN = 2048
 
+#: Marks a key that is not in the block at all, as distinct from one whose value is
+#: JSON ``null``. ``data.get(name)`` collapses the two, and they mean opposite things
+#: here: an ABSENT bound takes the engine's default, while a present ``null`` is a
+#: value of the wrong type and drops the whole block, the way ``assign_public_ip:
+#: null`` already does. A module-level sentinel rather than a default argument so the
+#: two readings cannot be confused at the call site.
+_ABSENT = object()
+
 
 #: Ceiling on the whole file, checked BEFORE it is parsed. ``json.loads`` builds its
 #: result in memory, so a bound applied to the parsed document is applied too late;
@@ -107,6 +116,20 @@ class FargateConfig:
     #: False is the safe direction, and the flag is not the boundary -- a task in
     #: a public subnet with no NAT gateway cannot pull its image without one.
     assign_public_ip: bool = False
+    #: How long one of this lane's tasks may run before the launcher stops it, in
+    #: seconds, or ``None`` when the operator did not say.
+    #:
+    #: ``None`` rather than a number, because the default belongs to the engine and
+    #: this is the field that would copy it. ``TaskBounds`` already holds six hours
+    #: and states where the number was read from, so an omitted key takes whatever
+    #: that dataclass says and cannot drift from it -- the same reason
+    #: :func:`_cpu_architectures` reads the engine's set instead of listing it.
+    #:
+    #: A lane whose tasks legitimately run for hours raises its own bound here, so
+    #: the engine's six hours is a default and not a ceiling, and the number that
+    #: stops a task is readable from the same file the operator edits rather than
+    #: from Python.
+    task_ttl_seconds: Optional[int] = None
 
     def is_complete(self) -> bool:
         """True when every field the engine requires is present and well-formed.
@@ -128,6 +151,11 @@ class FargateConfig:
         a valid credential beside a malformed or cross-crew reference leaves the lane
         unregistered rather than registering one whose every launch then fails. None of
         it is a second copy of those rules -- both are called, not reimplemented.
+
+        The bound number is judged the same way and for the same reason. A
+        ``task_ttl_seconds`` of zero is a lifetime the engine refuses, and a block
+        carrying one would otherwise register a lane whose first launch raises out of
+        ``TaskBounds`` rather than a lane that does not exist.
         """
         return bool(
             self.cluster
@@ -136,7 +164,54 @@ class FargateConfig:
             and _digest_pinned(self.image or "")
             and self.cpu_architecture in _cpu_architectures()
             and _names_model_credential(self.secrets)
+            and self._bounds_are_usable()
         )
+
+    def _bounds_are_usable(self) -> bool:
+        """Whether the ENGINE accepts the bound number in this block.
+
+        Delegates the range rule to :class:`TaskBounds`, which owns it, exactly as
+        :func:`_digest_pinned` delegates the image rule to ``taskdef``'s own refusal.
+        A second copy of "a lifetime of zero or less is not a lifetime" here would be
+        free to disagree with the one enforced at launch, and the looser copy is the
+        one a bad value would reach the engine through.
+        """
+        try:
+            self.task_bounds()
+        except ValueError:
+            return False
+        return True
+
+    def task_bounds(self) -> TaskBounds:
+        """This block's bound, as the engine's own :class:`TaskBounds`.
+
+        The number is passed only when the operator wrote one, so an omitted key
+        takes ``TaskBounds``'s own default rather than a copy kept here. That is why
+        neither default's VALUE appears anywhere in this module: the engine stays the
+        single answer to "how long, and how many", and
+        ``test_the_spec_and_this_module_track_the_engine_numbers`` pins that as a check
+        rather than leaving it a promise.
+
+        Only the LIFETIME is operator-reachable. ``TaskBounds.max_running`` keeps the
+        engine's fixed cap and has no ``cloud.json`` key, because ``fargate_engine``
+        describes it as a ceiling an operator reaches "only by fanning out deliberately
+        or by leaking, and the second is what it exists to catch" -- a key that raised
+        it would work against the thing it is for. Raising it is a code change.
+
+        The key is ``task_ttl_seconds`` while the engine's field is ``ttl_seconds``, and
+        that mapping lives here and nowhere else. The key carries ``task`` deliberately:
+        this lane already has a second TTL an operator meets, ``connect.mint_token``'s
+        ``ttl="6h"`` session token, and the two bound different things -- a bare
+        ``ttl_seconds`` in ``cloud.json`` would invite reading one as the other.
+
+        Raises ``ValueError`` for a number the engine rejects, which is what
+        :meth:`_bounds_are_usable` reads. A caller holding a complete block never sees
+        it: :meth:`from_mapping` returns ``None`` for a block this refuses.
+        """
+        supplied: dict[str, int] = {}
+        if self.task_ttl_seconds is not None:
+            supplied["ttl_seconds"] = self.task_ttl_seconds
+        return TaskBounds(**supplied)
 
     def credential_recipient(self) -> str:
         """The thing this block would hand the model credential to, in one line.
@@ -203,6 +278,34 @@ class FargateConfig:
         assign_public_ip = data.get("assign_public_ip", False)
         if not isinstance(assign_public_ip, bool):
             return None
+        # The bound numbers, under the same discipline and for the same reason. ABSENT
+        # means the operator did not say, so the engine's own default applies; a PRESENT
+        # value of the wrong JSON type drops the whole block. The two are told apart by
+        # :data:`_ABSENT` rather than by a ``None`` return from ``data.get``, because an
+        # explicit ``null`` is a present value and must drop the block exactly as
+        # ``assign_public_ip: null`` does.
+        #
+        # ``bool`` is a subclass of ``int``, so ``true`` would otherwise read as a
+        # lifetime of one second -- the same trap ``fargate_engine._epoch_seconds``
+        # guards before it accepts a number -- so it is refused by name. A float is
+        # refused too: ``6.5`` is not a whole number of seconds, and rounding it would
+        # be this reader guessing at a cost bound.
+        #
+        # There is deliberately no CEILING. The bounds above exist because an unbounded
+        # string or list read from this file is a gateway memory-exhaustion surface, and
+        # an integer is neither; a maximum lifetime would instead be a second invented
+        # number, which is the thing this field exists to stop being necessary. A very
+        # large value is an operator asking for effectively no lifetime bound, and the
+        # engine's fixed running cap still holds the population.
+        numbers: dict[str, Optional[int]] = {}
+        for field_name in _INT_FIELD_NAMES:
+            raw = data.get(field_name, _ABSENT)
+            if raw is _ABSENT:
+                numbers[field_name] = None
+                continue
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return None
+            numbers[field_name] = raw
         # EVERY string-typed field, in one place. `str()` on a raw value made any JSON
         # scalar truthy: `false` became the string "False", which is non-empty, so
         # `is_complete()` passed and the lane registered against a cluster named
@@ -220,12 +323,18 @@ class FargateConfig:
         security_groups = _bounded_string_tuple(data.get("security_groups"))
         if subnets is None or security_groups is None:
             return None
+        # ONE splat, not two. mypy resolves a ``**`` argument against every parameter it
+        # could reach, so two splats of different value types are each checked against
+        # the other's fields and both are reported. Merging keeps both derivations
+        # intact: the string defaults and the bound names are still read from the
+        # dataclass rather than listed at this call site.
+        derived: dict[str, Any] = {**strings, **numbers}
         candidate = cls(
             subnets=subnets,
             security_groups=security_groups,
             secrets=tuple(secrets),
             assign_public_ip=assign_public_ip,
-            **strings,
+            **derived,
         )
         return candidate if candidate.is_complete() else None
 
@@ -267,7 +376,28 @@ def _string_field_defaults() -> dict[str, str]:
     }
 
 
+def _int_field_names() -> tuple[str, ...]:
+    """Every optional whole-number field on :class:`FargateConfig`, in declaration order.
+
+    Derived from the dataclass for the reason :func:`_string_field_defaults` gives: a
+    hand-written list is what let ``cluster`` keep coercing with ``str()`` after
+    ``assign_public_ip`` was fixed one field over. A bound number added later is read
+    with the same type discipline, and covered by the test that parametrizes over this
+    tuple, without anyone remembering to extend either.
+
+    ``f.type`` is compared against both the string and the object because this module
+    carries ``from __future__ import annotations``, which makes every annotation a
+    string today -- the same pair :func:`_string_field_defaults` compares for.
+    """
+    return tuple(
+        f.name
+        for f in fields(FargateConfig)
+        if f.type in ("Optional[int]", Optional[int]) and f.default is None
+    )
+
+
 _STRING_FIELD_DEFAULTS = _string_field_defaults()
+_INT_FIELD_NAMES = _int_field_names()
 
 
 def _names_model_credential(secrets: tuple[tuple[str, str], ...]) -> bool:

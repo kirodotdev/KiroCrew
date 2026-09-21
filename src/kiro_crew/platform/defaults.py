@@ -790,7 +790,20 @@ class DefaultRemoteProvisionerProvider:
                 # be the file confirming itself. ``provision`` resolves the recipient from
                 # the spec and compares, and it refuses an empty value.
                 confirmed_recipient=confirmed_recipient,
-            )
+            ),
+            # What bounds the task's cost. Passed rather than left to default, which is
+            # the whole point: the engine defaults to six hours, and until this argument
+            # existed that default was reachable only by editing Python -- so a task the
+            # RFC itself says may run for hours was stopped by its owner's next launch
+            # with no operator-reachable way to ask for longer.
+            #
+            # ``config`` is complete here (``_fargate_config`` yields only complete
+            # blocks), and ``is_complete`` already called this same method, so the numbers
+            # are ones ``TaskBounds`` accepts and this cannot raise. A block that omits
+            # the key produces exactly the engine's own defaults, so the lane's
+            # behaviour is unchanged for every operator who does not set it. The
+            # population cap has no key at all and always stays the engine's.
+            bounds=config.task_bounds(),
         )
 
     @staticmethod

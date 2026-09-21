@@ -188,6 +188,49 @@ operator writes it by hand.
 | `secrets` | list of `[canonical name, ARN]` pairs; one must be named for the model credential |
 | `cpu_architecture` | `X86_64` or `ARM64`; defaults to `X86_64` |
 | `assign_public_ip` | JSON boolean; defaults to `false` |
+| `task_ttl_seconds` | how long one task may run before the launcher stops it; JSON integer above zero; omitted takes the engine's own default |
+
+`task_ttl_seconds` is the operator-reachable half of `TaskBounds`. Before it the
+bound existed only in code: `engine_for` built the engine with no `bounds`, so the
+six-hour default was reachable only by editing Python, and because `reap` runs only
+from `provision` it was applied at the owner's next launch rather than at six hours --
+so a task the RFC itself says may run for hours was stopped mid-work by that launch,
+with no way to ask for longer and nothing on any product surface saying where the
+number came from. It is **optional**, and an omitted key is carried as `None` rather
+than as a copy of the default, so `fargate_engine.DEFAULT_TASK_TTL_SECONDS` and
+`DEFAULT_MAX_RUNNING_TASKS` stay the single answer to "how long, and how many" -- a
+block that omits it produces exactly the behaviour the lane had before the field
+existed. The key carries `task` because this lane already has a second TTL an operator
+meets, `connect.mint_token`'s `ttl="6h"` session token, and the two bound different
+things. `FargateConfig.task_bounds()` is the one place that key name maps onto the
+engine's `ttl_seconds`.
+
+The OTHER half of `TaskBounds` is deliberately not operator-reachable.
+`DEFAULT_MAX_RUNNING_TASKS` stays fixed at the engine's value, because
+`fargate_engine` describes it as a ceiling on the population an operator reaches "only
+by fanning out deliberately or by leaking, and the second is what it exists to catch"
+-- a `cloud.json` key that raised it would work against the thing it is for. Raising
+the cap is a code change, so the population stays bounded whatever lifetime the file
+asks for.
+
+There is deliberately **no ceiling** on `task_ttl_seconds`. The string and list bounds
+below exist because an unbounded value read from this file is a gateway
+memory-exhaustion surface, and an integer is neither; a maximum lifetime would instead
+be a second invented number, which is what an operator-reachable field exists to stop
+being necessary. A very large value is an operator asking for effectively no lifetime
+bound, and the engine's fixed running cap still holds the population. What it does NOT buy is a
+sweep: because `reap` runs only from `provision` (below), a large value means a task on a
+cluster nobody relaunches bills for as long as it is asked to, so the ceiling's absence
+and the lazy enforcement compound rather than cancel. Because that is a decision
+rather than an oversight, it is pinned:
+`test_no_ceiling_is_imposed_on_the_lifetime` drives a day, a week, a year and `10**12`
+through `from_mapping` and `task_bounds`, so a later clamp at any of those thresholds
+reddens instead of silently falsifying this paragraph.
+
+This closes only the **configuration** half of the lazily-enforced bound. `reap` is
+still called only from `provision`, so a cluster whose last launch has already happened
+is never swept -- see issue #12283 for the two remaining directions, a container-level
+expiry that travels with the task and a periodic caller.
 
 **Incomplete means absent.** A block missing any required field, naming a movable
 image tag, carrying a secret entry that is not a two-string pair, or carrying an
@@ -204,7 +247,12 @@ string `"false"` as true on the one field that decides network exposure. For the
 same reason **no** string-typed field is coerced: `str()` would turn JSON `false`
 into the non-empty string `"False"` and register a lane against a cluster that does
 not exist. The rejection is written once over the dataclass's string fields, so a
-field added later is covered without a new branch.
+field added later is covered without a new branch. The bound number is read under
+the same discipline and by the same derivation: absent means the operator did not say,
+so the engine's default applies, while a present value that is not a JSON integer above
+zero voids the block. `true` is refused by name because `bool` is a subclass of `int` in
+Python, and would otherwise read as a lifetime of one second; the range half is delegated
+to `TaskBounds`, which owns it, rather than copied here.
 
 The block is read **per call**, so editing `cloud.json` takes effect on the next
 request and deleting the block removes the lane, with no gateway restart. A read
