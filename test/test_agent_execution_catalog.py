@@ -92,7 +92,7 @@ async def test_catalog_keeps_namespaces_and_never_changes_registry(catalog):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("session_key", [None, "chat-empty"])
+@pytest.mark.parametrize("session_key", [None, "dashboard:ui", "chat-empty"])
 async def test_catalog_never_borrows_another_slots_project(catalog, session_key):
     headers = {"X-Session-Key": session_key} if session_key else {}
     async with TestClient(TestServer(catalog.app)) as client:

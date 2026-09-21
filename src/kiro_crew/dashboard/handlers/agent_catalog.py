@@ -65,6 +65,10 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     """
     state = request.app.get("state")
     session_key = _read_session_key(request)
+    # The browser sends this placeholder when a page has no chat slot to name.
+    # It is a transport identity, not a conversation whose project can be scoped.
+    if session_key == "dashboard:ui":
+        session_key = ""
     project_dir = None
     if state is not None and session_key:
         slot_name = session_key.split(":", 1)[-1]
