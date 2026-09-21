@@ -52,7 +52,13 @@ import {
   type CloudCoords,
   type RemoteProvisioner,
 } from '../../api/client'
-import { BUILTIN_PROVISIONER_ID, WARM_SET_CAP_AUTO_CEILING, shortenEcsTarget, usesSsmTransport } from '../../utils/remoteCrew'
+import {
+  BUILTIN_PROVISIONER_ID,
+  WARM_SET_CAP_AUTO_CEILING,
+  launchIsInFlight,
+  shortenEcsTarget,
+  usesSsmTransport,
+} from '../../utils/remoteCrew'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import {
@@ -87,9 +93,10 @@ import {
 } from './InstanceFormFields'
 
 
-/** A launch job the user is still waiting on (not yet a switchable crew). */
-const IN_PROGRESS: LaunchJob['status'][] = ['pending', 'running', 'awaiting_signin']
-const isInProgress = (j: LaunchJob) => IN_PROGRESS.includes(j.status)
+/** A launch job the user is still waiting on (not yet a switchable crew). The
+ *  status list is the shared one in utils/remoteCrew, so the Members page's
+ *  cloud panel and this one classify a launch the same way. */
+const isInProgress = (j: LaunchJob) => launchIsInFlight(j.status)
 
 const connectionTypeLabel = (inst: InstanceView): string =>
   inst.connection_method === 'fargate'
@@ -1616,7 +1623,7 @@ export function RemoteCrewPanel() {
     enabled: !!effectiveLaunchId,
     refetchInterval: q => {
       const s = (q.state.data as LaunchJob | undefined)?.status
-      return s && IN_PROGRESS.includes(s) ? 3000 : false
+      return s && launchIsInFlight(s) ? 3000 : false
     },
   })
 
