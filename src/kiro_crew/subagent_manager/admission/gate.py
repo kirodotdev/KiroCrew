@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import logging as _logging
 from typing import TYPE_CHECKING
 
 from .._component import ManagerComponent
 from .types import ClaimPoint, PreparedSpawn
 
-_glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
-
 if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
-
-    pass
-
     from ...subagent import (
         KiroCrewConfig,
         SubagentInfo,

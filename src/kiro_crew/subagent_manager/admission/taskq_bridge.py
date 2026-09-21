@@ -90,12 +90,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             return None
         return getattr(self._manager, "_taskq_unavailable", None)
 
-    def taskq_window(self) -> int:
-        from kiro_crew import taskq as _taskq
-
-        store = self.taskq_store()
-        return store.window if store is not None else _taskq.DEFAULT_DISPATCH_WINDOW
-
     def taskq_admit_wait_secs(self) -> float:
         return float(getattr(self._manager, "_taskq_admit_wait_secs", 30.0) or 30.0)
 

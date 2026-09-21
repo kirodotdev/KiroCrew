@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from ..subagent_persistence import (
     publish_live_cleanup_identity,
-    read_run_agent_selection,
     remember_live_cleanup_identity,
     write_run_agent,
 )
@@ -91,7 +90,6 @@ class RunEventCoordinator(ManagerComponent):
     """Own run transitions while state remains facade-owned."""
 
     _publish_identity = staticmethod(publish_live_cleanup_identity)
-    _read_run_agent = staticmethod(read_run_agent_selection)
     _remember_identity = staticmethod(remember_live_cleanup_identity)
     _write_run_agent = staticmethod(write_run_agent)
     __slots__ = ()

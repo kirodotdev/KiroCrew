@@ -544,11 +544,7 @@ class _WaitsMixin(ManagerComponent):
                 ids.extend(ledger.outstanding_children(parent_id))
             except _taskq.TaskStoreUnavailable:
                 pass
-        key = f"subagent:{parent_id}"
-        for info in self._manager._agents.values():
-            if info.parent_session_key == key and not info.done and info.id not in ids:
-                ids.append(info.id)
-        return ids
+        return self._merge_outstanding_children(parent_id, ids)
 
     def taskq_deadline_of(self, agent_id: str) -> float | None:
         store = self.taskq_store()

@@ -290,8 +290,7 @@ class ContinuationCoordinator(ManagerComponent):
         ``close_all``, so touching it from a worker thread races restart
         cold-starts (lost mappings / dict-changed-size errors). Per-entry
         work is small and bounded by the keep-run count, and the loop
-        yields between entries so a large batch cannot stall chat turns
-        (the round-2 event-loop concern).
+        yields between entries so a large batch cannot stall chat turns.
         """
         loop = asyncio.get_running_loop()
         found = await loop.run_in_executor(None, self._manager._scan_keep_states)
@@ -303,7 +302,7 @@ class ContinuationCoordinator(ManagerComponent):
         # conversation whose real last-use is recent.
         found.sort(key=lambda t: t[5], reverse=True)
         seeded = 0
-        for conv_id, conv_key, sid, provider, cwd, last_used in found:
+        for _conv_id, conv_key, sid, provider, cwd, last_used in found:
             if conv_key in self._manager._conversations:
                 continue  # live registration wins over the disk snapshot
             # Same on-demand seeding as continue_conversation (also on-loop):
@@ -620,15 +619,12 @@ class ContinuationCoordinator(ManagerComponent):
         # that a legacy run belonged to the dashboard user.
         try:
             original = self._manager._agents.get(conv_id)
-            app = (
-                _execution_context.app
-                if _execution_context is not None
-                else (
-                    original.app
-                    if original is not None
-                    else self._persistence.read_run_app(conv_id)
-                )
-            )
+            if _execution_context is not None:
+                app = _execution_context.app
+            elif original is not None:
+                app = original.app
+            else:
+                app = self._persistence.read_run_app(conv_id)
             if not isinstance(app, str):
                 raise ValueError("protected app ownership unavailable; start a new conversation")
         except (OSError, ValueError) as exc:
@@ -1173,7 +1169,7 @@ class ContinuationCoordinator(ManagerComponent):
                 logger.warning("Dropping malformed conversation registry key %r", conv_key)
                 self._manager._conversations.pop(conv_key, None)
                 continue
-            ok, detail = self._manager.release_conversation(conv_id)
+            _ok, detail = self._manager.release_conversation(conv_id)
             logger.info(
                 "Conversation %s expired after %ds idle: %s",
                 conv_id,
