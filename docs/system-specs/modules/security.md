@@ -63,16 +63,41 @@ The MASKED leaves are a separate population with a separate pass.
 on the spawn path so a leaf carrying its own tailored refusal (`live_target.json`, whose
 sentence is shared with `kirocrew doctor`, and the md-notebook state leaves) answers first
 and keeps its own wording. It creates nothing, so an absent store is skipped rather than
-materialised — which is what lets one pass cover the masked leaves nothing precreates,
-including the retired `ledgers` root that must not be re-created on every machine. Two
-exceptions are deliberate and each has a test asserting it is NOT refused: `.env`, the
+materialised, which is what lets one pass cover the masked leaves nothing precreates,
+including the retired `ledgers` root that must not be re-created on every machine. It
+checks the leaf AND every component below the data home: `lstat` un-follows only the final
+component, so a link planted at an intermediate of a multi-component leaf
+(`apps/aws-control/data`, `apps/meetings/data/edits`) would otherwise land the mask on an
+attacker-chosen tree while the lexical name stayed replaceable. The data home itself and
+its parents are deliberately not walked, because `config_dir()` documents that a symlinked
+data HOME is supported.
+
+**Scope: the Linux bind-mask path only.** The pass is called from `namespace_argv`, so it
+governs the Linux namespace launcher. macOS fences the same leaves through Seatbelt subpath
+denies, which are path rules rather than mounts and hold for a name that does not exist
+yet, so whether a symlinked leaf there resolves outside the denied subpath is a separate
+question this pass does not answer.
+
+Two exceptions are deliberate and each has a test asserting it is NOT refused. `.env`, the
 operator's hand-authored channel-credential file and the clearest dotfile-manager case in
-the list; and the extra-hardlink shape for every leaf, because a hardlink does not make
-the masked NAME replaceable while `rsync --link-dest` and hardlinking snapshot tools leave
-one behind on hosts whose backups are working correctly. `scratch` and `backup` were
-checked for a supported second name and refuse: each resolves to one managed path
-(`agent_scratch.scratch_root()` is `config_dir() / "scratch"`) with no override, so a link
-there is not a relocation the product offers.
+the list. And the extra-hardlink shape for every leaf, which is WARNED rather than refused:
+a hardlink does not make the masked NAME replaceable, and `rsync --link-dest` and
+hardlinking snapshot tools leave one behind on hosts whose backups are working correctly.
+Neither exception is silent, and that is part of the decision rather than an accident: a
+tolerated leaf is VISITED and logged, because excluding it from the walk would reproduce on
+the credential leaf exactly the silence the pass exists to end. The warnings are emitted by
+this pass rather than by `_warn_if_alias_backed`, which never runs over these leaves, and
+they fire per spawn for that function's own stated reason -- a host where this keeps
+happening has a real problem, and de-duplicating would hide how often the control cannot be
+established. A third case degrades rather than refusing: a planted link at an intermediate
+component of an md-notebook state leaf, where `carveout_chain_has_planted_link` already
+withholds the carve-out, so the owning backend cannot write that state and an unmasked leaf
+has nothing to expose; refusing there would let one optional app's on-disk layout stop every
+sandboxed spawn on the host. That case warns too.
+
+`scratch` and `backup` were checked for a supported second name and refuse: each resolves
+to one managed path (`agent_scratch.scratch_root()` is `config_dir() / "scratch"`) with no
+override, so a link there is not a relocation the product offers.
 
 Memory V2 separates members' learning and work context; it does not promise
 confidentiality between agents running as the same host operator. One stable

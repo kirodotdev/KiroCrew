@@ -1705,6 +1705,10 @@ _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset({"crew-panels", "panel-templat
 #: :data:`_CREW_HIDDEN_LEAVES` refuses one through :func:`_refuse_aliased_masked_leaves`,
 #: so this set is the whole exception list and each member states its own reason.
 #:
+#: Tolerated means NOT REFUSED, never NOT LOOKED AT. The pass visits these leaves and logs a
+#: warning, because the alias really is outside the mask: excluding them from the walk would
+#: reproduce, on the credential leaf, exactly the silence the pass exists to end.
+#:
 #: * ``.env`` -- the operator's OWN channel-credential file, authored by hand and
 #:   documented as such (``docs/architecture/overview.md`` lists it as "channel tokens,
 #:   owner id"). It is the clearest member of the class ``_warn_if_alias_backed`` exists
@@ -1722,17 +1726,30 @@ _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset({"crew-panels", "panel-templat
 #: pass rather than an entry here: see :func:`_refuse_aliased_masked_leaves`.
 _CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
 
+#: Masked leaves where a planted link at an INTERMEDIATE component DEGRADES instead of
+#: refusing, because a sibling control already answers that case.
+#:
+#: Derived from :data:`_MD_NOTEBOOK_PRECREATE_CONTENT`, not hand-listed, so the two cannot
+#: drift. Those leaves are the ones :func:`carveout_chain_has_planted_link` governs, and its
+#: docstring states the reasoning this set defers to: withholding the CARVE-OUT is the
+#: proportionate response, since while the chain holds a planted link the owning backend
+#: cannot write that state at all, so a leaf left unmasked has nothing to expose. Refusing
+#: the spawn instead would let one optional app's on-disk layout take every sandboxed
+#: process on the host down with it -- an operator who symlinks ``workspace/`` to another
+#: disk would find no agent could start, over a file they may never have created.
+#:
+#: Every OTHER multi-component masked leaf refuses, because no such compensating control
+#: exists for it: nothing withholds anything when ``apps/aws-control`` is a link, so the
+#: mask binds the referent while the writable alias name persists.
+_CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_PRECREATE_CONTENT)
 
-#: Masked leaves whose NAME must be the masked name. DERIVED, so a leaf added to
-#: :data:`_CREW_HIDDEN_LEAVES` inherits the refusal instead of needing a reviewer to
-#: notice it was left out -- the failure mode a hand-copied list has every time.
-_CREW_NO_ALIAS_MASKED_LEAVES: tuple[str, ...] = tuple(
-    leaf for leaf in _CREW_HIDDEN_LEAVES if leaf not in _CREW_ALIAS_TOLERATED_LEAVES
-)
-assert _CREW_ALIAS_TOLERATED_LEAVES <= set(_CREW_HIDDEN_LEAVES)
-assert len(_CREW_NO_ALIAS_MASKED_LEAVES) + len(_CREW_ALIAS_TOLERATED_LEAVES) == len(
-    _CREW_HIDDEN_LEAVES
-)
+
+#: The tolerated leaves must BE masked leaves -- an entry naming something outside
+#: :data:`_CREW_HIDDEN_LEAVES` would be an exception to nothing, and would read as a
+#: permission the pass never actually grants. Pinned by
+#: ``test_the_tolerated_set_names_only_masked_leaves`` rather than a module-level
+#: ``assert``, which ``python -O`` strips and which would make the invariant hold only
+#: in the builds that happen not to be optimised.
 
 
 def _refuse_if_aliased_protected_leaf(target: str) -> None:
@@ -2318,6 +2335,50 @@ def _materialize_maskable_dirs() -> list[str]:
     return created
 
 
+def _first_linked_component_below(root: str, leaf: str) -> str | None:
+    """The first component of *leaf* under *root* that is a link, or ``None``.
+
+    ROOT-FIRST, stopping at the first hit, which is the safety property rather than a
+    detail: each test runs only after every component above it is known not to be a link, so
+    the probe itself never traverses one. The same order and reason as
+    :func:`platform_compat.first_linked_ancestor`, which cannot be used directly here
+    because it walks EVERY ancestor, including the data home and its parents --
+    ``config_dir()`` documents that a symlinked data HOME is supported, so refusing that
+    would break a layout the product allows.
+
+    The leaf's own final component is excluded: the caller judges that with ``lstat``, and a
+    link there is the leaf-alias case rather than the ancestor case.
+
+    **Fails CLOSED on a component it cannot read**, raising rather than answering "not a
+    link". ``os.path.islink`` (and so ``is_link_or_junction``) answers False when the stat
+    fails, which makes "cannot tell" indistinguishable from "safe" -- and the data home is
+    agent-writable, so an agent can strip search permission from a directory it owns and turn
+    the whole walk into a silent pass. ABSENT is the one benign failure: a component that is
+    not there means nothing below it exists, so there is no alias to find.
+    """
+    parts = leaf.replace(os.sep, "/").split("/")[:-1]
+    walked = root
+    for part in parts:
+        if not part or part == ".":
+            continue
+        walked = os.path.join(walked, part)
+        try:
+            mode = os.lstat(walked).st_mode
+        except FileNotFoundError:
+            # Nothing below an absent component can exist, so nothing is aliased.
+            return None
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat {safe_terminal_line(walked)} to check whether a masked path "
+                f"passes through a link: {safe_terminal_line(str(exc))}. Refusing rather "
+                "than assuming it is a real directory, because the mask would bind whatever "
+                "this component resolves to."
+            ) from exc
+        if stat.S_ISLNK(mode) or platform_compat.is_link_or_junction(walked):
+            return walked
+    return None
+
+
 def _refuse_aliased_masked_leaves() -> None:
     """Refuse the spawn when a MASKED leaf is reachable under a second name.
 
@@ -2327,6 +2388,16 @@ def _refuse_aliased_masked_leaves() -> None:
     file there, and every later read goes to bytes it controls -- past whatever ownership
     check or redactor the gateway applies to the masked path. Warning and continuing is
     what made that silent, which is the whole reason this pass refuses.
+
+    **Both the leaf and its components below the data home.** ``lstat`` leaves only the
+    FINAL component un-followed, so a leaf checked that way alone still resolves through a
+    planted link at an intermediate component, and multi-component masked leaves genuinely
+    exist (``apps/aws-control/data``, ``apps/meetings/data/edits``, the md-notebook state
+    leaves). Those intermediates sit inside the agent-writable data home, so a link at one
+    of them lands the mask on an attacker-chosen tree while the lexical name stays
+    replaceable -- the same hole one level up. Components are walked root-first by
+    :func:`_first_linked_component_below`; the data home itself and its parents are NOT
+    walked, because ``config_dir()`` documents that a symlinked data HOME is supported.
 
     Creates NOTHING. An ABSENT leaf is skipped, and that is what makes one pass safe over
     EVERY masked leaf rather than only the materialised ones: a store that has not been
@@ -2340,16 +2411,23 @@ def _refuse_aliased_masked_leaves() -> None:
     wording with ``kirocrew doctor`` and the md-notebook leaves name their own documents,
     and a generic message arriving first would replace both.
 
-    SYMLINKS only. The other shape :func:`_warn_if_alias_backed` reports -- a regular file
-    carrying an extra hardlink -- stays a warning for every leaf, which is why it is a
-    property of this pass rather than a per-leaf exception: a hardlink does not make the
-    masked NAME replaceable, and ``rsync --link-dest`` and hardlinking snapshot tools
-    leave one behind on ordinary hosts, so refusing it would cost every sandboxed spawn on
-    a machine whose backups are working correctly.
+    SYMLINKS refuse; an extra HARDLINK is WARNED, not refused. A hardlink does not make the
+    masked name replaceable, and ``rsync --link-dest`` and hardlinking snapshot tools leave
+    one behind on ordinary hosts, so refusing it would cost every sandboxed spawn on a
+    machine whose backups are working correctly. The warning is emitted HERE rather than
+    left to :func:`_warn_if_alias_backed`, which never runs over these leaves: without it
+    the alias really would be outside the mask with nothing said about it, which is the
+    silent-by-construction property this pass exists to end.
 
-    Ancestors are deliberately not walked: ``config_dir()`` documents that a symlinked
-    data HOME is supported, so only the leaf's own name is checked -- the same line
-    ``agent_panel._real_dir_under_data_home`` draws.
+    A TOLERATED leaf is VISITED and WARNED, never skipped. Excluding it from the walk is the
+    same silence one level along: a symlinked ``.env`` carries live channel tokens and is
+    replaceable by the very mechanism described above, so saying nothing about it would
+    reproduce the property this pass ends while claiming to end it. Tolerating the layout is
+    the decision; tolerating it silently is not part of that decision.
+
+    Per spawn rather than once per process, matching :func:`_warn_if_alias_backed`'s own
+    stated reason: a host where this keeps happening has a real problem, and de-duplicating
+    would hide how often the control cannot be established.
     """
     try:
         root = str(config_dir())
@@ -2360,25 +2438,84 @@ def _refuse_aliased_masked_leaves() -> None:
         raise SandboxCeilingUnsealable(
             f"cannot resolve the crew data home to check the masked leaves for an alias: {exc}"
         ) from exc
-    for leaf in _CREW_NO_ALIAS_MASKED_LEAVES:
+    for leaf in _CREW_HIDDEN_LEAVES:
+        # TOLERATED leaves are VISITED, not excluded. Excluding them from the walk is what
+        # made the exception silent: a symlinked ``.env`` -- live channel tokens, under the
+        # same unlink-and-replace mechanism this pass exists to refuse -- got no refusal and
+        # no log line either, which is the property being ended rather than an instance of
+        # it. Tolerating the dotfile-manager layout is right; tolerating it silently is not.
+        tolerated = leaf in _CREW_ALIAS_TOLERATED_LEAVES
         target = os.path.join(root, leaf)
+        linked = _first_linked_component_below(root, leaf)
+        if linked is not None:
+            if leaf in _CREW_ALIAS_CHAIN_DEGRADE_LEAVES or tolerated:
+                # A sibling control already answers the first case; see
+                # ``_CREW_ALIAS_CHAIN_DEGRADE_LEAVES`` for why degrading beats refusing
+                # for exactly those leaves. A tolerated leaf is never refused at all.
+                logger.warning(
+                    "sandbox: the masked path %s passes through a component that is a link "
+                    "(%s), so the mask binds what that component resolves to. Not refused "
+                    "for this leaf -- replace the link with a real directory to close it.",
+                    target,
+                    linked,
+                )
+                continue
+            raise SandboxCeilingUnsealable(
+                f"the masked path {safe_terminal_line(target)} passes through a component "
+                f"that is a LINK ({safe_terminal_line(linked)}). The mask binds whatever "
+                "that component resolves to, so the name would stay writable inside the "
+                "sandbox while reads and writes reached an unmasked tree. Replace the link "
+                "with a real directory."
+            )
         try:
             info = os.lstat(target)
-        except OSError:
-            # Absent, or an absent parent. Nothing is aliased, and nothing is created.
+        except FileNotFoundError:
+            # Genuinely absent. Nothing is aliased, and nothing is created.
             continue
-        if not stat.S_ISLNK(info.st_mode):
-            continue
-        pointed_at = "(unreadable)"
-        with contextlib.suppress(OSError):
-            pointed_at = os.readlink(target)
-        raise SandboxCeilingUnsealable(
-            f"the masked path {safe_terminal_line(target)} is a SYMLINK -> "
-            f"{safe_terminal_line(pointed_at)}. The mask binds whatever the link "
-            "resolves to, so this NAME would stay writable inside the sandbox while "
-            "reads and writes reached an unmasked target. Remove the link and keep a "
-            "real directory or file under this name."
-        )
+        except OSError as exc:
+            # Every OTHER errno means this process could not judge the path, which is not
+            # the same as the path being safe. Treating them alike failed OPEN: the data
+            # home is agent-writable, so an agent that strips search permission from a
+            # directory it owns (``apps/``) turns EACCES into a silent skip, and the
+            # launcher's own ``isdir`` guard skips the mask for the same reason -- so the
+            # child can restore the permission and reach the protected state unmasked.
+            # Same split the sibling ``_refuse_if_symlink_leaf`` already makes.
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the masked path {safe_terminal_line(target)} to check for an "
+                f"alias: {safe_terminal_line(str(exc))}. Refusing rather than treating an "
+                "unreadable path as absent, because the mask is skipped for a path that "
+                "cannot be classified."
+            ) from exc
+        if stat.S_ISLNK(info.st_mode):
+            pointed_at = "(unreadable)"
+            with contextlib.suppress(OSError):
+                pointed_at = os.readlink(target)
+            if tolerated:
+                logger.warning(
+                    "sandbox: the masked path %s is a SYMLINK -> %s. The mask binds what "
+                    "the link resolves to, so this NAME stays writable inside the sandbox. "
+                    "Not refused, because this leaf is the operator's own file and a dotfile "
+                    "manager legitimately links it -- make it a regular file to close it.",
+                    target,
+                    pointed_at,
+                )
+                continue
+            raise SandboxCeilingUnsealable(
+                f"the masked path {safe_terminal_line(target)} is a SYMLINK -> "
+                f"{safe_terminal_line(pointed_at)}. The mask binds whatever the link "
+                "resolves to, so this NAME would stay writable inside the sandbox while "
+                "reads and writes reached an unmasked target. Remove the link and keep a "
+                "real directory or file under this name."
+            )
+        if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+            logger.warning(
+                "sandbox: the masked path %s has %d hardlinks. The mask covers this path "
+                "only, so a read or write through another name reaches the same inode. "
+                "Not refused, because a hardlinking snapshot tool leaves one behind on an "
+                "ordinary host -- remove the extra link to close it.",
+                target,
+                info.st_nlink,
+            )
 
 
 def _materialize_live_target_mask_target() -> str | None:
