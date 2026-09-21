@@ -147,12 +147,26 @@ from kiro_crew.sel import SecurityEventLog
 
 logger = logging.getLogger(__name__)
 
-#: Kiro Crew's own pooled control planes: the only backends handed the
-#: per-session token, because only they post back to the gateway for the
-#: session they act on behalf of. Mirrors ``acp.session_mcp.CONTROL_PLANE_SERVERS``
-#: rather than importing it (that module pulls ``kiro_crew.agent`` onto the
-#: daemon's boot path); a ratchet test pins the two equal.
-CONTROL_PLANE_BACKENDS = frozenset({"kirocrew-core", "kirocrew-cron"})
+#: Kiro Crew's own control planes: the only backends handed the per-session
+#: token, because only they post back to the gateway for the session they act on
+#: behalf of.
+#:
+#: This is NOT a mirror of ``acp.session_mcp.CONTROL_PLANE_SERVERS`` -- the two
+#: answer different questions, and the ratchet pins CONTAINMENT rather than
+#: equality for that reason. That set decides which servers every session mounts
+#: and which survive a ``disabledTools`` entry (``session_mcp`` subtracts it from
+#: the disabled set); this one decides who is handed a bearer token.
+#: ``kirocrew-dashboard`` belongs in the second and NOT the first: it posts back
+#: to the gateway for the CALLING session (``session_create``, ``session_send``,
+#: the folder and tag tools), which is exactly what the token is for -- but it is
+#: ``opt_in``, so naming it there would mount it in every session and make an
+#: operator's decision to switch its tools off unenforceable.
+#:
+#: Membership is necessary and NOT sufficient. ``_spawns_own_control_plane`` still
+#: compares the spawned binary by realpath and the argv exactly against the
+#: managed spec for this name, and refuses a child carrying ``PYTHON*`` env or an
+#: import root that shadows ``kiro_crew``, so the name alone hands over nothing.
+CONTROL_PLANE_BACKENDS = frozenset({"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard"})
 
 # Python treats its environment namespace as an extensible interpreter control
 # surface. A prefix rule fails closed when a later Python release adds another
@@ -206,12 +220,23 @@ def _spawns_own_control_plane(
     variables or on version-specific interpreter flags.
     """
     if server_name not in CONTROL_PLANE_BACKENDS:
+        # DEBUG, not the WARNING ``_deny_control_plane`` raises: this is the
+        # ordinary answer for a third-party backend, which is most of them.
+        # Logged at all because the two exits are otherwise indistinguishable
+        # from outside -- a control plane MISSING from the set above produces
+        # exactly this silence, so reading "no denial was logged" as "the check
+        # passed" is wrong: such a backend is invisible here while every one of
+        # its tools answers 409.
+        logger.debug(
+            "mcp-gateway: backend %r gets no session token: not in CONTROL_PLANE_BACKENDS",
+            server_name,
+        )
         return False
     # Lazy: ``kiro_crew.agent`` is not on the daemon's boot path and this runs
     # once per spawn, not per call.
     from kiro_crew.agent import managed_mcp_spec_entry
 
-    expected = managed_mcp_spec_entry(server_name)
+    expected = managed_mcp_spec_entry(server_name, include_opt_in=True)
     if not expected:
         return _deny_control_plane(server_name, "no managed spec entry resolves for this name")
     expected_command = str(expected.get("command") or "")
@@ -250,7 +275,8 @@ def _deny_control_plane(server_name: str, reason: str) -> bool:
     """Record why a reserved-name backend gets no session token; always False."""
     logger.warning(
         "mcp-gateway: backend %r spawned under a control-plane name but is denied the "
-        "session token: %s; its kirocrew-core/kirocrew-cron tools will answer 403",
+        "session token: %s; its tools that post back to the gateway for the calling "
+        "session will answer 403",
         server_name,
         reason,
     )

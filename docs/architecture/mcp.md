@@ -1810,9 +1810,10 @@ can persist it.
 gatewayd spawns a pooled backend from its OWN environment, so the per-session
 token the stub carries never reaches the backend's `os.environ`. That is right
 for a third-party server, which has no business proving a session to anyone.
-`kirocrew-core` and `kirocrew-cron` are different: they post back to the gateway
-over loopback (`/api/crons/tools`, the memory routes) on behalf of the session
-they act for, and since #11780 the gateway requires `X-Session-Token` on that
+`kirocrew-core`, `kirocrew-cron` and `kirocrew-dashboard` are different: they
+post back to the gateway over loopback (`/api/crons/tools`, the memory routes,
+the session and folder routes) on behalf of the session they act for, and since
+#11780 the gateway requires `X-Session-Token` on that
 transport when no kernel peer attestation is present — which a gatewayd child
 never has. So for exactly `gatewayd.CONTROL_PLANE_BACKENDS` the connection
 handler copies `conn.stub_session_token` onto the injected `CallerContext`
@@ -1890,9 +1891,26 @@ is distinguishable from the local one) — so an
 install that trips the check has more to read than every cron tool answering
 403.
 
-`CONTROL_PLANE_BACKENDS` mirrors `acp.session_mcp.CONTROL_PLANE_SERVERS`
-(importing it would put `kiro_crew.agent` on the daemon's boot path) and a
-ratchet test pins the two equal. The stub-strip in
+`CONTROL_PLANE_BACKENDS` is named in gatewayd itself (importing
+`acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path). It is
+a superset of `acp.session_mcp.CONTROL_PLANE_SERVERS`, not a mirror, because the
+two answer different questions: `CONTROL_PLANE_SERVERS` decides which servers
+every session mounts and which survive a `disabledTools` entry;
+`CONTROL_PLANE_BACKENDS` decides who is handed the token. Containment holds in
+one direction: a server mounted in every session posts back for that session,
+so it needs the token. `kirocrew-dashboard` is the reverse case -- it posts back
+for the CALLING session (`session_create`, `session_send`, the folder and tag
+tools), so it needs the token, but it is `opt_in`, so naming it in
+`CONTROL_PLANE_SERVERS` would mount it in every session and make an operator's
+decision to switch its tools off unenforceable. A ratchet test pins that
+relationship rather than equality: it asserts `CONTROL_PLANE_SERVERS` is
+contained in `CONTROL_PLANE_BACKENDS`, pins the token-only extras to exactly
+`kirocrew-dashboard`, and requires every extra to be a managed `opt_in` server,
+so a new recipient has to update the pin in the same commit. Because the
+dashboard is `opt_in`, `_spawns_own_control_plane` asks
+`agent.managed_mcp_spec_entry` for the invocation with `include_opt_in=True`,
+which skips only the `opt_in` emission disqualifier; a closed `spec_gate` still
+yields no invocation, and therefore no token. The stub-strip in
 `backend._strip_caller_meta` removes the whole caller block, so a stub cannot
 forge a `sessionToken` either. A gateway-injected caller also marks the backend
 as gateway-hosted: when its dial to the gateway is refused it reports the

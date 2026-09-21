@@ -1283,7 +1283,7 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
-def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
+def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[str, Any] | None:
     """The kiro-spec ``mcpServers`` entry a fresh build would emit for *name*.
 
     One entry, resolved live (``invocation_fn`` + the pinned data home), for a
@@ -1292,6 +1292,14 @@ def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
     assignable set is granted by a spec, never minted here) or when its
     ``spec_gate`` is closed — the same predicate the two spec writers use, so a
     caller cannot resurrect a server emission withholds.
+
+    ``include_opt_in`` resolves an ``opt_in`` entry's invocation anyway, and exists
+    for the ONE caller that is not asking the emission question:
+    ``mcp_gateway.gatewayd._spawns_own_control_plane``, which compares a spawn's
+    binary and argv against the invocation this name is DEFINED as. A closed
+    ``spec_gate`` still yields ``None`` under the flag; the branch below says why the
+    two disqualifiers part company there. It grants nothing on its own, because
+    neither spec writer passes it: an opt-in entry a writer omits is still omitted.
 
     ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
     :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
@@ -1306,7 +1314,18 @@ def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
     spec = _MANAGED_MCP_SERVERS.get(name)
     if not isinstance(spec, dict):
         return None
-    if not _mcp_server_emission_eligible(name, spec):
+    if include_opt_in:
+        # The control-plane check asks what this name's INVOCATION is, not whether
+        # a rebuild would GRANT it, and ``_mcp_server_emission_eligible`` answers
+        # the second question. Its two disqualifiers part company here: ``opt_in``
+        # means "never auto-emitted, assigned per agent", so an opt-in server that
+        # IS running was legitimately granted and its invocation is still ours to
+        # compare against; a CLOSED ``spec_gate`` means the opposite -- the gate
+        # exists to keep that backend unspawned, so a spawn under its name is
+        # anomalous and must not be handed a token. Skip the first, keep the second.
+        if not _mcp_spec_gate_open(name, spec):
+            return None
+    elif not _mcp_server_emission_eligible(name, spec):
         return None
     try:
         if "invocation_fn" in spec:

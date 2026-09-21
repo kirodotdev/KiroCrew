@@ -1515,12 +1515,199 @@ def test_the_token_is_attached_per_backend_never_to_the_base_caller() -> None:
     )
 
 
-def test_control_plane_set_mirrors_session_mcp() -> None:
+def test_control_plane_backends_contain_session_mcp_and_justify_the_difference() -> None:
     """gatewayd names the set itself so the daemon does not import
-    ``kiro_crew.agent`` at boot; this pin is what stops the two copies drifting."""
-    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS
+    ``kiro_crew.agent`` at boot, and this pin is what stops the two copies
+    drifting -- the two sets are not EQUAL, so it pins the RELATIONSHIP.
 
-    assert gw.CONTROL_PLANE_BACKENDS == frozenset(CONTROL_PLANE_SERVERS)
+    ``CONTROL_PLANE_SERVERS`` decides which servers every session mounts and which
+    survive a ``disabledTools`` entry; ``CONTROL_PLANE_BACKENDS`` decides who is
+    handed a bearer token. Containment holds in one direction only: a server
+    mounted in every session posts back for that session, so it needs the token.
+    The reverse does not, and ``kirocrew-dashboard`` is why -- it posts back for the
+    CALLING session, so it needs the token, but it is ``opt_in``, so naming it in
+    the first set would mount it everywhere and make an operator's decision to
+    switch its tools off unenforceable.
+
+    The extras are pinned BY NAME to exactly ``kirocrew-dashboard`` and each is
+    also checked BY PROPERTY. The name pin makes a new recipient an explicit,
+    reviewable change; the property check stops a typo'd or third-party name from
+    being handed a token even if someone edits the pin.
+    """
+    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS
+    from kiro_crew.agent import _MANAGED_MCP_SERVERS
+
+    assert frozenset(CONTROL_PLANE_SERVERS) <= gw.CONTROL_PLANE_BACKENDS
+
+    token_only = gw.CONTROL_PLANE_BACKENDS - frozenset(CONTROL_PLANE_SERVERS)
+    assert token_only == frozenset({"kirocrew-dashboard"}), (
+        "a new token recipient must be added to this pin in the same commit that adds it "
+        "to CONTROL_PLANE_BACKENDS"
+    )
+    for name in sorted(token_only):
+        spec = _MANAGED_MCP_SERVERS.get(name)
+        assert isinstance(spec, dict), f"{name!r} is handed a token but is not a managed server"
+        assert spec.get("opt_in"), (
+            f"{name!r} is token-only, which is only justified for an opt_in server; "
+            "one mounted in every session belongs in CONTROL_PLANE_SERVERS as well"
+        )
+
+
+def test_the_control_plane_check_asks_for_an_opt_in_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check resolves the spec with ``include_opt_in=True``, or a token-only
+    control plane can never be verified at all.
+
+    Pinned as the CALL and not only its effect, because every double in this file
+    now swallows keywords: dropping that argument at the call site would leave
+    ``kirocrew-dashboard`` permanently unverifiable -- every tool of its answering
+    409 -- with this whole file still green. That is the exact shape of the bug
+    this pins against.
+    """
+    from kiro_crew import agent as agent_mod
+
+    seen: list[dict[str, Any]] = []
+
+    def _record(name: str, **kw: Any) -> None:
+        seen.append({"name": name, **kw})
+        return None
+
+    monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", _record)
+    gw._spawns_own_control_plane("kirocrew-dashboard", "/bin/true", [], env={})
+
+    assert seen, "the check resolved no spec for a name that IS in CONTROL_PLANE_BACKENDS"
+    assert seen[0].get("include_opt_in") is True
+
+
+class TestTokenOnlyControlPlane:
+    """``kirocrew-dashboard`` is the one control plane that is ``opt_in``: it
+    posts back to the gateway for the CALLING session, so it needs the token,
+    but no spec writer auto-emits it. Every branch that lets the check see it is
+    pinned in BOTH directions here -- the grant, and what the grant does not do."""
+
+    NAME = "kirocrew-dashboard"
+
+    def test_the_real_dashboard_entry_matches_itself(self) -> None:
+        """No patching: whatever this install emits for the dashboard set must be
+        recognised as ours, or the token is never handed over and every
+        ``session_create`` / ``session_send`` answers 409."""
+        from kiro_crew.agent import managed_mcp_spec_entry
+
+        entry = managed_mcp_spec_entry(self.NAME, include_opt_in=True)
+        assert entry is not None
+        assert entry["args"][-1] == "mcp-dashboard"
+        assert gw._spawns_own_control_plane(self.NAME, entry["command"], entry["args"], env={})
+
+    def test_the_real_dashboard_entry_is_checked_not_trusted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Membership is necessary, never sufficient: the same binary/argv/env
+        fences that guard the always-on planes deny a dashboard spawn that is not
+        byte-for-byte the managed invocation, and each denial names its reason."""
+        from kiro_crew.agent import managed_mcp_spec_entry
+
+        entry = managed_mcp_spec_entry(self.NAME, include_opt_in=True)
+        assert entry is not None
+        other = tmp_path / "evil"
+        other.write_text("#!/bin/sh\n")
+        wrong_args = list(entry["args"][:-1]) + ["mcp-core"]
+        cases = [
+            (dict(command=str(other), args=entry["args"], env={}), "is not the spec's"),
+            (dict(command=entry["command"], args=wrong_args, env={}), "differ from spec"),
+            (
+                dict(
+                    command=entry["command"], args=entry["args"], env={"PYTHONPATH": str(tmp_path)}
+                ),
+                "child environment carries non-empty PYTHONPATH",
+            ),
+        ]
+        with caplog.at_level(logging.WARNING, logger=gw.__name__):
+            for kwargs, fragment in cases:
+                caplog.clear()
+                assert not gw._spawns_own_control_plane(self.NAME, **kwargs)
+                (record,) = [r for r in caplog.records if "denied the session token" in r.message]
+                assert f"'{self.NAME}'" in record.message and fragment in record.message
+
+    def test_the_emission_question_still_says_no(self) -> None:
+        """The flag is the control-plane check's, not the spec writers': without
+        it the dashboard entry is still ``None``, so an opt-in server the user
+        never granted is not resurrected by the same helper that now verifies it."""
+        from kiro_crew.agent import managed_mcp_spec_entry
+
+        assert managed_mcp_spec_entry(self.NAME) is None
+        assert managed_mcp_spec_entry("not-a-managed-server", include_opt_in=True) is None
+
+    def test_include_opt_in_keeps_a_closed_spec_gate_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The flag skips exactly ONE disqualifier. A closed ``spec_gate`` keeps a
+        backend unspawned, so a spawn under that name is anomalous: the entry stays
+        ``None`` under the flag, and a gate that raises reads as closed."""
+        import kiro_crew.agent as agent_mod
+
+        gate = {"open": False}
+        invocation = (sys.executable, ["-m", "kiro_crew", "mcp-probe"])
+
+        def _raise() -> bool:
+            raise RuntimeError("keystone unreadable")
+
+        spec: dict[str, Any] = {
+            "invocation_fn": lambda: invocation,
+            "opt_in": True,
+            "spec_gate": lambda: gate["open"],
+        }
+        monkeypatch.setitem(agent_mod._MANAGED_MCP_SERVERS, "kirocrew-probe", spec)
+        assert agent_mod.managed_mcp_spec_entry("kirocrew-probe", include_opt_in=True) is None
+        gate["open"] = True
+        resolved = agent_mod.managed_mcp_spec_entry("kirocrew-probe", include_opt_in=True)
+        assert resolved is not None and resolved["args"] == invocation[1]
+        assert agent_mod.managed_mcp_spec_entry("kirocrew-probe") is None
+        monkeypatch.setitem(
+            agent_mod._MANAGED_MCP_SERVERS,
+            "kirocrew-probe",
+            {**spec, "spec_gate": _raise},
+        )
+        assert agent_mod.managed_mcp_spec_entry("kirocrew-probe", include_opt_in=True) is None
+
+    def test_a_gate_closed_dashboard_is_denied_the_token(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Through the production path: the real dashboard invocation, under a
+        spec whose gate has shut, gets no token and the denial says why."""
+        import kiro_crew.agent as agent_mod
+
+        entry = agent_mod.managed_mcp_spec_entry(self.NAME, include_opt_in=True)
+        assert entry is not None
+        gated = {**agent_mod._MANAGED_MCP_SERVERS[self.NAME], "spec_gate": lambda: False}
+        monkeypatch.setitem(agent_mod._MANAGED_MCP_SERVERS, self.NAME, gated)
+        with caplog.at_level(logging.WARNING, logger=gw.__name__):
+            assert not gw._spawns_own_control_plane(
+                self.NAME, entry["command"], entry["args"], env={}
+            )
+        (record,) = [r for r in caplog.records if "denied the session token" in r.message]
+        assert "no managed spec entry resolves" in record.message
+
+    def test_a_name_outside_the_set_is_logged_at_debug_not_as_a_denial(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The two ``False`` exits are distinguishable in the log: a third-party
+        name leaves one DEBUG line naming the set and no WARNING, while a reserved
+        name that fails leaves the WARNING and never the DEBUG line. A control
+        plane missing from the set is exactly the silent shape this pins against."""
+        import kiro_crew.agent as agent_mod
+
+        with caplog.at_level(logging.DEBUG, logger=gw.__name__):
+            assert not gw._spawns_own_control_plane("echo-mcp", "/bin/true", [], env={})
+            (record,) = [r for r in caplog.records if "not in CONTROL_PLANE_BACKENDS" in r.message]
+            assert record.levelno == logging.DEBUG and "'echo-mcp'" in record.message
+            assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+            caplog.clear()
+            monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: None)
+            assert not gw._spawns_own_control_plane("kirocrew-core", "/bin/true", [], env={})
+            assert not [r for r in caplog.records if "not in CONTROL_PLANE_BACKENDS" in r.message]
+            assert [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 class TestSpawnsOwnControlPlane:
@@ -1537,7 +1724,7 @@ class TestSpawnsOwnControlPlane:
         monkeypatch.setattr(
             agent_mod,
             "managed_mcp_spec_entry",
-            lambda name: dict(entry) if name == "kirocrew-core" else None,
+            lambda name, **_kw: dict(entry) if name == "kirocrew-core" else None,
         )
         return entry
 
@@ -1605,7 +1792,7 @@ class TestSpawnsOwnControlPlane:
             caplog.clear()
             import kiro_crew.agent as agent_mod
 
-            monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name: None)
+            monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: None)
             assert not gw._spawns_own_control_plane(
                 "kirocrew-core", managed["command"], ["mcp-core"]
             )
@@ -1620,7 +1807,7 @@ class TestSpawnsOwnControlPlane:
     ) -> None:
         import kiro_crew.agent as agent_mod
 
-        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name: None)
+        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: None)
         assert not gw._spawns_own_control_plane("kirocrew-core", managed["command"], ["mcp-core"])
 
     def test_the_real_managed_entry_matches_itself(self) -> None:
@@ -1786,7 +1973,7 @@ class TestModuleFormShadowing:
         monkeypatch.setattr(
             agent_mod,
             "managed_mcp_spec_entry",
-            lambda name: dict(entry) if name == "kirocrew-cron" else None,
+            lambda name, **_kw: dict(entry) if name == "kirocrew-cron" else None,
         )
         return entry
 
@@ -2001,11 +2188,11 @@ class TestModuleFormShadowing:
         entry = {"command": sys.executable, "args": ["-P", "-s", "-m", "kiro_crew", self.SUB]}
         import kiro_crew.agent as agent_mod
 
-        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name: dict(entry))
+        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: dict(entry))
         (tmp_path / "kiro_crew").mkdir()
         (tmp_path / "kiro_crew" / "__init__.py").write_text("")
         assert not self._ours(entry, env={}, work_dir=tmp_path)
         assert not self._ours(entry, env={"PYTHONPATH": str(tmp_path)}, work_dir=tmp_path)
         isolated = {"command": sys.executable, "args": ["-I", "-m", "kiro_crew", self.SUB]}
-        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name: dict(isolated))
+        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: dict(isolated))
         assert not self._ours(isolated, env={"PYTHONPATH": str(tmp_path)}, work_dir=tmp_path)
