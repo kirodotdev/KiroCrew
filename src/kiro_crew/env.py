@@ -68,6 +68,37 @@ _EXTRA_PATH_DIRS = (
 # config files) and never :func:`augmented_path` (the generic composition). Both
 # exclusions are load-bearing and are argued at :func:`mcp_search_path`.
 #
+# ONE exception, for gatewayd: :func:`mcp_runtime_path` puts these directories on
+# the DAEMON's inherited PATH, which every pooled backend inherits in turn. A
+# contributed directory therefore reaches spawned processes, not resolution
+# alone. That is deliberate. The rewriter resolves a wrapper out of a contributed
+# dir, but the wrapper's own ``exec`` of a bare tool name is resolved by the
+# CHILD against its inherited PATH, so a resolution-only contribution does not
+# suffice to start such a server: it exits rc=127. Both exclusions above hold
+# even so -- :func:`augmented_path` and :func:`spec_env_path` keep the
+# contribution out, :func:`mcp_runtime_path` wraps the former rather than
+# altering it, and nothing is persisted.
+#
+# That exception is also where the setting stops being live. A resolution caller
+# reads the current snapshot on every call, so an edit reaches it immediately;
+# the daemon's PATH is a process environment fixed when ``manager._spawn_once``
+# spawns it, and an ADOPTED survivor never has a new one applied (``manager``'s
+# adoption gates compare the target-stem map and the code fingerprint, neither of
+# which sees a PATH). Adding or clearing a directory therefore governs the
+# daemon, and every pooled backend that inherits its environment, only from the
+# next daemon onwards, which is why ``mcp.extra_path_dirs`` carries
+# ``restart=True``.
+#
+# One backend shape is the exception and applies an edit LIVE: a cold backend
+# whose spec declares its own PATH. ``gatewayd._acquire_backend`` composes that
+# value through :func:`mcp_search_path`, and the ``_declared_env_pairs`` call
+# that reads the declared sidecar first goes through ``KiroCrewConfig.load``,
+# whose loader re-pushes ``mcp.extra_path_dirs`` into the snapshot above. Such a
+# backend spawned after the edit therefore sees the new directory without a
+# restart. ``restart=True`` still states the operator-facing rule, because the
+# daemon's own PATH -- the case that decides whether a bare launcher name
+# resolves at all -- is fixed at spawn.
+#
 # The config value is PUSHED here by the loader (:func:`publish_config_path_dirs`,
 # called from ``KiroCrewConfig.load``) rather than read here. That is not
 # indirection for its own sake: :func:`mcp_search_path` is reached from the event
@@ -76,7 +107,7 @@ _EXTRA_PATH_DIRS = (
 # Pushing keeps this module's whole search-path construction free of IO, and
 # costs nothing: every process that spawns an MCP server loads the config at
 # startup, and each later ``load()`` refreshes the snapshot, so an edited setting
-# takes effect without a restart.
+# reaches every RESOLUTION caller in this process without a restart.
 _registered_path_dirs: tuple[str, ...] = ()
 _config_path_dirs: object = ()
 _path_dirs_lock = threading.Lock()
@@ -869,7 +900,11 @@ def mcp_search_path(env_path: str) -> str:
       being searched immediately.
     * It also keeps the contribution off :func:`augmented_path`, whose callers
       include the resolvers for the trusted agent runtime -- see the section
-      comment near ``_registered_path_dirs``.
+      comment near ``_registered_path_dirs``. :func:`mcp_runtime_path` is the one
+      composition that carries contributed dirs into a SPAWNED process's env
+      (gatewayd's, and so every pooled backend's); it wraps
+      :func:`augmented_path` rather than changing it, and the exception is
+      argued at the section comment.
 
     Contributed dirs sit BETWEEN the spec's own entries and the generic
     augmentation: a spec that pins a toolchain still wins, while a directory an
@@ -891,6 +926,38 @@ def mcp_search_path(env_path: str) -> str:
         augmented_path(os.environ.get("PATH", "")),
     ]
     return dedup_path(os.pathsep.join(filter(None, parts)))
+
+
+def mcp_runtime_path(base_path: str = "") -> str:
+    """Contributed MCP directories, then :func:`augmented_path` unchanged.
+
+    For an INHERITED process PATH such as the gateway daemon's environment.
+    ``base_path`` is not a spec-authored override, so :func:`mcp_search_path`
+    is the wrong composition here: it would treat the inherited entries as spec
+    pins and move them ahead of the managed launcher directories.
+
+    Contributed directories (``mcp.extra_path_dirs`` and
+    :func:`register_mcp_path_dirs`) LEAD, honouring the rule documented at
+    :func:`mcp_search_path`: a directory an operator or a packaged build named
+    explicitly outranks this module's built-in guesses. An operator who sets
+    the option precisely to override a wrong built-in guess must get their own
+    directory. :func:`augmented_path` then follows as one contiguous block with
+    its internal order untouched, so both spawn sites share one launcher
+    precedence and the inherited base still trails as ``augmented_path`` places
+    it. A contributed directory that duplicates a built-in guess appears once,
+    at the front. With nothing contributed the result is byte-identical to
+    ``augmented_path(base_path)``.
+
+    The caller bakes this into a process environment, so the contribution it
+    reads is the one in force at that spawn: an edited ``mcp.extra_path_dirs``
+    governs the next daemon, not the running one (see the section comment above
+    for why an adopted daemon never receives a new PATH).
+    """
+    path = augmented_path(base_path)
+    extra = _dedup_dirs(_extra_mcp_path_dirs())
+    if not extra:
+        return path
+    return os.pathsep.join(_dedup_dirs([*extra, *path.split(os.pathsep)]))
 
 
 # Env keys a spec's declared ``env`` must never set on a process WE spawn.

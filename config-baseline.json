@@ -3805,10 +3805,11 @@
       "sensitive": false,
       "tags": [],
       "label": "Extra MCP Binary Directories",
-      "help": "Additional directories to search for MCP server binaries, ahead of the built-in locations. Add one when a package manager installs its MCP launchers somewhere Kiro Crew does not know about: a server declared by bare name that resolves nowhere never starts, and the session just comes up short of tools. Each entry must be a single absolute directory (``~`` is expanded); anything else is ignored with a warning. These directories are prepended to the search path used by the MCP probe, the agent-config command resolver, and the broker's rewriter alike, so a binary found here is found everywhere. They do NOT join the search for the agent runtime itself, which must not be shadowable by a configured directory.",
+      "help": "Additional directories to search for MCP server binaries, ahead of the built-in locations. Add one when a package manager installs its MCP launchers somewhere Kiro Crew does not know about: a server declared by bare name that resolves nowhere never starts, and the session just comes up short of tools. Each entry must be a single absolute directory (``~`` is expanded); anything else is ignored with a warning. These directories are prepended to the search path used by the MCP probe, the agent-config command resolver, and the broker's rewriter alike, so a binary found here is found everywhere. They also join the PATH of the broker daemon and every pooled MCP backend it spawns, so a wrapper script found here can exec a bare tool name; the daemon reads this when it starts, so a change reaches it only once it is replaced. They do NOT join the search for the agent runtime itself, which must not be shadowable by a configured directory.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": []
+      "defaultValue": [],
+      "requiresRestart": true
     },
     {
       "path": "mcp.extra_path_dirs.*",

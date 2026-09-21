@@ -5513,8 +5513,13 @@ class McpConfig:
             "with a warning. These directories are prepended to the search path "
             "used by the MCP probe, the agent-config command resolver, and the "
             "broker's rewriter alike, so a binary found here is found "
-            "everywhere. They do NOT join the search for the agent runtime "
-            "itself, which must not be shadowable by a configured directory.",
+            "everywhere. They also join the PATH of the broker daemon and every "
+            "pooled MCP backend it spawns, so a wrapper script found here can "
+            "exec a bare tool name; the daemon reads this when it starts, so a "
+            "change reaches it only once it is replaced. They do NOT join the "
+            "search for the agent runtime itself, which must not be shadowable "
+            "by a configured directory.",
+            restart=True,
         ),
     )
 

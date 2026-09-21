@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from conftest import host_abs
 from kiro_crew.config import loader as L
 from kiro_crew.config.loader import KiroCrewConfig, McpConfig
@@ -135,3 +137,52 @@ def test_distinct_from_mcp_gateway():
     broker's own section."""
     assert not hasattr(KiroCrewConfig().mcp_gateway, "extra_path_dirs")
     assert isinstance(KiroCrewConfig().mcp, McpConfig)
+
+
+def test_the_setting_is_restart_marked():
+    """The contribution is not live for every consumer, and the mark is how the UI
+    says so.
+
+    A resolution caller (the MCP probe, the agent-config resolver, the rewriter)
+    reads the published snapshot on every call, so an edit reaches it at once. The
+    broker daemon instead receives the contribution as a process PATH baked when
+    ``manager._spawn_once`` spawns it, and every pooled backend inherits that
+    PATH; a gateway that ADOPTS a surviving daemon never applies a new one, since
+    the adoption gates compare the target-stem map and the code fingerprint and
+    neither sees a PATH. That is the "hot for one consumer and boot-only for the
+    others" case ``config.live._refuse_restart_marked`` names, and it is the same
+    mark every baked-at-spawn broker field carries.
+    """
+    from kiro_crew.config.schema import requires_restart
+
+    assert requires_restart("mcp.extra_path_dirs")
+
+
+def test_a_config_applier_on_the_setting_is_refused():
+    """The mark is enforced, not decorative.
+
+    Without this the field could gain an applier that refreshes the resolution
+    snapshot while every already-spawned daemon and backend keeps the old PATH --
+    a field the UI calls boot-only and the watcher treats as hot.
+    """
+    from kiro_crew.config.live import ConfigWatch
+
+    w = ConfigWatch()
+    with pytest.raises(ValueError, match="restart-marked"):
+        w.subscribe("mcp.extra_path_dirs", callback=lambda c: None, name="bad")
+    with pytest.raises(ValueError, match="restart-marked"):
+        w.bind("mcp.extra_path_dirs", lambda v: None)
+    assert list(w.subscriptions()) == []
+
+
+def test_the_help_states_the_spawned_process_effect():
+    """An operator reading only "search path" would expect a resolution-only
+    effect and no restart, which is why a wrapper script's bare-name ``exec``
+    kept exiting rc=127 after the setting was pointed at the right folder."""
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.extra_path_dirs")
+    help_text = entry.help.lower()
+    assert "path of the broker daemon" in help_text
+    assert "pooled mcp backend" in help_text
+    assert "when it starts" in help_text

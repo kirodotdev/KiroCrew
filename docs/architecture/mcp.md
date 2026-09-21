@@ -103,7 +103,10 @@ declared `PATH` **replaces** the child's inherited one rather than extending it.
 A spec that names one directory to add would therefore hand the server a PATH
 holding only that directory. `spec_env_path()` expands a declared `env.PATH`
 into the full effective PATH — the spec's own entries first, then the augmented
-inherited PATH, deduped — before it is written out. Consequence to know about:
+inherited PATH, deduped — before it is written out. A forwarded declared `PATH`
+reaches a pooled backend the same way: `gatewayd` composes it through
+`env.mcp_search_path`, so the spec's entries LEAD that backend's PATH rather
+than being the whole of it. Consequence to know about:
 the emitted value is a snapshot of the rebuild-time environment, so it encodes
 this host's directories (mise data dir, installed Node version bins, the
 running interpreter's bin) and is not portable to another machine.

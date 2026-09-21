@@ -60,7 +60,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
 
 # This light leaf keeps ``kiro_crew.agent`` off the daemon's boot path.
-from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES
+from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES, mcp_search_path, spec_path_key
 from kiro_crew.executors import (
     configure_default_executor,
     maintenance_executor,
@@ -4269,6 +4269,18 @@ async def _acquire_backend(
                 pool_key,
             )
         )
+        declared_path_key = spec_path_key(declared)
+        if declared_path_key is not None:
+            declared_path = await asyncio.to_thread(
+                mcp_search_path,
+                declared[declared_path_key],
+            )
+            # The declared VALUE carries the operator's pin; the variable a
+            # child reads is the one the daemon already carries (``PATH`` on
+            # POSIX, where ``Path`` is a distinct variable). Writing under the
+            # spec's spelling would leave a POSIX backend with no PATH at all.
+            declared = {key: value for key, value in declared.items() if key.upper() != "PATH"}
+            spawn_env[spec_path_key(spawn_env) or "PATH"] = declared_path
         accepted_temp_keys: tuple[str, ...] = ()
         if declared:
             # A ``secret://`` temp has no path until resolution. Classifying

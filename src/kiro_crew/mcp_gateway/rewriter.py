@@ -308,14 +308,16 @@ def _resolve_target_command(
 ) -> str:
     """Resolve an MCP target command to an absolute path, or ``""``.
 
-    gatewayd spawns backends from the systemd ``--user`` environment, whose
-    ``PATH`` lacks the toolbox / user-local bin dirs a login shell has — so a
-    bare command that resolves fine for the SESSION's own exec ENOENTs on
-    every pooled spawn: 79% of all measured fallbacks. The search is
+    A bare command that resolves on no searched directory ENOENTs on every
+    pooled spawn, while kiro-cli's own spawn environment may still resolve it
+    for the SESSION's exec. The daemon's PATH carries the managed launcher
+    dirs (:func:`kiro_crew.env.mcp_runtime_path`), so a pooled backend
+    searches them too; what this pass settles is the verdict itself, once at
+    rewrite time and ahead of any spawn. The search is
     :func:`kiro_crew.env.mcp_search_path` — literally the same composition the
     MCP probe and the agent-config resolver use (spec ``env.PATH`` first, then
-    the augmented host PATH) — so a server that probes healthy on the
-    dashboard can never ENOENT in gatewayd.
+    the contributed MCP directories, then the augmented host PATH) — so a
+    server that probes healthy on the dashboard can never ENOENT in gatewayd.
 
     An absolute command is accepted only when it exists and is executable
     (the same predicate ``agent.py``'s config resolver applies). Any command
