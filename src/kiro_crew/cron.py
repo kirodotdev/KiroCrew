@@ -826,7 +826,7 @@ class CronJob:
     env: dict[str, str] = field(default_factory=dict)  # per-job environment variables
     timeout_secs: int = _JOB_TIMEOUT_SECS
     strict_schedule: bool = False  # when True, skip jitter and fire exactly on schedule
-    script: str = ""  # Python callable path (module:func or file.py:func); bypasses LLM dispatch
+    script: str = ""  # Script file "<config_dir>/crons/x.py:func"; bypasses LLM dispatch
     command: str = ""  # Shell command for direct execution; bypasses LLM dispatch
     timeout: int = (
         0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)

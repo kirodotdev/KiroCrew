@@ -1597,7 +1597,7 @@ Examples:
         help="Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered",
     )
     cron_preview.add_argument(
-        "script", help="Script path in module:function format (e.g. ~/.kiro/crew/crons/my.py:run)"
+        "script", help="Script file in file.py:function format (e.g. ~/.kiro/crew/crons/my.py:run)"
     )
     cron_preview.add_argument("--message", "-m", default="", help="ctx.message value")
     cron_preview.add_argument(
