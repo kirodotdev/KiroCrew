@@ -5,7 +5,7 @@ import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
 import { basenamePatchHeaders } from '../utils/diffUtils'
 import { PierrePatch } from '../pierre'
-import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
+import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS, PIERRE_FOLD_HANDLE_GUTTER_CSS } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { usePlainDiff } from '../hooks/usePlainDiff'
@@ -186,9 +186,12 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
       // count and arrows earn their room on a full file. It also keeps the
       // library's untranslated "N unmodified lines" out of chat entirely.
       hunkSeparators: 'simple' as const,
-      unsafeCSS: PIERRE_COMPACT_HEADER_CSS + PIERRE_WRAP_NO_HSCROLL_CSS + PIERRE_SEPARATOR_BG_CSS,
+      unsafeCSS: PIERRE_COMPACT_HEADER_CSS + PIERRE_WRAP_NO_HSCROLL_CSS + PIERRE_SEPARATOR_BG_CSS
+        // The fold chevron overlays the header's left edge (see the handle
+        // below); make room so the filename is not under it.
+        + (onFold ? PIERRE_FOLD_HANDLE_GUTTER_CSS : ''),
     }),
-    [sideBySide],
+    [sideBySide, onFold],
   )
 
   const copy = async () => { if (await copyToClipboard(code)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
@@ -248,11 +251,17 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             The chevron is visible at rest (muted) so the only density control
             is discoverable without mousing over; it brightens on hover/focus.
             NO `title` — it would shadow the wrapper's full-path tooltip;
-            aria-label carries the action for this icon-only control. */}
+            aria-label carries the action for this icon-only control.
+            `z-10`, not `z-0`: Pierre's `default` file header is
+            `position: relative; z-index: 2` in the SAME stacking context (a
+            shadow root does not open one), so at z-0 the header painted over
+            the chevron and took every click meant for it — a card, once opened
+            from its chip, could not be closed. The actions row slotted into
+            that header is `relative z-10` for the same reason. */}
         {onFold && (
           <button
             type="button"
-            className="group/fold absolute left-0 top-0 w-8 h-8 z-0 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
+            className="group/fold absolute left-0 top-0 w-8 h-8 z-10 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
             data-diff-toggle
             onClick={onFold}
             aria-label={i18nT('pages.chat.toolCallLine.aria_hide_diff')}

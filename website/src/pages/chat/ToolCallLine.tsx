@@ -9,7 +9,7 @@ import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
-import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import ErrorNotice from '../../components/ErrorNotice'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
@@ -603,7 +603,6 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const [cardFolded, setCardFolded] = useState(
     () => !(toolCallId && openedDiffCards.has(toolCallId)),
   )
-  const diffTogglePendingFocus = useRef(false)
   const toggleCardFolded = useCallback(() => {
     setCardFolded(prev => {
       const next = !prev
@@ -613,32 +612,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       }
       return next
     })
-    // The two halves of the toggle unmount each other, so the activated
-    // control disappears and focus would fall to <body>. Hand focus to the
-    // counterpart once it mounts — both carry data-diff-toggle.
-    diffTogglePendingFocus.current = true
   }, [toolCallId])
-  useEffect(() => {
-    if (!diffTogglePendingFocus.current) return
-    diffTogglePendingFocus.current = false
-    const el = containerRef.current?.querySelector<HTMLElement>('[data-diff-toggle]')
-    el?.focus()
-  }, [cardFolded])
   const cardStats = useMemo(
     () => (diffView?.mode === 'card' ? countDiffStats(diffView.code) : null),
     [diffView],
   )
   const showCard = diffView?.mode === 'card' && !cardFolded
-  // The chip is the one-line handle for COMPACT states only: the folded
-  // card's re-open handle, and the summary / pathname rows. An OPEN card
-  // shows no chip — DiffBlock's own header row already carries the file
-  // icon, basename and ±counts, and its fold control lives there (onFold),
-  // so the facts never render twice.
+  // The chip is the one-line handle for every diff presentation and it STAYS
+  // MOUNTED while the card is open: the same chip that opened the patch is
+  // the one that closes it, so the reader never has to find a second control
+  // (the card's own header gets no fold handle — one toggle, one place — and
+  // the chip's `aria-expanded` names the state). An earlier design swapped the
+  // chip for a chevron in the card header; that chevron sat under Pierre's
+  // header in paint order and a card, once opened, could not be closed. The
+  // filename and ±counts do render twice while open — the price of a control
+  // that does not move out from under the pointer.
   const chipView: { path: string | null; added: number; removed: number; truncated: boolean; opensCard: boolean } | null =
     diffView?.mode === 'card'
-      ? (cardFolded
-        ? { path: extractDiffHeaderPath(diffView.code)?.path ?? filePath, added: cardStats?.added ?? 0, removed: cardStats?.removed ?? 0, truncated: false, opensCard: true }
-        : null)
+      ? { path: extractDiffHeaderPath(diffView.code)?.path ?? filePath, added: cardStats?.added ?? 0, removed: cardStats?.removed ?? 0, truncated: false, opensCard: true }
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
@@ -1006,7 +997,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       </div>
 
       {/* Diff chip: the one-line handle for every diff presentation. For a
-          promoted card it folds/unfolds the card below; for a summary /
+          promoted card it folds/unfolds the card below and stays put while the
+          card is open (open look: filled background, full-strength text, and
+          the trailing chevron turned up — colour alone did not read as a
+          state); for a summary /
           pathname row it expands the details panel. Full path in the native
           tooltip — the visible basename alone cannot tell two same-named
           files apart. Truncated transports prefix counts with ≥ (lower
@@ -1017,7 +1011,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       {chipView && (
         <button
           type="button"
-          className="mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden"
+          className={`mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${chipView.opensCard && showCard ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
           title={chipView.path ?? undefined}
           aria-expanded={chipView.opensCard ? showCard : effectivelyExpanded}
           data-diff-toggle={chipView.opensCard ? true : undefined}
@@ -1038,17 +1032,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           {chipView.truncated && (
             <span className="text-warn">· {i18nT('pages.chat.toolCallLine.diff_truncated')}</span>
           )}
+          {/* Card chips only: the disclosure cue. Down = a card can open below;
+              up = it is open and this same chip closes it. The summary chip
+              expands the details panel, whose own pill already carries that
+              cue. */}
+          {chipView.opensCard && (
+            <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${showCard ? 'rotate-180' : ''}`} />
+          )}
         </button>
       )}
-      {/* Diff card: the full inline diff, foldable via the chip above. A
-          sibling of the pill (not inside the expanded panel) — the primary
-          display of the change; the details panel keeps the raw copy. The
-          wrapper is a pointer-only event fence (role="presentation"): clicks
-          inside the card must never toggle a surrounding TurnBlock /
-          collapsed-group wrapper. */}
+      {/* Diff card: the full inline diff, folded by the chip above — no
+          `onFold`, the chip is the card's only toggle. A sibling of the pill
+          (not inside the expanded panel) — the primary display of the change;
+          the details panel keeps the raw copy. The wrapper is a pointer-only
+          event fence (role="presentation"): clicks inside the card must never
+          toggle a surrounding TurnBlock / collapsed-group wrapper. */}
       {showCard && diffView?.mode === 'card' && (
         <div className="mt-1.5" role="presentation" onClick={e => e.stopPropagation()}>
-          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} onFold={toggleCardFolded} />
+          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} />
         </div>
       )}
 
