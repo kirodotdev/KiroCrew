@@ -132,6 +132,7 @@ from kiro_crew.memory_stores import (
     retire_unpublished_allocation,
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -680,21 +681,69 @@ def _app_declared_server_names() -> frozenset[str]:
         # then be skipped as "not an app", making the absent bridges of the app
         # under that name deletable. Only a resolved stat may exclude a child, and
         # only by PROVING it is not a directory.
+        #
+        # ``lstat`` FIRST, and that ordering is the whole screen rather than a
+        # refinement of it. ``stat`` FOLLOWS the link, so a single ``stat`` reports
+        # ``FileNotFoundError`` for two opposite states: a name nothing occupies,
+        # and a name a DANGLING link or junction still occupies. ``lstat`` inspects
+        # the entry itself, so it succeeds for the link and fails only for the empty
+        # name -- the rule :func:`_require_present_shape` states for this same
+        # hazard one position out ("a dangling symlink counts as present"), applied
+        # here, where the entry being screened is the app ROOT.
         try:
-            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` does
+            link_st = os.lstat(child)
         except FileNotFoundError:
             # Absence, and only absence, is a skip: an uninstall completing
-            # between the listing and this stat leaves precisely this state, and a
-            # DANGLING link lands here too -- unlike the metadata screen below,
-            # that is a definite answer rather than an unreadable one, because no
-            # app directory exists under the name at all.
+            # between the listing and this lstat leaves precisely this state, and
+            # refusing it would turn a routine PUT into a 500.
             continue
         except OSError as exc:
             raise AppOwnershipUnreadable(
                 f"installed-apps entry {child.name!r} present but unstattable: {exc}"
             ) from exc
+        try:
+            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` does
+        except OSError as exc:
+            # The name IS occupied -- the ``lstat`` above proved it -- and does not
+            # resolve: a dangling link or junction, a symlink loop, or a fault on
+            # the target. Whatever this app declares is therefore UNKNOWN, never
+            # empty, and empty is what deletes its live bridges. So this is the
+            # cannot-read case the metadata screen below already refuses for
+            # ``installed.json``, reached one directory level up.
+            #
+            # It is also the answer ``apps.manager`` gives the same shape:
+            # ``_entry_stands_for_a_dropped_app`` counts a link-ish non-directory
+            # entry as an app the listing dropped, so ``list_apps_with_skips``
+            # reports INCOMPLETE rather than vouching for the name being free.
+            # Skipping here would make this walk the one reader that treats that
+            # shape as a definite absence.
+            raise AppOwnershipUnreadable(
+                f"installed-apps entry {child.name!r} present but unresolvable: {exc}"
+            ) from exc
         if stat.S_ISDIR(st.st_mode):
             entries.append(child)
+            continue
+        # A non-directory that RESOLVED cleanly. ``apps.manager`` splits this same
+        # shape in two and this walk has to split it the same way, because the two
+        # halves carry opposite answers.
+        #
+        # LINK-ISH (symlink or junction) whose target is not a directory: the
+        # resolving predicates disagree about it, since ``is_dir()`` says no while
+        # the name is plainly occupied, and
+        # ``_entry_stands_for_a_dropped_app`` returns ``entry.is_symlink() or
+        # is_link_or_junction(entry)`` for exactly this, counting it as an app the
+        # listing dropped. So what this app declares is UNKNOWN, and unknown is the
+        # one answer that must not be spelled as the empty set, because empty is
+        # what deletes its live bridges.
+        #
+        # A PLAIN non-directory is the opposite answer, and skipping it is
+        # deliberate: ``_entry_stands_for_a_dropped_app`` does not count one either,
+        # because a file BESIDE the app directories is an ordinary member of a
+        # healthy apps root, and refusing it would turn every such file into a 500.
+        if stat.S_ISLNK(link_st.st_mode) or is_link_or_junction(child):
+            raise AppOwnershipUnreadable(
+                f"installed-apps entry {child.name!r} is a link to a non-directory"
+            )
     declared: set[str] = set()
     for entry in entries:
         # SHAPE before CONTENT. ``app_enabled_state`` reaches the metadata through
