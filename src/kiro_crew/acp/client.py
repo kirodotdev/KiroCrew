@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 import uuid
+import weakref
 from collections import deque
 from contextlib import aclosing, suppress
 from pathlib import Path
@@ -292,6 +293,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
+    _push_verdict_masks_ssh,
     agent_env_scrub_prefixes,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
@@ -3531,6 +3533,97 @@ async def _run_preflight_bounded(
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
 
+    #: Every live agent runtime -- an ``AcpClient`` here AND an ``AcpRuntime`` (the shared
+    #: kiro runtime, incl. the one behind ``AcpSessionProvider._runtime``) -- registers itself
+    #: here at construction so the periodic pool-health sweep can reach a CLAIMED, in-use
+    #: runtime, not just an idle warm-pool provider. The two per-session guards (a turn-boundary
+    #: recycle, the per-tool-call drift refusal) only fire on an EVENT; a live session sitting
+    #: BETWEEN turns reaches neither, so a descendant it already started (a build/script
+    #: subprocess running ``git push``) could publish an unjudged commit in that window. The
+    #: sweep closes it by reaping the pre-activation tree within one tick of activation becoming
+    #: effective. WeakSet so a garbage-collected runtime drops out on its own -- registration
+    #: adds no lifecycle obligation and cannot leak a dead runtime. Entries must expose
+    #: ``_spawn_push_verdict_activation``, ``_pid`` and an async ``_reap_pre_activation_drift()``
+    #: that performs the class's own tree reap (see ``sweep_pre_activation_runtimes``).
+    _LIVE_RUNTIMES: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+    def _is_live_pre_activation(self) -> bool:
+        """True when this client was spawned non-activated and its process is still alive.
+
+        Only a non-activated spawn can drift ON (deactivation only relaxes), so an
+        already-activated or never-spawned runtime is not a candidate.
+        """
+        return (
+            self._spawn_push_verdict_activation is False
+            and self._process is not None
+            and self._process.returncode is None
+        )
+
+    async def _reap_pre_activation_drift(self) -> None:
+        """Reap THIS client's pre-activation process tree so the next turn respawns masked.
+
+        The same tree reap (killpg + escaped-descendant kill) the turn-boundary recycle uses,
+        followed by ``_reset_state`` so the cold-start path rebuilds the child under the
+        credential mask.
+        """
+        logger.warning(
+            "push-verdict: periodic sweep found a LIVE client runtime (pid=%s, session=%s) "
+            "spawned BEFORE gating was activated -- its credential mask is fixed at spawn, so "
+            "it still holds git credentials this install must withhold. Reaping it and its "
+            "process tree so the next turn respawns under the mask",
+            self._pid,  # pid-owner-ok: the sweep is the pool's reaper ending this runtime
+            self._session_id,
+        )
+        await self._kill_process(force=True)
+        try:
+            await self._discard_claude_settings_seed()
+        finally:
+            self._reset_state()
+
+    @classmethod
+    async def sweep_pre_activation_runtimes(cls) -> int:
+        """Reap every live runtime spawned BEFORE push-verdict activation, once per sweep.
+
+        Covers BOTH registrant kinds -- ``AcpClient`` and ``AcpRuntime`` (including the one
+        behind ``AcpSessionProvider._runtime``) -- so the default kiro shared-runtime session
+        is swept, not just the stdio client. Mirrors the warm-pool sweep's activation-drift
+        arm, but for a CLAIMED/live runtime the pool does not hold. Resolves activation ONCE
+        (off-loop) and only when it is on does it reap, so a never-activated install pays a
+        single boolean read and touches no runtime. Each registrant performs its OWN tree reap
+        via ``_reap_pre_activation_drift`` (``AcpClient`` kill+reset; ``AcpRuntime.kill``).
+        Returns the number reaped (test + telemetry hook).
+        """
+        candidates = [
+            runtime for runtime in list(cls._LIVE_RUNTIMES) if runtime._is_live_pre_activation()
+        ]
+        if not candidates:
+            # Nothing spawned pre-activation is live: do not even read the keystone.
+            return 0
+        try:
+            activated = await asyncio.to_thread(_push_verdict_masks_ssh)
+        except Exception:
+            # Fail CLOSED on an unreadable keystone: an operator who activated gating does
+            # not silently keep stale credentialed live runtimes because one read hiccuped.
+            activated = True
+        if not activated:
+            return 0
+        reaped = 0
+        for runtime in candidates:
+            # Re-check liveness: a candidate may have exited or reached its own turn-boundary
+            # recycle between the snapshot above and here.
+            if not runtime._is_live_pre_activation():
+                continue
+            try:
+                await runtime._reap_pre_activation_drift()
+                reaped += 1
+            except Exception:
+                logger.warning(
+                    "push-verdict: failed to reap pre-activation live runtime (pid=%s)",
+                    getattr(runtime, "_pid", None),  # pid-owner-ok: the sweep ends this runtime
+                    exc_info=True,
+                )
+        return reaped
+
     def __init__(
         self,
         work_dir: str | Path | None = None,
@@ -3716,6 +3809,11 @@ class AcpClient:
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
+        # The push-verdict activation state this client's live process was built
+        # under (``None`` before the first spawn). ``ensure_ready`` recycles the
+        # process when this was ``False`` and gating has since been activated, so
+        # the respawn rebuilds the child under the credential mask.
+        self._spawn_push_verdict_activation: bool | None = None
         self._pid: int | None = None
         # The root's process-start identity, read once at spawn and handed to
         # both the session-file tracker and the identity-bound retirement in
@@ -3996,6 +4094,12 @@ class AcpClient:
         # Only the effort configOptions are consumed (model lists come from
         # _capture_available_models, which parses the real dict-shaped `models`).
         self._acp_config_options: list[dict] = []
+
+        # Register this live runtime so the periodic pool-health sweep can reap it if an
+        # operator activates push-verdict gating after it was spawned (see
+        # ``sweep_pre_activation_runtimes``). WeakSet, so no deregistration is needed --
+        # the entry drops out when the client is garbage-collected.
+        type(self)._LIVE_RUNTIMES.add(self)
 
     @property
     def backend(self) -> str:
@@ -8373,6 +8477,20 @@ class AcpClient:
         # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
         # generic launchers default the flag off and keep scrubbing the socket.
         forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # Resolve the push-verdict activation mask off the event loop too (it
+        # reads the activation keystone through config.paths, a stat/read), then
+        # thread the resolved boolean into the parent-side scrub below so no
+        # synchronous config read runs on the loop -- exactly as
+        # forward_ssh_auth_sock is threaded. This is an agent spawn, never the
+        # gateway-owned publish, so the mask is the raw activation signal
+        # (gateway_publish is not in play here); under it the HTTPS token env is
+        # withheld from the delegated/parent-scrubbed child on Windows too.
+        push_verdict_activation = await asyncio.to_thread(_push_verdict_masks_ssh)
+        # Record the activation state this process is built under so ``ensure_ready``
+        # can recycle it if an operator activates gating later while this child is
+        # still live -- its baked-in credential mask would otherwise never update,
+        # and activation is a manual keystone write with no watcher to re-sandbox.
+        self._spawn_push_verdict_activation = push_verdict_activation
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -8535,7 +8653,11 @@ class AcpClient:
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
         # to the positively identified Kiro backend. forward_ssh_auth_sock is
         # the opt-in resolved off-loop above and reused here.
-        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+        env = scrub_agent_subprocess_env(
+            env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
+            push_verdict_activation=push_verdict_activation,
+        )
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that
@@ -9976,6 +10098,24 @@ class AcpClient:
         if not self._work_dir_ready:
             await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
             self._work_dir_ready = True
+        # Push-verdict activation drift: a live process built while gating was OFF
+        # kept full git credentials and its sandbox mask is fixed for its lifetime.
+        # If an operator has since activated gating, recycle the process so the
+        # cold-start path below respawns it under the credential mask -- otherwise
+        # an opaque subprocess of this still-running child could publish an unjudged
+        # commit. Only a runtime spawned NON-activated can drift ON; once spawned
+        # activated there is nothing to catch. Cheap boolean read, off-loop.
+        if (
+            self._spawn_push_verdict_activation is False
+            and self._process
+            and self._process.returncode is None
+            and await asyncio.to_thread(_push_verdict_masks_ssh)
+        ):
+            await self._kill_process(force=True)
+            try:
+                await self._discard_claude_settings_seed()
+            finally:
+                self._reset_state()
         if self._process and self._process.returncode is None and self._session_id:
             return
 
@@ -12426,6 +12566,16 @@ class AcpClient:
             if msg.id is not None:
                 await self._send_error(msg.id, -32600, "invalid request id")
             return
+        # The push-verdict activation-drift refusal is a SECURITY FLOOR, not a judging-policy
+        # concern: a process spawned before gating was activated still holds git credentials an
+        # activated install must withhold, and that is true whether or not THIS session handle
+        # judges permission requests. ``_judges_permission_requests`` is off for a shared-runtime
+        # session handle, so gating this behind it let a shared-runtime client's in-flight
+        # ``git push`` bypass the gate. Run it for every permission request, before that branch.
+        # The method self-gates (it no-ops unless this process was spawned non-activated and
+        # gating is now on), so running it unconditionally costs a no-op keystone check at most.
+        if await self._refuse_push_verdict_activation_drift(event):
+            return
         if not self._judges_permission_requests:
             options = getattr(self, "_permission_options", {})
             recorded = options.pop(event.request_id, None)
@@ -12534,6 +12684,45 @@ class AcpClient:
             await self.reject_tool(event.request_id)
             return True
         return False
+
+    async def _refuse_push_verdict_activation_drift(self, event: AcpEvent) -> bool:
+        """Refuse a tool call from a live child spawned before push-verdict activation.
+
+        ``ensure_ready`` recycles a process whose spawn predates activation, but only at a
+        turn BOUNDARY -- so a child spawned while gating was OFF stays credentialed for the
+        rest of an IN-FLIGHT turn, and an opaque ``git push`` it runs mid-turn would publish
+        an unjudged commit before the next-turn recycle. Close that window here, at the
+        per-tool-call gate, which runs for EVERY permission request -- a shared-runtime session
+        handle does not judge permission requests, so gating this behind that policy flag would
+        reopen the window for it; this is a security floor, not a judging-policy concern. When
+        this process was spawned non-activated and gating is now ON,
+        REFUSE the tool call and retire the process so ``ensure_ready`` rebuilds it under the
+        credential mask before it runs anything else. Only a non-activated spawn can drift on
+        (deactivation only relaxes), so a process spawned activated is never checked here and
+        pays no keystone read. Returns True when refused (rejected + audited + retired).
+        """
+        if getattr(self, "_spawn_push_verdict_activation", None) is not False:
+            return False
+        if not await asyncio.to_thread(_push_verdict_masks_ssh):
+            return False
+        logger.warning(
+            "push-verdict: refusing a tool call from an agent process spawned BEFORE gating "
+            "was activated -- its credential mask is fixed at spawn, so it still holds git "
+            "credentials this activated install must withhold. Retiring it so the next turn "
+            "respawns it under the mask [session=%s]",
+            self._session_id,
+        )
+        self._audit_spec_restriction(
+            tool_name=event.tool_name or "tool__push_verdict_activation_drift",
+            outcome="denied",
+            reason="push_verdict_activation_drift_stale_child",
+        )
+        await self.reject_tool(event.request_id)
+        # Retire the stale child: mark it so the warm-path reuse check in ``ensure_ready``
+        # cannot short-circuit and the next turn respawns it under the credential mask.
+        with suppress(Exception):
+            await self._kill_process(force=True)
+        return True
 
     def _foreign_mcp_identity(self, event: AcpEvent) -> bool:
         """True when a trusted identity names a server this session never mounted.
@@ -14305,6 +14494,23 @@ class AcpClient:
                 continue
             if msg.method and not msg.id:
                 self._mcp_notifications.append(msg)
+
+
+# Install the pre-activation live-runtime reap as the pool's single drift-sweep callback. The
+# dependency points FROM the agent layer (this module) TO the session layer, which is the
+# direction the agent-SDK boundary allows -- so ``session_pool`` imports nothing from
+# ``kiro_crew.acp`` and its boundary baseline does not grow. Guarded: a session layer that
+# cannot expose the slot (an older build, a partial import) leaves the per-session
+# turn-boundary and per-tool-call drift guards in place; only the proactive between-turns
+# sweep is skipped.
+try:
+    from kiro_crew.session_pool import set_pre_activation_sweep as _set_pre_activation_sweep
+
+    _set_pre_activation_sweep(AcpClient.sweep_pre_activation_runtimes)
+except Exception:  # pragma: no cover - slot unavailable on a partial import
+    logger.debug(
+        "pool pre-activation sweep slot unavailable; proactive sweep not armed", exc_info=True
+    )
 
 
 # --------------------------------------------------------------------------- #

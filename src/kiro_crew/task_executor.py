@@ -691,10 +691,17 @@ async def execute_task(
                     _auto_approved = False
                     _auto_reason = ""
                     if ctx:
+                        # Resolve activation OFF the event loop (no-blocking-call-on-event-loop):
+                        # this task-runner permission path is async and must not read the
+                        # keystone inline on the loop.
+                        from kiro_crew.security import resolve_push_verdict_activation
+
+                        _pv_activation = await asyncio.to_thread(resolve_push_verdict_activation)
                         tool_result = ctx.hooks.on_tool_call(
                             event.title,
                             session_key=session_key,
                             agent=agent,
+                            push_verdict_activation=_pv_activation,
                             **hook_gate_kwargs(event),
                         )
                         if tool_result.action == TOOL_DENY:

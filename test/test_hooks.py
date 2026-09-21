@@ -509,7 +509,18 @@ class TestHookGateKwargs:
     # asking, on whose behalf, in which mode) rather than the tool call. Every
     # other keyword parameter is derived from the event, and the parity test
     # below demands the helper emit exactly those.
-    SURFACE_KWARGS = frozenset({"session_key", "agent", "app", "resolved_agent", "classifier_only"})
+    SURFACE_KWARGS = frozenset(
+        {
+            "session_key",
+            "agent",
+            "app",
+            "resolved_agent",
+            "classifier_only",
+            # Pre-resolved push-verdict activation an async caller reads OFF the loop and
+            # passes in (see security.resolve_push_verdict_activation); not event-derived.
+            "push_verdict_activation",
+        }
+    )
 
     # The gate's event-derived parameters and the event attribute each reads.
     # A new entry here means a new enforcement signal; the parity test below
@@ -831,6 +842,67 @@ class TestHookGateKwargs:
         # table too, or the table drifts into fiction.
         for rel in self.INFORMATIONAL_SITES | set(self.ALLOWED_OVERRIDES):
             assert (root / rel).exists(), rel
+
+
+class TestGateConsultRunsOffTheEventLoop:
+    """STRUCTURAL: the interactive gate consults run OFF the event loop.
+
+    ``on_tool_call`` reaches the git-publish floor, which on a git-publish command reads
+    the push-verdict activation keystone (an ``open`` + JSON parse under the crew data home).
+    The read is deliberately live per publish (no cache -- see ``push_verdict.activation()``),
+    so on an activated, network-mounted data home it can stall. The two inline on-loop
+    permission handlers -- the dashboard chat runner and the webhook hook runner -- must run
+    the synchronous consult in a worker thread so a slow keystone read cannot freeze the
+    gateway loop and its heartbeat.
+
+    The pin is textual on purpose: the consult is a sync call inside an async handler, and the
+    only thing that keeps it off the loop is the ``asyncio.to_thread`` hop around it. A future
+    edit that drops the hop and calls the gate inline again would re-open the stall this fix
+    closed -- and nothing else would fail. Mutation check: delete either ``to_thread`` wrap and
+    the matching assertion flips.
+    """
+
+    SITES = (
+        "dashboard/chat_runner.py",
+        "dashboard/handlers/hooks.py",
+    )
+
+    @staticmethod
+    def _consult_is_wrapped_in_to_thread(text: str) -> bool:
+        """True when every ``...on_tool_call(`` consult sits inside a ``to_thread``-run inner
+        def -- i.e. a ``_consult_hook_gate`` def whose body calls the gate, awaited through
+        ``asyncio.to_thread(_consult_hook_gate)``."""
+        import re
+
+        # The off-loop pattern both sites use: a named inner def that calls the gate, invoked
+        # via ``await asyncio.to_thread(<that def>)``. Require the def, its gate call, and the
+        # to_thread hop that runs it.
+        has_inner_def = re.search(r"def _consult_hook_gate\(", text) is not None
+        inner_calls_gate = (
+            re.search(r"def _consult_hook_gate\([\s\S]*?on_tool_call\(", text) is not None
+        )
+        hopped_off_loop = (
+            re.search(r"await asyncio\.to_thread\(\s*_consult_hook_gate\s*\)", text) is not None
+        )
+        return has_inner_def and inner_calls_gate and hopped_off_loop
+
+    def test_interactive_consults_run_in_a_worker_thread(self):
+        from pathlib import Path
+
+        import kiro_crew
+
+        root = Path(kiro_crew.__file__).resolve().parent
+        offenders: list[str] = []
+        for rel in self.SITES:
+            path = root / rel
+            assert path.exists(), rel
+            text = path.read_text(encoding="utf-8")
+            if not self._consult_is_wrapped_in_to_thread(text):
+                offenders.append(
+                    f"{rel}: gate consult is not run off-loop via "
+                    f"`await asyncio.to_thread(_consult_hook_gate)`"
+                )
+        assert not offenders, "\n".join(offenders)
 
 
 class TestToolCallEvaluatesRawCommand:

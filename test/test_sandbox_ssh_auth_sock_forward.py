@@ -78,6 +78,72 @@ def test_shared_constant_never_mutated():
     assert "SSH_AUTH_SOCK" in sb._SENSITIVE_ENV_PREFIXES
 
 
+# --- Site 0: sandboxed_spawn_argv returned env (the gateway publish path) ---
+
+
+@pytest.fixture
+def _no_backend_fail_open(monkeypatch):
+    """Let ``wrap_argv`` fail OPEN (return argv unmodified) with no OS sandbox backend.
+
+    ``sandboxed_spawn_argv`` wraps argv through ``wrap_argv`` BEFORE it builds the
+    scrubbed env these tests assert on. On a CI runner with no backend ``wrap_argv``
+    raises ``SandboxUnavailableError`` and the env is never reached, so the test cannot
+    run there. These tests are about the RETURNED ENV (the ``SSH_AUTH_SOCK`` exemption /
+    scrub), not the wrap, so opt this process into the unsandboxed-exec carve-out exactly
+    as ``test_acp_tool_gate`` / ``test_apps_registry`` do -- ``wrap_argv`` then returns argv
+    unmodified and the env-scrub path runs unchanged, on any host.
+    """
+    monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: True)
+
+
+def test_sandboxed_spawn_argv_gateway_publish_retains_socket(_no_backend_fail_open):
+    """FIX2: the gateway-owned publish keeps SSH_AUTH_SOCK in the RETURNED env.
+
+    The gateway git spawn (``dashboard/handlers/push_verdict.py``) routes through
+    ``sandboxed_spawn_argv`` with ``gateway_publish=True``. ``wrap_argv`` keeps ``~/.ssh``
+    visible on the filesystem for it, but the returned env is built by ``scrub_env``, which
+    drops ``SSH_AUTH_SOCK`` unconditionally -- so a gateway publish that authenticates through
+    an SSH AGENT (no on-disk key) would find no socket and FAIL. The gateway publish restores
+    the exact socket key.
+
+    Mutation check: before the fix the returned env has no ``SSH_AUTH_SOCK`` even for a gateway
+    publish, so the positive assertion below fails.
+    """
+    src = {
+        "PATH": "/usr/bin",
+        "HOME": "/opt/x-home",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+    }
+    _wrapped, scrubbed, _cleanup = sb.sandboxed_spawn_argv(
+        ["git", "push"], mode="standard", env=src, gateway_publish=True
+    )
+    # Positive: the gateway publish keeps the agent socket with its exact value.
+    assert scrubbed.get("SSH_AUTH_SOCK") == "/tmp/agent.sock"
+    # Control (same call): a genuine credential is STILL removed, so the exemption is scoped to
+    # the socket and did not disable the scrub.
+    assert "AWS_SECRET_ACCESS_KEY" not in scrubbed
+
+
+def test_sandboxed_spawn_argv_agent_spawn_still_scrubs_socket(_no_backend_fail_open):
+    """The exemption is gateway-only: an ordinary agent-influenced spawn
+    (``gateway_publish=False``, the default) keeps the socket SCRUBBED, so an opaque agent
+    child cannot reach the operator's ssh-agent to push past the argv floor."""
+    src = {
+        "PATH": "/usr/bin",
+        "HOME": "/opt/x-home",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+    }
+    _wrapped, scrubbed, _cleanup = sb.sandboxed_spawn_argv(
+        ["some", "agent-cmd"], mode="standard", env=src
+    )
+    # Negative: the default (agent) spawn drops the socket, exactly as before.
+    assert "SSH_AUTH_SOCK" not in scrubbed
+    # Control: a benign key survives, proving the scrub ran rather than returning empty.
+    assert scrubbed.get("PATH") == "/usr/bin"
+
+
 # --- Site 3: parent-side scrub_agent_subprocess_env (ACP agent enforcement) ---
 
 
@@ -148,6 +214,46 @@ def test_seatbelt_scrub_keys_on_omits_socket_only(monkeypatch):
     assert "SSH_AUTH_SOCK" not in keys
     # Control (same call): a real credential is STILL unset.
     assert "AWS_SECRET_ACCESS_KEY" in keys
+
+
+def test_activation_re_scrubs_socket_on_seatbelt_path_despite_forward(monkeypatch):
+    """Under the push-verdict activation mask the seatbelt / kiro-cli-delegated
+    ``env -u`` path re-scrubs SSH_AUTH_SOCK even when the operator opted in to the
+    forward -- mirroring the Linux launcher's own re-scrub.
+
+    The forwarded agent socket is an equivalent publish credential; on an
+    activated install an opaque agent child authenticating over it is the exact
+    unjudged-publish hole activation exists to close. Before the fix
+    ``_agent_scrub_prefixes`` dropped the socket for the forward and nothing on
+    this (non-Linux) path re-added it under activation, so the socket survived in
+    the child's env on macOS and on any POSIX host delegating to kiro-cli's
+    internal sandbox.
+
+    Mutation check: remove the ``push_verdict_activation`` re-add and the socket
+    stays out of the unset set here, so the negative assertion below fails.
+    """
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sk")
+    # forward opted IN, but activation is on: the socket must be scrubbed anyway.
+    keys = sb._sandbox_env_scrub_keys(
+        "standard",
+        strip_python_env=True,
+        forward_ssh_auth_sock=True,
+        push_verdict_activation=True,
+    )
+    # Negative: activation wins over the forward -- the socket is in the unset set.
+    assert "SSH_AUTH_SOCK" in keys
+    # Control (same call): a genuine credential is STILL scrubbed, so the set is real.
+    assert "AWS_SECRET_ACCESS_KEY" in keys
+    # Positive control (activation OFF, same forward): the forward is honoured, so
+    # the socket is NOT scrubbed -- proving only the activation gate re-added it above.
+    keys_unactivated = sb._sandbox_env_scrub_keys(
+        "standard",
+        strip_python_env=True,
+        forward_ssh_auth_sock=True,
+        push_verdict_activation=False,
+    )
+    assert "SSH_AUTH_SOCK" not in keys_unactivated
 
 
 # --- Site 1: Linux namespace launcher script (POSIX-only) ---

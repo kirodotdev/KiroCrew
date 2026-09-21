@@ -1320,7 +1320,7 @@ continue to apply.
   - **`patterns=None` means the regex tier contributes nothing** — deliberately NOT `is_denied`'s fail-closed-to-every-built-in. Getting that backwards would evaluate the whole catalogue against a synthesized target, which is exactly the state this tier exists to leave.
   - **This tier does not run the argv-structural floors** (credential mint, self-kill, restart/update/cloud) **or the verb-anchored git-publish detector**, and does not do per-segment (pass 2) re-evaluation. Each interprets shell syntax a synthesized target does not have: its tokens are the namespace and `key=value` pairs, values are whitespace-encoded so one cannot split into two tokens, and no such target names a program — so a search of a tree cannot mint a credential or kill a process, and splitting only manufactures pseudo-commands out of path substrings. A real command still reaches all of them through its own `command` target.
 
-- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector runs before either tier and is always-on; the protected-branch **gate** it feeds is default-on but **per-rule disableable** (see the opt-out note in the Protected-branch gate bullet below), except for the anti-obfuscation branches, which no opt-out can reach:
+- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes, session_key)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector runs before either tier and is always-on; the protected-branch **gate** it feeds is default-on but **per-rule disableable** (see the opt-out note in the Protected-branch gate bullet below), except for the anti-obfuscation branches, which no opt-out can reach:
 
   - **Refusal diagnostic (a LAST line, opt-in per tier):** a refusal may carry a final line naming the rule id that decided, the component inside that tier which decided, and the matched span's OFFSETS and character-class shape — never the matched bytes. It is appended, so line one stays whatever the refusal already said and an operator note keeps the second line it has always had; a reader that stops before it sees exactly what it saw before, and the line shares no prefix with `DENY_REASON_PREFIX` so the recovery card's global per-line regex cannot read it as a second, fabricated pattern. It is opt-in per call site rather than always-on, and the split is not cosmetic: a pattern-tier denial's first line already IS the accurate cause, so a diagnostic there would add a line to every ordinary refusal for no information, while a STRUCTURAL denial (the argv floor, the git-publish floor) reports a pattern the input provably cannot match and is the refusal an agent cannot diagnose at all. So the structural floors pass one, the pattern tiers do not, and a plain catalog refusal stays exactly one line. The keystone bash gate passes one on every refusal it produces, including its over-ceiling refusal, where the span is the whole subject because nothing matched and the reported reason is "not scanned". The same record names an unresolvable governance pin, which used to leave in a set comprehension's filter — reported by shape, never by the pattern an operator authored.
   - **Refusal string (a parsed micro-format, not free text):** the first line is always exactly `f"{DENY_REASON_PREFIX}{matched}"` — `DENY_REASON_PREFIX` is exported from `security/` precisely so guards cannot drift from the producer. It is byte-stable on purpose, because three consumers parse it: `website/src/pages/chat/RecoveryCard.tsx` extracts the pattern with `/Blocked by security policy:\s*(.+?)\s*$/gm`, the test helper `_denied_by` partitions on the exact `"Blocked by security policy: "` separator, and `chat_runner` reads it for display (after redaction). When the matched pattern has an operator note, the note is appended as a **second line** — never on the first, which would be captured as part of the pattern. Because `RecoveryCard`'s regex is GLOBAL and per-line, a note containing the prefix would be parsed as a second, fabricated pattern; that is why notes carrying it are rejected at the endpoint and dropped in `resolve_denied_notes`. Both guards test `DENY_REASON_MATCH_PREFIX` (the colon-terminated form derived from the emitted prefix), NOT the emitted prefix itself: the regex makes the space after the colon optional, so `"Blocked by security policy:forged"` parses as a refusal line without containing the emitted string. Anything added to this format must keep line one intact.
@@ -1356,6 +1356,277 @@ continue to apply.
 **kiro-cli `autoAllowReadonly` removed.** The `toolsSettings.execute_bash.autoAllowReadonly: true` flag in `config/defaults.json` is gone — kiro-cli no longer self-approves read-only bash upstream of the gate (which would let those calls skip `hooks.py` entirely). Kiro Crew now performs read-only auto-approve itself inside `hooks.on_tool_call`, placed **AFTER** the sensitive-path, deny-floor, and governance checks, so a deny always wins over the read-only fast-path (see "Read-only auto-approve" below).
 
 **Agent-config injection retired.** Kiro Crew no longer injects `deniedCommands` into `~/.kiro/agents/*.json`. `agent._enforce_denied_commands()`, the ~60s `CleanupHook('denied_commands', …)` re-enforce loop (`session.py`), and the `agent.enforce_denied_commands` config scope (`all`/`kirocrew`) are all removed. Enforcement is hooks-gate-only, so a kiro agent config that edits or omits `deniedCommands` cannot weaken Kiro Crew's ceiling — the gate is authoritative (cross-ref `governance.md` Plane A/B).
+
+### Push verdict: the gateway publishes, so the guard's answer cannot be skipped (`security/push_verdict.py`)
+
+The prepare-pr skill's pre-push stale-base guard answered its question by PRINTING it, so a
+publish whose guard was skipped was byte-identical to one whose guard passed. Recording the
+answer where the agent could not write it fixed half of that. The other half survived three
+revisions: while the AGENT performed the push, a receipt could only ever describe a PAST state.
+The guard snapshotted `HEAD`, and any mutation the gateway did not observe — a script file it
+authorized as one opaque invocation, a non-shell interpreter, a process it never launched —
+moved the tree before the agent's `git push` ran, and nothing downstream could tell, because a
+branch push names no commit for the receipt to be compared against.
+
+So the gateway performs the push. One operation binds and validates `HEAD`, the remote, the ref,
+the target repository and the receipt, pushes, and releases. The agent never holds publish
+authority at all.
+
+- **The gateway is the writer AND the publisher.** `POST /api/push-verdict/run`
+  (`dashboard/handlers/push_verdict.py`) executes the guard itself, records what it observed,
+  and then pushes. The agent's MCP tool only PRESENTS a request; it writes nothing, and its
+  request body reaches no field of the record. A store the gated party can write is not
+  evidence, and signing does not help when the key is as readable as the file.
+- **The push SOURCE is the judged commit, out of the gateway's mirror.** `_publish` pushes
+  `<candidate ref>:refs/heads/<source_ref>`, where the candidate ref is the one the guard was
+  pointed at. So what lands is what was examined, whatever the worktree says by now. Re-reading
+  the worktree at push time would reopen the window in the last place it could still be opened,
+  which is why the refs now outlive the judging: `_run_guard` hands them back and the operation
+  removes them in its `finally` (an exception inside the runner cleans up there, the one exit the
+  caller cannot reach).
+- **The state the judging assumed is re-checked immediately before the push.** `HEAD` must still
+  be the judged commit (`head_moved`) and the effective remote and its push URL must still be
+  the ones validated (`target_moved`); either having moved refuses rather than publishes, with
+  409, because something moved underneath a judgement and the honest answer is to judge again.
+  The target is re-resolved through the SAME `_effective_push_target` the route used, not a
+  second copy of git's precedence.
+- **The lease is the gateway's own reading of the remote.** The push carries
+  `--force-with-lease=refs/heads/<ref>:<tip>` where `<tip>` comes from `_remote_tip`. A plain
+  push would refuse every rebase, which is the workflow this guard exists to serve, and a bare
+  `--force` would discard whatever arrived meanwhile. The expected value is never accepted from
+  the caller: a lease against an agent-supplied SHA would let the agent describe a remote state
+  that never existed, which is the same defect as a receipt the agent writes.
+- **The receipt is RELEASED with the operation, on every path out of it.** A receipt that
+  outlived its operation would be standing authority to publish again, and the only thing that
+  can honestly spend it is the operation, which has finished. The failure paths matter most: a
+  publish refused because `HEAD` moved must not leave a pass for the next command. So an agent's
+  own `git push` finds no receipt and is refused — the floor's checks below are defence in depth
+  rather than the only thing standing in the way.
+- **The verdict is keyed on the CALLING SESSION**, never on a worktree named in a request
+  body — the contract `handlers/session_ledger.py` states for its own routes. A session
+  cannot ask for a verdict about one tree and publish from another, because it never names a
+  tree: its own identity selects the record. There is no enrolled list, so there is also no
+  over-refusal of a repository nobody asked about.
+- **Under activation the floor denies EVERY agent publish outright.** The agent never holds
+  publish authority at all: the gateway judges the commit and does the push itself, so an
+  agent-visible `git push` has no legitimate reason to run. On an activated install the floor
+  therefore refuses every one of them (`git-publish-agent-denied`), with no receipt to match and
+  no tree-binding to resolve. An earlier design let the floor ALLOW an agent push that matched a
+  recorded receipt and bound each thing the publish named (branch, remote, refspec) to the
+  recorded verdict — but that receipt only ever exists for the instant the gateway's own push
+  holds it, so matching it bought nothing and WAS the authority this gate removes. One flat
+  refusal does the same job with none of the binding, mismatch, mutation-observation,
+  redirect-detection or invalidation machinery, all of which were deleted as dead surface.
+- **A present but malformed activation leaf REFUSES.** Unparseable bytes already raised; a
+  document that parses but is not an object, or whose `enabled` is present and not a real
+  boolean, used to read as off — a fail-open with a narrower entrance than the parse error, since
+  truncating the leaf to `[]` or writing `{"enabled": 1}` silently disabled the gate on an
+  installation whose operator had turned it on. Only a real `true` or `false` is an operator's
+  intent; an absent key (or an explicit `null`, indistinguishable from absent through `.get()`)
+  stays the never-activated reading, which is off.
+- **The floor reads process memory only.** The publish branch of `is_denied` resolves the
+  activation reading from this process (no receipt file, no ref read, no subprocess, no network)
+  because that branch runs inside the permission gate, where a slow mount is a stall of every
+  task in the process. An async caller resolves activation off the event loop and passes it in,
+  so even that one file read never runs on the loop.
+- **The presenter speaks the route's vocabulary.** The route answers `published` (the gateway
+  performed the push), `not_published` (it judged the branch but the push did not land),
+  `refused`, `not_activated` or
+  `error` and sends `base`; `mcp_tools/push_verdict.py` matches those exact names. A presenter
+  matching a name the route does not emit renders a real outcome as an unrecognised verdict to
+  the one reader who has to act on it, so the names are a contract with a test driving every
+  exit.
+- **Activation is TRUSTED and the operator's.** `activation()` reads the
+  `ACTIVATION_LEAF` file, `push-verdict-activation.json`, a flat crew-home leaf listed in
+  `security.paths._CREW_SECRET_LEAVES` (read+write protected on the tool path) and in
+  `sandbox`'s `_CREW_READONLY_LEAVES`, `_CREW_CHILD_WITHHELD_LEAVES` and
+  `_CREW_PRECREATE_READONLY_FILE_LEAVES` (mounted read-only for the shell). Those four
+  entries ARE the claim that the agent cannot write it, and it is the same placement and
+  protection the computer-use primary enable has, for the same reason. Only a real JSON
+  `true` activates, so a leaf carrying the string `"false"` or the number `1` does not.
+  `config.json` may REQUEST activation; only the keystone AUTHORIZES it.
+- **The same leaf pins the guard's digest, and that pin is the trust anchor.** `guard_sha256`
+  is read from the keystone and nowhere else, so config can REQUEST activation but cannot
+  authorize it and cannot say which guard bytes are acceptable. A malformed value — wrong type,
+  wrong length, or 64 characters of non-hex — reads as ABSENT rather than as a digest that never
+  matches, because only absence produces the refusal that tells an operator to pin one. With
+  gating active and nothing pinned, no guard runs at all.
+- **Absence and unreadability are different facts.** Absence returns false: nobody activated
+  gating, and an installation that never activates is judged exactly as before. A leaf that
+  EXISTS but cannot be read or parsed raises `ActivationUnreadable`, and the floor turns that
+  into a publish refusal (`git-publish-activation-unreadable`) naming the file to repair.
+  Answering false there would be a fail-OPEN: corrupting one file would disable the gate on an
+  installation whose operator had turned it on, which is an off switch reachable by damage
+  rather than by authorization. Refusing costs nothing on installations that never activated,
+  because those never reach the raising branch.
+- **Activation survives a restart; verdicts deliberately do not.** The leaf is on disk so an
+  operator does not silently lose a control they turned on. The verdicts are process memory,
+  so a restart costs one guard re-run rather than leaving a stale pass behind. A verdict also
+  EXPIRES after `MAX_AGE_SECONDS` (one hour), which is now a BACKSTOP rather than the main bound:
+  the operation releases its receipt in a `finally`, so in ordinary operation a receipt lives for
+  the few seconds between the guard run and the push. The expiry is what covers a receipt that
+  somehow escapes that release, and it costs nothing to keep.
+- **The activation read is LIVE on every publish, deliberately.** The floor's contract is that it
+  does no expensive I/O, and an `open()` plus a JSON parse per publish is a fair objection to
+  that. A stat-keyed cache of the parse was written and then removed: modification time, size and
+  inode cannot tell two writes of the SAME byte length within one clock tick apart, and the value
+  it would serve is an ENABLE decision, so its failure mode is the gate reading as off after an
+  operator turned it on. A test pins the live read so the cheap-but-wrong version does not return.
+  The file is a few bytes an operator wrote, read locally and never over a network.
+- **It runs the REAL guard, not a second copy of its logic — but from the gateway's own
+  snapshot.** The handler executes the packaged
+  `builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py` on that script's own
+  contract — exit `0` SAFE, `40` REFUSED, anything else an environment failure — and records
+  only on `0`. Every other exit records NOTHING, so a failure to judge is indistinguishable
+  from never having asked, which the floor denies. The script grew `--base-ref`,
+  `--candidate-ref` and `--no-fetch` so its four checks (fetch freshness, ancestry, ahead-count,
+  patch-id replay) can be pointed at other refs, which is what lets the gateway run them OUT OF
+  PLACE. Re-implementing them here would be both a weaker verdict than it claims and a grammar
+  that drifts from the one the skill documents.
+- **What executes is a copy inside the sealed directory, never the installation tree's own
+  file.** In an editable or source install the packaged guard IS a file in the repository the
+  agent edits, so executing it there would hand the gated party the script that authorizes it:
+  edit it to print `SAFE TO PUSH`, and every push is recorded as checked. Two things answer it
+  and neither is sufficient alone. The PIN is the authority: `_guard_snapshot(digest)` hashes the
+  packaged bytes and refuses unless they equal the keystone's `guard_sha256`, which is the one
+  statement about those bytes written outside the tree they live in. The SNAPSHOT is what
+  executes, inside the sealed `push-verdict-mirrors` directory (tmp+rename), so nothing can swap
+  the file between the digest check and the interpreter opening it. The snapshot is refreshed
+  whenever it disagrees with the pin, which is safe precisely BECAUSE the pin rather than the
+  copy's age authorizes the bytes. A copy taken once on first use could not do that: it made
+  TIMING the authority, so an edit landing before any verdict was ever requested became the
+  authorized version permanently. No trustworthy copy means no verdict — the run refuses rather
+  than falling back to the writable file — and an unpinned installation is told to pin rather
+  than told its bytes mismatched, because only the first of those sentences is actionable.
+- **A project change no longer drops a verdict, because there is nothing to drop.** The agent
+  holds no publish authority under activation, so a verdict a session might carry across a
+  project change is never SPENDABLE by the agent in the first place. The `_ChatSlot.project`
+  setter is a plain attribute set again — the earlier invalidation hooks it carried were part of
+  the receipt surface that was deleted.
+- **The verdict's audit is fail-closed, and that requires `critical=True`.** `log_api_access`
+  defaults to a non-critical ENQUEUE that returns success even when the write fails, so ordering
+  the calls would be decoration on its own. The critical form writes synchronously and re-raises,
+  which is why it runs off the event loop through `asyncio.to_thread` — the shape `cron.py` uses
+  for a record that must land before its promoting write. Audit first, record second, and a
+  failed audit refuses with `500 audit_failed` having stored nothing.
+- **The worktree is never written; the judging happens in a mirror the gateway owns.** One bare
+  repository per repository, under `push-verdict-mirrors` in the crew home, keyed on a digest of
+  the git directory so one repository gets one mirror however many branches or worktrees it has.
+  The gateway primes it with two fetches whose DIRECTIONS are the design: the base comes from the
+  remote, so it is the fresh tip rather than whatever the worktree last saw, and the candidate is
+  fetched OUT of the worktree, which reads it and writes only into the mirror. A fetch INTO the
+  worktree would both modify the state being judged and fail outright on its own `FETCH_HEAD`
+  once that tree is read-only. Every worktree-scoped git call in the handler is a read.
+- **Each judgement gets its OWN pair of refs, and the recorded pair is read from them.** The
+  refs are namespaced under `refs/kirocrew/push-verdict/<token>/`, minted per request and deleted
+  by the request that minted them. Fixed names were a correctness bug rather than an untidiness:
+  one mirror serves one REPOSITORY, so two sessions judging two of its branches at once wrote the
+  same two refs, the second fetch replaced the first's candidate, and the guard then measured one
+  session's branch and answered for the other's. `head` and `base_sha` are resolved from those
+  refs inside the mirror, which are the only two commits the guard can examine. Re-reading the
+  worktree's `HEAD` after the run was the matching gap: a commit landing in between was recorded
+  as judged while nothing had judged it.
+- **The mirror is sealed like the activation leaf, but in the DIRECTORY dispositions only**, in
+  `paths._CREW_SECRET_LEAVES`, `sandbox._CREW_READONLY_LEAVES` and
+  `_CREW_CHILD_WITHHELD_LEAVES`, for a sharper reason than the enable: a mirror the agent can
+  write is a mirror in which the agent plants the base its own push is then measured against. It
+  is materialised before any sandbox starts by `_CREW_PRECREATE_READONLY_DIR_LEAVES`, and its
+  name is held unreplaceable by `_CREW_NOFOLLOW_READONLY_DIR_LEAVES` with the reason entry that
+  list requires — a fence seals an EXISTING path, so on a fresh activated install the mirror root
+  was absent, the read-only mount was skipped, and the name the agent would create was exactly the
+  one the listing exists to deny. It is deliberately NOT in
+  `_CREW_PRECREATE_READONLY_FILE_LEAVES`, which pre-creates each entry as
+  an empty FILE — listing a directory there materializes a file at the mirror's path and the
+  first `mkdir` raises, disabling the feature outright while looking like protection. The
+  gateway writes the mirror directly, not through the tool gate.
+- **Every git the handler launches goes through ONE routed spawn.** `_run_git` wraps
+  `sandboxed_spawn_argv` (via `sandbox.shielded_prepare_off_loop`) and launches with
+  `create_subprocess_limited`, so the child gets filesystem isolation, a scrubbed environment and
+  a kernel resource ceiling. One site rather than one per caller, because the repository's spawn
+  audit reads the enclosing FUNCTION and each extra site is another place the routing can be
+  forgotten. The neutralized git environment is that helper's DEFAULT, so a git call added later
+  cannot arrive unprotected by omission.
+- **Executable git configuration is neutralized for every git the gateway launches.** The
+  worktree being judged is agent-writable while this code runs in the gateway process, outside
+  the agent's sandbox, so an agent that writes `core.sshCommand` into its own `.git/config`
+  would otherwise have the gateway run that command at gateway privilege just by asking for a
+  verdict. `git_env()` passes the neutralizations as `GIT_CONFIG_COUNT` environment entries
+  rather than `-c` arguments, because those have the highest precedence git offers **and** are
+  inherited, so they also govern the git processes the guard script starts for itself.
+  Documented as a denylist: git offers no switch that ignores repository configuration, so this
+  closes every directive git documents today as running a program. It is the SECOND of two
+  layers, not the answer on its own — the first is that every one of these spawns is confined by
+  the sandbox and judges a mirror rather than the worktree, so a directive that does run reaches
+  neither the gateway's credentials nor the tree being judged.
+- **It runs the PACKAGED copy**, resolved through `skills._BUILTIN_SKILLS_DIR`, never the copy
+  installed into the user's skills directory: that copy is agent-writable, so running it
+  would hand the gated party the check that authorizes it.
+- **It PINS the base** rather than letting the script auto-detect, so the base recorded in the
+  verdict is the base that was judged. The base is the repository's default branch from
+  `refs/remotes/origin/HEAD`, NOT the branch's upstream — a feature branch already pushed once
+  has its own remote branch as upstream, and staleness measured against that is satisfied by
+  construction. The GATEWAY does the fetching, into its own mirror, which is correct in a tool
+  call the agent awaits; the script is run with `--no-fetch` and the permission gate itself still
+  reads process memory only. Out of place, the guard's diagnostic readings name the refs it
+  actually compared; its remedy prose keeps naming `origin/<base>` and `HEAD`, which are the
+  right names for the human standing in their own worktree reading it.
+- **An unactivated installation banks nothing.** The route answers `not_activated` and records
+  no verdict: with gating off the floor never reads one, so storing a pass would leave a banked
+  receipt to be spent the moment an operator did activate.
+- **The subsystem is NOT on the gateway boot path.** `handlers/__init__.py` deliberately does
+  not import the module — the deferral `work_ledger` already uses — and `server.py` reaches it
+  through `_deferred_push_verdict` at registration time. A test parses that package as an AST
+  rather than grepping it, because the module's name appears in comments and a count pins nothing.
+- **Activation preconditions, stated because they are refusals an operator will meet.** The base
+  is the repository's default branch and nothing else, since a base named in a request body is a
+  bypass. The consequence is that a branch NOT based on the default branch — a release-branch
+  hotfix, a stacked pull request — cannot satisfy the guard's ancestry check, so on an activated
+  installation it cannot be published at all. That is a limit of the gate, not a defect in the
+  branch, and an operator should know it before turning this on.
+- **Activation withdraws ALL agent-side git/gh authentication — not only the publish floor.**
+  On an activated installation `_push_verdict_masks_ssh` masks every AGENT subprocess (the
+  gateway-owned publish is exempt): `~/.ssh` is hidden and `SSH_AUTH_SOCK` re-scrubbed on the
+  POSIX launcher/seatbelt tiers, and on the Windows/delegated tier the child's git-over-SSH is
+  given `GIT_SSH_COMMAND` with `-F none -o IdentitiesOnly=yes -o IdentityFile=none -o
+  IdentityAgent=none` so it presents no key from disk OR agent; the HTTPS side withholds
+  `GH_TOKEN`/`GITHUB_TOKEN`, hides `.config/gh`/`.git-credentials`/`.netrc`, and resets
+  `credential.helper` to empty with `GIT_TERMINAL_PROMPT=0`. The consequence is a deliberate
+  availability cliff: an agent on an activated install can no longer authenticate ANY git
+  operation — `fetch`/`clone` and `gh pr create` included, not just `push` — so a workflow that
+  needs the agent to authenticate to a remote must run its authenticated step through the
+  gateway-owned path (or off an activated install). This is the point of the gate (an opaque
+  subprocess must not hold publish authority), stated here because an operator activating from
+  the "only the publish-floor refusals" summary would otherwise meet it as a silent failure days
+  later.
+- **Activation retires live agents that predate it.** The mask is baked into a spawn's sandbox
+  wrap and is fixed for that process's lifetime, and activation is a manual keystone write with
+  no watcher. So a process spawned while gating was OFF would keep full git credentials after an
+  operator activates it. `AcpRuntime._is_stale` and `AcpClient.ensure_ready` detect this drift
+  (spawned-OFF, now-ON) and recycle the process — and the per-tool-call permission gate refuses a
+  tool call from such a stale child mid-turn and retires it — so the child is rebuilt under the
+  credential mask before it can publish. An in-flight turn on a pre-activation child therefore
+  sees its next tool call refused and the child respawned, which an operator should expect when
+  activating during active work. A proactive between-turns sweep
+  (`WarmSessionPool._activation_drift_sweep_loop` calling `AcpClient.sweep_pre_activation_runtimes`)
+  reaps a CLAIMED/live pre-activation runtime the per-tool-call gate would not reach until its
+  next call. That loop is armed ONLY on an activated install — `_start_activation_drift_sweep`
+  reads the keystone once at startup and does not arm it otherwise — so a plain install that
+  never activated the gate arms no sweep and behaves exactly as it did before this feature
+  existed. It runs in its own loop, independent of the warm pool, so it covers the default
+  `pool_size=0` install where the pool-health loop never starts.
+- **Re-pinning is part of upgrading.** Any release that changes `push_guard.py` changes its
+  digest, and an activated installation then refuses every publish until an operator writes the
+  new `guard_sha256`. The digest of the packaged script is
+  `python3 -c "import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())" <path to push_guard.py>`,
+  and the refusal names both the digest it found and the one pinned, so the value to write is in
+  the message. This belongs on the release checklist rather than in code: a product that re-pinned
+  itself would be pinning on its own say-so, which is the property the pin exists to remove.
+- **Route auth.** Listed in `server._STRICT_INTERNAL_API_PATHS` and registered in
+  `_register_mcp_routes`, the one registrar both servers call — a route present on one server
+  and absent on the other is the drift that becomes an auth bypass. The handler re-asserts
+  loopback AND `internal_auth` itself, because frozenset membership does not prove the secret
+  was checked: with the header absent the middleware falls through to cookie auth, and
+  `local_only=False` reclassifies strict paths as mixed.
 
 ### Denied-command rules, opt-out state, and read-only auto-approve
 

@@ -34,6 +34,7 @@ def _build_launcher_script(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = (),
@@ -69,6 +70,9 @@ def _build_launcher_script(
         _CREW_READONLY_LEAVES,
         _CREW_READONLY_TARGETS,
         _CREW_UNREADABLE_MASK_LEAVES,
+        _PUSH_VERDICT_HTTPS_CRED_DIRS,
+        _PUSH_VERDICT_HTTPS_CRED_FILES,
+        _PUSH_VERDICT_HTTPS_ENV_PREFIXES,
         _PYTHON_ENV_PREFIXES,
         _SENSITIVE_ENV_PREFIXES,
         _STANDARD_DIRS,
@@ -79,6 +83,8 @@ def _build_launcher_script(
         _md_notebook_degraded_mask_dirs,
         _pod_os_home_targets,
         _private_window_spellings,
+        _push_verdict_masks_ssh,
+        _push_verdict_mirror_parents,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_kiro_agents_targets,
@@ -124,7 +130,53 @@ def _build_launcher_script(
     # $TMPDIR/tmp, outside ~/.ssh), so key material stays unreadable while the
     # socket becomes usable.
     env_prefixes = _agent_scrub_prefixes(env_prefixes, forward_ssh_auth_sock)
-    hide_ssh = sandbox_level == "strict"
+    # ``~/.ssh`` is hidden in the strict tier always, and ALSO in every agent tier once
+    # push-verdict gating is activated: on such an install the agent's own visible ``git
+    # push`` is judged at the argv floor, but an opaque subprocess reaches the private key
+    # and pushes past the floor, so the key is withheld from agent subprocesses and left only
+    # to the gateway-owned publish. The forwarded SSH agent socket is an equivalent publish
+    # credential -- an opaque subprocess authenticates over it just as it would over the key --
+    # so under the activation mask the socket is ALSO withheld from agent subprocesses,
+    # re-scrubbing ``SSH_AUTH_SOCK`` even where ``forward_ssh_auth_sock`` re-admitted it above.
+    # The HTTPS git transport carries an equivalent publish credential: the GitHub-CLI helper
+    # dir (``.config/gh``) and the git HTTPS credential stores (``.git-credentials``,
+    # ``.netrc``) that the cc/standard tiers leave readable, plus the ``GH_TOKEN`` /
+    # ``GITHUB_TOKEN`` env, let an opaque subprocess authenticate a push over HTTPS just as the
+    # key does over SSH -- so under the activation mask those are ALSO withheld from agent
+    # subprocesses, making an activated install credential-free for EVERY git transport rather
+    # than the SSH one alone. The strict tier already hides all of them; only the agent tiers
+    # gain the HTTPS hide here, and only under the mask.
+    # ``gateway_publish`` is that one exempt caller -- it runs OUTSIDE this sandbox conceptually
+    # but still routes git through the chokepoint, so it opts out of the activation mask and
+    # keeps the key, the socket, and the HTTPS credential stores + token env to publish; it is
+    # threaded True only from the gateway publish path, defaulting False so no agent-influenced
+    # spawn can claim it. The known_hosts carve below is unchanged, so legitimate host
+    # verification still works.
+    push_verdict_activation_mask = not gateway_publish and _push_verdict_masks_ssh()
+    if push_verdict_activation_mask and "SSH_AUTH_SOCK" not in env_prefixes:
+        env_prefixes = env_prefixes + ["SSH_AUTH_SOCK"]
+    if push_verdict_activation_mask:
+        env_prefixes = env_prefixes + [
+            prefix for prefix in _PUSH_VERDICT_HTTPS_ENV_PREFIXES if prefix not in env_prefixes
+        ]
+        # ``DBUS_SESSION_BUS_ADDRESS`` names the session bus the libsecret /
+        # git-credential-manager helpers dial to reach the secret-service
+        # (gnome-keyring/KWallet) daemon. The ``GIT_CONFIG_*`` empty-helper reset
+        # clears a CONFIGURED libsecret helper, but a command-line ``git -c
+        # credential.helper=libsecret push`` outranks ``GIT_CONFIG_*`` and
+        # re-adds it; the helper then authenticates over this bus -- a daemon, not
+        # a file, outside every path mask. Scrubbing the bus address from the
+        # agent child's env (the same class of re-scrub as ``SSH_AUTH_SOCK``
+        # above, not a fragile helper-binary denylist) leaves the re-added helper
+        # with no bus to reach, so the gateway-owned publish stays the only path
+        # that retrieves the HTTPS helper credential.
+        if "DBUS_SESSION_BUS_ADDRESS" not in env_prefixes:
+            env_prefixes = env_prefixes + ["DBUS_SESSION_BUS_ADDRESS"]
+        # New lists: ``dirs``/``files`` may be a shared module global (``_STANDARD_DIRS``),
+        # so extend copies rather than mutating the tier list in place.
+        dirs = list(dirs) + [d for d in _PUSH_VERDICT_HTTPS_CRED_DIRS if d not in dirs]
+        files = list(files) + [f for f in _PUSH_VERDICT_HTTPS_CRED_FILES if f not in files]
+    hide_ssh = sandbox_level == "strict" or push_verdict_activation_mask
     hidden_dirs = [os.path.join(home, d) for d in dirs]
     # Re-anchor the SAME tier list under a pod child's remapped home. Must run here
     # rather than at the ACP call sites: both transports freeze the sandbox before
@@ -277,17 +329,25 @@ def _build_launcher_script(
     # re-exposed read-only grow a writable window through this parameter
     # (pinned by test_launcher_refuses_carveout_inside_unhidden_tree).
     runtime_parents = list(_voice_runtime_parent_paths())
+    # The gateway-owned publish (``gateway_publish=True``) OWNS the push-verdict mirror
+    # tree -- it runs ``git init --bare``, the mirror fetches and the ref cleanup there --
+    # so for that spawn ALONE the sealed mirror leaf becomes a validated write carve-out:
+    # its parent joins the carveable set and drops out of the readonly subtree guards, the
+    # same shape the voice runtime parent already uses. Every agent spawn leaves
+    # ``gateway_publish`` False, so the mirror stays fully sealed for them.
+    mirror_carveable = _push_verdict_mirror_parents() if gateway_publish else []
+    carve_exempt = set(runtime_parents) | set(mirror_carveable)
     writable_json = json.dumps(
         _writable_carveout_spellings(
             extra_writable_dirs,
             subtree_guards=hidden_dirs
             + unhidden
-            + [path for path in readonly_dirs if path not in set(runtime_parents)]
+            + [path for path in readonly_dirs if path not in carve_exempt]
             + ([os.path.join(home, ".ssh")] if hide_ssh else []),
             literal_guards=[
                 _fold_crew_home_alias(os.path.join(home, f), crew_home_aliases) for f in files
             ],
-            carveable_parents=runtime_parents,
+            carveable_parents=runtime_parents + mirror_carveable,
         )
     )
     files_json = json.dumps(
@@ -1267,6 +1327,7 @@ SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
 SANDBOX_LEVEL = {sandbox_level_json}
+PUSH_VERDICT_ACTIVATION = {push_verdict_activation_mask}
 
 def main():
     argv = sys.argv[1:]
@@ -2153,6 +2214,48 @@ def main():
         # wrap_argv passthrough can detect a requested-vs-active tier
         # downgrade. Same non-scrubbable placement as the marker above.
         os.environ["KIROCREW_SANDBOX_LEVEL"] = SANDBOX_LEVEL
+
+        # Neutralize the git credential HELPER under the push-verdict activation mask.
+        #
+        # The file/env mask above hides the credential STORES the agent path could read
+        # (``.config/gh``, ``.git-credentials``/``.netrc``, ``GH_TOKEN``/``GITHUB_TOKEN``), but
+        # a ``git config credential.helper`` backed by the OS keychain (macOS), libsecret
+        # (Linux), git-credential-manager, or ``store --file=<path>`` sits OUTSIDE all of them:
+        # an opaque agent ``git push`` over HTTPS still gets a credential by RUNNING the helper,
+        # a program no file mask can withhold. Setting ``credential.helper`` to the EMPTY string
+        # resets git's helper list (git >= 2.9: an empty value clears every earlier-configured
+        # helper across system/global/local scopes), and we add NO helper after it, so no helper
+        # runs for an agent git spawn. Injected via ``GIT_CONFIG_*`` env, which is git's
+        # highest-precedence config source and is INHERITED by the git processes git itself
+        # starts -- so it also governs a helper git would otherwise re-add from a lower scope.
+        # The gateway-owned publish is exempt: it runs with ``gateway_publish=True`` so
+        # ``PUSH_VERDICT_ACTIVATION`` is False for it and it keeps its helper to publish.
+        # keychain/libsecret/GCM are OS services, not files, so this neutralization -- not a
+        # file mask -- is their closure; a ``store --file`` under a masked home is also covered
+        # by the file mask above, and the default ``store`` file (``.git-credentials``) is
+        # already in the masked file set.
+        #
+        # APPEND rather than assign: a caller (or a nested wrap) may already have set
+        # ``GIT_CONFIG_COUNT`` and its key/value pairs, and clobbering the count would silently
+        # drop those. Read the existing count, add our one pair as the next index, and bump the
+        # count -- so our empty ``credential.helper`` is applied on top of, not instead of, any
+        # existing env config.
+        if PUSH_VERDICT_ACTIVATION:
+            try:
+                _gc_count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
+            except ValueError:
+                # A non-integer count is a corrupted/hostile value git would itself reject; do
+                # not build on it -- start our own count so the neutralization still applies.
+                _gc_count = 0
+            if _gc_count < 0:
+                _gc_count = 0
+            os.environ["GIT_CONFIG_KEY_%d" % _gc_count] = "credential.helper"
+            os.environ["GIT_CONFIG_VALUE_%d" % _gc_count] = ""
+            os.environ["GIT_CONFIG_COUNT"] = str(_gc_count + 1)
+            # ``GIT_TERMINAL_PROMPT=0`` so that, with every helper neutralized, a git that would
+            # otherwise fall back to an interactive credential prompt instead FAILS the fetch --
+            # a blocked publish, not a process hung on a terminal no one is attached to.
+            os.environ["GIT_TERMINAL_PROMPT"] = "0"
 
         # Fix /etc/ssh/ssh_config.d/ ownership issue: root-owned files
         # appear as nobody:nobody inside the user namespace because UID 0

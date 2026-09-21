@@ -107,6 +107,34 @@ def _url_payload_command(n: int) -> str:
 #: leaf would have been fenced under ``$HOME`` and writable under the override. Both
 #: halves now loop the same tuple, each leaf's tail is spelled once, and a test adds a
 #: probe leaf and asserts BOTH spellings refuse -- it fails on the old code.
+#: Raised again for the gateway-owned push-verdict gate: a new
+#: ``push_verdict.py`` submodule (~874 lines) that reads the operator activation leaf
+#: and answers the publish floor's verdict question, plus the floor's own binding
+#: checks and the new write-protected ``push-verdict-mirrors`` entries in ``__init__.py``.
+#: Its own tests live in ``test_push_verdict_gate.py``; this bound only tracks volume.
+#:
+#: Raised again, from 28,874, for the push-verdict destination pin: the ``security/push_verdict.py``
+#: submodule gains the ``Activation.pinned_push_url`` field and its ``_pinned_push_url`` parser
+#: (fail-closed on a corrupted present pin, exactly as the boolean and digest checks are), which
+#: is the operator-only anchor the handler binds the resolved push destination to. The binding
+#: closes an agent-writable ``git remote set-url`` pointing the credential-exempt gateway publish
+#: at an attacker-chosen repository. The enforcement itself lives in the handler, outside this
+#: package; only the keystone field and its parser land here.
+#:
+#: Raised again, from 28,922, for the push-verdict pin's CREDENTIAL-FREE rule: the activation
+#: leaf is readable in-sandbox, so REQUIRING a credentialed pin to publish would force a token
+#: into a readable leaf. ``security/push_verdict.py`` gains ``_url_embedded_credential`` (rejects
+#: a URL carrying an embedded password/token, ``scheme://user:pass@`` or scp-like
+#: ``user:pass@host:path``) wired into ``_pinned_push_url``, and ``_credential_free_url`` (strips
+#: userinfo for the identity compare the handler runs on both sides). The enforcement compare is
+#: in the handler, outside this package; only the two URL helpers and the parser wiring land here.
+#:
+#: Raised again, from 29,004, for the push-verdict pin's IPv6 fix: ``_credential_free_url`` in
+#: ``security/push_verdict.py`` re-bracketed an IPv6 hostname before appending ``:port``, because
+#: ``urlsplit().hostname`` returns an IPv6 literal without its ``[...]`` and re-appending the port
+#: to the bare address lost the host/port boundary, letting two DISTINCT IPv6 destinations collapse
+#: to one credential-free identity and match the operator pin. The fix is a small comment plus the
+#: re-bracket branch; the enforcement compare stays in the handler, outside this package.
 #:
 #: Re-pinned again, on top of every raise above, for the ``panel-dismissals`` leaf
 #: added to ``_CREW_SECRET_LEAVES`` in ``paths.py``: one entry plus the comment
@@ -153,12 +181,25 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again, from 29,763, for the push-verdict activation docstring in
+#: ``paths.py``: the keystone-reader docstring was corrected to say that CONTENT
+#: (a literal ``enabled: true``), not mere file presence, authorizes activation --
+#: matching what ``activation()`` actually enforces. Two lines of prose, no new
+#: pass and no threshold moved.
+#:
+#: Raised again, from 29,765, for the off-loop activation resolver: ``is_denied`` read the
+#: activation keystone synchronously on the git-publish branch, and that read ran on the
+#: gateway event loop for every async gate caller. ``PushVerdictActivation`` + the
+#: ``resolve_push_verdict_activation`` helper let an async caller read the keystone off the loop
+#: and pass the result into ``is_denied(..., activation=)``, which uses it instead of reading
+#: inline. One dataclass, one resolver, one branch in the git-publish gate; no pass widened.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 29_822
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

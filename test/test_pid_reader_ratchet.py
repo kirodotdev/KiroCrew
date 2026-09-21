@@ -125,11 +125,12 @@ _EXCLUDED_PARTS = ("kiro_crew/testing/", "container_tests/")
 #: A site the pool itself owns carries this marker as a comment on one of the
 #: lines the site spans, and is counted separately instead of against the total.
 #: Two readings are legitimate: the pool that spawns a runtime owns its pid, and
-#: the one function that ends the process needs it. Nothing else does. Neither of
-#: those lives in ``src`` on this branch, so the marker appears nowhere here; the
-#: change that lands the ownership module marks its own sites rather than raising
-#: the total, which the exact-count rule would otherwise refuse. Spelled like the
-#: tree's other in-line exemptions (``brand-ok``, ``testpaths-ok``).
+#: the one function that ends the process needs it. Nothing else does. The
+#: pre-activation live-runtime sweep (``AcpClient.sweep_pre_activation_runtimes``)
+#: is the pool's own reaper -- it ends a runtime whose spawn predates gating -- so
+#: its two pid reads are marked rather than counted against the total, the same way
+#: the pool's spawn/teardown sites are. Spelled like the tree's other in-line
+#: exemptions (``brand-ok``, ``testpaths-ok``).
 _OWNER_MARKER = "pid-owner" + "-ok"
 
 #: The pid-reader count this branch measures. The assertion is EQUALITY, not an
@@ -140,8 +141,11 @@ _OWNER_MARKER = "pid-owner" + "-ok"
 _BASELINE_SITES = 144
 
 #: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
-#: an ordinary reader would otherwise move a site out of the total for free.
-_BASELINE_OWNER_MARKED = 3
+#: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
+#: an ordinary reader would otherwise move a site out of the total for free. Raised
+#: to include the pre-activation sweep's reaper reads across ``AcpClient`` and
+#: ``AcpRuntime`` (see ``_OWNER_MARKER``).
+_BASELINE_OWNER_MARKED = 6
 
 #: Files that hold sites at the baseline and are not yet migrated. Each must still
 #: be found, so a scanner that matches nothing cannot pass as a clean tree. Drop a

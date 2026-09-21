@@ -19,6 +19,7 @@
     "skill_fetch": "Fetch skill",
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
+    "push_verdict_run": "Publish gated push",
     "wait": "Wait",
     "route_crew": "Route to crew",
     "select_crew": "Select crew",

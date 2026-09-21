@@ -544,6 +544,16 @@ from kiro_crew.dashboard.handlers.teams import (  # noqa: E402, F401
 # binds the two routes at boot and imports this module on the first request,
 # exactly as the work_ledger and session-control routes do.
 
+# ── Push verdict, the prepare-pr push gate's gateway side (handlers/push_verdict.py) ──
+# DELIBERATELY NOT IMPORTED HERE. Push-verdict gating is an operator opt-in that is OFF
+# unless someone activated it on the keystone, so its handler is an optional subsystem and
+# an eager import would put it on the gateway boot path — which
+# ``no-new-work-on-gateway-boot-path`` clause 5 forbids ("gate the import, not just the
+# handler"). The module also pulls in the sandbox and hashing machinery it needs to judge a
+# push, none of which a default install ever uses. ``server._deferred_push_verdict`` binds
+# the route at boot and imports the module on the first request instead, exactly as
+# ``_deferred_work_ledger`` does for the opt-in conductor ledger.
+
 
 # ── Durable task queue + capacity view (handlers/tasks.py) ──
 async def api_task_action(request):

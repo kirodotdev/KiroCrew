@@ -1597,6 +1597,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "and returned by dashboard status. Both shared redactors run before storage, "
         "so raw launch values do not enter durable operator-facing state.",
     ),
+    (
+        "Gateway push-verdict guard and publish output",
+        "dashboard/handlers/push_verdict.py",
+        "The tail of git's own output on a refused/errored guard run and on a "
+        "publish, returned as the `detail` an MCP presenter shows the agent. That "
+        "text is written by `git fetch`/`git push` from the REMOTE, so it can echo "
+        "a credential-shaped token or an exfiltration URL the remote emitted -- "
+        "external bytes on their way into the model's context, which is exactly an "
+        "egress boundary. Both shared redactors run (exfiltration-URL then "
+        "credential) over the WHOLE output and the tail is clipped only AFTER them "
+        "at each return, so no raw remote byte reaches the agent and no secret is "
+        "halved by the clip; an empty output passes through unchanged.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

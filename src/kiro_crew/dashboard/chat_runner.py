@@ -12122,18 +12122,40 @@ async def _run_chat(
                     # so the security gate evaluates what actually executes.
                     # event.title may be an LLM-authored description that hides
                     # a dangerous command (see HookManager.on_tool_call).
-                    tool_result = state.context_builder.hooks.on_tool_call(
-                        event.title,
-                        session_key=session_key,
-                        agent=slot.agent or "",
-                        app=slot._app or "",
-                        **hook_gate_kwargs(event),
-                        # The RESOLVED agent (what actually served the turn), not
-                        # slot.agent — that is an alias resolve_agent_bindings
-                        # maps to a concrete kiro agent, so it must never decide
-                        # which builtin app an agent belongs to.
-                        resolved_agent=read_effective_agent(client),
-                    )
+                    #
+                    # Off the event loop: ``on_tool_call`` reaches the git-publish floor,
+                    # which reads the push-verdict activation keystone (an ``open`` + JSON
+                    # parse of a leaf under the crew data home) on a git-publish command. On
+                    # an activated, network-mounted data home that read can stall, and this
+                    # permission handler runs inline on the gateway loop -- a stall here
+                    # freezes the gateway and its heartbeat. The read is deliberately live
+                    # per publish (no cache -- see ``push_verdict.activation()``), so the fix
+                    # is to run the whole synchronous consult in a worker thread rather than
+                    # to memoize it. The inner def keeps the shared ``**hook_gate_kwargs(event)``
+                    # splat (the structural contract in ``TestHookGateKwargs``) -- the thread
+                    # hop wraps it, it does not hand-spell the event-derived kwargs.
+                    _resolved_agent = read_effective_agent(client)
+                    # Bind the already-narrowed gate here (the enclosing ``if
+                    # state.context_builder`` proved it non-None) so the inner def closes over
+                    # a concrete ``hooks`` rather than re-reading the optional attribute.
+                    _hooks = state.context_builder.hooks
+
+                    def _consult_hook_gate() -> Any:
+                        result = _hooks.on_tool_call(
+                            event.title,
+                            session_key=session_key,
+                            agent=slot.agent or "",
+                            app=slot._app or "",
+                            **hook_gate_kwargs(event),
+                            # The RESOLVED agent (what actually served the turn), not
+                            # slot.agent — that is an alias resolve_agent_bindings
+                            # maps to a concrete kiro agent, so it must never decide
+                            # which builtin app an agent belongs to.
+                            resolved_agent=_resolved_agent,
+                        )
+                        return result
+
+                    tool_result = await asyncio.to_thread(_consult_hook_gate)
                     if tool_result.action == TOOL_DENY:
                         # Surface WHY: carry the deny reason into the pill so
                         # the user sees "Blocked by security policy: ..." rather

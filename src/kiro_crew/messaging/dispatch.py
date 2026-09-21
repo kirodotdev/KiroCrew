@@ -81,6 +81,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
     redact_local_paths,
+    resolve_push_verdict_activation,
 )
 from kiro_crew.sel import sel
 
@@ -529,7 +530,13 @@ async def inbound_permitted(
     return False
 
 
-def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callable[[Any], str]:
+def build_tool_gate(
+    ctx_builder: Any,
+    *,
+    session_key: str,
+    agent: str,
+    push_verdict_activation: Any = None,
+) -> Callable[[Any], str]:
     """PreToolUse security gate, channel-neutral (off ``ctx_builder.hooks``).
 
     Sensitive-path keystone + governance ceiling + deny-list. Returns ``"deny"``
@@ -550,6 +557,7 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             getattr(event, "title", "") or "",
             session_key=session_key,
             agent=agent,
+            push_verdict_activation=push_verdict_activation,
             **hook_gate_kwargs(event),
         )
         denied = result.action == TOOL_DENY
@@ -1701,7 +1709,17 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 auto_approve_session=turn.auto_approve_session,
                 deny_all_tools=turn.deny_all_tools,
                 auto_approve_tool=build_auto_approve(ctx_builder),
-                tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
+                tool_gate=build_tool_gate(
+                    ctx_builder,
+                    session_key=session_key,
+                    agent=turn.agent,
+                    # Resolve the activation keystone OFF the event loop here, so the sync
+                    # ``_tool_gate`` the ACP dispatcher calls back on the loop performs no
+                    # keystone read on it (the no-blocking-call-on-event-loop finding).
+                    push_verdict_activation=await asyncio.to_thread(
+                        resolve_push_verdict_activation
+                    ),
+                ),
                 directive_consumer=turn.directive_consumer,
                 audit_session_key=session_key,
                 audit_agent=turn.agent or "kirocrew",
