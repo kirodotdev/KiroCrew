@@ -189,7 +189,12 @@ export const CHUNK_BUDGETS = {
   // the merge result to 3,445,107 B (3364.4 KB). Preserve the documented margin
   // at that current measurement; a library-class regression still exceeds this
   // ceiling by hundreds of kilobytes.
-  App: 3533 * KB, // measured 3364.4 KB on managed-credentials PR (~5% headroom)
+  App: 3535 * KB, // measured 3534.7 KB on main 20261b7633c5 (2026-09-21); was
+  // 3533, set from a 3364.4 KB measurement with ~5% headroom that the chunk has
+  // since grown through. This is the smallest whole KB that fits the current
+  // measurement, so the headroom is now ~0.3 KB and ordinary growth on main will
+  // reach it again -- deliberately, so the next raise is a decision someone makes
+  // rather than a number that quietly absorbs drift.
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
