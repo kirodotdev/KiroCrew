@@ -9,9 +9,9 @@ Envelope (one JSON object per line after the header)::
     {"type": "<event type>", "seq": <int>, "time": <epoch ms>, "data": {...}}
 
 ``seq`` is the crew log's own entry number, so the header is 0 and the first
-event is 1. The writer
-assigns it as ``len(events)`` and refuses anything else; the reader treats a
-gap inside the committed region as corruption.
+event is 1. The crew log store assigns it off the file tail under its own lock;
+a damaged line inside the committed region costs a reader that line and nothing
+else, so a gap in the numbers is not a contiguity failure.
 """
 
 from __future__ import annotations

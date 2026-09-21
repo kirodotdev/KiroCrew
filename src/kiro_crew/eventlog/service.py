@@ -74,12 +74,12 @@ def _redact_projection_value(value: object) -> object:
     return value
 
 
-#: The unit kind this service serves. A second kind registers alongside it
-#: rather than forking this module.
-#: Suffix that marks a member's legacy activity file as already folded. Its mere
-#: EXISTENCE is the completion record: the fold dedupes by counting matching rows,
-#: which cannot tell a row the migration has not reached from one written after it
-#: finished, so without a marker every later write would be imported as trusted.
+#: Suffix the legacy activity file is renamed to once the fold has run. Hygiene
+#: rather than the protection: the completion record is the fenced
+#: :data:`LEGACY_FOLDED_MARKER`, because the member directory is writable by the
+#: party that record defends against. Renaming keeps a member's own rows readable
+#: under a retired name instead of deleting them, and keeps the byte budget off a
+#: file already folded.
 LEGACY_MIGRATED_SUFFIX = ".migrated"
 
 #: Records, inside the member's own FENCED log directory, that the legacy activity
@@ -132,8 +132,6 @@ def _legacy_fold_completed(slug: str) -> bool:
 #: agent-writable and the fold runs on every ``ensure``, which the roster
 #: projection calls, so an unbounded read sits on a request path.
 MAX_LEGACY_ACTIVITY_BYTES = 8 * 1024 * 1024
-
-UNIT_KIND = "member"
 
 _singleton: "MemberEventLogService | None" = None
 _singleton_lock = threading.Lock()
@@ -258,8 +256,6 @@ def _read_legacy_activity_files(slug: str) -> tuple[list[dict], bool]:
     are skipped — the legacy writer was best-effort and never fsync'd, so a
     torn tail is expected, not corruption.
     """
-    import json
-
     from kiro_crew import members
 
     rows: list[dict] = []
@@ -515,23 +511,23 @@ class MemberEventLogService:
             if log.refresh_if_changed():
                 self._fold_gap_locked(slug, log)
             return log
-        if log is None:
-            log = MemberLog(slug)
-            if not log.exists():
-                return None
-            log.load()
-            events = log.iter_events()
-            if log.header is not None:
-                header_name = log.header.get("name")
-                self._names[slug] = header_name if isinstance(header_name, str) else slug
-            self._registry.prime(slug, events)
-            with self._map_lock:
-                # Another thread may have primed concurrently; last writer wins
-                # the map slot but priming is idempotent.
-                existing = self._logs.get(slug)
-                if existing is not None:
-                    return existing
-                self._logs[slug] = log
+        log = MemberLog(slug)
+        if not log.exists():
+            return None
+        log.load()
+        events = log.iter_events()
+        if log.header is not None:
+            header_name = log.header.get("name")
+            self._names[slug] = header_name if isinstance(header_name, str) else slug
+        self._registry.prime(slug, events)
+        with self._map_lock:
+            # Another thread may have primed concurrently. The FIRST primer into
+            # this lock installs its instance and every later one adopts it, so a
+            # loser's own fold is wasted rather than wrong: priming is idempotent.
+            existing = self._logs.get(slug)
+            if existing is not None:
+                return existing
+            self._logs[slug] = log
         return log
 
     # ---- units ------------------------------------------------------------
