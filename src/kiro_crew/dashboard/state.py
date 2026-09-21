@@ -3835,6 +3835,7 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        edit_id: str | None = None,
     ) -> bool:
         return self._queue_repository.queue_edit_by_id(
             self,
@@ -3842,6 +3843,7 @@ class _ChatSlot:
             content,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            edit_id=edit_id,
         )
 
     def queue_promote_by_id(self, queue_id: str) -> bool:

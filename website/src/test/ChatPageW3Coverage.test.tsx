@@ -798,7 +798,8 @@ describe('ChatPage — queued message actions', () => {
     act(() => { queueProps!.onEdit('q1', '   ') })
     expect(apiSpy('editQueuedMessage')).not.toHaveBeenCalled()
     act(() => { queueProps!.onEdit('q1', '  run the tests twice  ') })
-    expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice')
+    await waitFor(() => expect(apiMocks.editQueuedMessage)
+      .toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice', expect.any(String)))
     await waitFor(() =>
       expect(queueProps!.messages.find(m => m.meta?.queueId === 'q1')?.content)
         .toBe('run the tests twice'),

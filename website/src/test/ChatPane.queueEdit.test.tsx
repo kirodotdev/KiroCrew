@@ -126,7 +126,7 @@ describe('ChatPane queue inline edit (issue #2240)', () => {
     fireEvent.change(input, { target: { value: 'edited from split pane' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.editQueuedMessage).toHaveBeenCalledTimes(1))
-    expect(api.editQueuedMessage).toHaveBeenCalledWith('pane-edit', 'q-77', 'edited from split pane')
+    expect(api.editQueuedMessage).toHaveBeenCalledWith('pane-edit', 'q-77', 'edited from split pane', expect.any(String))
     // Optimistic store update mirrors ChatPage.handleEditQueued.
     const msgs = selectSlotMessages(store.getState() as RootState, 'pane-edit')
     const card = msgs.find((m) => m.meta?.queueId === 'q-77')
@@ -142,6 +142,6 @@ describe('ChatPane queue inline edit (issue #2240)', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.editQueuedMessage).toHaveBeenCalledTimes(1))
     // QueueStack hands the raw value through; ChatPane's callback owns the trim.
-    expect(api.editQueuedMessage).toHaveBeenCalledWith('pane-edit-2', 'q-77', 'padded edit')
+    expect(api.editQueuedMessage).toHaveBeenCalledWith('pane-edit-2', 'q-77', 'padded edit', expect.any(String))
   })
 })
