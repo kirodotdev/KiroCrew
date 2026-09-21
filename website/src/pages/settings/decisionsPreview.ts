@@ -58,6 +58,15 @@ export const DECISIONS_MODEL_POINT = 'model.route'
  */
 export const DECISIONS_COMPACTION_POINT = 'compaction.keep'
 
+/**
+ * The point that chooses which of the memories vector similarity recalled reach
+ * the prompt.
+ *
+ * Named here beside the others for the same reason: the strip reader dispatches on
+ * it, so a second spelling anywhere would be a record nobody renders.
+ */
+export const DECISIONS_MEMORY_POINT = 'memory.recall'
+
 /** Config path of the sampling share; the only decisions value the config PATCH accepts. */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
 
@@ -117,6 +126,13 @@ export interface DecisionsView {
    * choice.
    */
   compaction: boolean
+  /**
+   * Whether the owner consented to sending the text of recalled memories — the
+   * `memory.recall` scope. Read on the same fail-closed terms as `toolArgs`: only a
+   * literal `true` counts, so an older gateway and a keystone written before this
+   * scope existed both read false, and the card draws the switch off for them.
+   */
+  memoryText: boolean
 }
 
 const UNSUPPORTED: DecisionsView = {
@@ -127,6 +143,7 @@ const UNSUPPORTED: DecisionsView = {
   bucket: null,
   toolArgs: false,
   compaction: false,
+  memoryText: false,
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -175,6 +192,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
       endpointMoved: false,
       toolArgs: false,
       compaction: false,
+      memoryText: false,
     }
   }
   const enabled = root.enabled === true
@@ -191,7 +209,18 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
   // the widest of the three categories, so a truthy stand-in and a narrower yes are
   // both "no".
   const compaction = root.compaction === true
-  return { supported: true, enabled, configuredEndpoint, endpointMoved, toolArgs, compaction }
+  // An exact `true` on the same terms again: a recalled memory is text the agent wrote
+  // down in an earlier conversation, so neither scope beside this one stands for it.
+  const memoryText = root.memory_text === true
+  return {
+    supported: true,
+    enabled,
+    configuredEndpoint,
+    endpointMoved,
+    toolArgs,
+    compaction,
+    memoryText,
+  }
 }
 
 /** Combine the two reads into the card's one view. */

@@ -56,12 +56,18 @@ const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = 
   // what a keystone recorded before the scope existed reads as, and no narrower yes
   // grants it.
   compaction: false,
+  // And the recalled-memory scope, false on the same terms.
+  memory_text: false,
   ...overrides,
 })
 
 /** The tool-argument consent switch. Only drawn while the main switch is on. */
 const toolArgsSwitch = () =>
   screen.getByRole('switch', { name: 'Also send tool-call arguments so Jev can flag risky calls' })
+
+/** The recalled-memory consent switch. Only drawn while the main switch is on. */
+const memoryTextSwitch = () =>
+  screen.getByRole('switch', { name: /snippets of recalled memories/i })
 
 /** The whole-transcript consent switch. Only drawn while the main switch is on. */
 const compactionSwitch = () =>
@@ -441,7 +447,7 @@ describe('Decisions (Jev) preview card', () => {
 
     it('grants the scope through the same consent route, with no new endpoint', async () => {
       stubGateway({ enabled: true })
-      const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(
+      const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
         consentOf(true, { tool_args: true }),
       )
       renderSection()
@@ -450,10 +456,11 @@ describe('Decisions (Jev) preview card', () => {
       })
       toolArgsSwitch().click()
       await waitFor(() => {
-        // `undefined` for the switch, not `true`: a scope write carries no switch, so
-        // this view cannot re-grant a consent revoked since it last read. The reviewed
-        // address still rides along.
-        expect(save).toHaveBeenCalledWith(undefined, ENDPOINT, true)
+        // No switch in the body at all, so this view cannot re-grant a consent
+        // revoked since it last read -- and no endpoint either, because the recorded
+        // address is part of what an absent switch preserves. Only its own scope is
+        // named: naming another would let this click move a switch nobody touched.
+        expect(save).toHaveBeenCalledWith({ toolArgs: true })
       })
     })
 
@@ -461,14 +468,14 @@ describe('Decisions (Jev) preview card', () => {
       // Omission PRESERVES the recorded scope on this route, so a revoke has to send
       // the boolean. A card that omitted it would leave the scope granted.
       stubGateway(consentOf(true, { tool_args: true }))
-      const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
+      const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
       renderSection()
       await waitFor(() => {
         expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
       })
       toolArgsSwitch().click()
       await waitFor(() => {
-        expect(save).toHaveBeenCalledWith(undefined, ENDPOINT, false)
+        expect(save).toHaveBeenCalledWith({ toolArgs: false })
       })
     })
 
@@ -614,7 +621,7 @@ describe('the whole-transcript consent scope', () => {
 
   it('grants the scope through the same consent route, with no new endpoint', async () => {
     stubGateway({ enabled: true })
-    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(
+    const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
       consentOf(true, { compaction: true }),
     )
     renderSection()
@@ -623,23 +630,23 @@ describe('the whole-transcript consent scope', () => {
     })
     compactionSwitch().click()
     await waitFor(() => {
-      // `undefined` in the tool-argument slot is deliberate: an OMITTED field
-      // preserves the recorded scope, so acting on this switch cannot grant or erase
-      // the narrower one beside it.
-      expect(save).toHaveBeenCalledWith(undefined, ENDPOINT, undefined, true)
+      // The other scopes go UNNAMED, which is deliberate: an omitted field preserves
+      // the recorded scope, so acting on this switch cannot grant or erase either one
+      // beside it.
+      expect(save).toHaveBeenCalledWith({ compaction: true })
     })
   })
 
   it('revokes it with an explicit false rather than by omission', async () => {
     stubGateway(consentOf(true, { compaction: true }))
-    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
+    const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
     renderSection()
     await waitFor(() => {
       expect(compactionSwitch().getAttribute('aria-checked')).toBe('true')
     })
     compactionSwitch().click()
     await waitFor(() => {
-      expect(save).toHaveBeenCalledWith(undefined, ENDPOINT, undefined, false)
+      expect(save).toHaveBeenCalledWith({ compaction: false })
     })
   })
 
@@ -695,7 +702,7 @@ describe('the whole-transcript scope reports its own in-flight and failed states
   it('freezes the main switch while the scope write is in flight', async () => {
     stubGateway(consentOf(true))
     const held = heldSave()
-    vi.spyOn(api, 'saveDecisionsConsent').mockReturnValue(held.promise)
+    vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
     await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
     expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
@@ -714,7 +721,7 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     // of its own subject.
     stubGateway(consentOf(true))
     const held = heldSave()
-    vi.spyOn(api, 'saveDecisionsConsent').mockReturnValue(held.promise)
+    vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
     await waitFor(() => { expect(toolArgsSwitch()).toBeInTheDocument() })
     expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
@@ -730,12 +737,12 @@ describe('the whole-transcript scope reports its own in-flight and failed states
 
   it('says so when the scope write is refused, rather than reverting in silence', async () => {
     stubGateway(consentOf(true))
-    vi.spyOn(api, 'saveDecisionsConsent').mockRejectedValue(new Error('dashboard owner required'))
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
     await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
     compactionSwitch().click()
     await waitFor(() => {
-      expect(screen.getByText(/could not save this setting/i)).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-compaction-error')).toBeInTheDocument()
     })
     // The stored value is what the switch shows: the refused write did not take.
     expect(compactionSwitch().getAttribute('aria-checked')).toBe('false')
@@ -744,14 +751,250 @@ describe('the whole-transcript scope reports its own in-flight and failed states
   it('draws no error while the write is merely in flight', async () => {
     stubGateway(consentOf(true))
     const held = heldSave()
-    vi.spyOn(api, 'saveDecisionsConsent').mockReturnValue(held.promise)
+    vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
     await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
     compactionSwitch().click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     })
-    expect(screen.queryByText(/could not save this setting/i)).toBeNull()
+    expect(screen.queryByTestId('decisions-compaction-error')).toBeNull()
     held.release()
+  })
+})
+
+describe('the recalled-memory scope switch', () => {
+  it('is not offered while the main switch is off', async () => {
+    // Off, nothing is sent at all, so a second egress control would describe a
+    // state that cannot happen.
+    stubGateway({ enabled: false })
+    renderSection()
+    await waitFor(() => {
+      expect(decisionsSwitch()).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('switch', { name: /snippets of recalled memories/i })).toBeNull()
+  })
+
+  it('appears unchecked once consent is on, for a keystone that never recorded it', async () => {
+    // The state every install consented before this scope existed is in: sending is
+    // allowed, recalled-memory text is not, and the card must draw exactly that
+    // rather than inferring the scope from the main switch.
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('reflects a recorded scope', async () => {
+    stubGateway(consentOf(true, { memory_text: true }))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('true')
+    })
+  })
+
+  it('is not granted by the tool-argument scope', async () => {
+    // Two independent decisions. A card that read one switch off the other would
+    // show a consent the owner never gave.
+    stubGateway(consentOf(true, { tool_args: true }))
+    renderSection()
+    await waitFor(() => {
+      expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
+    })
+    expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('grants the scope through the same consent route, naming only itself', async () => {
+    stubGateway({ enabled: true })
+    const scopeSave = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
+      consentOf(true, { memory_text: true }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      // ONLY its own scope: naming the other would let this click grant or erase a
+      // scope the owner did not touch, which the route's omission rule exists for.
+      expect(scopeSave).toHaveBeenCalledWith({ memoryText: true })
+    })
+  })
+
+  it('revokes it with an explicit false rather than by omission', async () => {
+    stubGateway(consentOf(true, { memory_text: true }))
+    const scopeSave = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('true')
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(scopeSave).toHaveBeenCalledWith({ memoryText: false })
+    })
+  })
+
+  it('states what the extra data is, and what the decision can do with it', async () => {
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('first 200 characters')
+    expect(body).toContain('It can only remove them')
+    expect(body).toContain('Passwords and keys are replaced')
+  })
+
+  it('names recalled-memory snippets in the egress note, above either switch', async () => {
+    // The note is what a reader consents to, and it is drawn whether or not the
+    // scope switches are. Naming only messages and skills would understate it.
+    stubGateway({ enabled: false })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/leave this machine/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/snippets of the memories recalled/i)).toBeInTheDocument()
+  })
+})
+
+describe('a scope write and the main switch cannot interleave', () => {
+  // The hole this closes: flip a scope, immediately turn the seam OFF, and the two
+  // PUTs race. The disable lands first, the scope write lands second carrying
+  // `enabled: true`, and consent is re-committed by a click that was about a scope —
+  // the owner turned egress off and it came back on.
+
+  it('says NOTHING about enabled on a scope write', async () => {
+    // Not even the value the card holds. That value comes from a read, and a concurrent
+    // revoking PUT makes it stale inside the window — writing it back would re-commit a
+    // consent the owner had just withdrawn, from a click that was about a scope. Saying
+    // nothing is the only shape that cannot, and the gateway preserves the recorded flag.
+    stubGateway({ enabled: true })
+    const scopeSave = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
+      consentOf(true, { memory_text: true }),
+    )
+    const consentSave = vi.spyOn(api, 'saveDecisionsConsent')
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(scopeSave).toHaveBeenCalledWith({ memoryText: true })
+    })
+    // The scope path must not reach the consent writer at all: that is the function
+    // whose body carries `enabled`.
+    expect(consentSave).not.toHaveBeenCalled()
+  })
+
+  it('freezes the MAIN switch while a scope write is in flight', async () => {
+    // The other half: the interleave cannot be started, not merely made harmless.
+    stubGateway({ enabled: true })
+    let release = () => {}
+    vi.spyOn(api, 'saveDecisionsScope').mockImplementation(
+      () => new Promise(resolve => { release = () => resolve(consentOf(true, { memory_text: true })) }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    })
+    release()
+  })
+
+  it('freezes the OTHER scope switch while one scope write is in flight', async () => {
+    // Two outstanding writes against one keystone resolve in an order the clicks did
+    // not choose, and the route records the whole file under one lock.
+    stubGateway(consentOf(true, { tool_args: true }))
+    let release = () => {}
+    vi.spyOn(api, 'saveDecisionsScope').mockImplementation(
+      () => new Promise(resolve => { release = () => resolve(consentOf(true, { tool_args: true })) }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(toolArgsSwitch().getAttribute('aria-disabled')).toBe('true')
+    })
+    release()
+  })
+
+  it('frees every switch again once the scope write settles', async () => {
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true, { memory_text: true }))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    })
+  })
+})
+
+describe('a refused scope write says so', () => {
+  // The switch snaps back to the recorded value on the refetch, which on its own looks
+  // like the click never landed. Each scope gets its OWN notice: two failures rendering
+  // in one place would leave a reader unable to tell which write was refused.
+
+  it('surfaces a refused tool-argument write, with a hand-off', async () => {
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
+    renderSection()
+    await waitFor(() => {
+      expect(toolArgsSwitch()).toBeInTheDocument()
+    })
+    toolArgsSwitch().click()
+    await waitFor(() => {
+      expect(screen.getByTestId('decisions-tool-args-error')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('surfaces a refused recalled-memory write, with a hand-off', async () => {
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('draws neither notice while both writes are healthy', async () => {
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('decisions-tool-args-error')).toBeNull()
+    expect(screen.queryByTestId('decisions-memory-text-error')).toBeNull()
+  })
+
+  it('names only the scope that failed', async () => {
+    // One rejected write must not light the other scope's notice.
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('nope'))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('decisions-tool-args-error')).toBeNull()
   })
 })

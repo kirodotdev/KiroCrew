@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import recall_json, recall_terms
+from kiro_crew.session_surface import dashboard_surfaced_keys
 
 from ._shared import (
     _admin_store,
@@ -81,6 +82,57 @@ async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Respo
     return tier, None
 
 
+def _memory_recall_keep(session_key: str, query: str, pending: list) -> "Callable | None":
+    """The ``memory.recall`` keep hook for this recall, or ``None`` to return every hit.
+
+    ``None`` is the answer for every request that is not an OWNER DASHBOARD one, and
+    that restriction is this call site's rather than the seam's. Two reasons, both about
+    who is served: the request carries snippets of the member's own recalled memories,
+    and the receipt for the decision rides a reply someone is looking at
+    (``decisions/outcomes.py`` hands it to ``chat_runner``). A cron turn, a sub-agent, an
+    integration and any session whose tab is closed have no such reader.
+
+    The test is membership of ``session_surface.dashboard_surfaced_keys()``, the set
+    ``chat_utils._sync_dashboard_slots`` republishes from ``state._slots`` whenever the
+    slot table changes. So a CHANNEL-born session with its tab open qualifies -- a
+    channel-born slot contributes its channel key -- which is the intended reading: the
+    owner is reading that conversation in the dashboard, so the audience the receipt
+    needs is there.
+
+    Deliberately NOT ``has_dashboard_surface``, whose first test is a ``dashboard:``
+    PREFIX and therefore answers True for a key that merely looks dashboard-born. That
+    fallback exists so a genuinely dashboard-born session is recognised before the
+    dashboard has published anything, which is right for the gates that ask "could this
+    ever be shown". It is wrong here: a retained or archived slot keeps its key and has no
+    open tab, so the prefix would send recalled memory for a conversation nobody is
+    looking at and stamp a receipt on a reply nobody reads. The published set is emptied
+    of a slot the moment it leaves ``state._slots``, which is exactly the liveness this
+    needs -- and an empty set before the dashboard publishes fails CLOSED, which is the
+    safe direction for an egress gate.
+
+    THIS coroutine's loop is captured for the point, because the point runs on the
+    executor thread ``run_in_embed_pool`` puts ``recall`` on and submits its one
+    ``decide`` await back to a loop. The point's own gates -- consent, the
+    ``memory_text`` scope, the sampling bucket, a usable loop -- run inside the hook, so
+    building one costs nothing on a request the seam refuses.
+    """
+    if not session_key or not query.strip():
+        return None
+    if session_key not in dashboard_surfaced_keys():
+        return None
+    # Function-local by design, not by habit: `decisions/__init__.py` asks callers to
+    # import the package inside the function that uses it, so a request the seam refuses
+    # never pays for the gate's import graph -- and without consent that graph is the
+    # whole cost of the feature.
+    from kiro_crew.decisions.points.memory_recall import keep_hook
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return keep_hook(query, session_key=session_key, loop=loop, owner_turn=True, pending=pending)
+
+
 @memory_recall_deadline
 async def api_memory_recall(request: web.Request) -> web.Response:
     """GET /api/memory/recall: explicit recall from the caller's V1 or V2 store."""
@@ -144,9 +196,20 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         if tier is None and (markdown is None or markdown._memory_version != 1):
             return _store_unavailable(name)
         project = requesting_slot_project(state, request.headers.get("X-Session-Key", ""))
+        # The decision's outcome is HELD here and committed below, after the recall has
+        # come back. `_recall_once` validates the embedding generation after applying the
+        # hook and `recall` answers a moved generation by running the whole recall again,
+        # so a row written when the answer arrived could describe a subset the store then
+        # discarded -- and a retried recall would leave two rows for one tool call.
+        decision_pending: list = []
+        session = request.headers.get("X-Session-Key", "")
         result = (
             await run_in_embed_pool(
-                tier.recall, query, cap=3000, project_dir=str(project) if project else None
+                tier.recall,
+                query,
+                cap=3000,
+                project_dir=str(project) if project else None,
+                keep=_memory_recall_keep(session, query, decision_pending),
             )
             if tier is not None
             else {}
@@ -223,6 +286,15 @@ async def api_memory_recall(request: web.Request) -> web.Response:
             result["retrieval"] = retrieval
     except (ValueError, OSError, sqlite3.Error):
         return _store_unavailable(name)
+    # Only here: the recall came back and this route is answering with it, so the
+    # decision it shaped is the one the caller receives. A store that discarded its own
+    # result, a retried generation, or a request that failed above commits nothing, and a
+    # failure therefore leaves no receipt at all rather than a row for something nobody
+    # saw. Off the loop, because it appends to the decision day-file.
+    if decision_pending:
+        from kiro_crew.decisions.points.memory_recall import commit_outcome
+
+        await asyncio.to_thread(commit_outcome, session, decision_pending)
     return web.json_response(
         _redact_memory_field({"store": name, **result}),
         dumps=lambda payload: recall_json(payload, ensure_ascii=False, context_cap=3000),

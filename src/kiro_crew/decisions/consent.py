@@ -81,6 +81,15 @@ STATE_KEY_TOOL_ARGS = "tool_args"
 #: consented, so an install that granted either of the others is inert here.
 STATE_KEY_COMPACTION = "compaction"
 
+#: Whether the owner consented to sending the TEXT OF RECALLED MEMORIES, the
+#: category ``memory.recall`` needs and no other point does. A separate leaf for
+#: exactly the reason ``tool_args`` is one, and the category is genuinely new: a
+#: message excerpt is text the owner just typed and a skill description is text this
+#: build shipped, while a recalled memory is text the AGENT wrote down turns or days
+#: ago about whatever it was working on then. Consent recorded against the first two
+#: cannot stand for the third, so absent reads as NOT consented.
+STATE_KEY_MEMORY_TEXT = "memory_text"
+
 #: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
 #: because ``0`` is a ceiling an owner may choose and no number can mean "not asked".
 #: Resolved inside the read-modify-write, so the value written comes from the same
@@ -99,8 +108,14 @@ KEEP_TOOL_ARGS: object = object()
 #: restore a scope a concurrent revoking PUT just cleared.
 KEEP_COMPACTION: object = object()
 
+#: "Keep whatever recalled-memory scope is recorded", on the same terms and for the
+#: same reason as :data:`KEEP_TOOL_ARGS`: ``False`` is a scope an owner may choose,
+#: so no boolean can also mean "not asked", and it is resolved inside the lock so an
+#: enabling PUT cannot restore a scope a concurrent revoking PUT just cleared.
+KEEP_MEMORY_TEXT: object = object()
+
 #: "Keep whatever the keystone records" -- the switch AND the endpoint it is bound to.
-#: A distinct object for the reason the three above are: ``False`` is a state an owner
+#: A distinct object for the reason the four above are: ``False`` is a state an owner
 #: may choose, so no boolean can also mean "not asked".
 #:
 #: It exists so a write that only moves a SCOPE never carries the switch. A caller that
@@ -222,6 +237,25 @@ def consented_compaction(state: "dict | None" = None) -> bool:
     return data.get(STATE_KEY_COMPACTION) is True
 
 
+def consented_memory_text(state: "dict | None" = None) -> bool:
+    """Whether the owner consented to sending recalled-memory text. Absent reads False.
+
+    Only a literal ``True`` consents, on the same terms as
+    :func:`consented_tool_args` and for the same reason: this value decides whether a
+    new category of content leaves the machine, so a value nobody can read back as a
+    deliberate yes is a no.
+
+    The default is the whole point of the key. Every consent recorded before it
+    existed was given against a request carrying the message excerpt and the
+    candidate skill descriptions. A recalled memory is neither: it is text the agent
+    wrote down in an earlier conversation, about work the owner was not reviewing
+    when they flipped the switch. Reading those records as permission to send it
+    would widen egress with no new choice.
+    """
+    data = load_state() if state is None else state
+    return data.get(STATE_KEY_MEMORY_TEXT) is True
+
+
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
     """Whether the keystone consents to sending to *endpoint*, exactly.
 
@@ -267,6 +301,7 @@ def save_enabled(
     history_budget_chars: object = 0,
     tool_args: object = False,
     compaction: object = False,
+    memory_text: object = False,
 ) -> dict:
     """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
 
@@ -309,6 +344,12 @@ def save_enabled(
     to none, and :data:`KEEP_COMPACTION` leaves a recorded scope alone from inside
     this same lock.
 
+    *memory_text* is the RECALLED-MEMORY egress scope and behaves identically, down
+    to :data:`KEEP_MEMORY_TEXT` and the lock. The two scopes are independent fields
+    because they are independent decisions: an owner may want risky tool calls
+    flagged without the contents of their memory store leaving the machine, and
+    either order of those two answers has to be recordable.
+
     Pass :data:`KEEP_ENABLED` for a write that moves only a scope. The switch and the
     endpoint are then taken from the keystone inside this lock and written back
     unchanged, and the scopes are applied under the RECORDED switch -- so a scope write
@@ -335,6 +376,9 @@ def save_enabled(
     keep_compaction = compaction is KEEP_COMPACTION
     if not keep_compaction and not isinstance(compaction, bool):
         raise ValueError("compaction must be a bool")
+    keep_memory = memory_text is KEEP_MEMORY_TEXT
+    if not keep_memory and not isinstance(memory_text, bool):
+        raise ValueError("memory_text must be a bool")
     target = normalize_endpoint(endpoint)
     if enabled is True and not target:
         raise ValueError("consent needs the endpoint it is given for")
@@ -352,10 +396,13 @@ def save_enabled(
             tool_args = consented_tool_args(state)
         if keep_compaction:
             compaction = consented_compaction(state)
+        if keep_memory:
+            memory_text = consented_memory_text(state)
         state[STATE_KEY_ENABLED] = enabled
         state[STATE_KEY_ENDPOINT] = target if enabled else ""
         state[STATE_KEY_HISTORY_BUDGET] = history_budget_chars if enabled else 0
         state[STATE_KEY_TOOL_ARGS] = tool_args is True if enabled else False
         state[STATE_KEY_COMPACTION] = compaction is True if enabled else False
+        state[STATE_KEY_MEMORY_TEXT] = memory_text is True if enabled else False
         atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state

@@ -220,7 +220,14 @@ export const CHUNK_BUDGETS = {
   // code with no lazy boundary available, the same shape the notes above document.
   // Back to the ~5% convention over the measurement that includes this branch,
   // matching the `all` and `t` entries.
-  App: 3711 * KB, // measured 3,624,314 B (3539.4 KB) on this branch's merge result 2026-09-21 (4.85% headroom)
+  // The memory-recall strip, its own record reader and the card's second
+  // switch add a further 5,492 B, so a tree carrying both decisions surfaces
+  // sits at about 3,627,757 B, and about 3,629,806 B with the surface the
+  // paragraph above measures. The ceiling covers all three parts -- main's
+  // drift and each surface's own cost -- with the ~5% margin the lines above
+  // prescribe, so ordinary first-party growth does not re-trip this entry
+  // within days.
+  App: 3714 * KB, // ~3,629,806 B with all three surfaces (~4.7% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

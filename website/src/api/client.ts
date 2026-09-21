@@ -439,6 +439,13 @@ export interface DecisionsConsentData {
    * ever read as this one.
    */
   compaction?: boolean
+  /**
+   * Whether the owner consented to sending THE TEXT OF RECALLED MEMORIES — the extra
+   * egress category `memory.recall` needs. Absent reads as not consented, on the same
+   * terms as `tool_args`: a recalled memory is text the agent wrote down in an earlier
+   * conversation, so consent recorded against a message excerpt cannot stand for it.
+   */
+  memory_text?: boolean
 }
 
 /** Which side of a logged decision a reader's verdict is about. */
@@ -5261,12 +5268,19 @@ export const api = {
   // read, so a view read before a revoke turns egress back on. Omitted, the route reads
   // the switch and the endpoint off the keystone under its own lock, and the write moves
   // only the scopes named. A body with neither the switch nor a scope is a 400.
-  saveDecisionsConsent: (enabled?: boolean, endpoint?: string, toolArgs?: boolean, compaction?: boolean) =>
+  saveDecisionsConsent: (
+    enabled?: boolean,
+    endpoint?: string,
+    toolArgs?: boolean,
+    compaction?: boolean,
+    memoryText?: boolean,
+  ) =>
     put('/api/decisions/consent', enabled === undefined
       ? {
         endpoint,
         ...(toolArgs === undefined ? {} : { tool_args: toolArgs }),
         ...(compaction === undefined ? {} : { compaction }),
+        ...(memoryText === undefined ? {} : { memory_text: memoryText }),
       }
       : enabled
         ? {
@@ -5274,8 +5288,24 @@ export const api = {
           endpoint,
           ...(toolArgs === undefined ? {} : { tool_args: toolArgs }),
           ...(compaction === undefined ? {} : { compaction }),
+          ...(memoryText === undefined ? {} : { memory_text: memoryText }),
         }
         : { enabled }).then(j) as Promise<DecisionsConsentData>,
+  // A SCOPE-ONLY write, named for what it is: the body carries the scope fields and
+  // nothing else, so it asserts nothing about whether the seam may send. `enabled` is
+  // deliberately absent rather than set to the value the card holds — that value comes
+  // from a read which a concurrent revoking PUT makes stale, and writing it back would
+  // re-commit a consent the owner had just withdrawn. The gateway preserves the recorded
+  // flag AND the recorded endpoint for an absent `enabled`, so there is nothing to echo
+  // either. Scope switches call this; the switch above calls `saveDecisionsConsent`.
+  saveDecisionsScope: (
+    scopes: { toolArgs?: boolean; compaction?: boolean; memoryText?: boolean },
+  ) =>
+    put('/api/decisions/consent', {
+      ...(scopes.toolArgs === undefined ? {} : { tool_args: scopes.toolArgs }),
+      ...(scopes.compaction === undefined ? {} : { compaction: scopes.compaction }),
+      ...(scopes.memoryText === undefined ? {} : { memory_text: scopes.memoryText }),
+    }).then(j) as Promise<DecisionsConsentData>,
   // One reader's verdict on one side of one decision, from the transcript's
   // decision strip. `verdict: null` takes an answer back, which is why the field
   // is nullable rather than absent — the server records the retraction.

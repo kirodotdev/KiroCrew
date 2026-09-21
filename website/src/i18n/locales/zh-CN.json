@@ -10264,7 +10264,26 @@
         "point_model_route": "模型",
         "rate_right_model": "Jev 选对了模型",
         "rate_wrong_model": "Jev 选错了模型",
-        "truncated_turns_label": "被截断的历史轮次"
+        "truncated_turns_label": "被截断的历史轮次",
+        "point_memory_recall": "记忆",
+        "memory_similarity": "召回 {{count}} 条",
+        "memory_kept": "Jev 保留 {{count}} 条",
+        "memory_saved_chars": "省下 {{chars}} 个提示词字符",
+        "memory_baseline_label": "召回的记忆",
+        "memory_jev_label": "Jev 保留",
+        "memory_candidates_label": "召回的记忆",
+        "memory_none": "没有记忆",
+        "memory_confidence_title": "Jev 认为一条记忆值得进入提示词的平均把握，取值 0 到 1",
+        "memory_confidence_latency_title": "Jev 认为一条记忆值得进入提示词的平均把握，取值 0 到 1，以及回答用了多久",
+        "memory_rate_right_jev": "Jev 保留对了记忆",
+        "memory_rate_wrong_jev": "Jev 保留错了记忆",
+        "memory_rate_baseline": "评价相似度的选择",
+        "memory_rate_jev": "评价 Jev 的选择",
+        "memory_rate_right_baseline": "相似度召回对了记忆",
+        "memory_rate_wrong_baseline": "相似度召回错了记忆",
+        "memory_kept_fallback": "回退后留下 {{count}} 条",
+        "memory_jev_label_fallback": "留下的记忆（回退）",
+        "memory_saved_title": "记忆块变小之后省下的提示词字符数。"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev 看过这次调用并做了标记。标记不会影响这次调用是否被允许：那由本会话自己的权限设置决定，而且这次调用仍可能已被拒绝。",
@@ -11102,7 +11121,7 @@
         "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。",
         "decisions": "决策（Jev）",
         "decisions_desc": "Jev 是一个小而快的决策模型。开启后，{{productName}} 会就你刚发出的消息问 Jev：哪一个技能最合适，或者都不合适；并在开关下方所示比例的会话里直接采用 Jev 所选，其余会话仍按本版本自带词语匹配规则处理。如果 Jev 太慢、连不上或没有给出可用答案，这条消息就回退到同一条规则，所以决策不会拖住你的回复。每次调用还会在运行 {{productName}} 的机器上记入一份日志，供排查使用。这个开关保存在运行 {{productName}} 的机器上，而不是这个浏览器里，所以你在任何设备上打开都生效。",
-        "decisions_egress": "开启后，你的消息文本以及技能的名称和描述会离开本机。它们通过互联网发送给 Jev——这台 {{productName}} 配置使用的决策服务。关闭时不发送任何内容。",
+        "decisions_egress": "开启期间，你输入的消息正文，还有技能名称和说明，都会离开这台机器，经互联网发给这个 {{productName}} 指定的决策服务 Jev。另外两类内容各有下面自己的开关，在你打开之前不会发送。一是工具调用的名称和参数，二是为你这条消息召回的记忆片段。关闭期间什么都不发送。",
         "decisions_backend_required": "运行这个面板的 {{productName}} 比这个功能旧，因此暂时无法开启。请先在设置 › Releases 中更新 {{productName}}。",
         "decisions_sent_to": "发送到",
         "decisions_endpoint_moved": "你同意发送的地址和现在设置里的地址不一样，所以什么都没有发送。请关掉再打开这个开关，以同意新地址。",
@@ -11117,7 +11136,10 @@
         "decisions_tool_args_desc": "在自动批准工具调用的会话里，每次调用的名称和参数也会发给 Jev；Jev 觉得值得看一眼，就给那次调用加上标记。发送前会替换掉密码和密钥。它不会改变哪些工具调用被允许。你打开它之前一直关着，即使上面那个开关已经打开。",
         "decisions_compaction": "也发送对话和工具调用输入，让 Jev 为压缩打分",
         "decisions_compaction_desc": "每次上下文满了、{{productName}} 自己压缩一个会话时，这会把那段对话和里面的工具调用输入发给 Jev，问它哪些值得留下。工具输出从不发送，只发送它有多少个字符。密码和密钥在发送前会被替换掉。这只是一次测量：无论 Jev 怎么答，压缩都和现在一样进行，答案会在压缩提示上显示为一行。三者中它最宽，所以在你打开之前它是关着的，即使上面两个开关已经打开。",
-        "decisions_point_compaction_keep": "一次压缩会保留哪些工具调用（仅测量）"
+        "decisions_point_compaction_keep": "一次压缩会保留哪些工具调用（仅测量）",
+        "decisions_memory_text": "同时发送召回记忆的片段，让 Jev 去掉没用的那些",
+        "decisions_memory_text_desc": "助手向自己的记忆提问时，措辞最接近的条目会返回。打开这一项后，每个条目的 id 和正文前 200 个字符也会发给 Jev，由它说留哪些。它只能去掉，不会新增，也不会改顺序；它慢或连不上时，全部照旧返回。密码和密钥在发送前先替换掉。就算上面的开关已经打开，这一项在你打开之前仍是关的。",
+        "decisions_scope_save_failed": "这个开关没能保存，现在显示的是已保存的值。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",

@@ -27,6 +27,7 @@ import {
   readCompactionKeepRecord,
   readDecisionRecord,
   readDecisionStrip,
+  readMemoryRecallRecord,
   readModelRecord,
   readSteerRecord,
 } from '../pages/chat/decisionRecord'
@@ -36,6 +37,8 @@ const SECTION = "## 8. The decision strip's record and feedback"
 const STEER_SECTION = '## 10. Mid-turn handling (`message.steer`)'
 const MODEL_SECTION = '## 11. Model routing (`model.route`)'
 const COMPACTION_SECTION = '## 12. Compaction scoring (`compaction.keep`)'
+
+const MEMORY_SECTION = '## 13. Recalled memories (`memory.recall`)'
 
 /** The first fenced JSON block inside *section*. */
 function specFixtureIn(section: string): Record<string, unknown> {
@@ -230,6 +233,81 @@ describe('the mid-turn handling fixture in the decisions spec', () => {
     // The teeth: masking is by key, so anything else naming a message still fails.
     expect(JSON.stringify({ ...withoutPoint, message_text: 'hi' })).toContain('message')
     expect(fixture.point).toBe('message.steer')
+  })
+})
+
+describe('the recalled-memory fixture in the decisions spec', () => {
+  // Same hazard as the two above, from the same direction: `readMemoryRecallRecord`
+  // fails safe by drawing nothing, which is byte-identical to a turn the seam did
+  // not decide. A field respelled on one side would make the strip vanish rather
+  // than fail.
+  const fixture = specFixtureIn(MEMORY_SECTION)
+
+  it('is accepted by the reader, field for field', () => {
+    expect(readMemoryRecallRecord(fixture)).toEqual({
+      turnId: 'turn-7d1e04',
+      point: 'memory.recall',
+      baselineKeys: ['mem-a', 'mem-b', 'mem-c'],
+      jevKeys: ['mem-a', 'mem-c'],
+      agree: false,
+      p: 0.81,
+      charsSaved: 2100,
+      candidates: 3,
+      messageChars: 96,
+      latencyMs: 210,
+      error: null,
+    })
+  })
+
+  it('names every key the reader needs, so a dropped promise is visible here', () => {
+    for (const key of [
+      'turn_id', 'point', 'baseline_keys', 'jev_keys', 'p',
+      'chars_saved', 'candidates', 'message_chars', 'latency_ms', 'error',
+    ]) {
+      expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
+    }
+  })
+
+  it('names its two lists for what they hold, which is what keeps the readers apart', () => {
+    // `baseline`/`jev` are what the SKILL reader requires. Spelling them here would
+    // make that reader accept this record and draw memory ids as skill keys, so the
+    // refusal below is a property of the field names rather than a guess.
+    expect(Object.keys(fixture)).not.toContain('baseline')
+    expect(Object.keys(fixture)).not.toContain('jev')
+  })
+
+  it('promises neither `agree` nor `history_chars`, because nothing reads them', () => {
+    // Agreement is recomputed from the two lists. There is no history half: the
+    // candidates ARE the prior conversation this question sends.
+    expect(Object.keys(fixture)).not.toContain('agree')
+    expect(Object.keys(fixture)).not.toContain('history_chars')
+  })
+
+  it('is refused by the other two readers, and refuses their records in turn', () => {
+    // Three records on one field. Each must decline the others rather than render
+    // them: this one read as a skill selection would print two empty skill lists
+    // under a check mark saying the sides agreed.
+    expect(readDecisionStrip(fixture)).toBeNull()
+    expect(readSteerRecord(fixture)).toBeNull()
+    expect(readMemoryRecallRecord(specFixture())).toBeNull()
+    expect(readMemoryRecallRecord(specFixtureIn(STEER_SECTION))).toBeNull()
+  })
+
+  it('carries no memory text, snippet or message — the bound the log section sets', () => {
+    // `point` and `message_chars` are dropped by exact key first: the former's
+    // VALUE is the identifier `memory.recall` and the latter is a LENGTH, so both
+    // would match a broad needle below. The needles stay broad rather than
+    // narrowing, because a narrow one would admit a `message_text` carrying the
+    // conversation — the leak this asserts against.
+    const { point: _id, message_chars: _length, ...rest } = fixture
+    const serialized = JSON.stringify(rest).toLowerCase()
+    for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'snippet', 'description', 'content', 'text']) {
+      expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
+    }
+    // The teeth: masking is by key, so anything else naming a snippet still fails.
+    expect(JSON.stringify({ ...rest, snippet_text: 'hi' })).toContain('snippet')
+    expect(fixture.point).toBe('memory.recall')
+    expect(typeof fixture.message_chars).toBe('number')
   })
 })
 

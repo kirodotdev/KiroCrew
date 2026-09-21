@@ -313,7 +313,15 @@ class TestTheRoute:
         seen: list = []
         real = consent.save_enabled
 
-        def _spy(enabled, *, endpoint, history_budget_chars=0, tool_args=False, compaction=False):
+        def _spy(
+            enabled,
+            *,
+            endpoint,
+            history_budget_chars=0,
+            tool_args=False,
+            compaction=False,
+            memory_text=False,
+        ):
             seen.append(tool_args)
             return real(
                 enabled,
@@ -321,6 +329,7 @@ class TestTheRoute:
                 history_budget_chars=history_budget_chars,
                 tool_args=tool_args,
                 compaction=compaction,
+                memory_text=memory_text,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)

@@ -66,6 +66,7 @@ DECISION_POINT_NAMES = (
     "message.steer",
     "model.route",
     "compaction.keep",
+    "memory.recall",
 )
 
 #: Points whose request carries TOOL-CALL ARGUMENTS, and which therefore need the
@@ -86,6 +87,16 @@ POINTS_NEEDING_TOOL_ARGS = frozenset({"tool.risk"})
 #: session has run, in a request one to two orders of magnitude larger. An install
 #: that granted only the narrower scope is inert here.
 POINTS_NEEDING_COMPACTION = frozenset({"compaction.keep"})
+
+#: Points whose request carries the TEXT OF RECALLED MEMORIES, and which therefore
+#: need the keystone's ``memory_text`` scope (``consent.consented_memory_text``). A
+#: set of its own rather than a wider reading of either above it, because the
+#: category is genuinely different: a message excerpt is text the owner just typed
+#: and a skill description is text this build shipped, while a recalled memory is
+#: text the AGENT wrote down turns or days ago about work the owner was not
+#: reviewing when they consented. An install that granted either other scope is
+#: inert here.
+POINTS_NEEDING_MEMORY_TEXT = frozenset({"memory.recall"})
 
 #: The model id sent when the config leaves ``provider.model`` empty -- the same
 #: fallback ``impl_jev`` applies, so the id the scrub clears is the id sent.
@@ -258,9 +269,9 @@ def _consented_for(
     an auditor needs recorded.
 
     *point* names the caller's decision point, so a point in
-    :data:`POINTS_NEEDING_TOOL_ARGS` or :data:`POINTS_NEEDING_COMPACTION` can be
-    refused on a keystone that consents to sending but not to sending THAT
-    category. Checked here rather than in
+    :data:`POINTS_NEEDING_TOOL_ARGS`, :data:`POINTS_NEEDING_COMPACTION` or
+    :data:`POINTS_NEEDING_MEMORY_TEXT` can be refused on a keystone that consents
+    to sending but not to sending THAT category. Checked here rather than in
     :func:`_sampled` because the state this needs is the one read this function
     already did -- ``_sampled`` is deliberately IO-free -- so the scope costs no
     second keystone read, and because this is the documented chokepoint every
@@ -297,6 +308,10 @@ _POINT_SCOPES: dict[str, tuple[str, str]] = {
     **{
         p: ("consented_compaction", "the conversation and its tool-call inputs")
         for p in POINTS_NEEDING_COMPACTION
+    },
+    **{
+        p: ("consented_memory_text", "the text of recalled memories")
+        for p in POINTS_NEEDING_MEMORY_TEXT
     },
 }
 

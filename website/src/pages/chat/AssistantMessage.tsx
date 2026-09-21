@@ -15,7 +15,8 @@ import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHig
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import FileChangeChips, { type FileChangeEntry } from '../../components/FileChangeChips'
 import DecisionStrip from './DecisionStrip'
-import { readDecisionRecords } from './decisionRecord'
+import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
+import MemoryRecallStrip from './MemoryRecallStrip'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
@@ -323,6 +324,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // Every decision this reply carries, not just the first: a turn can be decided
   // by more than one point, and each gets its own row.
   const decisionRecords = useMemo(() => readDecisionRecords(decisionsStrip), [decisionsStrip])
+  // The memory record rides the same field and is found in it rather than read
+  // from it: it is drawn by its own component, so the strip reader above declines
+  // it and at most one of the two claims any given record.
+  const memoryRecord = useMemo(() => readMemoryRecallInStrip(decisionsStrip), [decisionsStrip])
   const turnStatsTitle = (() => {
     if (!turnStats) return undefined
     const elapsed = fmtTurnElapsed(turnStats.elapsed_ms)
@@ -553,6 +558,9 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         disclosureKey={messageTs ? `dstrip-${record.point}-${messageTs}` : undefined}
       />
     ))}
+    {memoryRecord && (
+      <MemoryRecallStrip record={memoryRecord} disclosureKey={messageTs ? `mstrip-${messageTs}` : undefined} />
+    )}
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
       /* Pass `onFileOpen` by IDENTITY — a `(p) => onFileOpen(p)` wrapper here is
          a new function every render, which busts FileChangeChips' memo and

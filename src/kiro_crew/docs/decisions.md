@@ -1,6 +1,6 @@
 # Jev decisions
 
-Jev can answer three questions about a sampled conversation, and each one has to be switched on separately. It can also put a note on a risky tool call, which decides nothing at all -- see [Flagging risky tool calls](#flagging-risky-tool-calls) below.
+Jev can answer four questions about a sampled conversation, and each one has to be switched on separately. It can also put a note on a risky tool call, which decides nothing at all -- see [Flagging risky tool calls](#flagging-risky-tool-calls) below.
 
 **Which skill to load.** Jev receives a short message excerpt and a menu of eligible skill names and descriptions. Its valid answer changes the selected skill; a timeout or failed request keeps the normal trigger-matching result.
 
@@ -8,7 +8,9 @@ Jev can answer three questions about a sampled conversation, and each one has to
 
 **What a mid-turn message does.** Jev judges whether a message you send while the assistant is still working should steer that turn or wait for the next one. This happens only for a message you send with **Auto (Jev)** on the send button. A timeout or a failed request steers, which is what the send button has always done. See [Letting Jev choose steer or queue](#letting-jev-choose-steer-or-queue) below.
 
-All three are off by default. Turning on the Decisions switch does not start any of them: skill selection also needs `skills.max_triggered` above zero, model routing also needs you to pick **Auto (Jev)** in the chat model picker, and mid-turn handling also needs you to pick **Auto (Jev)** on the send button.
+**Which recalled memories reach the prompt.** When the assistant asks its own memory a question, Jev says which of the closest matches are worth putting in the prompt. This happens only while the recalled-memory switch under the Decisions switch is on. A timeout or a failed request keeps every match the search found. See [Choosing which recalled memories come back](#choosing-which-recalled-memories-come-back) below.
+
+All four are off by default. Turning on the Decisions switch does not start any of them: skill selection also needs `skills.max_triggered` above zero, model routing also needs you to pick **Auto (Jev)** in the chat model picker, mid-turn handling also needs you to pick **Auto (Jev)** on the send button, and memory narrowing also needs its own switch under the Decisions switch.
 
 ## What changes
 
@@ -25,7 +27,7 @@ A valid answer can choose one skill or explicitly choose none. Choosing none is 
 
 ## Configure before enabling
 
-Use Settings > Developer > Feature Previews for the Decisions switch. It records your consent in `decisions_consent.json` in the gateway's data directory, so it applies across devices. That file is deliberately separate from `config.json`: an agent can edit `config.json`, and an agent must not be able to switch on the sending of your own messages. Only the dashboard owner can flip the switch. The card shows the address messages would be sent to, and your consent is recorded for that address: if `provider.endpoint` is changed later, nothing is sent until you turn the switch off and on again. An older backend without this switch keeps it disabled.
+Use Settings > Developer > Feature Previews for the Decisions switch. Three of the things Jev can do need a switch of their own, underneath it, and each starts off even for someone who already had the main one on: **Also send tool-call arguments so Jev can flag risky calls**, **Also send the conversation and tool-call inputs so Jev can score compaction**, and **Also send snippets of recalled memories so Jev can drop the ones that do not help**. Turning the main switch on alone gives you automatic skill choice and the mid-turn send mode; the other three do nothing until you turn their own switch on, because each sends a category of your content the main switch never described. It records your consent in `decisions_consent.json` in the gateway's data directory, so it applies across devices. That file is deliberately separate from `config.json`: an agent can edit `config.json`, and an agent must not be able to switch on the sending of your own messages. Only the dashboard owner can flip the switch. The card shows the address messages would be sent to, and your consent is recorded for that address: if `provider.endpoint` is changed later, nothing is sent until you turn the switch off and on again. An older backend without this switch keeps it disabled.
 
 The remaining settings live in `config.json`:
 
@@ -192,6 +194,33 @@ A compaction that could not be measured is recorded too, with its reason: the st
 
 A measurement that finishes after its own compaction's notice has already been drawn is recorded and then dropped, rather than shown on the next compaction's notice.
 
+## Choosing which recalled memories come back
+
+When the assistant asks its own memory a question -- the `memory_recall` tool -- Kiro Crew looks through what it remembered from earlier conversations and hands back the closest matches. "Closest" means the wording is similar. That is a useful first pass and a poor last one: a note that happens to share your words gets in whether or not it helps with what you are doing, and it takes up room the rest of the prompt could have used.
+
+With the Decisions switch on AND the recalled-memory switch under it on, Jev looks at that shortlist and says which entries to keep. Both are needed: until the second one is on, nothing about your memories is sent and every close match goes into the prompt as before. It only ever REMOVES: it cannot add a memory that was not on the shortlist, and it cannot change their order. Everything else about memory stays the same -- what gets remembered, what gets forgotten, and what `memory_recall` finds when the assistant asks for it by hand.
+
+| State | What the tool hands back |
+|---|---|
+| Disabled | Every close match, as today |
+| Enabled, outside the sample | Every close match, as today |
+| Enabled, sampled, valid answer | The ones Jev kept |
+| Timeout, refusal or invalid answer | Every close match, as today |
+
+Keeping none of them is a valid answer, not a failure: the tool then reports no remembered conversations, which is also what a question with no close matches looks like.
+
+Jev is only ever shown the entries the tool was going to hand back anyway, and it is only ever asked about the first twenty of them. An entry it was not shown stays in -- nothing was decided about it, so nothing removes it -- and an entry that did not fit the answer's size budget cannot be let in by Jev dropping a different one.
+
+It happens only for a recall made in a chat you have open in the dashboard. A scheduled job, a sub-agent, an app request and any conversation whose tab is closed are never decided for, because the question sends parts of your own remembered notes and because the receipt appears on a reply you are looking at -- and those have no such reply. A conversation that started in Slack or another channel counts while you have its tab open in the dashboard: you are reading it there, so the receipt reaches you.
+
+What leaves the machine for one of these questions is the question the assistant asked its memory (up to 2000 characters) and, for each of at most twenty shortlisted entries, its id and the first 200 characters of its text. Credentials and data-collecting URLs are replaced in that text BEFORE it is shortened, so a shortened snippet cannot end in half a key. The remembered entries are already the earlier conversation, so this question sends no separate conversation history at all, whatever `history_budget_chars` says.
+
+Waiting for Jev cannot hold up a recall for long. The request gets the same budget as the other decisions -- `timeout_ms`, 1000 milliseconds by default -- and the wait is capped at ten seconds whatever that value says. When the time is up, every close match comes back as before.
+
+If the request fails, the receipt says so and credits the fallback rather than Jev: the line reads "kept after fallback" and the list is titled "Kept (fallback)", because every close match went in and Jev chose none of it.
+
+The reply carries a one-line receipt: how many entries the recall found, how many Jev kept, how sure it was on average, how long it took, and the prompt characters the smaller set saved -- `memory · recalled: 6 · Jev kept: 3 (confidence 0.81, 210 ms) · saved 2.1K prompt chars`. Open it to see which entries were on the shortlist and which survived, with a thumbs pair for each side, so you can say the plain closest-match list was the better one.
+
 ## Basic logs
 
 Operational records are JSONL day-files under the gateway's data home, in the `decisions` directory. That directory is read-only to agents working on your machine -- by name, so a link planted at that name does not stand in for it -- so a verdict in it is one you gave. They contain the point name, hashed session identifier, elapsed time, bounded answer data and error categories. They do not contain the message body, conversation history, candidate descriptions or credentials.
@@ -199,6 +228,8 @@ Operational records are JSONL day-files under the gateway's data home, in the `d
 A model choice writes one row for the question asked and — when the chosen model could actually be used — one further row carrying the level (`tier`), the model used (`model_chosen`), the model that would have been used (`baseline_model`) and the probability. When the level came back but could not be applied, the second row carries an error word instead: `model-not-advertised` if your account cannot run that model, `no-switch-seam` if the chat backend cannot change model mid-conversation, and `switch-failed` if it refused. Those are written on purpose, so "Jev answered and nothing happened" is visible rather than silent.
 
 A skill selection writes one row for the question asked, carrying a `turn_id` and the number of candidates, and — when a usable answer came back — one further row for the outcome, carrying both selections: `baseline` is what trigger matching would have injected, `jev` is what was injected, `agree` says whether the two sets match, `p` is the answer's probability, and `tokens_saved` estimates the skill-body characters the difference saves, divided by four. That estimate is a rough one, and a negative value means the selection cost more than trigger matching would have. `history_chars` and `truncated` say how much conversation the request carried. A refused, timed-out or unusable turn writes only the question row, with its error category, because an agreement figure needs an answer to compare against. So one selection is two rows, and a row count is not a count of decisions.
+
+A memory decision writes one row for the question asked, carrying a `turn_id`, the number of shortlisted memories and the length of the message excerpt, and -- when a usable answer came back -- one further row for the outcome, carrying `baseline_keys` (the ids similarity shortlisted), `jev_keys` (the ids that went into the prompt), `agree`, `p` (the average chance Jev gave one memory of being worth the prompt) and `chars_saved`. The rows carry ids and counts, never the remembered text.
 
 These are diagnostic records, not a billing report. This feature does not provide a decisions report command. Each day-file stops growing at 8 MiB (further rows that day are dropped, with one warning), and day-files older than 14 days are deleted by the next write, so the log stays a bounded number of bounded files. A missing row alone is not proof that an answer was applied.
 

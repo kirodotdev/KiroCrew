@@ -10264,7 +10264,26 @@
         "point_model_route": "モデル",
         "rate_right_model": "Jev は正しいモデルを選んだ",
         "rate_wrong_model": "Jev は誤ったモデルを選んだ",
-        "truncated_turns_label": "切り詰めた過去のやり取り"
+        "truncated_turns_label": "切り詰めた過去のやり取り",
+        "point_memory_recall": "記憶",
+        "memory_similarity": "呼び出した {{count}} 件",
+        "memory_kept": "Jev が残した {{count}} 件",
+        "memory_saved_chars": "プロンプト {{chars}} 文字節約",
+        "memory_baseline_label": "呼び出した記憶",
+        "memory_jev_label": "Jev が残した記憶",
+        "memory_candidates_label": "呼び出した記憶",
+        "memory_none": "記憶なし",
+        "memory_confidence_title": "記憶がプロンプトに値すると Jev が考えた平均的な確信度（0 から 1）",
+        "memory_confidence_latency_title": "記憶がプロンプトに値すると Jev が考えた平均的な確信度（0 から 1）と、答えが返るまでの時間",
+        "memory_rate_right_jev": "Jev が残した記憶は正しかった",
+        "memory_rate_wrong_jev": "Jev が残した記憶は間違っていた",
+        "memory_rate_baseline": "類似度の選択を評価",
+        "memory_rate_jev": "Jev の選択を評価",
+        "memory_rate_right_baseline": "類似度が呼び出した記憶は正しかった",
+        "memory_rate_wrong_baseline": "類似度が呼び出した記憶は間違っていた",
+        "memory_kept_fallback": "フォールバック後に残った {{count}} 件",
+        "memory_jev_label_fallback": "残った記憶（フォールバック）",
+        "memory_saved_title": "記憶のブロックが小さくなって節約できたプロンプトの文字数。"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev がこの呼び出しを見て印を付けました。印を付けても、その呼び出しが許可されたかどうかは変わりません。それを決めるのはこのセッションの権限設定で、呼び出しは拒否されたこともあります。",
@@ -11102,7 +11121,7 @@
         "crew_members_desc": "Crew Members ページ。あなたのすべてのエージェントが、それぞれ自分のスレッドを持って並びます。まだ開発中のため、オンにするまで表示されません。",
         "decisions": "判断（Jev）",
         "decisions_desc": "Jev は小さくて高速な判断モデルです。オンにすると、{{productName}} は送信したメッセージにどのスキルが合うか、あるいはどれも合わないかを Jev に尋ね、スイッチの下に示した割合のセッションでは Jev の選択をそのまま使います。残りのセッションはこのビルドに同梱の単語一致ルールのままです。Jev が遅い、つながらない、使える答えを返さない場合、そのメッセージは同じルールに戻るので、判断が返信を待たせることはありません。呼び出しごとに、{{productName}} を動かしているマシンのログにも記録が残ります（診断用）。このスイッチはブラウザーではなく {{productName}} を動かしているマシンに保存されるため、どの端末から開いても有効です。",
-        "decisions_egress": "オンの間、あなたのメッセージの文面とスキルの名前・説明はこのマシンから外に出ます。この {{productName}} が使うよう設定された判断サービス Jev へ、インターネット経由で送信されます。オフの間は何も送信されません。",
+        "decisions_egress": "これがオンのあいだ、あなたのメッセージの本文とスキルの名前・説明はこのマシンを離れます。この {{productName}} に設定された判断サービス Jev へインターネット経由で送られます。さらに二つのカテゴリには下にそれぞれの切り替えがあり、どちらかをオンにするまで送られません。ツール呼び出しの名前と引数、そしてメッセージに対して呼び出された記憶の短い抜粋です。これがオフのあいだは何も送られません。",
         "decisions_backend_required": "このダッシュボードを動かしている {{productName}} はこの機能より古いため、まだオンにできるものがありません。先に設定 › Releases から {{productName}} を更新してください。",
         "decisions_sent_to": "送信先",
         "decisions_endpoint_moved": "同意した送信先が、現在の設定にあるアドレスと異なるため、何も送信されていません。新しいアドレスに同意するには、これをいったんオフにしてからオンにしてください。",
@@ -11117,7 +11136,10 @@
         "decisions_tool_args_desc": "ツール呼び出しを自分で承認するセッションでは、各呼び出しの名前と引数も Jev に送り、Jev が見ておきたいと判断したものに印を付けます。送信前にパスワードと鍵は置き換えられます。どの呼び出しが許可されるかは変わりません。上のスイッチが入っていても、これはあなたが入れるまでオフです。",
         "decisions_compaction": "Jev が圧縮を採点できるよう、会話とツール呼び出しの入力も送る",
         "decisions_compaction_desc": "コンテキストがいっぱいになって {{productName}} がセッションを自動で圧縮するたびに、その会話と中のツール呼び出しの入力を Jev に送り、どれを残す価値があったかを尋ねます。ツールの出力は一切送りません。何文字だったかだけです。パスワードと鍵は送る前に置き換えます。これは計測です。Jev が何と答えても圧縮は今と同じに行われ、答えは圧縮の通知に 1 行として出ます。三つのなかで最も広いので、上のスイッチがすでに入っていても、あなたが入れるまでは切れたままです。",
-        "decisions_point_compaction_keep": "圧縮が残すツール呼び出し（計測のみ）"
+        "decisions_point_compaction_keep": "圧縮が残すツール呼び出し（計測のみ）",
+        "decisions_memory_text": "呼び出した記憶の抜粋も送り、役に立たないものを Jev に落とさせる",
+        "decisions_memory_text_desc": "アシスタントが自分の記憶に問いかけると、言い回しが最も近い項目が返ります。これを有効にすると、各項目の id と本文の先頭 200 文字も Jev へ送られ、Jev がどれを残すか答えます。できるのは取り除くことだけで、追加も並べ替えもしません。遅いときや届かないときは、これまでどおり全部返ります。パスワードや鍵は送信前に置き換えられます。上の切り替えが既にオンでも、これはあなたがオンにするまでオフです。",
+        "decisions_scope_save_failed": "この切り替えを保存できませんでした。保存済みの値に戻して表示しています。"
       },
       "kiroSignInCard": {
         "title": "Kiro サインイン",

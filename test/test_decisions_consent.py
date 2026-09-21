@@ -237,6 +237,7 @@ class TestWrite:
             # narrowest scope, so a caller that does not mention them grants none.
             "tool_args": False,
             "compaction": False,
+            "memory_text": False,
         }
         assert consent.permits(CUSTOM) is True
         assert consent.permits(DEFAULT_ENDPOINT) is False
@@ -254,6 +255,7 @@ class TestWrite:
             # re-enable cannot inherit a tool-argument scope nobody re-reviewed.
             "tool_args": False,
             "compaction": False,
+            "memory_text": False,
         }
         assert consent.permits(CUSTOM) is False
 
@@ -267,6 +269,7 @@ class TestWrite:
             "history_budget_chars": 0,
             "tool_args": False,
             "compaction": False,
+            "memory_text": False,
         }
 
     def test_records_the_history_ceiling_it_was_given(self, keystone):
@@ -473,6 +476,7 @@ class TestHandler:
             # inferring it from ``enabled``; absent on this keystone reads false.
             "tool_args": False,
             "compaction": False,
+            "memory_text": False,
         }
         keystone.write_text(
             json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
@@ -695,7 +699,15 @@ class TestHandler:
         seen: list = []
         real = consent.save_enabled
 
-        def _spy(enabled, *, endpoint, history_budget_chars=0, tool_args=False, compaction=False):
+        def _spy(
+            enabled,
+            *,
+            endpoint,
+            history_budget_chars=0,
+            tool_args=False,
+            compaction=False,
+            memory_text=False,
+        ):
             seen.append(history_budget_chars)
             return real(
                 enabled,
@@ -703,6 +715,7 @@ class TestHandler:
                 history_budget_chars=history_budget_chars,
                 tool_args=tool_args,
                 compaction=compaction,
+                memory_text=memory_text,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)
@@ -1024,6 +1037,102 @@ class TestCapabilityCeiling:
         assert resp.status == 200
         assert json.loads(resp.text)["enabled"] is False
         assert consent.is_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_raising_the_history_ceiling_is_refused_like_any_other_grant(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """A budget-only PUT carries no ``enabled`` and no scope, and still grants.
+
+        The number bounds how much prior conversation the seam may carry, so recording a
+        bigger one under the pin books an egress allowance for the moment the pin lifts
+        -- and the pin is exactly when it is cheapest to book, because nothing sends
+        while it holds. The write must be refused and the recorded ceiling untouched.
+
+        The scope rides along at its REVOKING value, because the route refuses a body
+        naming neither the switch nor a scope. So whatever this asserts can only have
+        come from the ceiling.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        keystone.write_text(
+            json.dumps(
+                {"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 100}
+            ),
+            encoding="utf-8",
+        )
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(
+            _request(body={"memory_text": False, "history_budget_chars": 50_000})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "decisions_capability_denied"
+        assert consent.consented_history_budget() == 100, "the ceiling must not move"
+        assert audit[-1]["outcome"] == "denied" and audit[-1]["error"] == "capability_denied"
+
+    @pytest.mark.asyncio
+    async def test_clearing_the_history_ceiling_stays_available_under_the_pin(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """``0`` takes prior turns back, so it is a revocation and must not be trapped."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        keystone.write_text(
+            json.dumps(
+                {"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 5_000}
+            ),
+            encoding="utf-8",
+        )
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(
+            _request(body={"memory_text": False, "history_budget_chars": 0})
+        )
+        assert resp.status == 200
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.asyncio
+    async def test_a_disabling_write_carrying_a_budget_is_not_trapped(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """Disabling forces the ceiling to 0, so the number in the body grants nothing."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        keystone.write_text(
+            json.dumps(
+                {"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 5_000}
+            ),
+            encoding="utf-8",
+        )
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": False, "history_budget_chars": 9_000})
+        )
+        assert resp.status == 200
+        assert consent.is_enabled() is False
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.asyncio
+    async def test_the_recorded_endpoint_is_never_taken_from_the_body(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """The other half of the same question: a PUT cannot move the address either.
+
+        The endpoint written is always ``gate.configured_endpoint()``, and a write that
+        preserves consent preserves the RECORDED address from the writer's own read. The
+        body's ``endpoint`` is only ever the echo an enabling write is checked against,
+        and an enabling write is refused under the pin by the test above.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        keystone.write_text(
+            json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
+        )
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(
+            _request(body={"endpoint": "https://attacker.example/v1", "memory_text": False})
+        )
+        assert resp.status == 200, "a revoking scope write stays available"
+        assert consent.consented_endpoint() == DEFAULT_ENDPOINT
 
     @pytest.mark.asyncio
     async def test_the_get_reports_the_denial_and_stops_claiming_it_permits(

@@ -10407,7 +10407,26 @@
         "point_model_route": "Modell",
         "rate_right_model": "Jev hat das richtige Modell gewählt",
         "rate_wrong_model": "Jev hat das falsche Modell gewählt",
-        "truncated_turns_label": "Gekürzte frühere Beiträge"
+        "truncated_turns_label": "Gekürzte frühere Beiträge",
+        "point_memory_recall": "Erinnerungen",
+        "memory_similarity": "geholt: {{count}}",
+        "memory_kept": "Jev behielt: {{count}}",
+        "memory_saved_chars": "{{chars}} Prompt-Zeichen gespart",
+        "memory_baseline_label": "Geholt",
+        "memory_jev_label": "Von Jev behalten",
+        "memory_candidates_label": "Geholte Erinnerungen",
+        "memory_none": "keine Erinnerungen",
+        "memory_confidence_title": "Wie sicher Jev im Schnitt war, dass eine Erinnerung den Prompt wert ist, von 0 bis 1",
+        "memory_confidence_latency_title": "Wie sicher Jev im Schnitt war, dass eine Erinnerung den Prompt wert ist, von 0 bis 1, und wie lange die Antwort gedauert hat",
+        "memory_rate_right_jev": "Jev hat die richtigen Erinnerungen behalten",
+        "memory_rate_wrong_jev": "Jev hat die falschen Erinnerungen behalten",
+        "memory_rate_baseline": "Ähnlichkeitsauswahl bewerten",
+        "memory_rate_jev": "Jevs Auswahl bewerten",
+        "memory_rate_right_baseline": "Die Ähnlichkeit hat die richtigen Erinnerungen geholt",
+        "memory_rate_wrong_baseline": "Die Ähnlichkeit hat die falschen Erinnerungen geholt",
+        "memory_kept_fallback": "nach Rückfall behalten: {{count}}",
+        "memory_jev_label_fallback": "Behalten (Rückfall)",
+        "memory_saved_title": "Prompt-Zeichen, die der kleinere Erinnerungsblock gespart hat."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev hat diesen Aufruf angesehen und markiert. Das hat nichts daran geändert, ob der Aufruf erlaubt war: darüber hat die Berechtigungseinstellung dieser Sitzung entschieden, und der Aufruf kann trotzdem abgelehnt worden sein.",
@@ -11259,7 +11278,7 @@
         "crew_members_desc": "Die Seite Crew Members: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest.",
         "decisions": "Entscheidungen (Jev)",
         "decisions_desc": "Jev ist ein kleines, schnelles Entscheidungsmodell. Wenn dies an ist, fragt {{productName}} Jev, welcher deiner Skills zu der Nachricht passt, die du gerade gesendet hast — oder ob keiner passt — und verwendet Jevs Wahl für den unter dem Schalter gezeigten Anteil deiner Sitzungen; die übrigen behalten die Wortabgleich-Regel, die dieser Build mitbringt. Ist Jev langsam, nicht erreichbar oder liefert keine brauchbare Antwort, fällt diese Nachricht auf dieselbe Regel zurück, sodass keine Entscheidung deine Antwort aufhält. Jeder Aufruf wird außerdem in einem Protokoll auf dem Rechner, auf dem {{productName}} läuft, vermerkt, zur Diagnose. Dieser Schalter wird nicht im Browser gespeichert, sondern auf dem Rechner, der {{productName}} ausführt, gilt also auf jedem Gerät, von dem du ihn öffnest.",
-        "decisions_egress": "Solange dies an ist, verlassen der Text deiner Nachrichten sowie die Namen und Beschreibungen deiner Skills diesen Rechner. Über das Internet gehen sie an Jev, den Entscheidungsdienst, für den dieses {{productName}} eingerichtet ist. Solange es aus ist, wird nichts gesendet.",
+        "decisions_egress": "Solange das an ist, verlassen der Text deiner Nachrichten und die Namen und Beschreibungen deiner Skills diese Maschine. Sie gehen über das Internet an Jev, den Entscheidungsdienst, für den dieses {{productName}} eingerichtet ist. Zwei weitere Kategorien haben jeweils ihren eigenen Schalter unten und bleiben aus, bis du einen anschaltest: Name und Argumente deiner Tool-Aufrufe, und kurze Ausschnitte der Erinnerungen, die zu deiner Nachricht geholt wurden. Solange das aus ist, wird nichts gesendet.",
         "decisions_backend_required": "Das {{productName}}, das dieses Dashboard ausführt, ist älter als diese Funktion, es gibt also noch nichts einzuschalten. Aktualisiere zuerst {{productName}} unter Einstellungen › Releases.",
         "decisions_sent_to": "Gesendet an",
         "decisions_endpoint_moved": "Du hast dem Senden an eine andere Adresse zugestimmt als der, die jetzt in den Einstellungen steht; darum wird nichts gesendet. Schalte dies aus und wieder ein, um der neuen Adresse zuzustimmen.",
@@ -11274,7 +11293,10 @@
         "decisions_tool_args_desc": "In einer Sitzung, die ihre Tool-Aufrufe selbst genehmigt, sendet dies zusätzlich Name und Argumente jedes Aufrufs an Jev, das die markiert, die es für einen Blick wert hält. Passwörter und Schlüssel werden vor dem Senden ersetzt. Es ändert nichts daran, welche Aufrufe erlaubt sind. Aus, bis Sie es einschalten, auch wenn der Schalter darüber schon an ist.",
         "decisions_compaction": "Auch das Gespräch und die Eingaben der Tool-Aufrufe senden, damit Jev die Verdichtung bewerten kann",
         "decisions_compaction_desc": "Jedes Mal, wenn der Kontext voll wird und {{productName}} eine Sitzung von selbst verdichtet, sendet das dieses Gespräch und die Eingaben der Tool-Aufrufe darin an Jev und fragt, welche es wert gewesen wären, behalten zu werden. Die AUSGABE der Tools wird nie gesendet – nur wie viele Zeichen sie war. Passwörter und Schlüssel werden vor dem Senden ersetzt. Es ist eine Messung: Die Verdichtung läuft genau wie heute, was Jev auch antwortet, und die Antwort erscheint als eine Zeile auf dem Verdichtungshinweis. Das ist das Weiteste der drei, also ist es aus, bis du es einschaltest, auch wenn die Schalter darüber schon an sind.",
-        "decisions_point_compaction_keep": "Welche Tool-Aufrufe eine Verdichtung behalten würde (nur gemessen)"
+        "decisions_point_compaction_keep": "Welche Tool-Aufrufe eine Verdichtung behalten würde (nur gemessen)",
+        "decisions_memory_text": "Auch Ausschnitte geholter Erinnerungen senden, damit Jev die nutzlosen verwerfen kann",
+        "decisions_memory_text_desc": "Wenn der Assistent seinem eigenen Gedächtnis eine Frage stellt, kommen die Einträge mit der größten Wortähnlichkeit zurück. Damit gehen auch die id jedes Eintrags und die ersten 200 Zeichen seines Textes an Jev, das dann sagt, welche bleiben. Es kann nur welche entfernen — nie einen hinzufügen, nie umsortieren — und wenn es langsam oder nicht erreichbar ist, kommen alle wie bisher zurück. Passwörter und Schlüssel werden vor dem Senden ersetzt. Aus, bis du es anschaltest, auch wenn der Schalter darüber schon an ist.",
+        "decisions_scope_save_failed": "Dieser Schalter konnte nicht gespeichert werden. Er zeigt wieder den gespeicherten Wert."
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",

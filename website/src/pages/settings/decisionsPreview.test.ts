@@ -19,6 +19,7 @@ import {
   readConsent,
   readDecisions,
   DECISIONS_COMPACTION_POINT,
+  DECISIONS_MEMORY_POINT,
 } from './decisionsPreview'
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
@@ -32,6 +33,8 @@ const OFF = {
   toolArgs: false,
   // And so does the whole-transcript scope, for the same reason.
   compaction: false,
+  // And the recalled-memory scope.
+  memoryText: false,
 }
 
 describe('readConsent', () => {
@@ -53,6 +56,8 @@ describe('readConsent', () => {
         toolArgs: false,
         // Nor is it consent to send a whole transcript, which is wider still.
         compaction: false,
+        // Nor to send the text of recalled memories.
+        memoryText: false,
       })
     for (const sloppy of [false, 'true', 1, null]) {
       expect(readConsent({ enabled: sloppy, configured_endpoint: ENDPOINT, permits: false }).enabled).toBe(false)
@@ -65,8 +70,13 @@ describe('readConsent', () => {
     // omits it entirely, which must read as off rather than as unknown.
     const base = { enabled: true, configured_endpoint: ENDPOINT, permits: true }
     expect(readConsent({ ...base, tool_args: true }).toolArgs).toBe(true)
+    expect(readConsent({ ...base, memory_text: true }).memoryText).toBe(true)
+    // Independent fields: one granted must not read as the other.
+    expect(readConsent({ ...base, tool_args: true }).memoryText).toBe(false)
+    expect(readConsent({ ...base, memory_text: true }).toolArgs).toBe(false)
     for (const sloppy of [undefined, false, 'true', 1, 0, null, [], {}]) {
       expect(readConsent({ ...base, tool_args: sloppy }).toolArgs).toBe(false)
+      expect(readConsent({ ...base, memory_text: sloppy }).memoryText).toBe(false)
     }
   })
 
@@ -124,6 +134,7 @@ describe('readDecisions', () => {
         bucket: 25,
         toolArgs: false,
         compaction: false,
+        memoryText: false,
       })
     expect(readDecisions(off, { decisions: { bucket: 100 } }).bucket).toBe(100)
     expect(readDecisions(off, undefined).bucket).toBeNull()
@@ -146,6 +157,8 @@ describe('readDecisions', () => {
     // The compaction point's identifier, which the card names and the card's record
     // dispatches on.
     expect(DECISIONS_COMPACTION_POINT).toBe('compaction.keep')
+    // The recalled-memory point, which the memory strip's record dispatches on.
+    expect(DECISIONS_MEMORY_POINT).toBe('memory.recall')
     // Singular on purpose: `skills.dedupe` and `cron.novelty` shipped as rows in
     // the shadow release and are retired here, because a row for an answer
     // nothing consumes described a comparison rather than a thing being on.

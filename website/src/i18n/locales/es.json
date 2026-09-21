@@ -10550,7 +10550,26 @@
         "point_model_route": "modelo",
         "rate_right_model": "Jev eligió el modelo correcto",
         "rate_wrong_model": "Jev eligió el modelo equivocado",
-        "truncated_turns_label": "Turnos anteriores recortados"
+        "truncated_turns_label": "Turnos anteriores recortados",
+        "point_memory_recall": "memoria",
+        "memory_similarity": "recuperadas: {{count}}",
+        "memory_kept": "Jev guardó: {{count}}",
+        "memory_saved_chars": "{{chars}} caracteres de prompt ahorrados",
+        "memory_baseline_label": "Recuperadas",
+        "memory_jev_label": "Guardadas por Jev",
+        "memory_candidates_label": "Memorias recuperadas",
+        "memory_none": "ninguna memoria",
+        "memory_confidence_title": "Confianza media de Jev en que una memoria valía el prompt, de 0 a 1",
+        "memory_confidence_latency_title": "Confianza media de Jev en que una memoria valía el prompt, de 0 a 1, y cuánto tardó la respuesta",
+        "memory_rate_right_jev": "Jev guardó las memorias correctas",
+        "memory_rate_wrong_jev": "Jev guardó las memorias equivocadas",
+        "memory_rate_baseline": "Valorar la selección por similitud",
+        "memory_rate_jev": "Valorar la selección de Jev",
+        "memory_rate_right_baseline": "La similitud recuperó las memorias correctas",
+        "memory_rate_wrong_baseline": "La similitud recuperó las memorias equivocadas",
+        "memory_kept_fallback": "guardadas tras el repliegue: {{count}}",
+        "memory_jev_label_fallback": "Guardadas (repliegue)",
+        "memory_saved_title": "Caracteres de prompt que ahorró el bloque de memoria más pequeño."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev miró esta llamada y la marcó. Eso no cambió nada sobre si la llamada estaba permitida: eso lo decidió el ajuste de permisos de esta sesión, y la llamada pudo haber sido rechazada igualmente.",
@@ -11416,7 +11435,7 @@
         "crew_members_desc": "La página Crew Members: todos tus agentes, cada uno con su propio hilo. Aún en construcción, así que no se ofrece hasta que actives esto.",
         "decisions": "Decisiones (Jev)",
         "decisions_desc": "Jev es un modelo de decisión pequeño y rápido. Con esto activado, {{productName}} le pregunta cuál de tus habilidades encaja con el mensaje que acabas de enviar — o si no encaja ninguna — y usa la elección de Jev en la parte de tus sesiones que se muestra bajo el interruptor; el resto conserva la regla de coincidencia de palabras que trae esta versión. Si Jev va lento, no responde o no da una respuesta utilizable, ese mensaje vuelve a la misma regla, así que ninguna decisión retrasa tu respuesta. Cada llamada también se anota en un registro de la máquina que ejecuta {{productName}}, para diagnóstico. Este interruptor no se guarda en el navegador, sino en la máquina que ejecuta {{productName}}, así que se aplica en todos los dispositivos desde los que lo abras.",
-        "decisions_egress": "Mientras esté activado, el texto de tus mensajes y los nombres y descripciones de tus habilidades salen de esta máquina. Se envían por Internet a Jev, el servicio de decisión que este {{productName}} está configurado para usar. Mientras esté desactivado, no se envía nada.",
+        "decisions_egress": "Mientras esto esté activado, el texto de tus mensajes y los nombres y descripciones de tus habilidades salen de esta máquina. Se envían por internet a Jev, el servicio de decisión para el que está configurado este {{productName}}. Dos categorías más tienen cada una su propio interruptor abajo y siguen apagadas hasta que enciendas una: el nombre y los argumentos de tus llamadas a herramientas, y fragmentos cortos de las memorias recuperadas para tu mensaje. Nada se envía mientras esto esté apagado.",
         "decisions_backend_required": "El {{productName}} que ejecuta este panel es más antiguo que esta función, así que todavía no hay nada que activar. Actualiza {{productName}} primero, desde Ajustes › Releases.",
         "decisions_sent_to": "Se envía a",
         "decisions_endpoint_moved": "Aceptaste enviar a una dirección distinta de la que hay ahora en los ajustes, así que no se envía nada. Apaga y vuelve a encender esto para aceptar la nueva dirección.",
@@ -11431,7 +11450,10 @@
         "decisions_tool_args_desc": "En una sesión que aprueba sus propias llamadas de herramienta, esto envía además el nombre y los argumentos de cada llamada a Jev, que pone una nota en las que le parecen dignas de mirar. Las contraseñas y claves se sustituyen antes de enviar nada. No cambia qué llamadas están permitidas. Está apagado hasta que lo enciendas, aunque el interruptor de arriba ya esté encendido.",
         "decisions_compaction": "Enviar también la conversación y las entradas de las llamadas a herramientas para que Jev puntúe la compactación",
         "decisions_compaction_desc": "Cada vez que el contexto se llena y {{productName}} compacta una sesión por su cuenta, esto envía a Jev esa conversación y las entradas de las llamadas a herramientas que hay en ella, y le pregunta cuáles habría valido la pena guardar. La SALIDA de las herramientas nunca se envía: solo cuántos caracteres tenía. Las contraseñas y las claves se sustituyen antes de enviar nada. Es una medición: la compactación ocurre igual que ahora, responda lo que responda Jev, y la respuesta sale como una línea en el aviso de compactación. Es la más amplia de las tres, así que está apagada hasta que la enciendes, aunque los interruptores de arriba ya estén encendidos.",
-        "decisions_point_compaction_keep": "Qué llamadas a herramientas guardaría una compactación (solo medición)"
+        "decisions_point_compaction_keep": "Qué llamadas a herramientas guardaría una compactación (solo medición)",
+        "decisions_memory_text": "Enviar también fragmentos de las memorias recuperadas para que Jev descarte las que no ayudan",
+        "decisions_memory_text_desc": "Cuando el asistente le hace una pregunta a su propia memoria, vuelven las entradas con la redacción más parecida. Esto también envía a Jev el id de cada una y los primeros 200 caracteres de su texto, y Jev dice cuáles quedarse. Solo puede quitarlas — nunca añadir una, nunca reordenarlas — y si va lento o no responde, vuelven todas como antes. Las contraseñas y las claves se reemplazan antes de enviar nada. Apagado hasta que lo enciendas, aunque el interruptor de arriba ya esté encendido.",
+        "decisions_scope_save_failed": "No se pudo guardar este interruptor. Vuelve a mostrar el valor guardado."
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",

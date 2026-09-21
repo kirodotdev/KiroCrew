@@ -2,7 +2,8 @@
 
 ``GET  /api/decisions/consent``   the keystone plus the endpoint config names now
 ``PUT  /api/decisions/consent``   ``{"enabled": bool}`` -> writes it, bound to that endpoint
-                                 plus the ``tool_args`` / ``compaction`` egress scopes,
+                                 plus the ``tool_args`` / ``compaction`` /
+                                 ``memory_text`` egress scopes,
                                  each preserved when its field is omitted
 ``POST /api/decisions/feedback``  a person's verdict on one turn -> one appended log row
 
@@ -183,6 +184,11 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # before this scope existed reads false here rather than inheriting either of
         # the narrower yeses.
         "compaction": consent.consented_compaction(state),
+        # Whether the owner consented to sending the TEXT OF RECALLED MEMORIES, on
+        # the same terms and reported for the same reason: a record written before
+        # this scope existed reads false here, which is what the card must draw for
+        # it rather than inferring the scope from ``enabled``.
+        "memory_text": consent.consented_memory_text(state),
     }
 
 
@@ -210,6 +216,30 @@ async def api_decisions_consent_get(request: web.Request) -> web.Response:
         resources=f"decisions_consent.json endpoint={payload['configured_endpoint']}",
     )
     return web.json_response(payload)
+
+
+def _consent_write_verb(*asserted: object) -> str:
+    """The audit verb for a consent write, from the values it actually carried.
+
+    ``granted`` when any carried value is ``True``, ``revoked`` when every carried value
+    is ``False``, and ``allowed`` when the body carried none of them -- a PUT that
+    asserts nothing changes nothing, so calling it either would be a claim about egress
+    that nobody made.
+
+    A non-boolean is a KEEP sentinel, meaning the field is absent from the body, so it
+    is not counted: that is the whole point of taking the verb from the request rather
+    than from the recorded state, where a scope revocation beside a still-enabled switch
+    reads as a grant.
+
+    Callers pass BOOLEANS, so a field that is not one -- the history ceiling is a number
+    -- arrives already reduced to the question this answers: does this value widen egress.
+    Keeping that reduction at the call site is what lets one rule cover a switch, a scope
+    and a ceiling without this function learning what any of them mean.
+    """
+    values = [value for value in asserted if isinstance(value, bool)]
+    if not values:
+        return "allowed"
+    return "granted" if any(values) else "revoked"
 
 
 async def api_decisions_consent_put(request: web.Request) -> web.Response:
@@ -248,6 +278,12 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     absent on a keystone that never had it reads as false. It is a field of its own
     rather than a wider reading of ``tool_args`` because the owner reviewed that one
     as the arguments of the one call about to run.
+
+    ``memory_text`` records the same answer for the TEXT OF RECALLED MEMORIES, the
+    category ``memory.recall`` needs, on identical terms. Independent fields because
+    they are independent decisions: an owner may want risky tool calls flagged without
+    the contents of their memory store leaving the machine, and any order of those
+    answers has to be recordable.
 
     ``history_budget_chars`` records the prior-conversation CEILING the owner
     reviewed, and it is here for the same reason ``endpoint`` is: the value in force
@@ -296,7 +332,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # It is only a scope-only write when a scope is actually present: a body naming
     # neither the switch nor a scope asks for nothing and stays a 400, so an empty or
     # misspelled body is refused rather than silently rewriting the record as itself.
-    scope_named = isinstance(body, dict) and ("tool_args" in body or "compaction" in body)
+    _SCOPE_FIELDS = ("tool_args", "compaction", "memory_text")
+    scope_named = isinstance(body, dict) and any(field in body for field in _SCOPE_FIELDS)
     enabled = body.get("enabled", consent.KEEP_ENABLED) if isinstance(body, dict) else None
     if enabled is consent.KEEP_ENABLED and not scope_named:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -375,6 +412,20 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # The recalled-memory scope, read and validated on exactly the terms above: the
+    # sentinel is handed on rather than resolved here so the writer resolves it from
+    # the same read its write is based on, and a truthy stand-in is a 400 rather than
+    # a silent yes about a new egress category.
+    memory_text = (
+        body.get("memory_text", consent.KEEP_MEMORY_TEXT) if isinstance(body, dict) else False
+    )
+    if memory_text is not consent.KEEP_MEMORY_TEXT and not isinstance(memory_text, bool):
+        await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
+        return web.json_response(
+            {"error": '"memory_text" must be true or false', "code": _CODE_INVALID_BODY},
+            status=400,
+        )
+
     # Bound to the endpoint the owner REVIEWED, checked against the one the
     # config names now. Equal: consent is for the address on screen, and the one
     # the gate will hold the config to afterwards. Different: the config moved
@@ -386,28 +437,59 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     from kiro_crew.decisions.capability import is_decisions_denied
 
     withdrawn = await asyncio.to_thread(is_decisions_denied)
-    # ``is True`` and not truthiness: ``KEEP_ENABLED`` is an object and would pass a bare
-    # ``if``, which would put a scope-only write through the endpoint echo it has no
-    # ``endpoint`` for. Only an ENABLING write is gated here, and a scope-only write is
-    # not one -- it cannot turn the seam on, so it acquires no authority a withdrawn
-    # ceiling would have to refuse.
+    # What the fleet ceiling is held against is whether this write GRANTS something:
+    # consent itself, or an egress scope. Only a grant is gated -- a disabling or
+    # revoking PUT stays available so an owner can clear a record written before the pin
+    # (the gate already reads it as off, so the write changes no authority, it only
+    # tidies the record), and trapping them with a stale `"enabled": true` they cannot
+    # clear would be worse than the record.
+    #
+    # A scope-only write is in scope for this: it carries ``KEEP_ENABLED`` and therefore
+    # asserts nothing about consent, but turning a scope ON under a pin would still
+    # record an egress permission the fleet has withdrawn.
+    #
+    # A NON-ZERO history ceiling grants too, on exactly that reading: the number bounds
+    # how much prior conversation the seam may carry, so recording one under a pin books
+    # an egress allowance for the moment the pin lifts -- and the pin is when it is
+    # cheapest to record, because nothing sends while it holds. Tested by VALUE and not
+    # against the recorded ceiling: reading the old number here would be the stale read
+    # this route refuses to take (the writer resolves the sentinel under its own lock),
+    # and no read is needed, because ``0`` is the only budget write that cannot widen
+    # anything. So ``0`` stays available under a pin for the reason a revoke does -- it
+    # is how prior turns are taken back -- and any other number waits for the pin to
+    # lift. ``enabled is False`` is excluded because the writer forces the ceiling to 0
+    # on a disabling write, so such a PUT records no allowance and must not be trapped.
+    budget_grants = (
+        budget is not consent.KEEP_HISTORY_BUDGET and budget > 0 and enabled is not False
+    )
+    grants = (
+        enabled is True
+        or tool_args is True
+        or compaction is True
+        or memory_text is True
+        or budget_grants
+    )
+    # The same answer, carried to the audit verb below with the ABSENT case kept apart
+    # from the false one: `budget_grants` is False both for a ceiling that widens nothing
+    # and for a body that mentioned no ceiling at all, and those two must not audit alike
+    # -- a PUT asserting nothing is `allowed`, not `revoked`.
+    budget_asserts: object = (
+        budget_grants if budget is not consent.KEEP_HISTORY_BUDGET else consent.KEEP_HISTORY_BUDGET
+    )
+    if grants and withdrawn:
+        await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied")
+        return web.json_response(
+            {
+                "error": "the decision seam is withdrawn by governance policy",
+                "code": _CODE_CAPABILITY_DENIED,
+            },
+            status=403,
+        )
+    # ``is True``, not truthiness: ``enabled`` may be the ``KEEP_ENABLED`` sentinel,
+    # which is an object and therefore truthy. Only a write that actually turns consent
+    # on has to echo the reviewed address -- a scope-only write is not consenting to an
+    # address, it is leaving the recorded one exactly as it is.
     if enabled is True:
-        # The fleet's ceiling, ahead of every other check on an enabling write: a
-        # withdrawn seam must not acquire a keystone that says otherwise. Only the
-        # ENABLING direction is gated -- a disabling PUT stays available so an owner
-        # can clear a consent recorded before the pin (the gate already reads it as
-        # off, so the write changes no authority, it only tidies the record).
-        if withdrawn:
-            await _audit(
-                request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied"
-            )
-            return web.json_response(
-                {
-                    "error": "the decision seam is withdrawn by governance policy",
-                    "code": _CODE_CAPABILITY_DENIED,
-                },
-                status=403,
-            )
         reviewed = consent.normalize_endpoint(body.get("endpoint"))
         if not reviewed:
             await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -438,6 +520,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             history_budget_chars=budget,
             tool_args=tool_args,
             compaction=compaction,
+            memory_text=memory_text,
         )
     except consent.ConsentCorruptError as exc:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="error", error="corrupt")
@@ -452,15 +535,30 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     await _audit(
         request,
         operation=OP_CONSENT_PUT,
-        # The state that was WRITTEN, not what the body asked for: a scope-only write
-        # names no switch, and an auditor needs the row to say which way the record
-        # stands afterwards.
-        outcome="granted" if consent.is_enabled(state) else "revoked",
+        # The verb names what THIS write ASSERTS, not the state it leaves behind. A
+        # scope-only PUT that turns a scope off is a revocation even while consent stays
+        # on, so a verb read off the recorded flag names it "granted" -- the opposite of
+        # what the request asked for, in the one record an auditor reconstructs egress
+        # from. Only fields the body actually carries count: a sentinel means the field is
+        # absent, so it asserts nothing. A body that asserts nothing at all changes
+        # nothing and is neither, so it audits as a plain allowed read-modify-write. A
+        # mixed write that grants one thing and revokes another reads as "granted",
+        # naming the widest thing it does; `resources` below carries every recorded value,
+        # so the row says exactly what the file holds afterwards either way.
+        #
+        # The CEILING is judged on the same terms the governance check above judges it
+        # on, and by reusing that same value rather than a second test of it: a bigger
+        # number widens egress, so it is a grant, and `0` takes prior turns back, so it
+        # is a revocation. One expression decides both what a pin refuses and what the
+        # row says happened, which is the only way the two cannot drift into a refused
+        # write the log calls something else.
+        outcome=_consent_write_verb(enabled, tool_args, compaction, memory_text, budget_asserts),
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
             f"history_budget_chars={consent.consented_history_budget(state)} "
             f"tool_args={consent.consented_tool_args(state)} "
-            f"compaction={consent.consented_compaction(state)}"
+            f"compaction={consent.consented_compaction(state)} "
+            f"memory_text={consent.consented_memory_text(state)}"
         ),
     )
     return web.json_response(_payload(state, denied=withdrawn))

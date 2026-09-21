@@ -1327,6 +1327,58 @@ def open_member_database(
     return store
 
 
+#: Characters of one episode's text a rendered line carries. Named because three
+#: readers need the same number: ``get_episodic_context``'s block, the ``fit`` walk in
+#: ``_recall_once`` that bounds a recall's evidence, and
+#: ``decisions/points/memory_recall.py``, which measures a decision's saving against the
+#: same clip. A literal in one place and a different literal in another would make the
+#: saving a number about text nobody rendered.
+EPISODIC_BLOCK_TEXT_CHARS = 1500
+
+
+def _kept_episodes(
+    results: list[dict],
+    keep: Callable[[list[dict]], list[dict] | None] | None,
+) -> list[dict]:
+    """*results* narrowed by *keep*, or *results* unchanged.
+
+    Every unusable answer keeps the full result: ``None`` (no decision), a raise, a
+    non-sequence, and a row the search did not produce. The last one matters most -- a
+    hook may REMOVE entries and nothing else, so an answer carrying an unknown row is
+    treated as unusable rather than returned, and a recall can never hand back a memory
+    its own search did not rank.
+
+    Identity, not equality, is what membership is judged on: two distinct episodes
+    can hold equal dicts, and a membership test by value would let one answer
+    admit the other.
+
+    Ranked order is preserved: the walk is over *results*, so a hook's own ordering is
+    discarded. A keep/drop answer says nothing about rank.
+    """
+    if keep is None:
+        return results
+    try:
+        narrowed = keep(list(results))
+    except Exception:
+        logger.debug("Episodic keep hook failed; injecting the similarity result")
+        return results
+    if narrowed is None:
+        return results
+    if not isinstance(narrowed, list):
+        logger.debug(
+            "Episodic keep hook returned %s; injecting the similarity result", type(narrowed)
+        )
+        return results
+    offered = {id(row) for row in results}
+    if any(id(row) not in offered for row in narrowed):
+        logger.debug("Episodic keep hook named a row this search did not rank; injecting it whole")
+        return results
+    # Ranked order is this module's, so the hook's own ordering is discarded: it
+    # answered a keep/drop question, which says nothing about rank.
+    chosen = {id(row) for row in narrowed}
+    return [row for row in results if id(row) in chosen]
+
+
 class VectorMemoryStore:
     """SQLite-backed structured memory with semantic keys and audit trail."""
 
@@ -4913,7 +4965,7 @@ class VectorMemoryStore:
         lines: list[str] = []
         total = 0
         for i, r in enumerate(results, 1):
-            text = r["text"][:1500]
+            text = r["text"][:EPISODIC_BLOCK_TEXT_CHARS]
             line = f"{i}. {text}"
             if self.algorithm_version == "v2":
                 line = f"{i}. [memory:{r['id']}] {text}"
@@ -8008,9 +8060,23 @@ class VectorMemoryStore:
                 raise _RecallSpaceChanged
 
     def recall(
-        self, query_text: str, *, cap: int = 3000, project_dir: str | Path | None = None
+        self,
+        query_text: str,
+        *,
+        cap: int = 3000,
+        project_dir: str | Path | None = None,
+        keep: Callable[[list[dict]], list[dict] | None] | None = None,
     ) -> dict:
-        """Compute once; discard mixed-space results and retry keyword-only once."""
+        """Compute once; discard mixed-space results and retry keyword-only once.
+
+        *keep*, when given, may narrow the recalled EPISODES before they are returned;
+        it returns ``None`` to keep every one. It is the seam the ``memory.recall``
+        decision point attaches to (``decisions/points/memory_recall.py``), reached
+        through the ``memory_recall`` tool, and it is a callable rather than a filtered
+        list so this method still owns the search: a hook that raises, returns a
+        non-list, or names rows this search did not produce leaves the recall result
+        exactly as it is.
+        """
         with self._db_lock:
             generation = self._space_generation
             signature = self.recorded_embedding_space()
@@ -8021,7 +8087,9 @@ class VectorMemoryStore:
         )
         query = _RecallQuery(vector, generation, signature)
         try:
-            return self._recall_once(query_text, cap=cap, project_dir=project_dir, query=query)
+            return self._recall_once(
+                query_text, cap=cap, project_dir=project_dir, query=query, keep=keep
+            )
         except _RecallSpaceChanged:
             # No inference on the retry, even when the first inference failed.
             # Keyword ranking cannot mix vector spaces during another switch.
@@ -8030,6 +8098,7 @@ class VectorMemoryStore:
                 cap=cap,
                 project_dir=project_dir,
                 query=_RecallQuery(None, None, None),
+                keep=keep,
             )
 
     def _recall_once(
@@ -8039,6 +8108,7 @@ class VectorMemoryStore:
         cap: int,
         project_dir: str | Path | None,
         query: _RecallQuery,
+        keep: Callable[[list[dict]], list[dict] | None] | None = None,
     ) -> dict:
         """Bounded on-demand member context with the evidence actually selected.
 
@@ -8122,7 +8192,7 @@ class VectorMemoryStore:
                 truncated = False
                 display_id = row["id"]
                 if episodic:
-                    body = row["text"][:1500]
+                    body = row["text"][:EPISODIC_BLOCK_TEXT_CHARS]
                 else:
                     body = f"{self._fact_label(row)}: {memory_v2.visible_json(row['value_json'])}"
                 line = f"[memory:{display_id}] {body}\n"
@@ -8166,6 +8236,14 @@ class VectorMemoryStore:
         _, episodes = fit(
             episodes, max(0, remainder - semantic_chars - wrapper_size), episodic=True
         )
+        # The decision seam, AFTER `fit` and before the payload is rendered. The
+        # ordering is the rule: `fit` is the char budget, so it decides which ranked
+        # episodes this recall would return. A hook shown the pre-budget list could drop
+        # a high-ranked episode and free room a lower-ranked one then fits into, which is
+        # the hook WIDENING the result rather than narrowing it. Screening what `fit`
+        # selected can only shrink the payload, and `bound_recall_payload` below renders
+        # the contexts and char counts from the evidence, so the numbers follow.
+        episodes = _kept_episodes(episodes, keep)
         # Contexts, char counts and previews are rendered from the evidence here.
         result = bound_recall_payload(
             {
