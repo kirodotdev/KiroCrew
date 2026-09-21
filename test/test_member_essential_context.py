@@ -1181,3 +1181,146 @@ def test_document_cap_still_bounds_declared_file_resources(env):
         projected_resource_documents(
             {"id": "writer-template", "resources": resources}, str(env.project)
         )
+
+
+def test_object_form_declaration_reaches_the_launch_document_path(env):
+    """The launch path, not just the helper, has to admit an object declaration.
+
+    kiro-cli documents no string form for a knowledge base, so a member bound to
+    such a template could not start: the launch-document build refused the spec
+    before the child process existed.
+    """
+    from kiro_crew.member_essential_context import kiro_launch_documents
+
+    resources = [
+        "file://declared-guide.md",
+        {
+            "type": "knowledgeBase",
+            "source": "file://kb",
+            "name": "ProjectDocs",
+            "indexType": "best",
+            "include": ["**/*.md"],
+            "autoUpdate": True,
+        },
+    ]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    documents = kiro_launch_documents("writer-template", str(env.project))
+    assert "Declared guide: examples must be reproducible." in [body for _, body in documents]
+
+
+def test_object_form_declaration_is_admitted_and_read_by_nobody(env):
+    """Admitting the entry must not turn its source into an essential document.
+
+    No path is derived from the entry, so a readable directory of markdown
+    behind ``source`` contributes no text.
+    """
+    from kiro_crew.member_essential_context import (
+        documents_for_member,
+        projected_resource_documents,
+    )
+
+    source_dir = env.project / "kb"
+    source_dir.mkdir()
+    (source_dir / "inside.md").write_text("KB_SOURCE_BODY", encoding="utf-8")
+    resources = [
+        "file://declared-guide.md",
+        {"type": "knowledgeBase", "source": "file://kb", "name": "ProjectDocs"},
+    ]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    bodies = [body for _, body in documents_for_member("writer-template", str(env.project))]
+    assert "Declared guide: examples must be reproducible." in bodies
+    assert not any("KB_SOURCE_BODY" in body for body in bodies)
+
+    projected = projected_resource_documents(
+        {"id": "writer-template", "resources": resources}, str(env.project)
+    )
+    assert list(projected.values()) == ["Declared guide: examples must be reproducible."]
+
+
+def test_object_form_source_cannot_widen_the_admitted_roots(env):
+    """A source outside every admitted root is still not a location this reads.
+
+    A ``file://`` declaration that escaped its root would be refused by ``_read``;
+    an object declaration is never resolved at all. Spelled without ``name`` and
+    also declared alone, so admission depends neither on an optional key nor on
+    a ``file://`` sibling.
+    """
+    from kiro_crew.member_essential_context import (
+        documents_for_member,
+        kiro_launch_documents,
+        projected_resource_documents,
+    )
+
+    outside = env.project.parent / "outside-kb"
+    outside.mkdir()
+    (outside / "secret.md").write_text("OUTSIDE_ROOT_BODY", encoding="utf-8")
+    nameless = {"type": "knowledgeBase", "source": f"file://{outside}"}
+    resources = ["file://declared-guide.md", nameless]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    bodies = [body for _, body in documents_for_member("writer-template", str(env.project))]
+    assert "Declared guide: examples must be reproducible." in bodies
+    assert not any("OUTSIDE_ROOT_BODY" in body for body in bodies)
+
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": [nameless]}),
+        encoding="utf-8",
+    )
+    launched = kiro_launch_documents("writer-template", str(env.project))
+    assert not any("OUTSIDE_ROOT_BODY" in body for _, body in launched)
+    assert (
+        projected_resource_documents(
+            {"id": "writer-template", "resources": [nameless]}, str(env.project)
+        )
+        == {}
+    )
+
+
+def test_object_form_declarations_do_not_spend_the_document_budget(env):
+    """An entry nothing reads cannot exhaust the budget for entries that are read."""
+    from kiro_crew.member_essential_context import documents_for_member
+
+    knowledge_bases = [
+        {"type": "knowledgeBase", "source": f"file://kb-{index}", "name": f"kb-{index}"}
+        for index in range(70)
+    ]
+    resources = ["file://declared-guide.md", *knowledge_bases]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    documents = documents_for_member("writer-template", str(env.project))
+    assert "Declared guide: examples must be reproducible." in [body for _, body in documents]
+
+
+@pytest.mark.parametrize("malformed", [42, ["file://nested.md"], None])
+def test_resources_still_refuse_an_entry_that_is_neither_uri_nor_object(env, malformed):
+    """Admitting the object form is not the same as admitting anything.
+
+    kiro-cli refuses the same shapes (``resource must be a string (file:// or
+    skill://) or an object``). Asserted on the refusal, not its wording.
+    """
+    from kiro_crew.member_essential_context import (
+        documents_for_member,
+        projected_resource_documents,
+    )
+
+    resources = ["file://declared-guide.md", malformed]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    with pytest.raises(MemberEssentialContextError):
+        documents_for_member("writer-template", str(env.project))
+    with pytest.raises(MemberEssentialContextError):
+        projected_resource_documents(
+            {"id": "writer-template", "resources": resources}, str(env.project)
+        )

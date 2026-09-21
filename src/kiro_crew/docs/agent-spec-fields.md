@@ -401,7 +401,7 @@ does.
 
 | Field | Type | Effect |
 |---|---|---|
-| `resources` | list | Two unrelated URI schemes in one list. |
+| `resources` | list | Two unrelated URI schemes and one object form in one list. |
 
 `skill://<glob>` maps skills to the agent. `skill_resource_uris` reads them in
 order and `expand_skill_uri` turns each into an fnmatch glob over real paths:
@@ -417,6 +417,18 @@ the spec file (`<project>/.kiro/agents/foo.json` → `<project>`).
 `kirocrew.json` specifically — not from the session's active agent — globs each
 pattern against `$HOME`, and admits only `*.md` files that stay under the trust
 base and are not sensitive locations.
+
+A knowledge base is the one entry that is an **object**, not a URI: kiro-cli
+documents `{"type": "knowledgeBase", "source": "file://./docs", "name": ...}` in
+the same list and no string spelling exists for it. This reader checks shape
+only — a URI string or an object, the contract kiro-cli itself reports as
+`resource must be a string (file:// or skill://) or an object` — and leaves the
+keys inside to the backend. Crew never reads the entry: no document, no budget
+spent, no path derived, so the admitted roots are unchanged.
+`to_client_custom_agent` projects string entries only, so the object never
+reaches the KAS wire. `agent_capabilities._rows` still requires strings, because
+each entry is a catalog key: a member enrolled in capability management cannot
+carry the object until that model represents it.
 
 `_skills_injection_plan` is the single decision for `skill://`, and it reads the
 mapping, not the backend:

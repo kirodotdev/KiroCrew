@@ -21,18 +21,23 @@ _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
 
+# A resources entry is a URI string this reader may open, or an object whose
+# keys are kiro-cli's schema. The alias records the shape, not those keys.
+ResourceDeclaration = str | dict[str, object]
+
 
 class MemberEssentialContextError(ValueError):
     """A declared essential source cannot be included completely and safely."""
 
 
-def _declared_document_count(resources: list) -> int:
+def _declared_document_count(resources: list[ResourceDeclaration]) -> int:
     """How many declared resources can become essential documents.
 
-    Only ``file://`` declarations are ever read; ``skill://``, ``knowledge://``
-    and other schemes stay on demand and never enter the essentials snapshot,
-    so they must not consume the document budget either. An agent that declares
-    seventy skills and no files loads zero documents.
+    Only ``file://`` declarations are ever read; ``skill://`` strings and
+    object-form ``knowledgeBase`` declarations stay on demand and never enter
+    the essentials snapshot, so they must not consume the document budget
+    either. An agent that declares seventy skills and no files loads zero
+    documents.
     """
     return sum(1 for r in resources if isinstance(r, str) and r.startswith("file://"))
 
@@ -488,10 +493,10 @@ def documents_for_member(
         )
     resources = spec.get("resources", [])
     if include_project and (
-        not isinstance(resources, list) or any(not isinstance(r, str) for r in resources)
+        not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources)
     ):
         raise MemberEssentialContextError(
-            f"Essential template {spec_path}: resources must be a list of strings"
+            f"Essential template {spec_path}: resources must be a list of declarations"
         )
     if include_project and isinstance(resources, list):
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
@@ -536,7 +541,7 @@ def _resource_pattern(path: Path, root: Path) -> str:
 
 
 def _resource_paths(
-    resources: list[str], source_root: Path, absolute_root: Path
+    resources: list[ResourceDeclaration], source_root: Path, absolute_root: Path
 ) -> list[tuple[Path, Path]]:
     paths: list[tuple[Path, Path]] = []
     if _declared_document_count(resources) > _MAX_DOCUMENTS:
@@ -544,7 +549,7 @@ def _resource_paths(
             "Essential resource declaration exceeds the document limit"
         )
     for resource in resources:
-        if not resource.startswith("file://"):
+        if not isinstance(resource, str) or not resource.startswith("file://"):
             continue
         path = Path(resource[7:]).expanduser()
         root = absolute_root if path.is_absolute() else source_root
@@ -567,12 +572,13 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
 
     No implicit project scan and no template reread: project overrides cannot
     substitute their resources for the global definition KAS actually registers.
-    Conditional inclusion stays with the native selector; skill/knowledge URI
-    resources keep their on-demand behavior and are never treated as full text.
+    Conditional inclusion stays with the native selector; skill URI resources
+    and object-form ``knowledgeBase`` declarations keep their on-demand
+    behavior and are never treated as full text.
     """
     resources = definition.get("resources", [])
-    if not isinstance(resources, list) or any(not isinstance(r, str) for r in resources):
-        raise MemberEssentialContextError("Projected resources must be a list of strings")
+    if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
+        raise MemberEssentialContextError("Projected resources must be a list of declarations")
     documents: dict[str, str] = {}
     for path, root in _resource_paths(resources, Path(cwd), Path.home()):
         if str(path) in documents:
