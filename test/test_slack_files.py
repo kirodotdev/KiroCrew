@@ -29,6 +29,17 @@ def _make_orch(download_content: bytes = b"hello") -> MagicMock:
     return orch
 
 
+async def _process(orch: MagicMock, files: list[dict]) -> tuple[list[str], list[str]]:
+    """The flattened ``(paths, text_blocks)`` view of :func:`process_slack_files`.
+
+    The function returns the full ``IngestResult`` (so the caller can tell a
+    promoted image from a temp file); these tests assert on the flattened shape,
+    which this helper rebuilds from it.
+    """
+    result = await process_slack_files(orch, files)
+    return [*result.image_paths, *result.file_paths], [*result.text_blocks, *result.rejections]
+
+
 class TestSafeSuffix:
     def test_normal(self):
         assert _safe_suffix("png") == ".png"
@@ -56,7 +67,7 @@ class TestProcessSlackFiles:
                 "size": 1024,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(image_paths) == 1
         assert image_paths[0].endswith(".png")
         assert os.path.exists(image_paths[0])
@@ -75,7 +86,7 @@ class TestProcessSlackFiles:
                 "size": _MAX_IMAGE_BYTES + 1,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         # Reported, not silently skipped: a dropped attachment with no
         # explanation is the defect this change fixes.
@@ -94,7 +105,7 @@ class TestProcessSlackFiles:
                 "size": len(content),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert len(text_blocks) == 1
         assert "[File: code.py]" in text_blocks[0]
@@ -114,7 +125,7 @@ class TestProcessSlackFiles:
                 "size": len(content),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(text_blocks) == 1
         assert "[File: data.json]" in text_blocks[0]
 
@@ -130,7 +141,7 @@ class TestProcessSlackFiles:
                 "size": _MAX_TEXT_BYTES + 1,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert len(text_blocks) == 1
         assert "too large" in text_blocks[0]
@@ -149,7 +160,7 @@ class TestProcessSlackFiles:
                 "size": len(content),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(text_blocks) == 1
         assert "truncated" in text_blocks[0]
 
@@ -166,7 +177,7 @@ class TestProcessSlackFiles:
                 "size": len(payload),
             }
         ]
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        attachment_paths, text_blocks = await _process(orch, files)
         assert len(attachment_paths) == 1
         assert attachment_paths[0].endswith(".zip")
         with open(attachment_paths[0], "rb") as fh:
@@ -188,7 +199,7 @@ class TestProcessSlackFiles:
                 "size": _MAX_OPAQUE_BYTES + 1,
             }
         ]
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        attachment_paths, text_blocks = await _process(orch, files)
         assert attachment_paths == []
         assert any("too large" in block for block in text_blocks)
         orch.slack.download_file.assert_not_called()
@@ -205,7 +216,7 @@ class TestProcessSlackFiles:
                 "size": 1000,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         # Audio is transcribed on a separate upstream path, so it is skipped
         # here SILENTLY -- this is not a rejection the user needs to see.
@@ -216,7 +227,7 @@ class TestProcessSlackFiles:
     async def test_no_url_skipped(self):
         orch = _make_orch()
         files = [{"mimetype": "image/png", "name": "no_url.png", "size": 100}]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         # A missing URL is now REPORTED rather than silently swallowed: a
         # dropped attachment with no explanation is the defect being fixed.
@@ -235,7 +246,7 @@ class TestProcessSlackFiles:
                 "size": 100,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(image_paths) == 1
         os.unlink(image_paths[0])
 
@@ -256,7 +267,7 @@ class TestProcessSlackFiles:
                 "size": 100,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         # Reported, not silently skipped.
         assert any("download failed" in b for b in text_blocks)
@@ -294,7 +305,7 @@ class TestProcessSlackFiles:
         with patch(
             "kiro_crew.messaging.attachments.tempfile.mkstemp", side_effect=tracking_mkstemp
         ):
-            await process_slack_files(orch, files)
+            await _process(orch, files)
         assert len(created_paths) == 1
         assert not os.path.exists(created_paths[0])
 
@@ -311,7 +322,7 @@ class TestProcessSlackFiles:
                 "size": 0,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(text_blocks) == 1
         assert "[File: empty.txt]" in text_blocks[0]
         assert "[End of file]" in text_blocks[0]
@@ -329,7 +340,7 @@ class TestProcessSlackFiles:
                 "size": 100,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert text_blocks == []
 
@@ -380,7 +391,7 @@ class TestProcessSlackFiles:
                 "size": 2000,
             },
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
 
         assert len(image_paths) == 1
         assert len(text_blocks) == 2  # text + pdf (could not extract)
@@ -404,7 +415,7 @@ class TestProcessSlackFiles:
                 "size": len(content),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert len(text_blocks) == 1
         assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd" not in text_blocks[0]
         assert "REDACTED" in text_blocks[0]
@@ -423,7 +434,7 @@ class TestProcessSlackFiles:
                 "size": len(payload),
             }
         ]
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        attachment_paths, text_blocks = await _process(orch, files)
         assert len(attachment_paths) == 1
         with open(attachment_paths[0], "rb") as fh:
             assert fh.read() == payload
@@ -458,7 +469,7 @@ class TestProcessSlackFiles:
                 "size": len(docx_bytes),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert len(text_blocks) == 1
         assert "[Document: narrative.docx]" in text_blocks[0]
@@ -494,7 +505,7 @@ class TestProcessSlackFiles:
                 "size": len(pptx_bytes),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert len(text_blocks) == 1
         assert "[Document: review.pptx]" in text_blocks[0]
@@ -515,7 +526,7 @@ class TestProcessSlackFiles:
                 "size": _MAX_DOC_BYTES + 1,
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
+        image_paths, text_blocks = await _process(orch, files)
         assert image_paths == []
         assert len(text_blocks) == 1
         assert "too large" in text_blocks[0]

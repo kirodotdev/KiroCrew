@@ -2706,9 +2706,10 @@ async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
     )
     # EVERY cross-surface publication asks, not just the channel-neutral leg: Slack
     # is an audience too, and it resolves its thread owner live. Four sites -- the
-    # channel-neutral reply, the Slack reply, the mid-turn tool stream, and the
-    # teardown's final task append, which would otherwise publish a title whose
-    # in-progress append was withheld.
+    # channel-neutral reply, the Slack renderer's seal, the shared
+    # `_mirror_publishes()` predicate every live mirror leg (text, thinking, tool
+    # cards, redactor flush) goes through, and the teardown, which closes a
+    # withheld turn's stream without publishing (`close(publish=False)`).
     asks = src.count("cross_surface_withheld(state, slot)")
     assert asks == 4, f"expected four fenced publication sites, found {asks}"
 

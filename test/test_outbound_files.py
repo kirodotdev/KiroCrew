@@ -172,6 +172,34 @@ class TestDestinationForms:
         result = extract_local_refs(f"![x](<{p}>)")
         assert [f.path for f in result.files] == [str(p)]
 
+    def test_a_producer_wrapped_percent_path_round_trips(self, tmp_path: Path) -> None:
+        # The composer (and its backend mirror uploads.markdown_image_dest) writes a
+        # `%` in the path as `%25` inside the `<...>` wrap; the extractor is the
+        # inverse, so a data home named `kc%home` still resolves to the real file.
+        from kiro_crew.uploads import markdown_image_dest
+
+        p = _png(tmp_path, "kc%home/uploads/shot.png")
+        dest = markdown_image_dest(str(p))
+        assert dest.startswith("<") and "%25" in dest
+        result = extract_local_refs(f"![x]({dest})")
+        assert [f.path for f in result.files] == [str(p)]
+
+    def test_a_bare_legacy_percent_name_stays_verbatim(self, tmp_path: Path) -> None:
+        # Only the wrapped form is producer-emitted; a bare destination is history
+        # that must not be decoded -- `photo%20copy.png` is the file's real name.
+        p = _png(tmp_path, "photo%20copy.png")
+        result = extract_local_refs(f"![x]({p})")
+        assert [f.path for f in result.files] == [str(p)]
+
+    def test_a_malformed_percent_sequence_in_the_wrap_is_kept_as_written(
+        self, tmp_path: Path
+    ) -> None:
+        # `%zz` is not percent-encoding; like the frontend's decodeLocalPath the
+        # text is taken as written rather than guessed at.
+        p = _png(tmp_path, "odd%zzname.png")
+        result = extract_local_refs(f"![x](<{p}>)")
+        assert [f.path for f in result.files] == [str(p)]
+
     def test_title_suffix_is_not_part_of_the_path(self, tmp_path: Path) -> None:
         p = _png(tmp_path)
         result = extract_local_refs(f'![x]({p} "a title")')
