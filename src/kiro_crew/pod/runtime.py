@@ -1486,6 +1486,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "kiro_crew.pod.runtime_home": (
         "SeedError",
         "StoreMapping",
+        "_CREATE_ATTEMPTS",
         "_HOME_RECLAIM_ATTEMPTS",
         "_HOME_RECLAIM_PAUSE_SECS",
         "_RUNTIME_AUTH_STORE_FILE_CAP",
