@@ -2729,6 +2729,42 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   z-index: 1;
 }
 
+/* Composer halo (ChatInput.tsx): an offset-free shadow spreading evenly on all
+ * four sides, so the box reads as set INTO the page rather than dropped onto it.
+ * At rest it is neutral and faint; while the composer holds focus it takes the
+ * accent tint, lighting up together with the wrapper's focus-within accent
+ * border as one signal. Dark themes need a stronger alpha for the same
+ * perceived depth because the surrounding background is already near black.
+ * Neutral black is intentional: a themed shadow color would shift hue on
+ * colorful backgrounds instead of reading as depth. */
+.composer-halo {
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.06);
+  transition: box-shadow 0.18s ease;
+}
+.composer-halo:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+[data-theme*="dark"] .composer-halo {
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.30);
+}
+[data-theme*="dark"] .composer-halo:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* Memory-mode variants follow the wrapper's always-on border color (warn for
+ * incognito, aim for temporary) so focus reads as one color per control. */
+.composer-halo-warn:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 18%, transparent);
+}
+.composer-halo-aim:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 18%, transparent);
+}
+[data-theme*="dark"] .composer-halo-warn:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+[data-theme*="dark"] .composer-halo-aim:focus-within {
+  box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 22%, transparent);
+}
+
 /* File-diff chips (FileChangeChips.tsx): flatter edge — no top highlight or
  * refraction, just a hairline border. Composes with .glass-surface (keeps the
  * themed background + blur). Placed after the .glass-surface rules so it wins on
