@@ -7,6 +7,7 @@ import logging as _logging
 import time as _time
 from typing import TYPE_CHECKING, Any
 
+from ..subagent_persistence import _agent_dir, _check_result_available
 from ._component import ManagerComponent
 
 _glue_logger = _logging.getLogger(__name__)
@@ -28,7 +29,6 @@ if TYPE_CHECKING:
         VERDICT_WORKING,
         LivenessOracle,
         SubagentInfo,
-        _agent_dir,
         _attributed_count,
         _proc_subtree_sample,
         _redact,
@@ -49,6 +49,15 @@ if TYPE_CHECKING:
         time,
         write_tombstone,
     )
+
+
+def tombstone_recovery_action(agent_id: str) -> str:
+    """The terminal ``recovery_action`` for a tombstone: read it, or still notify.
+
+    ONE rule for every writer, so the two call sites cannot disagree.
+    """
+    has_result = _check_result_available(_agent_dir(agent_id) / "result.txt")
+    return "result_available" if has_result else "notification_pending"
 
 
 class OrphanStallMonitor(ManagerComponent):
@@ -349,15 +358,8 @@ class OrphanStallMonitor(ManagerComponent):
                     continue  # tracked in current run, skip
                 try:
                     pid = state.get("pid")
-                    has_result = False
-                    try:
-
-                        rp = _agent_dir(agent_id) / "result.txt"
-                        has_result = rp.exists() and rp.stat().st_size > 0
-                    except OSError:
-                        pass
-
-                    recovery = "undeliverable"
+                    recovery = tombstone_recovery_action(agent_id)
+                    has_result = recovery == "result_available"
                     if pid and self._manager._is_pid_alive(pid):
                         # Use pid_recorded_at (when PID was actually written) instead of
                         # started (folder creation time) to avoid false negatives under load
@@ -374,11 +376,6 @@ class OrphanStallMonitor(ManagerComponent):
                                 )
                             except Exception:
                                 logger.debug("SEL audit failed for orphan %s", agent_id)
-                        recovery = "result_available" if has_result else "notification_pending"
-                    elif has_result:
-                        recovery = "result_available"
-                    else:
-                        recovery = "notification_pending"
 
                     try:
                         write_tombstone(

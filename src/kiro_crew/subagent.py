@@ -140,6 +140,7 @@ from kiro_crew.subagent_manager import (
     bind_component_globals,
     copy_component_docs,
 )
+from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
 from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
@@ -3620,7 +3621,7 @@ class SubagentManager:
             write_tombstone(
                 info.id,
                 cause=cause,
-                recovery_action="pending",
+                recovery_action=tombstone_recovery_action(info.id),
                 pid=info._pid,
                 turns=info.turns,
                 last_tool=info.last_tool,
