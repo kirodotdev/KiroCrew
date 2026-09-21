@@ -26,7 +26,8 @@ import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
 import { isRejectedDecision } from '../utils/approvalDecision'
 import { automationForSlot, type AutomationRecord } from '../monitoring/automation'
-import { findReport, parseErrorCode, type ErrorReport } from '../utils/errorReport'
+import { findReport, parseErrorCode, recentErrors, recordError, redactSecrets, type ErrorReport } from '../utils/errorReport'
+import { chatSlotDetailPath } from '../api/chatSlotPaths'
 import type { HistoryDeleteRefusal } from '../utils/historyDeleteRefusal'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
@@ -2183,11 +2184,79 @@ export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolea
  *  reducers' pre-existing tolerance of that must survive this indirection. */
 const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' && arg !== null ? arg.key : arg
 
-/** Preserve the API report behind a localized switch failure without changing
- *  journal-less reducer fixtures or the serialized rejection contract. */
-const switchSlotFailureReport = (error: unknown): { report?: ErrorReport } => {
-  const report = findReport(errMessage(error))
-  return report ? { report } : {}
+/** The structured report behind a localized switch failure, so the pane notice's
+ *  "ask the agent" hand-off carries the request and the real error, not just the
+ *  sentence the user read.
+ *
+ *  Two sources, in order:
+ *
+ *  1. The transport journal. A non-2xx passed through `apiFailure`, which
+ *     recorded status, endpoint, backend `code` and body under the exact
+ *     message the `ApiError` carries. Matched on message AND this request's
+ *     endpoint, not `findReport`'s message-only lookup: two sessions failing
+ *     with the same words ("Failed to fetch", "HTTP 502") are two requests,
+ *     and the message-only match hands the second one the FIRST one's
+ *     endpoint — a prompt then names a session the user did not click.
+ *  2. Recorded HERE, when the journal has nothing. A fetch that REJECTED
+ *     (`TypeError: Failed to fetch` on a dropped connection, a body that was
+ *     not JSON) never reached `apiFailure`, so nothing journaled it — and the
+ *     notice's hand-off then shipped a prompt with only the localized
+ *     "could not be opened" line: no route, no endpoint, no underlying error,
+ *     which is exactly the dead end the journal exists to prevent.
+ *
+ *     The entry keeps the journal's own key contract: `message` is the sentence
+ *     the notice SHOWS (`switchSlotNoticeCopy`), and the raw error — class and
+ *     text, `TypeError: Failed to fetch` — travels in `detail`. Recording the
+ *     raw text as the message would make this entry the newest `"Failed to
+ *     fetch"` in a journal every other surface still searches by message alone,
+ *     so a different surface's Ask-agent prompt would name a session-open
+ *     request it never made. Wrong context is worse than the empty prompt this
+ *     replaces. The endpoint comes from `chatSlotDetailPath`, the same owner
+ *     the request itself uses. A status-less report has no `status` — the
+ *     prompt says what failed without inventing an HTTP code for a request
+ *     that got none.
+ *
+ *  Returns a spread-friendly shape so journal-less reducer fixtures and the
+ *  serialized rejection contract stay untouched. */
+const switchSlotFailureReport = (
+  error: unknown,
+  key: string,
+  shown: { kind: 'gone' | 'failed'; name: string },
+): { report?: ErrorReport } => {
+  const raw = errMessage(error)
+  const endpoint = chatSlotDetailPath(key)
+  // Same key normalization `findReport` applies (the journal stores redacted
+  // messages), newest first.
+  const needle = redactSecrets(raw).trim()
+  const found = needle ? recentErrors().find(r => r.endpoint === endpoint && r.message.trim() === needle) : undefined
+  if (found) return { report: found }
+  const status = (error as { status?: unknown } | null)?.status
+  const cls = (error as { name?: unknown } | null)?.name
+  const detail = typeof cls === 'string' && cls && cls !== raw ? (raw ? `${cls}: ${raw}` : cls) : raw
+  return {
+    report: recordError({
+      source: 'api',
+      message: switchSlotNoticeCopy(shown.kind, shown.name),
+      status: typeof status === 'number' ? status : undefined,
+      endpoint,
+      detail: detail || undefined,
+    }),
+  }
+}
+
+/** The sentence the pane notice shows for a `switchSlotGone` record. ONE owner
+ *  for ChatPage (which re-resolves it on a locale switch) and the journal entry
+ *  `switchSlotFailureReport` records under it — the journal is keyed by the
+ *  message as the UI shows it, so the two must be the same words. */
+export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): string {
+  if (kind === 'failed') {
+    return name
+      ? i18nT('store.chatSlice.session_open_error_named', { name })
+      : i18nT('store.chatSlice.session_open_error')
+  }
+  return name
+    ? i18nT('store.chatSlice.session_gone_open_failed_named', { name })
+    : i18nT('store.chatSlice.session_gone_open_failed')
 }
 
 export const switchSlot = createAsyncThunk<
@@ -2339,7 +2408,7 @@ export const switchSlot = createAsyncThunk<
             dispatch(chatSlice.actions.setSwitchSlotGone({
               name: name ?? '',
               kind: 'gone',
-              ...switchSlotFailureReport(e),
+              ...switchSlotFailureReport(e, key, { kind: 'gone', name: name ?? '' }),
             }))
           }
           // Evict only when the selection will ESCAPE the evicted key. The
@@ -2394,7 +2463,7 @@ export const switchSlot = createAsyncThunk<
             dispatch(chatSlice.actions.setSwitchSlotGone({
               name: name ?? '',
               kind: 'failed',
-              ...switchSlotFailureReport(e),
+              ...switchSlotFailureReport(e, key, { kind: 'failed', name: name ?? '' }),
             }))
           }
         }
@@ -2411,7 +2480,7 @@ export const switchSlot = createAsyncThunk<
         dispatch(chatSlice.actions.setSwitchSlotGone({
           name: name ?? '',
           kind: 'failed',
-          ...switchSlotFailureReport(e),
+          ...switchSlotFailureReport(e, key, { kind: 'failed', name: name ?? '' }),
         }))
       }
       throw e

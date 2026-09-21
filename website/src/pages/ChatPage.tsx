@@ -29,7 +29,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
-  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
+  switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone, switchSlotNoticeCopy,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
@@ -6713,15 +6713,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             locus, through the required ErrorNotice surface. The store carries
             the NAME; the sentence resolves here so a locale switch re-renders it. */}
         <ErrorNotice
-          message={switchSlotGone
-            ? (switchSlotGone.kind === 'failed'
-              ? (switchSlotGone.name
-                ? i18nT('store.chatSlice.session_open_error_named', { name: switchSlotGone.name })
-                : i18nT('store.chatSlice.session_open_error'))
-              : switchSlotGone.name
-                ? i18nT('store.chatSlice.session_gone_open_failed_named', { name: switchSlotGone.name })
-                : i18nT('store.chatSlice.session_gone_open_failed'))
-            : ''}
+          message={switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : ''}
           report={switchSlotGone?.report}
           onDismiss={() => dispatch(clearSwitchSlotGone())}
           askAgent

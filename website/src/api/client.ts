@@ -1,4 +1,5 @@
 import { installSessionExpiryHandler } from './sessionExpirySignal'
+import { chatSlotDetailPath } from './chatSlotPaths'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
   AppContributor,
@@ -4003,7 +4004,7 @@ export const api = {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
     if (before !== undefined) p.set('before', String(before))
-    return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
+    return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
   },
   /** Create a chat slot. `instance_id` binds the new session to a connected crew
    *  for EXECUTION: it lives in this machine's list and history, and its turns run
