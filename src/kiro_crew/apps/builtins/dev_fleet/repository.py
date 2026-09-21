@@ -250,7 +250,7 @@ def _repo_source_hint() -> str:
     )
 
 
-def _discover_main_repo() -> str:
+def _discover_main_repo(configured: str | None = None) -> str:
     """Resolve the main checkout, or ``""`` when there is none to find.
 
     Blocking (config read + stats) — executor only; ``dev_fleet_startup`` calls
@@ -262,8 +262,16 @@ def _discover_main_repo() -> str:
     ``""`` means "no checkout found" and is deliberately not a path: inventing
     one made the out-of-the-box dashboard report a checkout as missing that the
     user had never asked for, hiding the real question of where theirs lives.
+
+    ``configured`` lets a caller that has already read tier 2 hand its snapshot in
+    rather than paying a second read. That is not only cheaper, it closes a window:
+    two reads of one file can disagree, and a caller that acted on the first while
+    this function acted on the second could latch an INFERRED checkout on the
+    strength of a configured path the first read had seen. Passing ``None`` reads it
+    here, which is what a caller holding no snapshot wants.
     """
-    configured = _configured_main_repo()
+    if configured is None:
+        configured = _configured_main_repo()
     if configured:
         return configured
     for candidate in (
@@ -402,8 +410,41 @@ async def ensure_main_repo_discovered() -> None:
                 return
             if not await loop.run_in_executor(subprocess_executor(), _invalid_resolution_is_stale):
                 return
-        configured = await loop.run_in_executor(subprocess_executor(), _configured_main_repo)
-        discovered = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
+        # ONE checked read, handed to discovery below rather than read again there.
+        # Two reads of one file can disagree, and the pair is what a torn write is
+        # visible through: the staleness test above could see a whole, corrected path
+        # and reopen, while a second read returned "" and sent discovery to the
+        # INFERRED tiers. That latch is VALID, so it is final -- nothing re-resolves
+        # it and only a restart clears it, with `Pull + Build` meanwhile mutating a
+        # checkout the operator never named. A partial read therefore publishes
+        # nothing: the attempt returns, and the next poll retries against a settled
+        # file.
+        configured, configured_whole = await loop.run_in_executor(
+            subprocess_executor(), _configured_main_repo_checked
+        )
+        if not configured_whole:
+            # Publish the UNRESOLVED state rather than leaving the import-time hint
+            # standing. `_repo()` gates on `MAIN_REPO` alone and never consults
+            # `_DISCOVERY_DONE`, so returning with that hint in place lets every
+            # consumer operate on a checkout this attempt could not confirm: the
+            # provisional value `_default_main_repo_state` picks before any config is
+            # read, which `dev_fleet_startup` exists to replace and normalize. An
+            # attempt that cannot read tier 2 has no basis for endorsing it, and the
+            # alternative is `Pull + Build` running inside a checkout the operator may
+            # not have chosen. Cleared, `_repo()` raises `RepoNotConfigured`, the page
+            # shows the setup card, and the next poll retries against a settled file.
+            # `_DISCOVERY_DONE` is part of that clearing. The reopen path arrives here
+            # holding it True, and the gate above returns early once the pair is empty,
+            # so leaving it set strands the very poll this branch promises and freezes
+            # the page until a restart -- the failure this whole attempt exists to end.
+            MAIN_REPO = ""
+            MAIN_REPO_INFERRED = False
+            _REPO_INVALID_MSG = None
+            _DISCOVERY_DONE = False
+            return
+        discovered = await loop.run_in_executor(
+            subprocess_executor(), _discover_main_repo, configured
+        )
         invalid_msg: str | None = None
         if discovered:
             discovered = await loop.run_in_executor(

@@ -134,7 +134,13 @@ the INFERRED tiers and latch a checkout the operator never named while their own
 in a file this process merely failed to read, and every later git call would target it.
 `_load_dev_fleet_cfg_checked` reports whether every file present parsed, and only a whole
 read can say the operator's answer changed; a parseable file carrying no `repo_path` is an
-answer rather than a gap, so that case still reopens. Every
+answer rather than a gap, so that case still reopens. The attempt then takes ONE checked
+read and hands it to `_discover_main_repo` rather than letting that function read tier 2
+again, because two reads of one file can disagree: the staleness test could see a whole
+corrected path and reopen while a second read returned the empty string and sent
+discovery to the INFERRED tiers. That latch passes the marker test, so it is VALID and
+therefore final, nothing re-resolves it and only a restart clears it. A partial read
+publishes nothing at all and the next poll retries against a settled file. Every
 global the chain writes is a function of the current attempt alone, including the
 invalid-path message, which an attempt that finds nothing clears rather than inherits —
 `MAIN_REPO` from one attempt beside an earlier attempt's verdict would hand `_repo()` a path

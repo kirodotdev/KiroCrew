@@ -69,7 +69,7 @@ def _discovers(monkeypatch: pytest.MonkeyPatch, *results: str) -> list[int]:
     attempts: list[int] = []
     pending = list(results)
 
-    def _discover() -> str:
+    def _discover(configured: str | None = None) -> str:
         attempts.append(1)
         return pending.pop(0) if len(pending) > 1 else pending[0]
 
@@ -250,9 +250,11 @@ def _configured_tiers(monkeypatch: pytest.MonkeyPatch, *, valid: bool) -> dict:
     monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: state["valid"])
     monkeypatch.setattr(repository, "_repo_source_hint", lambda: "set dev_fleet.repo_path")
 
-    def _discover() -> str:
+    def _discover(configured: str | None = None) -> str:
         state["attempts"] += 1
-        return state["configured"]
+        # Production hands its one checked snapshot in; returning it keeps the stub
+        # faithful to that contract rather than reading the state a second time.
+        return state["configured"] if configured is None else configured
 
     monkeypatch.setattr(repository, "_discover_main_repo", _discover)
     return state
@@ -336,7 +338,7 @@ class TestACorrectedPathIsNotFrozenBehindTheLatch:
         monkeypatch.setattr(repository, "_repo_source_hint", lambda: "set by the env var")
         attempts: list[int] = []
 
-        def _discover() -> str:
+        def _discover(configured: str | None = None) -> str:
             attempts.append(1)
             return repository._configured_main_repo()
 
@@ -456,3 +458,132 @@ class TestAConfigReadThatFailedIsNotAConfigChange:
 
         monkeypatch.setattr(loader_mod, "config_dir", _boom)
         assert repository._load_dev_fleet_cfg_checked() == ({}, False)
+
+
+class TestAPartialReadAtDiscoveryLatchesNothing:
+    """The second read is the dangerous one, because its latch can be FINAL.
+
+    The staleness test and discovery each need the configured path, and two reads of
+    one file can disagree. If the first sees a whole, corrected path and reopens
+    while the second returns "" from a torn read, discovery falls to the INFERRED
+    tiers and latches a checkout that PASSES the marker test. A valid latch is
+    final: nothing re-resolves it, the staleness test only reopens a latched-INVALID
+    one, and `Pull + Build` meanwhile mutates a checkout the operator never named.
+    Only a restart clears it.
+
+    So the attempt takes ONE checked snapshot and hands it to discovery, and a
+    partial read publishes nothing at all.
+    """
+
+    async def test_a_partial_read_publishes_no_resolution(
+        self, fresh_discovery, monkeypatch
+    ) -> None:
+        """No latch, no inferred hint left serving, and the next poll may try again.
+
+        ``MAIN_REPO`` is seeded with the provisional import-time value on purpose. The
+        fixture zeroes it, so asserting it stays empty would pass whether or not the
+        attempt clears anything; a real install reaches this branch holding that hint,
+        and ``_repo()`` gates on ``MAIN_REPO`` alone, never on ``_DISCOVERY_DONE``.
+        """
+        calls: list[int] = []
+
+        def _discover(configured: str | None = None) -> str:
+            calls.append(1)
+            return "/opt/inferred-kirocrew"
+
+        monkeypatch.setattr(repository, "MAIN_REPO", "/opt/import-time-hint")
+        monkeypatch.setattr(repository, "MAIN_REPO_INFERRED", True)
+        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", False))
+        monkeypatch.setattr(repository, "_discover_main_repo", _discover)
+        monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
+        monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: True)
+        await repository.ensure_main_repo_discovered()
+        assert calls == []
+        assert repository.MAIN_REPO == ""
+        assert repository.MAIN_REPO_INFERRED is False
+        assert repository._DISCOVERY_DONE is False
+        with pytest.raises(repository.RepoNotConfigured):
+            repository._repo()
+
+    async def test_a_torn_read_on_the_reopen_path_leaves_the_next_poll_reachable(
+        self, fresh_discovery, monkeypatch
+    ) -> None:
+        """Clearing the published pair alone still strands the retry it promises.
+
+        A latched-INVALID resolution whose config has since been corrected reaches the
+        read with ``_DISCOVERY_DONE`` already True. Clearing ``MAIN_REPO`` and the
+        message without clearing that flag satisfies every assertion the sibling test
+        makes and still freezes the page, because the pre-lock gate returns early once
+        the pair is empty. Counting the reads is what sees it: the flag's value at the
+        end of one attempt cannot be told apart from a fresh start, so the second
+        attempt is the evidence.
+        """
+        reads: list[int] = []
+
+        def _checked() -> tuple[str, bool]:
+            reads.append(1)
+            return ("", False)
+
+        monkeypatch.setattr(repository, "_DISCOVERY_DONE", True)
+        monkeypatch.setattr(repository, "MAIN_REPO", "/opt/latched-invalid")
+        monkeypatch.setattr(repository, "_REPO_INVALID_MSG", "not a kirocrew checkout")
+        monkeypatch.setattr(repository, "_invalid_resolution_is_stale", lambda: True)
+        monkeypatch.setattr(repository, "_configured_main_repo_checked", _checked)
+        monkeypatch.setattr(repository, "_discover_main_repo", lambda configured=None: "")
+        await repository.ensure_main_repo_discovered()
+        assert len(reads) == 1
+        assert repository.MAIN_REPO == ""
+        assert repository._DISCOVERY_DONE is False
+        await repository.ensure_main_repo_discovered()
+        assert len(reads) == 2
+
+    async def test_a_whole_read_still_publishes(self, fresh_discovery, monkeypatch) -> None:
+        """The control: the same path resolves normally once the read is whole.
+
+        Without this, the test above would pass against a function that never
+        resolves anything.
+        """
+        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", True))
+        monkeypatch.setattr(
+            repository, "_discover_main_repo", lambda configured=None: "/opt/inferred-kirocrew"
+        )
+        monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
+        monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: True)
+        await repository.ensure_main_repo_discovered()
+        assert repository.MAIN_REPO == "/opt/inferred-kirocrew"
+        assert repository._DISCOVERY_DONE is True
+        assert repository.MAIN_REPO_INFERRED is True
+
+    async def test_discovery_reads_the_handed_snapshot_rather_than_the_file(
+        self, fresh_discovery, monkeypatch
+    ) -> None:
+        """Pins that the attempt passes its snapshot in, so there is no second read.
+
+        The stub returns whatever it is handed. If the attempt stopped passing the
+        value, discovery would receive None and fall back to reading the file, and
+        the resolved path would not be the snapshot's.
+        """
+        seen: list[str | None] = []
+
+        def _discover(configured: str | None = None) -> str:
+            seen.append(configured)
+            return configured or ""
+
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda: ("/opt/named-by-operator", True)
+        )
+        monkeypatch.setattr(repository, "_discover_main_repo", _discover)
+        monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
+        monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: True)
+        await repository.ensure_main_repo_discovered()
+        assert seen == ["/opt/named-by-operator"]
+        assert repository.MAIN_REPO == "/opt/named-by-operator"
+        assert repository.MAIN_REPO_INFERRED is False
+
+    async def test_the_default_still_reads_the_file_for_a_caller_with_no_snapshot(
+        self, monkeypatch
+    ) -> None:
+        """`dev_fleet_startup` and the tests call it with no argument, so that path stays."""
+        monkeypatch.setattr(repository, "_configured_main_repo", lambda: "/opt/from-the-file")
+        assert repository._discover_main_repo() == "/opt/from-the-file"
+        assert repository._discover_main_repo("/opt/handed-in") == "/opt/handed-in"
