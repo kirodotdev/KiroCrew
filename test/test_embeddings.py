@@ -1273,6 +1273,64 @@ class TestEmbedThreads:
         monkeypatch.setattr("os.cpu_count", lambda: cores)
         assert embeddings_mod._embed_threads() == expected
 
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    def test_unset_leaves_one_core_free(self, monkeypatch, cores, expected) -> None:
+        """Unset means llama.cpp never gets the whole box.
+
+        Handing every core to the batch pool starves the event loop the gateway
+        answers on, which a 2-vCPU host feels hardest. The 16-core expectation
+        is the one that matters twice: the cap is a CEILING on the four-thread
+        default, so a big host answers 4, not 15.
+        """
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
+        if cores > 1:
+            assert embeddings_mod._embed_threads() < cores
+
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    def test_the_declared_default_in_config_is_not_operator_intent(
+        self, monkeypatch, cores, expected
+    ) -> None:
+        """A whole-document config save materializes the declared default.
+
+        ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4
+        and ``KiroCrewConfig.save()`` publishes every field, so a fresh
+        install's ``config.json`` carries a 4 nobody typed. Reading that as a
+        choice hands the whole box to the very hosts the cap protects, so a raw
+        value equal to the default takes the same ceiling as an absent one.
+        """
+        assert embeddings_mod._DEFAULT_EMBED_THREADS == 4, (
+            "Raising this past 4 reinterprets every config.json already carrying 4: "
+            "it stops matching the declared default, becomes an explicit choice, and "
+            "hands back the full core count on the small hosts this cap protects. "
+            "Migrate those files before changing it."
+        )
+        monkeypatch.setattr(
+            embeddings_mod,
+            "_read_memory_config",
+            lambda: {"embedding_threads": embeddings_mod._DEFAULT_EMBED_THREADS},
+        )
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
+
+    @pytest.mark.parametrize("cores,configured", [(1, 1), (2, 2), (4, 3), (16, 8)])
+    def test_a_value_other_than_the_default_is_honoured_unclamped(
+        self, monkeypatch, cores, configured
+    ) -> None:
+        """An operator asking for every core on a small host still gets it."""
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": configured}
+        )
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == configured
+
+    def test_unknown_core_count_keeps_the_flat_default(self, monkeypatch) -> None:
+        """No count means no core to subtract, so the default is not reduced."""
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: None)
+        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
+
     def test_threads_reach_the_llama_constructor(self, tmp_path: Path, monkeypatch) -> None:
         """BOTH pools are pinned, not only the batch pool that runs inference."""
         fake_cls = _make_fake_llama_class()

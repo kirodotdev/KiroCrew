@@ -1850,10 +1850,13 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 **Embedding backend abstraction** (`EmbeddingBackend` ABC): the public swap seam for future runtimes (Ollama again, remote endpoints, ONNX) and user-defined models. Surface: `model_id`, `dim`, `is_ready()`, `embed()`, `embed_batch()`, `close()`. Consumers (vector memory, knowledge library) depend only on this interface; everything llama.cpp-specific lives in `LlamaCppEmbedder`. Swap flow: `register_embedding_backend(factory)` + `reset_shared_embedder()` replaces the singleton (pass `None` to restore the default). A backend with a different `model_id`/`dim` produces incomparable vectors — the knowledge library's `embed_signature` is derived from `embedding_space_signature` and so folds BOTH in, meaning a swap (including a width change at a constant model id) automatically triggers the sig-gated knowledge re-embed; vector memory re-embeds via `migrate`.
 
 **Shared embedding budget.** Native inference has one shared worker and model.
-The normal interactive default is four native threads; background bulk work
-defaults to one. Explicit normal and bulk thread settings are honored within
-the available CPU count and the existing configuration range of 1–256; a bulk
-value of 0 inherits the ordinary thread setting. At most eight pending native
+The normal interactive default is four native threads, capped at one core below
+the host's CPU count and never below one thread, so the event loop keeps a core
+wherever there is one to spare; background bulk work defaults to one. A normal-thread value equal to that four-thread default reads as
+the default policy rather than as operator intent, because a whole-document config
+save materializes it. Any other explicit normal or bulk thread setting is honored
+within the available CPU count and the existing configuration range of 1–256; a
+bulk value of 0 inherits the ordinary thread setting. At most eight pending native
 jobs are retained, with
 two slots reserved for interactive queries; overflow returns `None`, leaving
 unembedded writes eligible for ordinary backfill. Native batch calls contain

@@ -666,13 +666,29 @@ def _embed_threads() -> int:
 
     Read from the RAW ``memory`` config section for the same reason the rest of
     this module does: the download thread and the backend factory must not pull
-    in the full config dataclass import graph. Explicit operator settings are
-    honoured up to the host's CPU count.
+    in the full config dataclass import graph.
+
+    An operator value OTHER than the declared :data:`_DEFAULT_EMBED_THREADS` is
+    honoured up to the host's CPU count. Default policy caps that default one
+    core BELOW the count instead, so a 2-vCPU host keeps a core for the event
+    loop rather than handing llama.cpp the whole box. It is a ceiling on the
+    default, not a replacement for it: a 16-core host still answers 4.
+
+    A raw value EQUAL to the default is default policy, not operator intent.
+    ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
+    ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
+    ``config.json`` carries a 4 nobody typed; reading that as a choice would
+    hand the whole box to exactly the hosts this cap protects. The cost is that
+    4 cannot be pinned on a host with 4 or fewer cores -- any other number can.
     """
     raw = _read_memory_config().get("embedding_threads")
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
-        raw = _DEFAULT_EMBED_THREADS
-    return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+    cores = os.cpu_count()
+    requested = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+    if requested and requested != _DEFAULT_EMBED_THREADS:
+        return max(1, min(requested, cores or _DEFAULT_EMBED_THREADS))
+    if cores is None:
+        return _DEFAULT_EMBED_THREADS
+    return max(1, min(_DEFAULT_EMBED_THREADS, cores - 1))
 
 
 def bulk_embed_threads() -> int:

@@ -1889,7 +1889,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Threads",
-      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4; explicit settings are honoured up to the machine's core count. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
+      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4, capped one core below the machine's core count -- never below one thread, so a single-core host still embeds -- to leave the event loop a core wherever there is one to spare; 4 means that default, so pinning threads on a 4-core host takes another number. Any other setting is honoured up to the core count. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4

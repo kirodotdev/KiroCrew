@@ -89,9 +89,12 @@ Global V1 retains its existing session-start memory retrieval. Crew Member V2
 injects current persona, permanent rules and admitted project guides every turn;
 facts and past experiences are retrieved through the explicit `memory_recall`
 tool. All stores share one model and inference worker. The interactive
-`memory.embedding_threads` default is 4; `memory.embedding_bulk_threads` remains
-1. Explicit settings are honored up to the host's CPU count. Bulk threads may
-be 0 to inherit the normal setting. Background jobs share the configured bulk
+`memory.embedding_threads` default is 4, capped at one core below the host's
+CPU count -- never below one thread -- so the event loop keeps a core wherever
+there is one to spare; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so pinning threads on a host
+with 4 or fewer cores takes a different number; any other explicit setting is
+honored up to the full CPU count. Bulk threads may be 0 to inherit the normal
+setting. Background jobs share the configured bulk
 duty cycle, while waiting interactive queries take priority. A full inference
 queue leaves new rows pending and permits keyword retrieval, so additional
 members do not create unbounded native work.
