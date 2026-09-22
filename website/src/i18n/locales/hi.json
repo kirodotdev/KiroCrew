@@ -13820,7 +13820,12 @@
         "feature_videos_downloads_disabled": "वीडियो डाउनलोड बंद हैं। केवल पहले से सहेजे गए क्लिप चलेंगे।",
         "feature_videos_download_all": "सभी अभी डाउनलोड करें",
         "failed_to_load_feature_video_status": "फ़ीचर वीडियो कैश स्थिति लोड नहीं हो सकी",
-        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका"
+        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका",
+        "minimap_side_left": "बाएँ",
+        "minimap_side_right": "दाएँ",
+        "minimap": "मिनीमैप",
+        "minimap_location": "मिनीमैप का स्थान",
+        "minimap_location_desc": "दाएँ किनारे पर होने पर मिनीमैप स्क्रॉलबार की जगह लेता है।"
       },
       "computerUsePanel": {
         "accessibility": "सुगम्यता",

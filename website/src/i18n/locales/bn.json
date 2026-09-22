@@ -13820,7 +13820,12 @@
         "feature_videos_downloads_disabled": "ভিডিও ডাউনলোড বন্ধ আছে। শুধু আগে সংরক্ষিত ক্লিপগুলিই চলবে।",
         "feature_videos_download_all": "এখনই সব ডাউনলোড করুন",
         "failed_to_load_feature_video_status": "ফিচার ভিডিও ক্যাশের অবস্থা লোড করা যায়নি",
-        "failed_to_start_feature_video_download": "ডাউনলোড শুরু করা যায়নি"
+        "failed_to_start_feature_video_download": "ডাউনলোড শুরু করা যায়নি",
+        "minimap_side_left": "বাম",
+        "minimap_side_right": "ডান",
+        "minimap": "মিনিম্যাপ",
+        "minimap_location": "মিনিম্যাপের অবস্থান",
+        "minimap_location_desc": "ডান প্রান্তে থাকলে মিনিম্যাপ স্ক্রলবারের জায়গা নেয়।"
       },
       "computerUsePanel": {
         "accessibility": "সহজগম্যতা",

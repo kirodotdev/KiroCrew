@@ -14194,7 +14194,12 @@
         "feature_videos_downloads_disabled": "Загрузка видео отключена. Будут воспроизводиться только уже сохранённые клипы.",
         "feature_videos_download_all": "Загрузить все сейчас",
         "failed_to_load_feature_video_status": "Не удалось загрузить состояние кэша видео о возможностях",
-        "failed_to_start_feature_video_download": "Не удалось начать загрузку"
+        "failed_to_start_feature_video_download": "Не удалось начать загрузку",
+        "minimap_side_left": "Слева",
+        "minimap_side_right": "Справа",
+        "minimap": "Мини-карта",
+        "minimap_location": "Расположение мини-карты",
+        "minimap_location_desc": "У правого края мини-карта заменяет полосу прокрутки."
       },
       "computerUsePanel": {
         "accessibility": "Универсальный доступ",

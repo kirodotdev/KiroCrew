@@ -1009,6 +1009,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.minimap-location",
+    "label": "Minimap location",
+    "labelKey": "pages.settings.chatPanel.minimap_location",
+    "description": "When located on the right edge, the minimap replaces the scroll bar.",
+    "tab": "chat",
+    "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
     "id": "chat.pin-the-latest-turn",
     "label": "Pin the latest turn",
     "labelKey": "pages.settings.chatPanel.pin_last_prompt",

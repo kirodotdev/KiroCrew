@@ -14007,7 +14007,12 @@
         "feature_videos_downloads_disabled": "Le téléchargement des vidéos est désactivé. Seuls les clips déjà enregistrés seront lus.",
         "feature_videos_download_all": "Tout télécharger maintenant",
         "failed_to_load_feature_video_status": "Impossible de charger l’état du cache des vidéos de fonctionnalités",
-        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement"
+        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement",
+        "minimap_side_left": "Gauche",
+        "minimap_side_right": "Droite",
+        "minimap": "Minicarte",
+        "minimap_location": "Emplacement de la minicarte",
+        "minimap_location_desc": "Sur le bord droit, la minicarte remplace la barre de défilement."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

@@ -1377,6 +1377,12 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection title={i18nT('pages.settings.chatPanel.minimap')}>
+        <SettingsCard>
+          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} description={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title={i18nT('pages.settings.chatPanel.sessions')}>
         <SettingsCard index={7}>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.split_view_session_grid')} description={i18nT('pages.settings.chatPanel.opt_in_split_the_chat_into_resizable_session_pan', { mod: isMac ? '⌘' : 'Ctrl' })} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />

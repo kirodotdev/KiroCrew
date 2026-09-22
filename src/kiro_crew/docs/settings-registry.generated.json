@@ -593,6 +593,13 @@
       "description": "Combine follow-up messages into a single labeled prompt while the agent is busy"
     },
     {
+      "id": "chat.minimap-location",
+      "label": "Minimap location",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.minimap-location",
+      "description": "When located on the right edge, the minimap replaces the scroll bar."
+    },
+    {
       "id": "chat.pin-the-latest-turn",
       "label": "Pin the latest turn",
       "tab": "chat",

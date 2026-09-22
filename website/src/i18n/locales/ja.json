@@ -13632,7 +13632,12 @@
         "feature_videos_downloads_disabled": "動画のダウンロードは無効です。保存済みのクリップのみ再生されます。",
         "feature_videos_download_all": "すべて今すぐダウンロード",
         "failed_to_load_feature_video_status": "機能紹介動画のキャッシュ状態を読み込めませんでした",
-        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした"
+        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした",
+        "minimap_side_left": "左",
+        "minimap_side_right": "右",
+        "minimap": "ミニマップ",
+        "minimap_location": "ミニマップの位置",
+        "minimap_location_desc": "右端に配置すると、ミニマップがスクロールバーを置き換えます。"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

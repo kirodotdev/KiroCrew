@@ -372,6 +372,36 @@ describe('TurnNavigationMinimap', () => {
     expect(button.getAttribute('aria-label')).toContain('Turns 1\u20132 of 89 loaded')
   })
 
+  it('the right-edge rail replaces the native scrollbar while shown and restores it on unmount', async () => {
+    const scroller = buildScroller()
+    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} side="right" />)
+    await screen.findByRole('button')
+    await waitFor(() => expect(scroller.style.scrollbarWidth).toBe('none'))
+    view.unmount()
+    expect(scroller.style.scrollbarWidth).toBe('')
+  })
+
+  it('the left rail (default) never touches the native scrollbar', async () => {
+    const scroller = buildScroller()
+    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    await screen.findByRole('button')
+    // Never assigned at all — jsdom reads an untouched property as undefined.
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+    view.unmount()
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+  })
+
+  it('below the md breakpoint a right-edge rail is hidden and the native scrollbar stays', async () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 700 })
+    const scroller = buildScroller() // pane itself is wide enough — the viewport is what is narrow
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} side="right" />)
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.queryByTestId('turn-navigation-minimap')).toBeNull()
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+    if (original) Object.defineProperty(window, 'innerWidth', original)
+  })
+
   it('does not render for one turn or without a safe left gutter', async () => {
     const scroller = buildScroller()
     const first = render(<TurnNavigationMinimap items={ITEMS.slice(0, 1)} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)

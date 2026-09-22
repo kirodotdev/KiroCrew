@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type RefObject } from 'react'
 import type { ChatSection } from '../../hooks/useChatNavigation'
+import type { MinimapSide } from './ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { stripMd } from '../../components/notifications/notifMeta'
@@ -100,14 +101,17 @@ function constrainedContentRect(scroller: HTMLDivElement): DOMRect | null {
   return { ...scrollerRect, left, right: left + width, width } as DOMRect
 }
 
-/** The rail sits in the pane's left gutter, so it needs free space between
- *  that edge and the content column. */
-function hasSafeLeftGutter(scroller: HTMLDivElement): boolean {
+/** Whether the hosting edge has free space between the pane edge and the
+ *  content column. */
+function hasSafeGutter(scroller: HTMLDivElement, side: MinimapSide): boolean {
   if (window.innerWidth < MD_BREAKPOINT_PX) return false
   if (scroller.clientWidth < MIN_PANE_WIDTH_PX) return false
   const scrollerRect = scroller.getBoundingClientRect()
   const contentRect = constrainedContentRect(scroller)
-  return !!contentRect && contentRect.left - scrollerRect.left >= MIN_GUTTER_PX
+  if (!contentRect) return false
+  return side === 'right'
+    ? scrollerRect.left + scroller.clientWidth - contentRect.right >= MIN_GUTTER_PX
+    : contentRect.left - scrollerRect.left >= MIN_GUTTER_PX
 }
 
 /** Marker length in px: the scrubbed marker grows and the neighbours taper
@@ -138,6 +142,9 @@ interface TurnNavigationMinimapProps {
   /** True while the server still holds rows above the loaded window: the rail
    *  maps loaded turns only, and the aria label and meta row say so. */
   windowed?: boolean
+  /** Hosting pane edge. The right-edge variant replaces the native scrollbar
+   *  while the rail is shown. */
+  side?: MinimapSide
 }
 
 export default function TurnNavigationMinimap({
@@ -145,6 +152,7 @@ export default function TurnNavigationMinimap({
   scrollerRef,
   onNavigate,
   windowed,
+  side = 'left',
 }: TurnNavigationMinimapProps) {
   const [hasGutter, setHasGutter] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -218,12 +226,11 @@ export default function TurnNavigationMinimap({
       window.innerHeight - estimatedHeight - VIEWPORT_EDGE_PX,
       Math.max(VIEWPORT_EDGE_PX, markerY - estimatedHeight / 2),
     ))
-    // The rail sits in the pane's left gutter, so the card floats to its right.
-    setPreviewLeft(Math.min(
-      window.innerWidth - PREVIEW_WIDTH_PX - VIEWPORT_EDGE_PX,
-      rect.right + PREVIEW_GAP_PX,
-    ))
-  }, [])
+    // The card floats on the content side of the rail.
+    setPreviewLeft(side === 'right'
+      ? Math.max(VIEWPORT_EDGE_PX, rect.left - PREVIEW_GAP_PX - PREVIEW_WIDTH_PX)
+      : Math.min(window.innerWidth - PREVIEW_WIDTH_PX - VIEWPORT_EDGE_PX, rect.right + PREVIEW_GAP_PX))
+  }, [side])
 
   const select = useCallback((bucketIndex: number | null) => {
     clearClose()
@@ -271,8 +278,12 @@ export default function TurnNavigationMinimap({
     const measure = () => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
-        const gutter = hasSafeLeftGutter(scroller)
+        const gutter = hasSafeGutter(scroller, side)
         setHasGutter(gutter)
+        // Right edge only: the rail replaces the native scrollbar while shown.
+        // `scrollbarWidth` is not a property TranscriptScrollShell claims, so
+        // this stays inside its style contract.
+        if (side === 'right') scroller.style.scrollbarWidth = gutter ? 'none' : ''
         if (!gutter) {
           setVisible(prev => (prev.size === 0 ? prev : new Set()))
           return
@@ -328,8 +339,9 @@ export default function TurnNavigationMinimap({
       resizeObserver?.disconnect()
       mutationObserver?.disconnect()
       window.removeEventListener('resize', measure)
+      scroller.style.scrollbarWidth = ''
     }
-  }, [coarsePointer, displayKey, placePreview, scrollerRef])
+  }, [coarsePointer, displayKey, placePreview, scrollerRef, side])
 
   useEffect(() => () => { clearClose(); clearOpen() }, [clearClose, clearOpen])
 
@@ -453,7 +465,7 @@ export default function TurnNavigationMinimap({
     <nav
       data-testid="turn-navigation-minimap"
       aria-label={i18nT('pages.chatPage.turn_minimap_landmark')}
-      className="absolute left-2 top-20 bottom-36 z-[3] hidden md:flex w-10 pointer-events-none items-center justify-start"
+      className={`absolute ${side === 'right' ? 'right-2 justify-end' : 'left-2 justify-start'} top-20 bottom-36 z-[3] hidden md:flex w-10 pointer-events-none items-center`}
     >
       {/* Accessible-name changes on an already-focused control are announced
           inconsistently across AT; this live region speaks the keyboard
@@ -461,7 +473,7 @@ export default function TurnNavigationMinimap({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {focused && selected !== null ? label : ''}
       </span>
-      <div className="flex h-full flex-col items-start justify-center gap-1.5">
+      <div className={`flex h-full flex-col ${side === 'right' ? 'items-end' : 'items-start'} justify-center gap-1.5`}>
       <button
         ref={buttonRef}
         type="button"
@@ -502,7 +514,7 @@ export default function TurnNavigationMinimap({
             data-target-display-index={items[bucket.first].displayIdx}
             data-in-view={visible.has(index) ? 'true' : 'false'}
             aria-hidden
-            className="absolute left-0 block rounded-full"
+            className={`absolute ${side === 'right' ? 'right-0' : 'left-0'} block rounded-full`}
             style={{
               top: `${markerPosition(index, buckets.length) * 100}%`,
               width: markerWidth(index, selected),

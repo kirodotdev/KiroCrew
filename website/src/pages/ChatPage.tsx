@@ -7143,6 +7143,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // The rail maps loaded turns only; while the server holds older
               // rows its labels say "of N loaded" (#8221's disclosure).
               windowed={slotHasMore && cursorIsForActiveSlot}
+              side={chatConfig.minimapSide}
             />
             <TranscriptScrollShell
               scrollerRef={scrollerRef}

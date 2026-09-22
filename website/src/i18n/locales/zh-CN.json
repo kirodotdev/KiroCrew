@@ -13632,7 +13632,12 @@
         "feature_videos_downloads_disabled": "视频下载已关闭。只有已保存的片段才能播放。",
         "feature_videos_download_all": "立即下载全部",
         "failed_to_load_feature_video_status": "无法加载功能视频缓存状态",
-        "failed_to_start_feature_video_download": "无法开始下载"
+        "failed_to_start_feature_video_download": "无法开始下载",
+        "minimap_side_left": "左侧",
+        "minimap_side_right": "右侧",
+        "minimap": "小地图",
+        "minimap_location": "小地图位置",
+        "minimap_location_desc": "位于右边缘时，小地图将取代滚动条。"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

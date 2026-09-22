@@ -14007,7 +14007,12 @@
         "feature_videos_downloads_disabled": "Las descargas de vídeo están desactivadas. Solo se reproducirán los clips ya guardados.",
         "feature_videos_download_all": "Descargar todo ahora",
         "failed_to_load_feature_video_status": "No se pudo cargar el estado de la caché de vídeos de funciones",
-        "failed_to_start_feature_video_download": "No se pudo iniciar la descarga"
+        "failed_to_start_feature_video_download": "No se pudo iniciar la descarga",
+        "minimap_side_left": "Izquierda",
+        "minimap_side_right": "Derecha",
+        "minimap": "Minimapa",
+        "minimap_location": "Ubicación del minimapa",
+        "minimap_location_desc": "Cuando está en el borde derecho, el minimapa reemplaza la barra de desplazamiento."
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

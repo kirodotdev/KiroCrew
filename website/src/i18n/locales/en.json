@@ -8343,6 +8343,8 @@
         "mcp_apps_in_side_panel": "MCP Apps in Side Panel",
         "merge_queued_messages": "Merge Queued Messages",
         "messages": "Messages",
+        "minimap_side_left": "Left",
+        "minimap_side_right": "Right",
         "mirror_documents_you_save_as_artifacts_into_the_l": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
         "model": "Model",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row.",
@@ -8384,7 +8386,10 @@
         "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
-        "your_role": "Your Role"
+        "your_role": "Your Role",
+        "minimap": "Minimap",
+        "minimap_location": "Minimap location",
+        "minimap_location_desc": "When located on the right edge, the minimap replaces the scroll bar."
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",

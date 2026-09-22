@@ -13819,7 +13819,12 @@
         "feature_videos_downloads_disabled": "Video-Downloads sind ausgeschaltet. Es laufen nur bereits gespeicherte Clips.",
         "feature_videos_download_all": "Jetzt alle herunterladen",
         "failed_to_load_feature_video_status": "Cache-Status der Feature-Videos konnte nicht geladen werden",
-        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden"
+        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden",
+        "minimap_side_left": "Links",
+        "minimap_side_right": "Rechts",
+        "minimap": "Minimap",
+        "minimap_location": "Position der Minimap",
+        "minimap_location_desc": "Am rechten Rand ersetzt die Minimap die Scrollleiste."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

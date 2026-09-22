@@ -13632,7 +13632,12 @@
         "feature_videos_downloads_disabled": "동영상 다운로드가 꺼져 있습니다. 이미 저장된 클립만 재생됩니다.",
         "feature_videos_download_all": "지금 모두 다운로드",
         "failed_to_load_feature_video_status": "기능 소개 영상 캐시 상태를 불러오지 못했습니다",
-        "failed_to_start_feature_video_download": "다운로드를 시작할 수 없습니다"
+        "failed_to_start_feature_video_download": "다운로드를 시작할 수 없습니다",
+        "minimap_side_left": "왼쪽",
+        "minimap_side_right": "오른쪽",
+        "minimap": "미니맵",
+        "minimap_location": "미니맵 위치",
+        "minimap_location_desc": "오른쪽 가장자리에 있으면 미니맵이 스크롤바를 대체합니다."
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",
