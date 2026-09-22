@@ -1,4 +1,10 @@
 {
+  "terminalTab": {
+    "rename": "Renombrar",
+    "name": "Nombre del terminal",
+    "edit_hint": "Enter para guardar, Escape para cancelar. Déjalo vacío para usar el nombre automático.",
+    "automatic_name": "Usar nombre automático"
+  },
   "appChatLaunch": {
     "unsent": "{{error}}\n\nMensaje no enviado. Cópialo para volver a intentarlo:\n{{message}}",
     "cancelled": "El envío se canceló porque cambiaste de sesión.",

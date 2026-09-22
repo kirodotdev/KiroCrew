@@ -1,4 +1,10 @@
 {
+  "terminalTab": {
+    "rename": "重命名",
+    "name": "终端名称",
+    "edit_hint": "按 Enter 保存，按 Escape 取消。留空则使用自动名称。",
+    "automatic_name": "使用自动名称"
+  },
   "appChatLaunch": {
     "unsent": "{{error}}\n\n消息未发送。复制以下内容后重试：\n{{message}}",
     "cancelled": "你切换了会话，发送已取消。",

@@ -1,4 +1,10 @@
 {
+  "terminalTab": {
+    "rename": "Umbenennen",
+    "name": "Terminalname",
+    "edit_hint": "Mit Enter speichern, mit Escape abbrechen. Für den automatischen Namen leer lassen.",
+    "automatic_name": "Automatischen Namen verwenden"
+  },
   "appChatLaunch": {
     "unsent": "{{error}}\n\nNachricht nicht gesendet. Kopiere sie, um es erneut zu versuchen:\n{{message}}",
     "cancelled": "Senden abgebrochen, weil du die Sitzung gewechselt hast.",

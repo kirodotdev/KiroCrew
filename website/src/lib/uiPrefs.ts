@@ -38,6 +38,15 @@
  */
 
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { bottomTerminalPrefsSnapshot } from '../hooks/useBottomTerminal'
+
+/** Terminal labels have per-id write coordinates, but share the layout's
+ *  existing backup key. Projection is read-only: syncing cannot race a layout
+ *  mutation by publishing a synthesized snapshot back into localStorage. */
+function readPreference(key: string): string | null {
+  const raw = safeGetItem(key)
+  return key === 'mc-bottom-terminal' && raw !== null ? bottomTerminalPrefsSnapshot(raw) : raw
+}
 
 /**
  * Durable, user-chosen preferences. Exact keys only.
@@ -433,7 +442,7 @@ export async function reconcileNewDurableKeys(): Promise<number> {
     for (const key of fresh) {
       const value = hostValues[key]
       if (typeof value !== 'string') continue // host has nothing: local (if any) seeds it
-      const local = safeGetItem(key)
+      const local = readPreference(key)
       const keepLocal = local !== null && (owned === null || owned.has(key))
       if (keepLocal) {
         updates.set(key, local)
@@ -505,7 +514,7 @@ let dirtyDuringFlush = false
 function readLocalSnapshot(): Map<string, string> {
   const snapshot = new Map<string, string>()
   for (const key of DURABLE_PREF_KEYS) {
-    const value = safeGetItem(key)
+    const value = readPreference(key)
     if (value !== null) snapshot.set(key, value)
   }
   return snapshot
@@ -735,7 +744,7 @@ export async function hydrateUiPrefs(): Promise<number> {
     for (const key of DURABLE_PREF_KEYS) {
       const value = hostValues[key]
       if (typeof value !== 'string') continue
-      const local = safeGetItem(key)
+      const local = readPreference(key)
       if (local === value) continue
       if (local !== null && (owned === null || owned.has(key))) continue
       if (safeSetItem(key, value)) restored += 1
@@ -757,7 +766,7 @@ export async function hydrateUiPrefs(): Promise<number> {
     const syncedNow = new Map<string, string>()
     for (const key of DURABLE_PREF_KEYS) {
       if (typeof hostValues[key] !== 'string') continue
-      const local = safeGetItem(key)
+      const local = readPreference(key)
       if (local !== null) syncedNow.set(key, local)
     }
     // One write for baselines AND roster (the hydrate has, by definition,

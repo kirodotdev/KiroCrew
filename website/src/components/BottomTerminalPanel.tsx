@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLongPressReorder } from '../hooks/useLongPressReorder'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
+import { Input } from './ui'
+import { useTranslation } from 'react-i18next'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
@@ -13,7 +18,8 @@ import { useAppSelector } from '../store'
 import { selectActiveSlotProject } from '../store/chatSlice'
 import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, returnSelfToMain } from '../utils/terminalPopout'
 import {
-  useBottomTerminal, useTerminalHydratePending, addTab, removeTab, setActiveTab, setTabsOrder,
+  useBottomTerminal, useTerminalHydratePending, addTab, removeTab, hasTab, setActiveTab, setTabsOrder,
+  renameTab, capTerminalName,
   closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
   toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
@@ -22,59 +28,244 @@ import {
 
 import { i18nT } from '../i18n/t'
 
-/** Live terminal tab title — the running command / cwd basename pushed by the
- *  backend poller; falls back to "Terminal" until the first frame arrives. */
-function TerminalTitle({ sessionId }: { sessionId: string }) {
-  const live = useTerminalTitle(sessionId)
-  return <>{live || i18nT('components.bottomTerminalPanel.terminal')}</>
-}
-
-/** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design */
-function TabChip({ tab, active, closing = false, onSelect, onClose }: {
-  tab: TermTab; active: boolean; closing?: boolean; onSelect: () => void; onClose: () => void
+/** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design.
+ *  `hintId` names the strip's visible editing helper (rendered outside the
+ *  scrolling tablist by TerminalTabsView), which the editor is described by;
+ *  `onEditingChange` tells the strip when to show it. */
+function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEditingChange }: {
+  tab: TermTab; active: boolean; closing?: boolean; hintId: string
+  onSelect: () => void; onClose: () => void; onEditingChange: (editing: boolean) => void
 }) {
+  const { t } = useTranslation()
+  const ime = useImeGuard()
+  const liveTitle = useTerminalTitle(tab.id)
+  const title = tab.name || liveTitle || t('components.bottomTerminalPanel.terminal')
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const editingRef = useRef(false)
+  const menuRenameRef = useRef(false)
+  const chipRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const { tabs, activeId } = useBottomTerminal()
+  // The first click selects immediately so the terminal can accept typing.
+  // Keep its prior selection through autofocus blur for a matching dblclick.
+  const priorActiveRef = useRef<string | null>(null)
+  const clearPriorActive = useCallback(() => { priorActiveRef.current = null }, [])
+
+  useEffect(clearPriorActive, [tabs, closing, clearPriorActive])
+  useEffect(() => {
+    if (activeId !== tab.id) clearPriorActive()
+  }, [activeId, tab.id, clearPriorActive])
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [editing])
+
+  // The helper lives outside the scrolling tablist (which would clip it), so
+  // the strip has to be told; the cleanup also covers a tab closed mid-edit.
+  useEffect(() => {
+    if (!editing) return
+    onEditingChange(true)
+    return () => onEditingChange(false)
+  }, [editing, onEditingChange])
+
+  useLayoutEffect(() => {
+    // Refocusing before the input unmounts scrolls its wider box into view.
+    // Reconcile once the label is back so the strip retains the outline inset.
+    if (!editing && document.activeElement === chipRef.current) {
+      chipRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }, [editing])
+
+  const beginRename = () => {
+    clearPriorActive()
+    if (closing || editingRef.current) return
+    // Renaming an inactive tab must not reveal its CliPanel: the terminal's
+    // visibility autofocus would blur and immediately commit the editor.
+    setDraft(capTerminalName(title))
+    editingRef.current = true
+    setEditing(true)
+  }
+  const finishRename = (save: boolean, restoreFocus: boolean) => {
+    // Escape/Enter can unmount the focused input and trigger blur. Only the
+    // first completion owns the edit, so cancellation can never become a save.
+    if (!editingRef.current) return
+    editingRef.current = false
+    if (save) renameTab(tab.id, draft)
+    setEditing(false)
+    if (restoreFocus) chipRef.current?.focus()
+  }
+
   return (
-    <div
-      role="tab"
-      aria-selected={active}
-      aria-busy={closing || undefined}
-      tabIndex={0}
-      onClick={onSelect}
-      // Guard on e.target so Enter/Space on the nested close button
-      // activates it natively instead of also selecting the tab.
-      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
-      onAuxClick={(e) => { if (e.button === 1 && !closing) { e.preventDefault(); onClose() } }}
-      className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
-        active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover'
-      } ${closing ? 'opacity-60' : ''}`}
-    >
-      <span className="shrink-0 opacity-80"><TerminalSquare size={13} /></span>
-      <span className="min-w-0 text-[12.5px] truncate text-left">
-        <TerminalTitle sessionId={tab.id} />
-      </span>
-      <div className="flex items-center gap-0.5 shrink-0">
-        {/* While the popout's last tab waits for its PTY DELETE to settle the
-            close control shows progress and stays inert, so the wait reads as
-            "closing" rather than a click that did nothing. */}
-        <button
-          onClick={(e) => { e.stopPropagation(); if (!closing) onClose() }}
-          disabled={closing}
-          className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active || closing ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-          title={closing ? i18nT('components.bottomTerminalPanel.closing_terminal') : i18nT('components.bottomTerminalPanel.close_terminal')}
-          aria-label={closing ? i18nT('components.bottomTerminalPanel.closing_terminal') : i18nT('components.bottomTerminalPanel.close_terminal')}
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={editing || closing}>
+        <div
+          ref={chipRef}
+          role="tab"
+          aria-label={title}
+          aria-selected={active}
+          aria-busy={closing || undefined}
+          aria-keyshortcuts="F2"
+          tabIndex={0}
+          onFocus={(e) => {
+            if (e.target === e.currentTarget) {
+              e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+            }
+          }}
+          // A second primary press belongs to the same potential double-click;
+          // close/context actions must not inherit that selection snapshot.
+          onPointerDownCapture={(e) => {
+            if (e.button !== 0 || (e.target as HTMLElement).closest('button, input')) clearPriorActive()
+          }}
+          onPointerCancel={clearPriorActive}
+          onDragStartCapture={clearPriorActive}
+          onContextMenuCapture={clearPriorActive}
+          onClick={(e) => {
+            if (closing || editingRef.current || e.detail > 1) return
+            priorActiveRef.current = e.detail === 0 ? null : activeId
+            onSelect()
+          }}
+          onDoubleClick={(e) => {
+            if ((e.target as HTMLElement).closest('button, input') || closing || editingRef.current) return
+            const priorActive = priorActiveRef.current
+            if (priorActive && priorActive !== tab.id && activeId === tab.id && hasTab(priorActive)) {
+              // Flush visibility AND its autofocus before beginRename mounts the
+              // input; batching both lets the restored terminal blur-save it.
+              flushSync(() => setActiveTab(priorActive))
+            }
+            beginRename()
+          }}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return
+            if (e.key === 'F2') { e.preventDefault(); e.stopPropagation(); beginRename() }
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              clearPriorActive()
+              if (!closing) onSelect()
+            }
+          }}
+          onAuxClick={(e) => {
+            if (e.button === 1 && !closing && !editing) {
+              e.preventDefault()
+              clearPriorActive()
+              onClose()
+            }
+          }}
+          // Three states, each in its own vocabulary: the selected tab is the
+          // elevated pill; an inactive tab is bare text; an editing tab sheds
+          // the pill entirely, leaving the filled text field as the only box —
+          // so a field can never be mistaken for a focus ring around a pill.
+          // Keyboard focus is split the same way. The selected pill keeps the
+          // global 2px accent outline: ring and pill are one element there, so
+          // the ring can only read as focus ON the selection. An inactive chip
+          // paints the same 2px outline in NEUTRAL `--muted` instead. Focus
+          // lands on an inactive chip after every rename of a tab that is not
+          // selected, and an accent ring there stands beside the selected pill
+          // as a second selection whatever its strength — the strip's selection
+          // grammar is fill plus accent, so the cue differs in COLOUR, as the
+          // swatch hover cue does (frontend-conventions § Animations). `--muted`
+          // is the lightest neutral token clearing the 3:1 non-text floor on
+          // `--bg` in both default themes; the utilities outspecify the bare
+          // global `:focus-visible` rule, and the offset is restated so the
+          // extent stays the 4px the strip's gutter reserves.
+          className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
+            editing ? 'bg-transparent border-transparent text-text'
+              : active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover focus-visible:outline-2 focus-visible:outline-muted focus-visible:outline-offset-2'
+          } ${closing ? 'opacity-60' : ''}`}
         >
-          {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-        </button>
-      </div>
-    </div>
+          <span className="shrink-0 opacity-80"><TerminalSquare size={13} /></span>
+          {editing ? (
+            <Input
+              ref={inputRef}
+              aria-label={t('terminalTab.name')}
+              aria-describedby={hintId}
+              value={draft}
+              // A filled field, not a ring: the strip's hover wash is the one
+              // fill that stands off the bare chip on every theme (the shared
+              // Input's elevated fill is near-invisible on the panel's own
+              // background). The helper it is described by stays visible
+              // beneath the strip while typing (see TerminalTabsView).
+              className="w-36 h-6 px-1 py-0 text-[12.5px] bg-bg-hover"
+              onChange={(e) => setDraft(capTerminalName(e.target.value))}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onAuxClick={(e) => e.stopPropagation()}
+              {...ime.bindComposition({ onBlur: () => finishRename(true, false) })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (ime.claimEnter(e)) finishRename(true, true)
+                } else if (e.key === 'Escape') {
+                  if (ime.claimKey(e)) { e.preventDefault(); finishRename(false, true) }
+                }
+                // Editing keys belong to the editor, never to the strip's
+                // shortcuts or the reorder gesture.
+                e.stopPropagation()
+              }}
+            />
+          ) : (
+            <span className="min-w-0 text-[12.5px] truncate text-left">{title}</span>
+          )}
+          {/* The editor stands alone: with the close control beside it, a click
+              meant to leave the field would blur-save and then kill the shell. */}
+          {!editing && (
+            <div className="flex items-center gap-0.5 shrink-0">
+              {/* Closing remains visible while the popout's last PTY DELETE settles. */}
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); clearPriorActive(); if (!closing) onClose() }}
+                disabled={closing}
+                className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active || closing ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+                title={closing ? t('components.bottomTerminalPanel.closing_terminal') : t('components.bottomTerminalPanel.close_terminal')}
+                aria-label={closing ? t('components.bottomTerminalPanel.closing_terminal') : t('components.bottomTerminalPanel.close_terminal')}
+              >
+                {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+              </button>
+            </div>
+          )}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent onCloseAutoFocus={(e) => {
+        // Wait until the menu releases its focus trap before mounting the editor.
+        if (menuRenameRef.current) {
+          e.preventDefault()
+          menuRenameRef.current = false
+          beginRename()
+        }
+      }}>
+        <ContextMenuItem disabled={closing} aria-keyshortcuts="F2" onSelect={() => { menuRenameRef.current = true }}>
+          {t('terminalTab.rename')}
+          {/* The shortcut a sighted user can otherwise never discover: F2 is
+              declared on the chip (aria-keyshortcuts) but nothing shows it.
+              Same shape as the nav rail's chord badge — a muted trailing span,
+              aria-hidden so the item's accessible name stays "Rename" while the
+              menuitem's own aria-keyshortcuts carries it to assistive tech.
+              `data-i18n-opaque` marks it as keycap data, not copy, for the
+              render-time i18n scan. Inline rather than a shared primitive:
+              this is the one menu in the tree that shows a shortcut. */}
+          <span aria-hidden="true" data-i18n-opaque="" data-testid="terminal-rename-shortcut" className="ml-auto pl-4 text-[11px] leading-none text-muted">
+            F2
+          </span>
+        </ContextMenuItem>
+        {tab.name && (
+          <ContextMenuItem disabled={closing} onSelect={() => renameTab(tab.id, '')}>
+            {t('terminalTab.automatic_name')}
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
 /** One reorderable chip in the strip. A component rather than inline JSX inside
  *  the map: each chip owns its own long-press drag state, and a hook cannot be
  *  called from a loop. */
-function DraggableTermTab({ tab, active, closing, separator, onSelect, onClose }: {
-  tab: TermTab; active: boolean; closing: boolean; separator: boolean; onSelect: () => void; onClose: () => void
+function DraggableTermTab({ tab, active, closing, separator, hintId, onSelect, onClose, onEditingChange }: {
+  tab: TermTab; active: boolean; closing: boolean; separator: boolean; hintId: string
+  onSelect: () => void; onClose: () => void; onEditingChange: (editing: boolean) => void
 }) {
   const { itemProps, dragging } = useLongPressReorder()
   return (
@@ -89,7 +280,7 @@ function DraggableTermTab({ tab, active, closing, separator, onSelect, onClose }
       {separator && (
         <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
       )}
-      <TabChip tab={tab} active={active} closing={closing} onSelect={onSelect} onClose={onClose} />
+      <TabChip tab={tab} active={active} closing={closing} hintId={hintId} onSelect={onSelect} onClose={onClose} onEditingChange={onEditingChange} />
     </Reorder.Item>
   )
 }
@@ -137,6 +328,13 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   const del = useDeleteTerminalSession()
   // The popout's last tab, while its DELETE is in flight (see closeTab).
   const [closingId, setClosingId] = useState<string | null>(null)
+  // Chips with an open name editor. A count rather than an id: a second
+  // editor can open (F2 on another tab) before the first's blur-save lands.
+  const [editingCount, setEditingCount] = useState(0)
+  const onEditingChange = useCallback((editing: boolean) => {
+    setEditingCount(n => n + (editing ? 1 : -1))
+  }, [])
+  const hintId = useId()
 
   // New tabs spawn in the selected session's project directory when one is
   // set; otherwise the backend's default cwd applies.
@@ -195,13 +393,15 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
       {variant === 'popout' && <TerminalCloseErrorNotice />}
       {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
           horizontally to reorder (framer Reorder). */}
-      <div className="flex items-center gap-1.5 h-9 shrink-0 pl-2 pr-1.5">
+      <div className="flex items-center gap-1.5 h-10 shrink-0 pl-1 pr-1.5">
         <Reorder.Group
           axis="x"
           values={tabs}
           onReorder={setTabsOrder}
           role="tablist"
-          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
+          // Four pixels contain the global 2px outline plus its 2px offset,
+          // including the first/last tab at either end of the scroll range.
+          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-1 list-none m-0 p-1"
         >
           {tabs.map((t, i) => (
             <DraggableTermTab
@@ -212,8 +412,10 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
               // Hairline between adjacent chips, suppressed on both edges of
               // the active tab (its pill already delineates it).
               separator={i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId}
+              hintId={hintId}
               onSelect={() => setActiveTab(t.id)}
               onClose={() => closeTab(t.id)}
+              onEditingChange={onEditingChange}
             />
           ))}
         </Reorder.Group>
@@ -273,6 +475,21 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
       {/* Body — every terminal stays mounted (hidden when inactive) so the
           xterm session + scrollback survive tab switches. */}
       <div className="flex-1 min-h-0 relative">
+        {/* Visible save/cancel helper for the name editor, shown only while one
+            is open. It sits here, not in the tablist: that strip is a
+            horizontal scroller (so it would clip anything hung below a chip)
+            and at 320px has no width to spare. Overlaid rather than stacked so
+            the shell keeps its size — a rename must not refit or resize the
+            PTY. Keyed by `hintId`, it is the editor's aria-describedby target. */}
+        {editingCount > 0 && (
+          <p
+            id={hintId}
+            data-testid="terminal-rename-hint"
+            className="absolute inset-x-0 top-0 z-10 m-0 px-3 py-1 text-[11.5px] leading-snug text-muted bg-bg-elevated border-b border-border shadow-sm"
+          >
+            {i18nT('terminalTab.edit_hint')}
+          </p>
+        )}
         {tabs.map(t => (
           <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeId ? 'block' : 'none' }}>
             <CliPanel sessionId={t.id} cwd={t.cwd} visible={t.id === activeId} />

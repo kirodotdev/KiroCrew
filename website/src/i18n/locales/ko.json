@@ -1,4 +1,10 @@
 {
+  "terminalTab": {
+    "rename": "이름 변경",
+    "name": "터미널 이름",
+    "edit_hint": "Enter로 저장, Escape로 취소합니다. 비워 두면 자동 이름을 사용합니다.",
+    "automatic_name": "자동 이름 사용"
+  },
   "appChatLaunch": {
     "unsent": "{{error}}\n\n메시지가 전송되지 않았습니다. 복사한 후 다시 시도하세요:\n{{message}}",
     "cancelled": "세션을 전환하여 전송이 취소되었습니다.",

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 
 /* ── App-wide bottom terminal panel ───────────────────────────────────────
@@ -22,6 +22,19 @@ export interface TermTab {
   id: string
   /** Working directory the shell spawned in (undefined = server default). */
   cwd?: string
+  /** User label; absent means follow the shell's live title. */
+  name?: string
+}
+
+export const MAX_TERMINAL_NAME_LENGTH = 120
+
+/** Cap labels and editing drafts by Unicode code points, preserving surrogate pairs. */
+export function capTerminalName(name: string): string {
+  return Array.from(name).slice(0, MAX_TERMINAL_NAME_LENGTH).join('')
+}
+
+function normalizeTabName(name: unknown): string | undefined {
+  return typeof name === 'string' ? capTerminalName(name.trim()) || undefined : undefined
 }
 
 /** Where the terminal panel is docked — like VS Code's Panel position. */
@@ -42,6 +55,79 @@ interface BottomTerminalState {
 }
 
 const STORAGE_KEY = 'mc-bottom-terminal'
+const NAME_KEY_PREFIX = 'mc-terminal-name:'
+/** Dropped writes stay local until a successful rename, a foreign label event,
+ *  or removal. Keep the fallback separate so layout writes cannot persist them. */
+const volatileNames = new Map<string, { name?: string; fallback?: string }>()
+
+function withLiveName(tab: TermTab): TermTab {
+  const local = volatileNames.get(tab.id)
+  return local ? (tab.name === local.name ? tab : { ...tab, name: local.name }) : withStoredName(tab)
+}
+
+/** Independent coordinates keep a rename from writing a stale tab list, and
+ *  simultaneous renames of different tabs from replacing each other's labels.
+ *  An empty string is an explicit reset, overriding names in layout backups. */
+function withStoredName(tab: TermTab): TermTab {
+  const stored = safeGetItem(NAME_KEY_PREFIX + tab.id)
+  const name = normalizeTabName(stored === null ? tab.name : stored)
+  return name === tab.name ? tab : { ...tab, name }
+}
+
+function withLiveNames(tabs: TermTab[]): TermTab[] {
+  const merged = tabs.map(withLiveName)
+  return merged.every((tab, i) => tab === tabs[i]) ? tabs : merged
+}
+
+/** Read membership afresh before label cleanup; malformed/unreadable storage
+ *  cannot authorize deleting labels. No module-local list drives cleanup. */
+function persistedIds(): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw === null) return new Set()
+    const p: unknown = JSON.parse(raw)
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+    const layout = p as { tabs?: unknown; splits?: unknown }
+    const tabs = Array.isArray(layout.tabs) ? layout.tabs
+      : Array.isArray(layout.splits) ? layout.splits
+        : layout.tabs === undefined && layout.splits === undefined ? [] : null
+    if (!tabs || tabs.some(t => !t || typeof t.id !== 'string')) return null
+    return new Set(tabs.map(t => t.id as string))
+  } catch { return null }
+}
+
+function cleanRemovedNames(ids: Iterable<string>): void {
+  for (const id of ids) {
+    const live = persistedIds()
+    if (live && !live.has(id)) safeRemoveItem(NAME_KEY_PREFIX + id)
+  }
+}
+
+/** Reclaim residue from an interrupted remove/rename, only for absent ids. */
+function cleanOrphanNames(): void {
+  try {
+    const ids: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(NAME_KEY_PREFIX)) ids.push(key.slice(NAME_KEY_PREFIX.length))
+    }
+    cleanRemovedNames(ids)
+  } catch { /* unavailable storage */ }
+}
+
+/** Project labels into the existing uiPrefs backup without writing the layout.
+ *  The backup remains self-contained when restored on a fresh origin. */
+export function bottomTerminalPrefsSnapshot(raw: string): string {
+  try {
+    const p = JSON.parse(raw)
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return raw
+    const field = Array.isArray(p.tabs) ? 'tabs' : Array.isArray(p.splits) ? 'splits' : null
+    if (!field) return raw
+    const tabs = p[field].map((tab: TermTab) => tab && typeof tab.id === 'string' ? withStoredName(tab) : tab)
+    if (JSON.stringify(tabs) === JSON.stringify(p[field])) return raw
+    return JSON.stringify({ ...p, [field]: tabs })
+  } catch { return raw }
+}
 /** Min panel height in px; the grip can't drag below this. */
 export const MIN_HEIGHT = 120
 /** Default panel height on first open. */
@@ -86,7 +172,9 @@ function loadPersisted(): BottomTerminalState {
     const p = JSON.parse(raw) as (Partial<BottomTerminalState> & { splits?: TermTab[] }) | null
     if (!p || typeof p !== 'object') return base
     const rawTabs = Array.isArray(p.tabs) ? p.tabs : Array.isArray(p.splits) ? p.splits : []
-    const tabs = (rawTabs.filter(t => t && typeof (t as TermTab).id === 'string') as TermTab[]).slice(0, MAX_TERMINALS)
+    const tabs = (rawTabs.filter(t => t && typeof (t as TermTab).id === 'string') as TermTab[])
+      .slice(0, MAX_TERMINALS)
+      .map(withLiveName)
     return {
       // Only restore "open" when there were tabs to restore — a stale open flag
       // with no tabs would render an empty panel on boot.
@@ -102,6 +190,7 @@ function loadPersisted(): BottomTerminalState {
   }
 }
 
+cleanOrphanNames()
 let state: BottomTerminalState = loadPersisted()
 const listeners = new Set<() => void>()
 
@@ -218,8 +307,23 @@ export function confirmRestoredTabs(payload: unknown): string[] {
  * re-loading here can't loop; state is adopted without re-persisting. */
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
-    if (e.key !== STORAGE_KEY) return
-    state = loadPersisted()
+    if (e.storageArea && e.storageArea !== localStorage) return
+    if (e.key === null || e.key === STORAGE_KEY) {
+      if (e.key === null) volatileNames.clear()
+      state = loadPersisted()
+      for (const id of volatileNames.keys()) {
+        if (!state.tabs.some(tab => tab.id === id)) volatileNames.delete(id)
+      }
+    } else if (e.key?.startsWith(NAME_KEY_PREFIX)) {
+      // Read current values, not an event payload queued before a later save.
+      // A label event cannot add/drop tabs or change the local layout.
+      const id = e.key.slice(NAME_KEY_PREFIX.length)
+      volatileNames.delete(id)
+      const stored = loadPersisted()
+      state = { ...state, tabs: state.tabs.map(tab => tab.id === id
+        ? { ...tab, name: stored.tabs.find(t => t.id === id)?.name }
+        : tab) }
+    } else return
     emit()
   })
 
@@ -238,9 +342,16 @@ if (typeof window !== 'undefined') {
 
 function set(next: BottomTerminalState) {
   if (next === state) return
-  state = next
+  const removed = state.tabs.filter(tab => !next.tabs.some(t => t.id === tab.id)).map(tab => tab.id)
+  for (const id of removed) volatileNames.delete(id)
+  state = { ...next, tabs: withLiveNames(next.tabs) }
   emit()
-  try { safeSetItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* quota / locked storage */ }
+  const tabs = state.tabs.map(tab => {
+    const local = volatileNames.get(tab.id)
+    return local ? withStoredName({ ...tab, name: local.fallback }) : tab
+  })
+  try { safeSetItem(STORAGE_KEY, JSON.stringify({ ...state, tabs })) } catch { /* quota / locked storage */ }
+  cleanRemovedNames(removed)
 }
 
 /* ── Actions (module functions so non-React callers — e.g. keyboard handlers,
@@ -313,6 +424,28 @@ export function removeTab(id: string): void {
 export function setActiveTab(id: string): void {
   if (state.activeId === id) return
   set({ ...state, activeId: id })
+}
+
+/** Change only the label, never the PTY identity or working directory.
+ *  An empty name returns the tab to the live shell title. */
+export function renameTab(id: string, value: string): void {
+  const name = normalizeTabName(value)
+  const tab = state.tabs.find(t => t.id === id)
+  if (!tab) return
+  const live = persistedIds()
+  const saved = live?.has(id) && safeSetItem(NAME_KEY_PREFIX + id, name ?? '')
+  if (saved) volatileNames.delete(id)
+  else {
+    const prior = volatileNames.get(id)
+    volatileNames.set(id, { name, fallback: prior ? prior.fallback : tab.name })
+  }
+  if (live?.has(id)) {
+    // A close may interleave between membership read and label write. It wins;
+    // the label cannot resurrect its tab or remain as a new orphan coordinate.
+    cleanRemovedNames([id])
+  }
+  state = { ...state, tabs: state.tabs.map(t => t.id === id ? { ...t, name } : t) }
+  emit()
 }
 
 /** Replace the tab order wholesale (drag-to-reorder in the strip). */
@@ -403,6 +536,7 @@ export function useTerminalHydratePending(): boolean {
 
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetBottomTerminal(): void {
+  volatileNames.clear()
   state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   restoredIds = new Set()
   hydrateSuspects = new Set()
@@ -411,6 +545,7 @@ export function __resetBottomTerminal(): void {
   setTerminalCloseFailed(false)
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+    cleanOrphanNames()
   }
 }
 

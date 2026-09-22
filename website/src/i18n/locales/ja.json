@@ -1,4 +1,10 @@
 {
+  "terminalTab": {
+    "rename": "名前を変更",
+    "name": "ターミナル名",
+    "edit_hint": "Enterで保存、Escapeでキャンセル。空欄にすると自動の名前に戻ります。",
+    "automatic_name": "自動の名前を使用"
+  },
   "appChatLaunch": {
     "unsent": "{{error}}\n\nメッセージは未送信です。コピーして再試行してください：\n{{message}}",
     "cancelled": "セッションを切り替えたため、送信をキャンセルしました。",
