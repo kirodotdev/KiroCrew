@@ -67,103 +67,79 @@ def patch_host(monkeypatch):
     return _apply
 
 
-# --- host terms without the auto-size clamp ---------------------------------
+# --- memory is the only host term ------------------------------------------
 
 
-class TestHostTermsSubagentCap:
-    """``host_terms_subagent_cap``: memory and CPU only, no ``subagent_auto_max``.
+class TestMemoryIsTheOnlyHostTerm:
+    """``compute_max_subagents`` sizes the AUTO cap from memory alone.
 
-    The clamp stands in for the LLM provider's concurrency limit and is
-    documented as auto-sizing only ("only applies when max_subagents=0 ...
-    Ignored when max_subagents is set explicitly"). The adaptive controller uses
-    this figure as the ceiling its execution cap climbs toward, so applying the
-    clamp there would put a hard 32 under an explicit ``max_subagents=64`` and
-    make the user's pin unreachable on a host that can carry it.
+    Over-committing memory ends in the OOM killer, an unrecoverable hard
+    failure, so it is sized up front. Over-committing CPU only slows work down,
+    and the adaptive controller already backs off on the pressure that slowness
+    produces; a static CPU term stacked on that loop priced every slot at the
+    busiest agent's one-minute burst and pinned a 32-core host at 4.
     """
 
-    def test_it_is_not_clamped_by_subagent_auto_max(self, patch_host) -> None:
-        # 174.7 GB / 48 cores with the §3.3 costs: mem_term=443, cpu_term=48.
+    def test_cpu_count_and_cpu_cost_do_not_bind(self, patch_host) -> None:
+        # 174.7 GB with the §3.3 memory cost: mem_term=443, clamp(443,3,64) = 64
+        # whether the host has 1 core or 48, and whatever the CPU cost says.
+        patch_host(174.7, 1)
+        cfg = _cfg(mem_cost=0.315, cpu_cost=100.0, hard_cap=64)
+        assert compute_max_subagents(cfg) == 64
         patch_host(174.7, 48)
-        cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
-        assert subagent.host_terms_subagent_cap(cfg) == 48
-        # The clamped caller is unchanged -- this is a second reading of the same
-        # host, not a replacement for the auto-sized one.
-        assert compute_max_subagents(cfg) == 16
+        assert compute_max_subagents(cfg) == 64
 
-    def test_the_tighter_of_memory_and_cpu_still_binds(self, patch_host) -> None:
-        patch_host(8.0, 64)  # memory-bound: mem_term=12, cpu_term=51
+    def test_memory_still_binds(self, patch_host) -> None:
+        patch_host(8.0, 64)  # mem_term = floor(8*0.8/0.5) = 12
         cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=64)
-        assert subagent.host_terms_subagent_cap(cfg) == 12
+        assert compute_max_subagents(cfg) == 12
 
-    def test_it_keeps_the_legacy_floor(self, patch_host) -> None:
-        patch_host(2.0, 1)
-        assert subagent.host_terms_subagent_cap(_cfg(hard_cap=64)) == 3
+    def test_the_deprecated_cpu_cost_key_is_not_a_sizing_input(self) -> None:
+        from kiro_crew.subagent import SubagentManager
 
-    def test_resident_agents_add_to_memory_headroom_not_cpu(self, patch_host) -> None:
-        cfg = _cfg(buffer_pct=0, mem_cost=1.0, cpu_cost=1.0, hard_cap=64)
-        patch_host(6.0, 64)
-        assert subagent.host_terms_subagent_cap(cfg, resident_agents=8) == 14
-        assert compute_max_subagents(cfg) == 6
-        patch_host(6.0, 10)
-        assert subagent.host_terms_subagent_cap(cfg, resident_agents=8) == 10
-
-    def test_resident_agents_do_not_turn_unreadable_memory_into_a_cap(self, patch_host) -> None:
-        patch_host(-1.0, 64)
-        assert subagent.host_terms_subagent_cap(_cfg(), resident_agents=8) == 0
-
-    def test_unreadable_memory_reports_not_measured_not_the_floor(self, monkeypatch) -> None:
-        """``0``, never the floor: the caller reads 0 as "not measured" and 3 as
-        a real bound. The floor (3) sits under the fresh-start exec cap (4), so
-        a controller handed 3 for a host it could not measure would deny every
-        increase for the life of the process. The clamped sibling still fails
-        open to the floor -- it has to produce a cap -- so the two callers get
-        the two different answers they need from one unreadable host."""
-        monkeypatch.setattr(subagent, "_available_memory_gb", lambda: 0.0)
-        assert subagent.host_terms_subagent_cap(_cfg(hard_cap=64)) == 0
-        assert compute_max_subagents(_cfg(hard_cap=64)) == 3
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.SIZING_CONFIG_PATHS
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.LIVE_CONFIG_PATHS
 
 
 # --- Worked examples from dynamic-subagent-sizing.md §3.3 -------------------
 
 
 def test_example_a_hard_cap_binds(patch_host) -> None:
-    # 174.7 GB / 48 cores: mem_term=443, cpu_term=48, clamp(min,3,16) = 16
+    # 174.7 GB: mem_term=443, clamp(443,3,16) = 16
     patch_host(174.7, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
     assert compute_max_subagents(cfg) == 16
 
 
 def test_example_b_floor(patch_host) -> None:
-    # 8 GB / 4 cores, fallback costs: mem_term=12, cpu_term=3, floor = 3
-    patch_host(8.0, 4)
+    # 2 GB, fallback cost: mem_term = floor(2*0.8/0.5) = 3, floor = 3
+    patch_host(2.0, 4)
     cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
     assert compute_max_subagents(cfg) == 3
 
 
-def test_example_c_cpu_binds_with_pool(patch_host) -> None:
-    # 32 GB / 12 cores, pool=5: mem_term=59, cpu_term=12, min = 12
-    patch_host(32.0, 12)
+def test_example_c_pool_reservation_binds(patch_host) -> None:
+    # 8 GB, pool=5: mem_term = floor((8*0.8 - 5*0.4)/0.4) = 11, clamp(11,3,16) = 11
+    patch_host(8.0, 12)
     cfg = _cfg(mem_cost=0.4, cpu_cost=0.8, hard_cap=16, pool_size=5)
-    assert compute_max_subagents(cfg) == 12
+    assert compute_max_subagents(cfg) == 11
 
 
 def test_example_d_memory_binds(patch_host) -> None:
-    # Effective 4 GB (cgroup headroom fed directly) / 48 cores:
-    # mem_term=10, cpu_term=48, min = 10
+    # Effective 4 GB (cgroup headroom fed directly): mem_term=10
     patch_host(4.0, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
     assert compute_max_subagents(cfg) == 10
 
 
 def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
-    # Stage 1: with session-shared marginal costs (mem≈0.05 GB, cpu≈0.25 core),
-    # even a modest 8 GB / 4 core host is not RAM-bound — the cap rises to
-    # the provider ceiling (hard_cap) instead of the legacy floor of 3.
-    # mem_term = floor((8*0.8)/0.05) = 128; cpu_term = floor((4*0.8)/0.25) = 12;
-    # min(128, 12, 16) = 12 (was 3 when the whole shared process was charged).
+    # Stage 1: with the session-shared marginal memory cost (≈0.05 GB), even a
+    # modest 8 GB host is not RAM-bound — the cap rises to the provider ceiling
+    # (hard_cap) instead of the legacy floor of 3.
+    # mem_term = floor((8*0.8)/0.05) = 128; clamp(128, 3, 16) = 16.
     patch_host(8.0, 4)
     cfg = _cfg(mem_cost=0.05, cpu_cost=0.25, hard_cap=16)
-    assert compute_max_subagents(cfg) == 12
+    assert compute_max_subagents(cfg) == 16
 
 
 # --- Edge cases ------------------------------------------------------------
@@ -171,7 +147,7 @@ def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
 
 def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
     # Same host, with vs without a warm pool: reservation lowers mem_term.
-    patch_host(20.0, 64)  # CPU generous so memory binds
+    patch_host(20.0, 64)
     no_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=0, hard_cap=100))
     with_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=10, hard_cap=100))
     # no_pool: floor(20*0.8/0.5)=32 ; with_pool: floor((16-5)/0.5)=22

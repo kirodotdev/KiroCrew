@@ -1619,8 +1619,12 @@ class AgentConfig:
         default=1.0,
         metadata=_meta(
             "SubAgent CPU Cost (cores)",
-            "First-boot per-agent CPU-cost fallback (cores) used to auto-size the "
-            "cap until a learned value accumulates.",
+            "Deprecated and inert: the subagent cap is sized from host memory "
+            "only, because over-committing memory is an unrecoverable OOM while "
+            "over-committing CPU only slows work the adaptive controller already "
+            "backs off from. Preserved on load and save so an existing config is "
+            "not rewritten out from under the operator.",
+            deprecated=True,
         ),
     )
     subagent_auto_max: int = field(

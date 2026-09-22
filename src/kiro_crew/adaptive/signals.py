@@ -148,16 +148,6 @@ class Sample:
     #: this, never the lifetime counter, so two failures a daemon saw an hour
     #: ago cannot keep the cap pinned.
     gate_failures_in_window: int = 0
-    #: What this HOST's memory and CPU size the subagent cap at right now --
-    #: ``subagent.host_terms_subagent_cap``, which is the auto-sized cap's own
-    #: memory/CPU arithmetic WITHOUT its ``subagent_auto_max`` clamp (that clamp
-    #: applies to auto-sizing only, and applying it here would leave an explicit
-    #: ``max_subagents`` above it unreachable).
-    #: ``0`` = not measured, and then the user's ceiling is the only
-    #: bound. The policy reads it as a GROWTH target (how high an increase may
-    #: climb), never as a reason to cut: nothing is ever killed, and a cap the
-    #: user pinned stays the hard ceiling.
-    host_cap: int = 0
     #: Gateway-side demand: running + queued subagent spawns.
     running: int = 0
     queued: int = 0

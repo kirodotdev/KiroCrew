@@ -51,7 +51,7 @@ pytestmark = pytest.mark.timeout(30)
 @pytest.mark.parametrize("slow_start,window", [(True, 5), (False, 30)])
 def test_fresh_progress_probes_one_slot_without_waiting_for_task_completion(slow_start, window):
     policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64, slow_start=slow_start))
-    sample = Sample(t=0, running=1, queued=63, host_cap=64, free_mem_mb=32768)
+    sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768)
     policy.observe(sample)
     result = policy.observe(replace(sample, t=window, progressing=1))
     assert result.action == ACTION_INCREASE
@@ -66,8 +66,6 @@ def test_fresh_progress_probes_one_slot_without_waiting_for_task_completion(slow
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"host_cap": 0},
-        {"host_cap": 1},
         {"free_mem_mb": -1},
         {"free_mem_mb": 1024},
         {"per_provider_429": {"provider": 1}},
@@ -79,7 +77,7 @@ def test_fresh_progress_probes_one_slot_without_waiting_for_task_completion(slow
 )
 def test_progress_probe_requires_measured_clear_capacity_and_waiting_work(overrides):
     policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64, slow_start=True))
-    sample = Sample(t=0, running=1, queued=63, host_cap=64, free_mem_mb=32768, progressing=1)
+    sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768, progressing=1)
     policy.observe(sample)
     result = policy.observe(replace(sample, t=5, **overrides))
     assert result.effective_exec_cap == 1
@@ -87,7 +85,7 @@ def test_progress_probe_requires_measured_clear_capacity_and_waiting_work(overri
 
 def test_progress_during_pressure_cannot_buy_a_later_probe():
     policy = AdaptivePolicy(PolicyParams(exec_initial=1, exec_ceiling=64))
-    sample = Sample(t=0, running=1, queued=63, host_cap=64, free_mem_mb=32768)
+    sample = Sample(t=0, running=1, queued=63, free_mem_mb=32768)
     policy.observe(sample)
     policy.observe(replace(sample, t=5, progressing=1, loop_lag_ms=400))
     result = policy.observe(replace(sample, t=40))
@@ -264,7 +262,7 @@ class TestCorroboration:
         pol = AdaptivePolicy(_params())
         assert pol.observe(_sample(0.0, free_mem_mb=2048.0)).action == ACTION_DECREASE
 
-    def test_single_provider_429_does_not_lower_the_host_cap(self) -> None:
+    def test_single_provider_429_does_not_lower_the_cap(self) -> None:
         pol = AdaptivePolicy(_params())
         t = 0.0
         for _ in range(6):
@@ -466,55 +464,59 @@ class TestSlowStart:
         """Clear sample with real demand at *cap*."""
         return _sample(t, running=cap, queued=50, completions=completions, **over)
 
-    def test_doubles_per_window_up_to_the_host_cap(self) -> None:
-        pol = AdaptivePolicy(self._ss())
+    def test_doubles_per_window_up_to_the_user_ceiling(self) -> None:
+        pol = AdaptivePolicy(self._ss(exec_ceiling=16))
         completions = 0
         caps = []
         t = 0.0
         for _ in range(8):
             completions += 5
-            caps.append(
-                pol.observe(
-                    self._busy(t, pol.exec_cap, completions, host_cap=16)
-                ).effective_exec_cap
-            )
+            caps.append(pol.observe(self._busy(t, pol.exec_cap, completions)).effective_exec_cap)
             t += 5.0
         # First sample fixes the clean-window baseline, then x2 per 5 s window,
-        # and the HOST figure -- not the 64 ceiling -- is where it stops.
+        # and the user's ceiling is where it stops.
         assert caps == [4, 8, 16, 16, 16, 16, 16, 16], caps
 
-    def test_climbs_to_the_user_ceiling_when_the_host_cap_is_unknown(self) -> None:
-        pol = AdaptivePolicy(self._ss(exec_ceiling=32))
+    def test_no_static_host_prediction_sits_under_the_user_ceiling(self) -> None:
+        """The ceiling is the user's number; the host is judged live, not guessed.
+
+        A p90-peak memory/CPU prediction clamping the climb pins a 32-core host
+        with tens of GB free at its fresh-start cap. Only the live pressure
+        signals in the sample decide whether an increase is safe, and a clear
+        host with demand climbs all the way to the configured ceiling.
+        """
+        pol = AdaptivePolicy(self._ss(exec_ceiling=64))
         completions = 0
         t = 0.0
         for _ in range(8):
             completions += 5
-            d = pol.observe(self._busy(t, pol.exec_cap, completions))  # host_cap defaults to 0
+            d = pol.observe(self._busy(t, pol.exec_cap, completions))
             t += 5.0
-        assert d.effective_exec_cap == 32
+        assert d.effective_exec_cap == 64
+        assert "host_cap" not in pol.snapshot()
 
-    def test_host_cap_below_the_live_cap_withholds_growth_and_cuts_nothing(self) -> None:
-        """A shrinking host figure is a brake, never a cut.
+    def test_memory_under_the_pressure_line_withholds_growth_and_cuts_nothing(self) -> None:
+        """Free memory is the live brake on growth, and a brake is never a cut.
 
         Nothing is ever killed, so lowering the cap under running work frees
-        nothing; the user's pin stays the hard ceiling and the host figure only
-        decides how high the NEXT increase may go.
+        nothing; memory between the pressure and critical lines holds the cap
+        where it is, and only the critical line (corroborated pressure) cuts.
         """
-        pol = AdaptivePolicy(self._ss())
-        for i in range(4):
-            pol.observe(self._busy(float(i * 5), pol.exec_cap, (i + 1) * 5, host_cap=16))
+        pol = AdaptivePolicy(self._ss(exec_ceiling=64))
+        for i in range(3):
+            pol.observe(self._busy(float(i * 5), pol.exec_cap, (i + 1) * 5))
         assert pol.exec_cap == 16
-        d = pol.observe(self._busy(60.0, 16, 100, host_cap=4))
+        d = pol.observe(self._busy(15.0, 16, 100, free_mem_mb=3072.0))
         assert d.effective_exec_cap == 16
         assert d.action == ACTION_HOLD
 
     def test_one_corroborated_pressure_ends_slow_start_for_the_process(self) -> None:
         pol = AdaptivePolicy(self._ss())
-        pol.observe(self._busy(0.0, 4, 5, host_cap=64))
-        d = pol.observe(self._busy(5.0, 4, 10, host_cap=64))
+        pol.observe(self._busy(0.0, 4, 5))
+        d = pol.observe(self._busy(5.0, 4, 10))
         assert d.effective_exec_cap == 8 and pol.slow_start is True
         # 300 ms lag is corroborated on its own: halve, and leave slow start.
-        pol.observe(self._busy(10.0, 8, 10, loop_lag_ms=300.0, host_cap=64))
+        pol.observe(self._busy(10.0, 8, 10, loop_lag_ms=300.0))
         assert pol.exec_cap == 4 and pol.slow_start is False
         # From here the climb is +1 per 30 s window, never x2 again.
         caps = []
@@ -522,11 +524,7 @@ class TestSlowStart:
         t = 41.0
         for _ in range(4):
             completions += 30
-            caps.append(
-                pol.observe(
-                    self._busy(t, pol.exec_cap, completions, host_cap=64)
-                ).effective_exec_cap
-            )
+            caps.append(pol.observe(self._busy(t, pol.exec_cap, completions)).effective_exec_cap)
             t += 31.0
         assert caps == [5, 6, 7, 8], caps
 
@@ -592,12 +590,12 @@ class TestSlowStart:
             )
         assert d.effective_exec_cap == 4
 
-    def test_snapshot_reports_the_host_cap_and_the_regime(self) -> None:
+    def test_snapshot_reports_the_regime(self) -> None:
         pol = AdaptivePolicy(self._ss())
-        pol.observe(self._busy(0.0, 4, 1, host_cap=14))
+        pol.observe(self._busy(0.0, 4, 1))
         snap = pol.snapshot()
-        assert snap["host_cap"] == 14
         assert snap["slow_start"] is True
+        assert snap["exec_ceiling"] == 64
 
     def test_slow_start_does_not_lower_the_spawn_gate_bar(self) -> None:
         """Slow start eases the EXECUTION bar only; the gate still owes 20.

@@ -222,14 +222,12 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
         f"  Mode: {mode}   Execution cap: {exec_cap}/{ceiling}   "
         f"MCP spawn gate: {gate_cap}/{gate_ceiling}   Dispatch: {status}"
     )
-    # The host's own figure and the growth regime: without them "4/64" reads as
-    # an unexplained throttle. ``host_cap`` is what memory and CPU size the cap
-    # at right now, and it is the bound an increase climbs toward, so a low one
-    # is the answer to "why is the cap far below my max".
-    host_cap = state.get("host_cap")
-    if isinstance(host_cap, int) and host_cap > 0:
+    # The growth regime: without it "4/64" reads as an unexplained throttle.
+    # The cap climbs toward the user's ceiling on clean samples; a low one is
+    # earned headroom not yet spent, never a static host prediction.
+    if state.get("enabled", True) and "slow_start" in state:
         growth = "slow start (x2/window)" if state.get("slow_start") else "+1 per window"
-        lines.append(f"  Host cap (memory+CPU): {host_cap}   Growth: {growth}")
+        lines.append(f"  Growth toward ceiling: {growth}")
     last = state.get("last") or {}
     if last:
         signals = ",".join(last.get("signals") or []) or "none"

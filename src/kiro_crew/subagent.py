@@ -1198,19 +1198,28 @@ def _cgroup_available_gb() -> float:
 
 
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:
-    """Compute the concurrent sub-agent cap from host memory and CPU.
+    """Compute the concurrent sub-agent cap from host memory.
 
-    Memory- and CPU-symmetric: each resource yields a candidate count from a
-    buffered budget divided by a per-agent cost, and the tighter one binds.
+    Memory is the ONLY host resource that sizes the cap: a buffered memory
+    budget divided by a per-agent memory cost. CPU is deliberately not a term.
+    Over-committing memory ends in the OOM killer, an unrecoverable hard
+    failure, so it must be sized up front; over-committing CPU only slows work
+    down, and the adaptive controller already backs off on the pressure signals
+    that slowness produces (timeouts, slow starts). A static CPU estimate on top
+    of that closed loop only ever closed the door early: peak-of-one-minute
+    CPU readings from build/test-heavy runs priced every slot at the busiest
+    agent's burst and pinned the cap to its starting value on 32-core hosts
+    with tens of GB free.
+
     The result is clamped to ``[3, hard_cap]`` — never below the legacy
     default (the per-spawn ``spawn_min_memory_gb`` gate is the real-time
     memory guard), never above the absolute ``subagent_auto_max`` (which
     stands in for the unmodeled LLM-provider concurrency limit).
 
-    Per-agent costs come from the learned cost store (``read_learned_cost``);
-    when no learned value exists yet, the configured first-boot fallbacks
-    (``subagent_cost_gb`` / ``subagent_cpu_cost_cores``) are used. Fails open to
-    the legacy default when memory can't be read (e.g. non-Linux hosts).
+    The per-agent memory cost comes from the learned cost store
+    (``read_learned_cost``); when no learned value exists yet, the configured
+    first-boot fallback (``subagent_cost_gb``) is used. Fails open to the legacy
+    default when memory can't be read (e.g. non-Linux hosts).
 
     See ``dynamic-subagent-sizing.md`` §3.
     """
@@ -1222,48 +1231,44 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
     lo = _LEGACY_DEFAULT_MAX
 
-    terms = _host_terms(cfg)
-    if terms is None:
+    mem_term = _host_mem_term(cfg)
+    if mem_term is None:
         # Memory unreadable (non-Linux / read error) — fail open.
         logger.info(
             "dynamic subagent cap = %d (memory unreadable; fail-open to legacy default)",
             lo,
         )
         return lo
-    mem_term, cpu_term = terms
 
-    candidate = min(mem_term, cpu_term)
-    result = max(lo, min(candidate, hard_cap))
+    result = max(lo, min(mem_term, hard_cap))
 
     # Name the active bound for an explainable startup log (§5.2).
-    if candidate >= hard_cap:
+    if mem_term >= hard_cap:
         reason = "hard_cap"
-    elif candidate <= lo:
+    elif mem_term <= lo:
         reason = "floor"
-    elif mem_term <= cpu_term:
-        reason = "mem_term"
     else:
-        reason = "cpu_term"
+        reason = "mem_term"
     logger.info(
-        "dynamic subagent cap = %d (%s; mem_term=%d, cpu_term=%d, floor=%d, hard_cap=%d)",
+        "dynamic subagent cap = %d (%s; mem_term=%d, floor=%d, hard_cap=%d)",
         result,
         reason,
         mem_term,
-        cpu_term,
         lo,
         hard_cap,
     )
     return result
 
 
-def _host_terms(cfg: KiroCrewConfig) -> tuple[int, int] | None:
-    """``(mem_term, cpu_term)`` for this host, or None when memory is unreadable.
+def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
+    """How many agents fit in this host's available memory, or None when unreadable.
 
-    THE one place the sizing arithmetic lives. Both public readings are built on
-    it -- :func:`compute_max_subagents`, which clamps to ``subagent_auto_max``
-    and logs, and :func:`host_terms_subagent_cap`, which does neither -- so the
-    two can never drift apart, and the log line still gets each term separately
-    to name the bound that actually bound.
+    THE one place the sizing arithmetic lives, so the auto-sized cap
+    (:func:`compute_max_subagents`) and its startup log line can never drift
+    apart. It sizes the AUTO ceiling only (``max_subagents=0``); an explicit
+    ``max_subagents`` is the ceiling as written, and the adaptive controller
+    climbs toward whichever applies on live pressure signals, not on this
+    prediction.
     """
     agent = cfg.agent
     avail_gb = _available_memory_gb()
@@ -1271,52 +1276,8 @@ def _host_terms(cfg: KiroCrewConfig) -> tuple[int, int] | None:
         return None
     buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
     mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
-    cpu_cost = read_learned_cost("cpu_cores") or agent.subagent_cpu_cost_cores or 1.0
     pool_size = cfg.session.pool_size
-    mem_term = math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
-    cpu_count = os.cpu_count() or 1
-    cpu_term = math.floor((cpu_count * buf) / cpu_cost)
-    return mem_term, cpu_term
-
-
-def host_terms_subagent_cap(cfg: KiroCrewConfig, *, resident_agents: int = 0) -> int:
-    """What this host's MEMORY and CPU alone size the subagent cap at.
-
-    :func:`compute_max_subagents` without the ``subagent_auto_max`` clamp, and
-    without the sizing log line. Two readings of one host, sharing
-    :func:`_host_terms`; neither calls the other. Two callers need exactly that:
-
-    * ``compute_max_subagents``, which applies the clamp and logs;
-    * the adaptive controller's growth ceiling, which must NOT apply it. The
-      clamp stands in for the LLM provider's concurrency limit and is documented
-      as auto-sizing only -- ``subagent_auto_max``'s own help says "only applies
-      when max_subagents=0 ... Ignored when max_subagents is set explicitly",
-      and :func:`resolve_max_subagents` honours that. Applying it to the climb
-      would put a hard 32 under an explicit ``max_subagents=64``, so the user's
-      pin would be unreachable by construction on a host large enough for it --
-      the exact failure the climb exists to remove.
-
-    Floored at ``_LEGACY_DEFAULT_MAX`` when the host IS measured. ``0`` when
-    memory cannot be read -- "not measured", NOT the floor. The two callers
-    want different answers to an unreadable host: ``compute_max_subagents``
-    must still produce a cap, so it fails open to the floor; the controller
-    reads this figure only as a bound on how high the cap may climb, and the
-    floor (3) sits BELOW the fresh-start cap (``adaptive_initial``, 4), so
-    handing it the floor would deny every increase and hold the cap at 4 for
-    the life of the process.
-    ``Sample.host_cap`` already defines 0 as "leave the user's ceiling as the
-    only bound", and that is the only safe reading of a probe that failed.
-    The memory term is ADDITIONAL slots in currently available memory; the CPU
-    term is TOTAL capacity. Add already-resident managed agents to memory only,
-    using occupancy captured with this observation. Queued or unstarted work
-    has consumed no process memory and must not buy capacity. Cache the resulting
-    total, never add newer occupancy to an older memory observation.
-    """
-    terms = _host_terms(cfg)
-    if terms is None:
-        return 0
-    mem_term, cpu_term = terms
-    return max(_LEGACY_DEFAULT_MAX, min(mem_term + max(0, resident_agents), cpu_term))
+    return math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
 
 
 def _startup_memory_reserve_gb(
@@ -2632,7 +2593,6 @@ class SubagentManager:
         "agent.subagent_auto_max",
         "agent.subagent_mem_buffer_pct",
         "agent.subagent_cost_gb",
-        "agent.subagent_cpu_cost_cores",
         "session.pool_size",
         "agent.subagent_max_turns",
         "agent.subagent_timeout_secs",
@@ -2655,7 +2615,6 @@ class SubagentManager:
         "agent.subagent_auto_max",
         "agent.subagent_mem_buffer_pct",
         "agent.subagent_cost_gb",
-        "agent.subagent_cpu_cost_cores",
         "session.pool_size",
     )
 
@@ -2675,7 +2634,6 @@ class SubagentManager:
             agent.subagent_auto_max,
             agent.subagent_mem_buffer_pct,
             agent.subagent_cost_gb,
-            agent.subagent_cpu_cost_cores,
             cfg.session.pool_size,
         )
 

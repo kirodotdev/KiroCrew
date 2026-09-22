@@ -4,10 +4,7 @@ One asyncio task on the gateway event loop. Every ``controller_sample_secs``
 (5 s) it
 
 1. measures event-loop lag (how late its own timer fired), reads host memory,
-   RSS, open fds and the host's own cap figure (``host_terms_subagent_cap`` --
-   what this host's memory and CPU size the subagent cap at, WITHOUT the
-   ``subagent_auto_max`` clamp, and cached for 60 s) off the loop
-   (``asyncio.to_thread``), and asks the MCP
+   RSS and open fds off the loop (``asyncio.to_thread``), and asks the MCP
    gateway daemon for its ``stats`` frame (spawn gate + host budget) -- also
    off the loop, over a fresh control connection with the manager's own
    timeout;
@@ -47,8 +44,6 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
-from kiro_crew import subagent as _subagent
-from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.metrics.events import ADAPTIVE_DECISIONS, emit_counter
 
 from .policy import (
@@ -124,65 +119,13 @@ class HostSample:
     rss_mb: float = -1.0
     fd_count: int = -1
     fd_limit: int = 0
-    #: What this host's memory and CPU size the subagent cap at right now
-    #: (``subagent.host_terms_subagent_cap``). ``0`` = not measured.
-    subagent_host_cap: int = 0
 
 
-#: Cache for :func:`_host_cap_cached`: ``(monotonic_deadline, value)``.
-_HOST_CAP_TTL_SECS = 60.0
-_host_cap_cache: tuple[float, int] = (0.0, 0)
+def probe_host() -> HostSample:
+    """Read memory, RSS and open fds.
 
-
-def _host_cap_cached(resident_agents: int = 0) -> int:
-    """The host's memory+CPU cap figure, recomputed at most every 60 s.
-
-    Called from the worker thread, so the cache is a plain read-modify-write of
-    a module global: a torn interleaving costs one extra recompute, never a
-    wrong value, and the GIL makes the tuple swap itself atomic.
-
-    Two reasons this is not read per tick. It is not free -- it loads config and
-    the learned-cost store -- and it moves on the scale of minutes, so a 5 s
-    cadence buys nothing; and ``compute_max_subagents`` logs its sizing line at
-    INFO on every call, which at one tick per 5 s is ~17k lines a day in the
-    gateway log.
-
-    ``host_terms_subagent_cap`` and NOT ``compute_max_subagents``: the latter
-    clamps to ``subagent_auto_max`` (32), which is documented as applying to the
-    auto-sized cap only. Clamping the growth ceiling with it would make an
-    explicit ``max_subagents=64`` unreachable on a host that can carry it.
-
-    ``0`` is a real answer ("memory unreadable, not measured") and is cached
-    like any other: :meth:`~.policy.AdaptivePolicy._growth_ceiling` reads it as
-    "the user's ceiling is the only bound", which is the only figure a failed
-    probe may hand a climb -- the sizing floor (3) would sit under the
-    fresh-start cap (4) and deny every increase.
-    """
-    global _host_cap_cache
-    now = time.monotonic()
-    deadline, value = _host_cap_cache
-    if now < deadline:
-        return value
-    fresh = max(
-        0,
-        int(
-            _subagent.host_terms_subagent_cap(
-                KiroCrewConfig.load(), resident_agents=resident_agents
-            )
-        ),
-    )
-    _host_cap_cache = (now + _HOST_CAP_TTL_SECS, fresh)
-    return fresh
-
-
-def probe_host(resident_agents: int = 0) -> HostSample:
-    """Read memory, RSS, open fds and the host's own cap figure.
-
-    Never raises; runs in a worker thread, so the two blocking reads here --
-    ``/proc`` (or its platform equivalent) and ``host_terms_subagent_cap``,
-    which loads config and the learned-cost store -- stay off the event loop.
-    The cap figure is cached (:func:`_host_cap_cached`), so only the memory read
-    is really paid every tick.
+    Never raises; runs in a worker thread, so the blocking ``/proc`` read (or
+    its platform equivalent) stays off the event loop.
     """
     out = HostSample()
     try:
@@ -198,12 +141,6 @@ def probe_host(resident_agents: int = 0) -> HostSample:
         out.rss_mb = platform_compat.proc_rss_bytes() / (1024.0 * 1024.0)
     except Exception:
         logger.debug("adaptive: rss probe failed", exc_info=True)
-    try:
-        out.subagent_host_cap = _host_cap_cached(resident_agents)
-    except Exception:
-        # 0 leaves the user's ceiling as the only growth bound: this figure is
-        # a tightening, so failing to read it must never tighten anything.
-        logger.debug("adaptive: host cap probe failed", exc_info=True)
     try:
         from kiro_crew.mcp_gateway.host_budget import _nofile_soft_limit
 
@@ -439,17 +376,7 @@ class AdaptiveController:
         if not self._enabled:
             return await self.step(Sample(t=self._clock()))
         if self._host_probe is None:
-            # Snapshot on-loop, where the manager owns these rows. A waiting
-            # parent still has a resident process despite yielding its slot;
-            # queued rows and approval/start waiters without a PID do not.
-            resident_agents = sum(
-                1
-                for info in getattr(self._manager, "_agents", {}).values()
-                if not getattr(info, "done", False)
-                and not getattr(info, "queued", False)
-                and getattr(info, "_pid", None) is not None
-            )
-            host = await asyncio.to_thread(probe_host, resident_agents)
+            host = await asyncio.to_thread(probe_host)
         else:
             host = await asyncio.to_thread(self._host_probe)
         gate_snap: dict[str, Any] = {}
@@ -536,7 +463,6 @@ class AdaptiveController:
             slow_or_failing_keys=len(slow_keys),
             per_provider_429=throttles,
             spawn_gate=gate,
-            host_cap=int(host.subagent_host_cap),
             running=running,
             queued=queued,
             healthy_in_flight=healthy,
@@ -685,7 +611,6 @@ class AdaptiveController:
                     "free_mem_mb": round(last.free_mem_mb, 1),
                     "rss_mb": round(last.rss_mb, 1),
                     "fd_count": last.fd_count,
-                    "host_cap": last.host_cap,
                     "running": last.running,
                     "queued": last.queued,
                     "attributable_timeout_rate": round(last.attributable_timeout_rate, 3),

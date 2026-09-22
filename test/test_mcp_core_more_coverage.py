@@ -1078,13 +1078,12 @@ class TestResourceStatusTool:
                 "exec_ceiling": 64,
                 "spawn_gate_capacity": 4,
                 "gate_ceiling": 8,
-                "host_cap": 14,
                 "slow_start": True,
                 "last": {"action": "increase", "reason": "clean window earned x2 (slow start)"},
             },
         )
         assert "Execution cap: 8/64" in out
-        assert "Host cap (memory+CPU): 14" in out
+        assert "Growth toward ceiling: slow start (x2/window)" in out
         # With a live answer in hand the configured ceiling is not printed at all.
         assert "Sub-agent ceiling: 3" not in out
 
@@ -1133,9 +1132,9 @@ class TestLiveAdaptiveState:
         return _live_adaptive_state()
 
     def test_the_in_process_registry_wins_and_costs_no_request(self) -> None:
-        with patch("kiro_crew.resource_status.adaptive_state", return_value={"host_cap": 9}):
+        with patch("kiro_crew.resource_status.adaptive_state", return_value={"exec_ceiling": 9}):
             with patch.object(mcp_core, "_get") as get:
-                assert self._call() == {"host_cap": 9}
+                assert self._call() == {"exec_ceiling": 9}
         get.assert_not_called()
 
     def test_out_of_process_it_reads_the_gateway(self) -> None:
@@ -1178,7 +1177,7 @@ class TestLiveAdaptiveState:
         )
         app["state"] = SimpleNamespace(subagents=None)
         spawn_resume.setup_spawn_resume_routes(app)
-        live = {"effective_exec_cap": 8, "exec_ceiling": 64, "host_cap": 14}
+        live = {"effective_exec_cap": 8, "exec_ceiling": 64, "slow_start": True}
         async with TestClient(TestServer(app)) as client:
             with patch("kiro_crew.resource_status.adaptive_state", return_value=live):
                 resp = await client.get(

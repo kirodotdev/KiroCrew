@@ -219,7 +219,7 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
         mgr,
         cfg=cfg,
         clock=clock,
-        host_probe=lambda: HostSample(free_mem_mb=available() * 1024, subagent_host_cap=38),
+        host_probe=lambda: HostSample(free_mem_mb=available() * 1024),
     )
 
     async def pump() -> None:

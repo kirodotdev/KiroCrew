@@ -47,11 +47,11 @@ async def test_long_running_stream_can_recover_from_one_without_completion():
         manager,
         cfg=_cfg(adaptive_initial=1),
         clock=clock,
-        host_probe=lambda: HostSample(free_mem_mb=32768, subagent_host_cap=64),
+        host_probe=lambda: HostSample(free_mem_mb=32768),
     )
     await ctl.tick()
     clock.advance(5)
-    await ctl.step(_clean(clock.t, running=1, queued=63, loop_lag_ms=400, host_cap=64))
+    await ctl.step(_clean(clock.t, running=1, queued=63, loop_lag_ms=400))
     assert manager.effective == 1
     clock.advance(31)
     info.last_activity = 102.0
@@ -304,179 +304,48 @@ class TestTick:
         assert ctl._samples[-1].completions == 1
 
     @pytest.mark.asyncio
-    async def test_host_cap_reaches_the_sample_and_bounds_the_climb(self) -> None:
-        """The probe's host figure is what an increase climbs toward.
+    async def test_the_climb_is_bounded_by_the_user_ceiling_alone(self, monkeypatch) -> None:
+        """No static host prediction sits between the cap and ``max_subagents``.
 
-        The user's ``max_subagents`` is a ceiling, not a promise: this is the
-        number that answers "how many does the memory and CPU on THIS host
-        actually allow", and the cap stops there instead of at the ceiling.
+        The probe reads memory, RSS and fds -- live signals the policy judges
+        each tick -- and never a p90-peak "how many fit" figure: that figure
+        pinned a 32-core host with tens of GB free at its fresh-start cap. A
+        clear host with demand climbs to the user's ceiling, and the sizing
+        helpers are not consulted on the way.
         """
-        mgr = FakeManager(user_max=64)
-        host = HostSample(
-            free_mem_mb=16_000.0, rss_mb=300.0, fd_count=50, fd_limit=1000, subagent_host_cap=8
-        )
-        ctl, clock = _controller(mgr, host=host, cfg=_cfg(adaptive_initial=4))
-        mgr.running_count = 4
-        mgr._queue = [{"task": str(i)} for i in range(50)]
-        await ctl.tick(loop_lag_ms=5.0)
-        assert ctl._samples[-1].host_cap == 8
-        assert ctl.state()["last_sample"]["host_cap"] == 8
-        for i in range(6):
-            clock.advance(5)
-            mgr._agents[f"done-{i}"] = SimpleNamespace(done=True, error="", stalled=False)
-            mgr.running_count = max(4, mgr.effective or 4)
-            await ctl.tick(loop_lag_ms=5.0)
-        assert ctl.state()["applied_exec_cap"] == 8, ctl.state()
 
-    @pytest.mark.asyncio
-    async def test_an_unreadable_host_cap_never_tightens_anything(self) -> None:
-        """A failed probe reports 0, and 0 means "use the user's ceiling"."""
-        mgr = FakeManager(user_max=64)
-        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_initial=4))  # default probe: no host cap
-        await ctl.tick(loop_lag_ms=5.0)
-        assert ctl._samples[-1].host_cap == 0
-        assert ctl.policy._growth_ceiling(ctl._samples[-1]) == 64
+        def _boom(*_a: object, **_kw: object) -> int:  # pragma: no cover - must never be called
+            raise AssertionError("the sizing helper must not bound the climb")
 
-    @pytest.mark.asyncio
-    async def test_an_unreadable_memory_probe_still_lets_the_cap_climb(self, monkeypatch) -> None:
-        """The REAL probe on a host whose memory read fails hands the climb 0.
-
-        The sizing helper's fail-open figure is the floor, 3, which sits UNDER
-        the fresh-start cap of 4: a controller handed 3 for a host it could not
-        measure has ``4 < 3`` as its increase condition and stays at 4 for the
-        life of the process. So an unreadable host must report "not measured"
-        (0), and the cap must climb toward the user's ceiling exactly as it does
-        with no host figure at all.
-        """
-        monkeypatch.setattr("kiro_crew.subagent._available_memory_gb", lambda: -1.0)
-        ctl_mod._host_cap_cache = (0.0, 0)
-        host = HostSample(
-            free_mem_mb=16_000.0,
-            rss_mb=300.0,
-            fd_count=50,
-            fd_limit=1000,
-            subagent_host_cap=ctl_mod._host_cap_cached(),
-        )
+        monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", _boom)
+        host = HostSample(free_mem_mb=16_000.0, rss_mb=300.0, fd_count=50, fd_limit=1000)
         mgr = FakeManager(user_max=64)
         ctl, clock = _controller(mgr, host=host, cfg=_cfg(adaptive_initial=4))
         mgr.running_count = 4
         mgr._queue = [{"task": str(i)} for i in range(70)]
         await ctl.tick(loop_lag_ms=5.0)
+        assert "host_cap" not in ctl.state()["last_sample"]
+        assert ctl.policy._growth_ceiling(ctl._samples[-1]) == 64
         for i in range(6):
             clock.advance(5)
             mgr._agents[f"done-{i}"] = SimpleNamespace(done=True, error="", stalled=False)
             mgr.running_count = max(4, mgr.effective or 4)
             await ctl.tick(loop_lag_ms=5.0)
-        assert ctl.state()["applied_exec_cap"] > 4, ctl.state()
         assert ctl.state()["applied_exec_cap"] == 64, ctl.state()
-        assert host.subagent_host_cap == 0
-        # The 0 is cached like a measured figure: an unreadable host is not a
-        # reason to re-read config and the learned-cost store every tick.
+
+    def test_probe_host_reads_only_live_signals(self, monkeypatch) -> None:
+        """``probe_host`` is the ONE blocking read and it reads the host, not config.
+
+        Config and the learned-cost store are sizing inputs, not live signals,
+        so the worker thread must not touch either.
+        """
         monkeypatch.setattr(
-            "kiro_crew.subagent.host_terms_subagent_cap",
-            lambda _c, **_kw: pytest.fail("cached 0 must not be recomputed inside the TTL"),
+            KiroCrewConfig,
+            "load",
+            lambda *_a, **_kw: pytest.fail("probe_host must not load config"),
         )
-        assert ctl_mod._host_cap_cached() == 0
-
-    def test_probe_host_reports_the_hosts_own_cap_figure(self) -> None:
-        """``probe_host`` is the ONE blocking read, so the cap figure rides it.
-
-        ``host_terms_subagent_cap`` loads config and the learned-cost store; it
-        belongs on the worker thread with the memory read, not on the loop.
-        """
-        ctl_mod._host_cap_cache = (0.0, 0)
         sample = ctl_mod.probe_host()
-        assert sample.subagent_host_cap >= 3  # the sizing floor
-
-    def test_the_host_cap_is_cached_not_recomputed_every_tick(self, monkeypatch) -> None:
-        """A 5 s tick must not re-read config and the learned-cost store.
-
-        It is not free, it moves on the scale of minutes, and the clamped
-        sibling ``compute_max_subagents`` logs a sizing line at INFO on every
-        call -- one tick per 5 s would be ~17k gateway log lines a day.
-        """
-        calls: list[int] = []
-
-        def _counted(_cfg: object, **_kw: object) -> int:
-            calls.append(1)
-            return 11
-
-        monkeypatch.setattr("kiro_crew.subagent.host_terms_subagent_cap", _counted)
-        ctl_mod._host_cap_cache = (0.0, 0)
-        assert [ctl_mod._host_cap_cached() for _ in range(5)] == [11] * 5
-        assert len(calls) == 1
-        # Past the TTL it is read again -- a cache, not a one-shot.
-        ctl_mod._host_cap_cache = (
-            ctl_mod._host_cap_cache[0] - ctl_mod._HOST_CAP_TTL_SECS - 1.0,
-            11,
-        )
-        assert ctl_mod._host_cap_cached() == 11
-        assert len(calls) == 2
-
-    def test_the_climb_is_not_bounded_by_the_auto_size_ceiling(self, monkeypatch) -> None:
-        """``host_terms_subagent_cap`` and NOT ``compute_max_subagents``.
-
-        The latter clamps to ``subagent_auto_max`` (default 32), documented as
-        applying to the auto-sized cap only. Reading it here would stop an
-        explicit ``max_subagents=64`` at 32 on a host that can carry it -- the
-        precise failure this controller change exists to remove.
-        """
-        monkeypatch.setattr("kiro_crew.subagent.host_terms_subagent_cap", lambda _c, **_kw: 48)
-
-        def _boom(_c: object) -> int:  # pragma: no cover - must never be called
-            raise AssertionError("the clamped sizing helper must not bound the climb")
-
-        monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", _boom)
-        ctl_mod._host_cap_cache = (0.0, 0)
-        assert ctl_mod.probe_host().subagent_host_cap == 48
-
-    @pytest.mark.asyncio
-    async def test_resident_headroom_is_cached_as_a_total_not_recredited(self, monkeypatch) -> None:
-        cfg = _cfg(
-            adaptive_initial=8,
-            subagent_mem_buffer_pct=0,
-            subagent_cost_gb=1.0,
-            subagent_cpu_cost_cores=1.0,
-        )
-        cfg.session.pool_size = 0
-        clock = Clock()
-        monkeypatch.setattr(ctl_mod, "time", SimpleNamespace(monotonic=clock))
-        monkeypatch.setattr(ctl_mod, "_host_cap_cache", (0.0, 0))
-        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
-        monkeypatch.setattr("kiro_crew.subagent.read_learned_cost", lambda _key: None)
-        monkeypatch.setattr("kiro_crew.subagent.os.cpu_count", lambda: 64)
-        available = [6.0]
-        monkeypatch.setattr("kiro_crew.subagent._available_memory_gb", lambda: available[0])
-        monkeypatch.setattr("kiro_crew.resource_status._read_available_gb", lambda: available[0])
-        mgr = FakeManager(user_max=64)
-        mgr.running_count = 8
-        mgr._queue = [{"task": str(i)} for i in range(64)]
-        mgr._agents = {str(i): SimpleNamespace(_pid=100 + i) for i in range(8)}
-        # A yielded parent still consumes memory; queued/terminal rows and a
-        # cold start without a process do not. running_count misses the parent.
-        mgr._agents["0"]._slot_released = True
-        mgr._agents.update(
-            queued=SimpleNamespace(queued=True, _pid=200),
-            terminal=SimpleNamespace(done=True, _pid=201),
-            unstarted=SimpleNamespace(_pid=None),
-        )
-        ctl = AdaptiveController(mgr, cfg=cfg, clock=clock)
-        await ctl.tick()
-        assert ctl._samples[-1].host_cap == 14
-        clock.advance(5)
-        ctl.record_completion(ok=True)
-        await ctl.tick()
-        assert mgr.effective == 14
-        # Three new residents consumed three GB. A live occupancy + cached
-        # headroom implementation would incorrectly raise the total to 17.
-        mgr._agents.update({str(i): SimpleNamespace(_pid=100 + i) for i in range(8, 11)})
-        available[0] = 3.0
-        clock.advance(5)
-        await ctl.tick()
-        assert ctl._samples[-1].host_cap == 14
-        clock.advance(ctl_mod._HOST_CAP_TTL_SECS)
-        await ctl.tick()
-        assert ctl._samples[-1].host_cap == 14
+        assert set(vars(sample)) == {"free_mem_mb", "rss_mb", "fd_count", "fd_limit"}
 
     @pytest.mark.asyncio
     async def test_hooks_feed_the_sample(self) -> None:
@@ -716,11 +585,11 @@ class TestVisibilityAndConfig:
         assert rs.adaptive_summary_lines() == []
         assert rs.adaptive_state() is None
 
-    def test_resource_status_names_the_host_cap_and_the_growth_regime(self) -> None:
+    def test_resource_status_names_the_growth_regime(self) -> None:
         """ "Execution cap: 4/64" alone reads as an unexplained throttle.
 
-        The host figure is the bound the climb is heading for, so a cap far
-        below the user's max is only actionable next to it.
+        The regime says how the cap is heading for the user's ceiling, so a cap
+        below the max reads as headroom not yet earned rather than a host limit.
         """
         from kiro_crew import resource_status as rs
 
@@ -733,20 +602,19 @@ class TestVisibilityAndConfig:
                     "exec_ceiling": 64,
                     "spawn_gate_capacity": 4,
                     "gate_ceiling": 8,
-                    "host_cap": 14,
                     "slow_start": True,
                     "last": {"action": "increase", "reason": "clean window earned x2 (slow start)"},
                 }
             )
         )
         assert "Execution cap: 8/64" in joined
-        assert "Host cap (memory+CPU): 14" in joined
-        assert "Growth: slow start (x2/window)" in joined
-        # An unmeasured host figure prints no line rather than a bare 0.
+        assert "Growth toward ceiling: slow start (x2/window)" in joined
+        assert "Host cap" not in joined
+        # A state without a regime prints no growth line rather than a guess.
         quiet = rs.adaptive_summary_lines(
-            {"enabled": True, "effective_exec_cap": 4, "exec_ceiling": 64, "host_cap": 0}
+            {"enabled": True, "effective_exec_cap": 4, "exec_ceiling": 64}
         )
-        assert not any("Host cap" in line for line in quiet)
+        assert not any("Growth" in line for line in quiet)
 
     def test_registry_round_trip(self) -> None:
         mgr = FakeManager()

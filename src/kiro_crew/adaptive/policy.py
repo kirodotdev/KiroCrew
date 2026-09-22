@@ -25,12 +25,19 @@ Rules, with fixed tuning constants owned by this module:
   into 6, then 4. Cooldown 30 s between decreases; the successes counted
   before a decrease are discarded on the track that was cut, and only there
   -- a track already at its floor keeps the successes it has earned.
-* **Increase**. Two regimes, one rule each, and the bound is
-  ``min(exec_ceiling, sample.host_cap)`` -- the user's pin AND what this host's
-  memory and CPU currently size the cap at (:attr:`~.signals.Sample.host_cap`,
-  ``subagent.host_terms_subagent_cap``). A host figure of 0 means "not measured"
-  and leaves the user's ceiling as the only bound; a host figure BELOW the live
-  cap withholds further increases and never cuts, because nothing is killed.
+* **Increase**. Two regimes, one rule each, and the bound is the user's
+  configured ceiling (``exec_ceiling``: an explicit ``max_subagents``, or the
+  memory-sized auto cap when it is 0). No static host prediction sits under
+  that ceiling: the point of the loop is to let many sessions ask for many
+  workers, admit them up to the ceiling, and QUEUE and back off on the live
+  pressure signals below (memory under the pressure line, loop lag, timeouts)
+  rather than pin the cap at a number guessed from peak readings. Memory is
+  the one resource whose over-commit is unrecoverable, and it is guarded
+  live: an increase needs a MEASURED free-memory reading at or above the
+  pressure line (an unreadable host, ``free_mem_mb < 0``, fails open here as
+  it does for the spawn gate's own guard), a decrease fires at the critical
+  line, and the spawn gate defers every cold start that would not leave
+  ``spawn_min_memory_gb`` plus the running agents' unobserved growth free.
 
   * **Slow start**, until this process meets its first corroborated pressure or
     pause: ``x2`` per clean sample window (``slow_start_clean_secs``, 5 s),
@@ -202,8 +209,6 @@ class AdaptivePolicy:
         # not retired it after the first corroborated pressure or pause.
         self._slow_start_retired = False
         self._slow_start = bool(params.slow_start)
-        #: Last host figure seen, for the state snapshot only.
-        self._host_cap = 0
         self._last_decrease_at = _NEVER
         self._last_increase_at = _NEVER
         self._last_pressure_at = _NEVER
@@ -256,7 +261,6 @@ class AdaptivePolicy:
             "effective_exec_cap": self._exec_cap,
             "exec_ceiling": self._p.exec_ceiling,
             "exec_floor": self._p.exec_floor,
-            "host_cap": self._host_cap,
             "slow_start": self._slow_start,
             "spawn_gate_capacity": self._gate_cap,
             "gate_ceiling": self._p.gate_ceiling,
@@ -301,7 +305,6 @@ class AdaptivePolicy:
             return self._emit(ACTION_FIXED, "fixed mode: caps pinned at their initial values", None)
 
         sample = replace(sample, gate_failures_in_window=self._windowed_gate_failures(sample))
-        self._host_cap = max(0, int(sample.host_cap))
         self._rebase_dropped_gate_successes(sample)
         report = classify(sample, self._p.thresholds)
         now = sample.t
@@ -473,14 +476,14 @@ class AdaptivePolicy:
         exec_successes = sample.completions - self._exec_success_base
         completion_earned = exec_successes >= self._required_exec_successes(self._exec_cap)
         # A long useful run need not FINISH before a second slot can open.
-        # Fresh stream progress buys only one exploratory slot, with measured
-        # host headroom and no provider throttle, after the same clean window.
-        # It never buys doubling or relaxes the independent init-gate bar.
+        # Fresh stream progress buys only one exploratory slot, with free
+        # memory above the pressure line and no provider throttle, after the
+        # same clean window. It never buys doubling or relaxes the independent
+        # init-gate bar.
         progress_probe = (
             sample.progressing > 0
             and sample.queued > 0
             and sample.running >= self._exec_cap
-            and sample.host_cap > self._exec_cap
             and sample.free_mem_mb >= max(0.0, p.thresholds.mem_pressure_mb)
             and not report.throttled_providers
         )
@@ -525,19 +528,16 @@ class AdaptivePolicy:
     def _growth_ceiling(self, sample: Sample) -> int:
         """How high an execution-cap increase may climb on THIS sample.
 
-        ``min(user ceiling, host cap)``. ``host_cap`` is what this host's memory
-        and CPU size the subagent cap at right now
-        (``subagent.host_terms_subagent_cap``); ``0`` means it was not measured
-        and leaves the user's ceiling alone. A host figure BELOW the live cap
-        only withholds the next increase -- it is never a cut, because a cut
-        cannot free work that is already running and the user's pin is the hard
-        ceiling.
+        The user's ceiling, and only that. An earlier reading clamped it to a
+        host figure predicted from p90 peak memory and CPU per agent; on a
+        32-core host with tens of GB free that prediction held the cap at its
+        fresh-start value for the life of the process, because one build-heavy
+        agent's burst priced every slot. The live signals in the sample -- free
+        memory against the pressure line, loop lag, timeouts -- are what say
+        whether THIS increase is safe, and the spawn gate's memory reserve is
+        what queues a cold start the host cannot absorb yet.
         """
-        ceiling = self._p.exec_ceiling
-        host = int(sample.host_cap)
-        if host > 0:
-            ceiling = min(ceiling, max(self._p.exec_floor, host))
-        return ceiling
+        return self._p.exec_ceiling
 
     def _required_exec_successes(self, cap: int) -> int:
         """Completions since the last change that an exec increase must see.

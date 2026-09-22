@@ -96,7 +96,7 @@ pool default changes.
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` defaults to `0` = auto-size the cap (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg--max_concurrentnone--live-config). Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
+| `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` defaults to `0` = auto-size the cap (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg--max_concurrentnone--live-config). Session-shared subagents are cost-sampled as the runtime's measured RSS divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS` |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
@@ -124,7 +124,9 @@ to follow the current default; `--keep` affirms it.
 ### Concurrency Auto-Sizing — Memory Probe (per platform)
 
 When `agent.max_subagents == 0`, `compute_max_subagents()` sizes the cap from
-host memory and CPU, clamped to `[3, agent.subagent_auto_max]`. The
+host memory alone, clamped to `[3, agent.subagent_auto_max]` (CPU is not a
+term: over-committing it only slows work the adaptive controller already backs
+off from, whereas memory over-commit is an unrecoverable OOM). The
 available-memory term is read by `_available_memory_gb()`, which is dispatched
 per operating system (see `dynamic-subagent-sizing.md`):
 
@@ -167,14 +169,11 @@ reservation; queued/terminal rows and confirmed shared sessions contribute none.
 This guards rapid admissions during delayed RSS growth without counting observed
 memory twice. The claim re-entry uses the reservation taken before its await.
 
-The adaptive growth bound uses `host_terms_subagent_cap(cfg,
-resident_agents=...)` rather than the auto-sizing clamp. Its memory term is
-additional headroom, so resident managed runs are added before taking the
-minimum with the total CPU term. The controller captures nonqueued, nonterminal
-PID-bearing runs with the host observation, including parents waiting without a
-lane slot. It caches that absolute capacity, never adds live occupancy to stale
-headroom. Auto-sizing's startup formula is unchanged. See
-[adaptive-concurrency](adaptive-concurrency.md#growth-ceiling-the-users-pin-and-the-hosts-own-figure).
+The adaptive growth bound is the user's ceiling itself (`user_max_concurrent`),
+with no static host prediction under it: the controller climbs on live pressure
+signals and this spawn-time reservation queues what the host cannot absorb yet.
+Auto-sizing's startup formula still sizes the AUTO ceiling from memory. See
+[adaptive-concurrency](adaptive-concurrency.md#growth-ceiling-the-users-pin-judged-live).
 
 ## APIs
 
@@ -207,7 +206,7 @@ ALL of them from the new config, whichever writer produced it (dashboard,
 
 | Config path | Manager field | Normalization (same as the constructor) |
 |---|---|---|
-| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `agent.subagent_cpu_cost_cores`, `session.pool_size` | `_user_max_concurrent` (and `_max_concurrent` re-clamped) | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
+| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `session.pool_size` | `_user_max_concurrent` (and `_max_concurrent` re-clamped) | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
 | `agent.subagent_max_turns` | `_default_turn_limit` | `int` |
 | `agent.subagent_timeout_secs` | `_default_timeout` | `0` keeps `_TIMEOUT_SECS` |
 | `agent.subagent_stall_idle_secs` | `_stall_idle_secs` | `0` keeps `_STALL_IDLE_SECS` |

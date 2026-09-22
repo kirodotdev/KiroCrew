@@ -1171,11 +1171,11 @@
       "kind": "core",
       "type": "number",
       "required": false,
-      "deprecated": false,
+      "deprecated": true,
       "sensitive": false,
       "tags": [],
       "label": "SubAgent CPU Cost (cores)",
-      "help": "First-boot per-agent CPU-cost fallback (cores) used to auto-size the cap until a learned value accumulates.",
+      "help": "Deprecated and inert: the subagent cap is sized from host memory only, because over-committing memory is an unrecoverable OOM while over-committing CPU only slows work the adaptive controller already backs off from. Preserved on load and save so an existing config is not rewritten out from under the operator.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1.0
