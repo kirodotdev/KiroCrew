@@ -11,6 +11,26 @@ from kiro_crew.dashboard import channel_slots, chat_regenerate, session_health
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state import StageBoundary, _ChatSlot, stage_boundary_for
 
+# Busy-check helpers, and the slot state each one reads on its caller's behalf.
+#
+# A handler that delegates its refusal to one of these is still a CONSUMER of
+# that state even though it does not name the attribute itself, so the
+# enumeration below credits the caller with what the helper reads. Without that,
+# extracting a guard into a helper silently drops every caller out of the table,
+# and a NEW handler wired to the same helper adds no entry at all -- the drift
+# this test exists to catch stops tripping it.
+#
+# Add a helper here when it becomes the only thing standing between a handler
+# and a live turn.
+_BUSY_HELPERS: dict[str, frozenset[str]] = {
+    # Regenerate, variant switch and edit-resend: refuses on either state.
+    "_destructive_history_busy": frozenset({"running", "turn_running"}),
+    # Agent, model, reasoning-effort and workspace switches: refuses on the
+    # RESERVATION, because ``slot.running`` is set at dispatch and so sees a
+    # cold-starting first turn that no provider has registered yet.
+    "_switch_target_busy": frozenset({"running"}),
+}
+
 
 def test_stage_boundary_for_reraises_real_slot_assignment_failure(monkeypatch) -> None:
     """A production slot cannot hide a missing writable boundary field."""
@@ -193,13 +213,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 and attr.value.id in aliases
                 and isinstance(attr.ctx, ast.Load)
             }
-            if any(
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "_destructive_history_busy"
-                for call in ast.walk(definition)
-            ):
-                predicates.update({"running", "turn_running"})
+            for call in ast.walk(definition):
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
+                    predicates.update(_BUSY_HELPERS.get(call.func.id, frozenset()))
             if predicates:
                 actual[site] = frozenset(predicates)
 
@@ -211,6 +227,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             site: reservation
             for site in {
                 ("chat_folders.py", "api_chat_slot_mode"),
+                ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_agent"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_handlers.py", "api_chat_slot_detail"),
