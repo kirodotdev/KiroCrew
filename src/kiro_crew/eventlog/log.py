@@ -41,7 +41,7 @@ from kiro_crew.crew_log.errors import (
     CrewLogError,
 )
 from kiro_crew.crew_log.schema import APP_SOURCE_PREFIX, KIND_MEMBER
-from kiro_crew.crew_log.store import CrewLog, crew_log_path
+from kiro_crew.crew_log.store import CrewLog, crew_log_path, segment_first_seqs
 from kiro_crew.eventlog.types import (
     Event,
     is_contributed_event_type,
@@ -428,3 +428,46 @@ class MemberLog:
 
     def exists(self) -> bool:
         return CrewLog.exists(KIND_MEMBER, self.slug)
+
+    def checkpoint_identity(self) -> dict[str, Any] | None:
+        """The facts that say WHICH log a savepoint belongs to, or None when absent.
+
+        Two facts, and they are the same two the crew log's own savepoints compare,
+        read through that module's own public helpers so two spellings of "is this
+        the same log" cannot drift apart -- the one that said yes too often would
+        fold a retired file's state onto a live one's bytes:
+
+        * ``origin`` -- the file's creation identity. A member removed and recreated
+          under the same slug restarts its seqs, so once the new log has grown past a
+          stored watermark a seq check ALONE would pass, and the fold would resume
+          state derived from an unrelated log.
+        * ``first_seq`` -- the oldest surviving segment's first seq. Retention deletes
+          whole segments off the front, so a cold fold folds a window while a
+          savepoint still counts entries the file does not hold. The two answers
+          differ, and the savepoint's is the one no reader can reproduce.
+
+        Returned as a plain mapping because the projection kernel stores it VERBATIM
+        and never interprets a key: adding a third fact here retires this log's
+        existing savepoints and needs no change in the kernel.
+
+        ``None`` means "do not take the shortcut" -- no log, or an identity the store
+        could not answer for. A caller folds from the start, which costs more and is
+        never wrong.
+        """
+        self._ensure_loaded()
+        handle = self._crew_log
+        if handle is None:
+            return None
+        # Function-local: crew_log.projection imports the store and the session
+        # ledger, so a module-level import here would widen this module's import
+        # graph for one accessor -- the same reason that module keeps its own
+        # checkpoint import local.
+        from kiro_crew.crew_log.projection import log_origin
+
+        origin = log_origin(handle)
+        if origin is None:
+            return None
+        firsts = segment_first_seqs(KIND_MEMBER, self.slug)
+        if not firsts:
+            return None
+        return {"origin": origin, "first_seq": firsts[0]}

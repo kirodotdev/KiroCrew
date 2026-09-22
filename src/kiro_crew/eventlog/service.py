@@ -36,12 +36,21 @@ from kiro_crew.crew_log.schema import KIND_MEMBER
 from kiro_crew.eventlog import members_projections, types
 from kiro_crew.eventlog.log import MemberLog
 from kiro_crew.eventlog.members_projections import all_units
-from kiro_crew.eventlog.projection import ProjectionRegistry
 from kiro_crew.eventlog.types import Event
+from kiro_crew.projection import DirectoryCheckpointStore, ProjectionRegistry
 
 logger = logging.getLogger(__name__)
 
 Broadcast = Callable[[str, object], None]
+
+#: Events a prime must have folded past its savepoint before a new one is written.
+#: A savepoint is allowed to LAG -- resuming from an older one replays more tail and
+#: reaches the same value -- so a write is spent only when it saves a meaningful
+#: replay. Without this every load of every member would rewrite one file per
+#: registered unit, which is the cost savepoints exist to remove rather than move,
+#: and a short-lived member would leave files behind that folding from the start
+#: already handles for free. Matches the crew log's own ``MIN_ADVANCE_ENTRIES``.
+_SAVEPOINT_MIN_ADVANCE = 256
 
 
 def _redact_projection_value(value: object) -> object:
@@ -515,11 +524,10 @@ class MemberEventLogService:
         if not log.exists():
             return None
         log.load()
-        events = log.iter_events()
         if log.header is not None:
             header_name = log.header.get("name")
             self._names[slug] = header_name if isinstance(header_name, str) else slug
-        self._registry.prime(slug, events)
+        self._prime_checkpointed(slug, log)
         with self._map_lock:
             # Another thread may have primed concurrently. The FIRST primer into
             # this lock installs its instance and every later one adopts it, so a
@@ -529,6 +537,62 @@ class MemberEventLogService:
                 return existing
             self._logs[slug] = log
         return log
+
+    def _prime_checkpointed(self, slug: str, log: MemberLog) -> None:
+        """Prime *slug* from its savepoints, folding only the tail past the watermark.
+
+        Falls back to the full fold whenever the shortcut cannot be trusted -- no
+        identity to compare, or no usable savepoint -- because a cold fold reaches the
+        same value at more cost, and that is the whole posture of a savepoint.
+
+        WHAT THIS SAVES, stated honestly: the FOLD, not the read. ``MemberLog``
+        materialises its event list on load, so the file is parsed either way; what
+        the watermark removes is one ``apply`` per definition per skipped event, which
+        with four registered units is the dominant cost of priming a long-lived
+        member. Removing the read cost too needs a windowed reader that starts at a
+        seq, which is a separate change to the log rather than to the fold.
+        """
+        identity = log.checkpoint_identity()
+        if identity is None:
+            self._registry.prime(slug, log.iter_events())
+            return
+
+        def tail_from(watermark: int):
+            return (ev for ev in log.iter_events() if ev["seq"] > watermark)
+
+        floor = self._registry.prime_checkpointed(
+            slug, self._checkpoints(slug), identity, tail_from
+        )
+        self._maybe_save_savepoints(slug, log, identity, floor)
+
+    def _checkpoints(self, slug: str) -> DirectoryCheckpointStore:
+        """This member's savepoint store, inside the directory its own log lives in.
+
+        The kernel owns no path, so the directory is chosen here. It is the log's own
+        store directory, which is already fenced from a sandboxed process and from the
+        agent's file tools -- so a savepoint inherits that protection by living there
+        and needs no fence entry of its own. It also means removing the member
+        removes its savepoints, with no second place to clean up.
+        """
+        from kiro_crew.crew_log.store import crew_log_dir
+
+        return DirectoryCheckpointStore(crew_log_dir(KIND_MEMBER, slug) / "projections")
+
+    def _maybe_save_savepoints(self, slug: str, log: MemberLog, identity: dict, floor: int) -> None:
+        """Write savepoints when the tail just folded was long enough to be worth it.
+
+        A savepoint is allowed to LAG, so a write is spent only when it saves a
+        meaningful replay. Without a threshold this would rewrite every unit's file on
+        every load of every member, which is the cost savepoints exist to remove
+        rather than relocate -- and a short-lived member would leave files behind that
+        folding from the start already handles for free.
+        """
+        reached = log.last_seq()
+        if reached - max(floor, 0) < _SAVEPOINT_MIN_ADVANCE:
+            return
+        store = self._checkpoints(slug)
+        for savepoint in self._registry.savepoints(slug, identity):
+            store.save(slug, savepoint)
 
     # ---- units ------------------------------------------------------------
     def ensure(self, slug: str, name: str, config=None) -> None:
