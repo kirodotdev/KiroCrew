@@ -8795,7 +8795,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "승인 게이트",
+        "approval_gate": "앞으로 승인 게이트",
         "approve": "승인",
         "cancelling": "취소 중",
         "deny": "거부",

@@ -14,7 +14,7 @@ describe('DagView', () => {
     expect(screen.getByText('Build')).toBeInTheDocument()
     // The node card and the legend row share one word per status.
     expect(screen.getAllByText('Done')).toHaveLength(2)
-    expect(screen.getAllByText('Approval gate')).toHaveLength(2)
+    expect(screen.getAllByText('Approval gate ahead')).toHaveLength(2)
     expect(screen.getByText('Needs Approval')).toBeInTheDocument()
   })
 
@@ -57,10 +57,15 @@ describe('DagView', () => {
       const deploy = cards.find(g => g.textContent?.includes('Deploy'))!
 
       expect(implement.querySelector('text')?.textContent).toBe('Needs Approval')
-      expect(implement.querySelector('rect[stroke="var(--warn)"][stroke-width="3"]')).toBeInTheDocument()
+      const halo = implement.querySelector('rect[stroke="var(--warn)"][stroke-width="3"]')!
+      expect(halo).toBeInTheDocument()
       expect(implement.querySelectorAll('button')).toHaveLength(2)
+      // The halo reaches past the card to enclose the button row (card 56 high, row at +60..+84).
+      const row = implement.querySelector('foreignObject:has(button)')!
+      const haloBottom = Number(halo.getAttribute('y')) + Number(halo.getAttribute('height'))
+      expect(haloBottom).toBeGreaterThanOrEqual(Number(row.getAttribute('y')) + Number(row.getAttribute('height')))
 
-      expect(deploy.querySelector('text')?.textContent).toBe('Approval gate')
+      expect(deploy.querySelector('text')?.textContent).toBe('Approval gate ahead')
       expect(deploy.querySelector('rect[stroke="var(--warn)"]')).toBeNull()
       expect(deploy.querySelectorAll('button')).toHaveLength(0)
 

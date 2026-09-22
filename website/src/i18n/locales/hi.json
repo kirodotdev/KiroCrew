@@ -8912,7 +8912,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "मंज़ूरी गेट",
+        "approval_gate": "आगे मंज़ूरी गेट",
         "approve": "स्वीकृत करें",
         "cancelling": "रद्द हो रहा है",
         "deny": "अस्वीकार करें",

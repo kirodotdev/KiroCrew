@@ -9029,7 +9029,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "Punto de aprobación",
+        "approval_gate": "Punto de aprobación más adelante",
         "approve": "Aprobar",
         "cancelling": "Cancelando",
         "deny": "Denegar",

@@ -8795,7 +8795,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "审批关卡",
+        "approval_gate": "前方审批关卡",
         "approve": "批准",
         "cancelling": "正在取消",
         "deny": "拒绝",

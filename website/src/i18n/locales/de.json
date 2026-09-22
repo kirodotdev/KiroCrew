@@ -8912,7 +8912,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "Genehmigungsschranke",
+        "approval_gate": "Genehmigungsschranke voraus",
         "approve": "Genehmigen",
         "cancelling": "Wird abgebrochen",
         "deny": "Ablehnen",

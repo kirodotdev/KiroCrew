@@ -94,10 +94,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json(200, { ok: true, errors: [] })
   }
   if (url.endsWith('/run') && method === 'POST') return json(500, { error: 'workflow runner unavailable' })
-  // The browse stub lists one directory, `docs`, under `/home/me/projects`; the
-  // create stub refuses the same name, so the notice matches the picker above it.
+  // The picker's name field reads `projects`, the last segment of the browsed
+  // directory; the create stub refuses THAT name, so the notice matches the
+  // form above it.
   if (url.includes('/api/workspaces') && method === 'POST') {
-    return json(200, { error: 'A workspace named "docs" already exists in /home/me/projects.' })
+    return json(200, { error: 'A workspace named "projects" already exists at /home/me/projects.' })
   }
   if (url.includes('/api/browse-dirs')) return json(200, { path: '/home/me/projects', parent: '/home/me', dirs: [{ name: 'docs', path: '/home/me/projects/docs' }] })
   if (url.includes('/api/skills/-/discover/install') && method === 'POST') {

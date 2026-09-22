@@ -9146,7 +9146,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "Точка подтверждения",
+        "approval_gate": "Впереди точка подтверждения",
         "approve": "Разрешить",
         "cancelling": "Отмена",
         "deny": "Запретить",

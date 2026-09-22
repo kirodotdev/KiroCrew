@@ -729,10 +729,11 @@ describe('DagView', () => {
     expect(container.querySelectorAll('path[marker-end]').length).toBe(3)
   })
 
-  it('maps reviewing to "in progress" label', () => {
+  it('labels a reviewing card with the legend word for reviewing', () => {
     const reviewNode = [{ id: '1', title: 'Check', status: 'reviewing', priority: 'normal' }]
     renderWithProviders(<DagView nodes={reviewNode} edges={[]} onNodeClick={vi.fn()} />)
-    expect(screen.getByText('in progress')).toBeInTheDocument()
+    // Card word + legend row: the same catalog entry, so they cannot drift apart.
+    expect(screen.getAllByText('Reviewing')).toHaveLength(2)
   })
 
   it('shows fix icon for fix task type', () => {

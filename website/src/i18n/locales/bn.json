@@ -8912,7 +8912,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "অনুমোদন গেট",
+        "approval_gate": "সামনে অনুমোদন গেট",
         "approve": "অনুমোদন করুন",
         "cancelling": "বাতিল করা হচ্ছে",
         "deny": "অস্বীকার করুন",

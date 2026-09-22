@@ -55,6 +55,8 @@ const TYPE_STYLE: Record<string, { fill: string; stroke: string; icon: ReactNode
 }
 const TYPE_FILL_OPACITY = 0.08
 const NODE_W = 180, NODE_H = 56, GAP_X = 60, GAP_Y = 40, PAD = 40
+/** The Approve / Deny row sits below its card, inside the layer gap. */
+const APPROVAL_ROW_Y = NODE_H + 4, APPROVAL_ROW_H = 24
 
 /**
  * The status a node is DRAWN with. Two approval states overlay the task's own
@@ -161,7 +163,9 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
                   too, so the dash pattern is what tells "selected" from "running". */}
               {isSelected && <rect x={n.x - 3} y={n.y - 3} width={NODE_W + 6} height={NODE_H + 6} rx={10}
                 fill="none" stroke="var(--accent)" strokeWidth={2} strokeDasharray="6 3" opacity={0.7} />}
-              {awaitingDecision && <rect x={n.x - 4} y={n.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={12}
+              {/* The halo wraps the Approve / Deny row too, so the buttons read as part of
+                  the card they decide on rather than floating between two cards. */}
+              {awaitingDecision && <rect x={n.x - 4} y={n.y - 4} width={NODE_W + 8} height={(onApprove ? APPROVAL_ROW_Y + APPROVAL_ROW_H : NODE_H) + 8} rx={12}
                 fill="none" stroke="var(--warn)" strokeWidth={3}>
                 <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.5s" repeatCount="indefinite"/>
               </rect>}
@@ -186,7 +190,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
               {/* Same token as PhasedView's EDIT_DOT, so an unsaved edit looks the same in both views. */}
               {hasPendingEdit && <circle cx={n.x + NODE_W - 8} cy={n.y + 8} r={5} fill="var(--warn)" stroke="var(--card)" strokeWidth={1.5} />}
               {awaitingDecision && onApprove && (
-                <foreignObject x={n.x} y={n.y + NODE_H + 4} width={NODE_W} height={24}>
+                <foreignObject x={n.x} y={n.y + APPROVAL_ROW_Y} width={NODE_W} height={APPROVAL_ROW_H}>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
                     <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--ok)', color: 'var(--ok-fg)', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> {i18nT('pages.aidlc.dagView.approve')}</button>
                     <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: 'var(--danger-fg)', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> {i18nT('pages.aidlc.dagView.deny')}</button>

@@ -8795,7 +8795,7 @@
     },
     "aidlc": {
       "dagView": {
-        "approval_gate": "承認ゲート",
+        "approval_gate": "この先に承認ゲート",
         "approve": "承認",
         "cancelling": "キャンセル中",
         "deny": "拒否",
