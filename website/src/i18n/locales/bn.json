@@ -4867,9 +4867,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "ডায়নামিক ওয়ার্কফ্লো লিখুন, চালান ও পর্যবেক্ষণ করুন",
         "budget": "বাজেট",
+        "couldn_t_start_the_run": "রান শুরু করা যায়নি",
+        "couldn_t_validate_the_script": "স্ক্রিপ্ট যাচাই করা যায়নি",
         "invalid_fix_before_running": "অবৈধ — চালানোর আগে ঠিক করুন:",
         "load_example": "উদাহরণ লোড করুন…",
-        "request_failed": "রিকোয়েস্ট ব্যর্থ হয়েছে:",
         "run": "চালান",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "এখানে ফেজ, এজেন্ট ও ফলাফল দেখতে একটি ওয়ার্কফ্লো চালান।",
         "running": "চলছে…",
@@ -8911,6 +8912,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "অনুমোদন গেট",
         "approve": "অনুমোদন করুন",
         "cancelling": "বাতিল করা হচ্ছে",
         "deny": "অস্বীকার করুন",

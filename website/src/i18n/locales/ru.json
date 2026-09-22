@@ -5025,9 +5025,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Создавайте, запускайте и отслеживайте динамические рабочие процессы",
         "budget": "бюджет",
+        "couldn_t_start_the_run": "Не удалось начать запуск",
+        "couldn_t_validate_the_script": "Не удалось проверить скрипт",
         "invalid_fix_before_running": "Некорректно — исправьте перед запуском:",
         "load_example": "Загрузить пример…",
-        "request_failed": "Запрос не выполнен:",
         "run": "Запустить",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "Запустите рабочий процесс, чтобы увидеть здесь его этапы, агентов и результат.",
         "running": "Выполнение...",
@@ -9145,6 +9146,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "Точка подтверждения",
         "approve": "Разрешить",
         "cancelling": "Отмена",
         "deny": "Запретить",

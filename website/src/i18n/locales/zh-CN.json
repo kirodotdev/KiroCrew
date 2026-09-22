@@ -4788,9 +4788,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "编写、运行并观察动态工作流",
         "budget": "预算",
+        "couldn_t_start_the_run": "无法启动运行",
+        "couldn_t_validate_the_script": "无法校验脚本",
         "invalid_fix_before_running": "无效 — 运行前请先修复：",
         "load_example": "加载示例…",
-        "request_failed": "请求失败：",
         "run": "运行",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "运行一个工作流即可在此查看其阶段、代理和结果。",
         "running": "正在运行…",
@@ -8794,6 +8795,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "审批关卡",
         "approve": "批准",
         "cancelling": "正在取消",
         "deny": "拒绝",

@@ -3634,9 +3634,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Author, run, and watch dynamic workflows",
         "budget": "budget",
+        "couldn_t_start_the_run": "Couldn't start the run",
+        "couldn_t_validate_the_script": "Couldn't validate the script",
         "invalid_fix_before_running": "Invalid — fix before running:",
         "load_example": "Load example…",
-        "request_failed": "Request failed:",
         "run": "Run",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "Run a workflow to see its phases, agents, and result here.",
         "validate": "Validate",

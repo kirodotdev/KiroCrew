@@ -4946,9 +4946,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, esegui e osserva workflow dinamici",
         "budget": "budget",
+        "couldn_t_start_the_run": "Impossibile avviare l’esecuzione",
+        "couldn_t_validate_the_script": "Impossibile convalidare lo script",
         "invalid_fix_before_running": "Non valido — correggi prima di eseguire:",
         "load_example": "Carica un esempio…",
-        "request_failed": "Richiesta non riuscita:",
         "run": "Esegui",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "Esegui un workflow per vederne qui le fasi, gli agenti e il risultato.",
         "running": "In esecuzione…",
@@ -9028,6 +9029,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "Punto di approvazione",
         "approve": "Approva",
         "cancelling": "Annullamento",
         "deny": "Nega",

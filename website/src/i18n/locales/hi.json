@@ -4867,9 +4867,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "डायनामिक वर्कफ़्लो लिखें, चलाएँ और देखें",
         "budget": "बजट",
+        "couldn_t_start_the_run": "रन शुरू नहीं हो सका",
+        "couldn_t_validate_the_script": "स्क्रिप्ट मान्य नहीं हो सकी",
         "invalid_fix_before_running": "अमान्य — चलाने से पहले ठीक करें:",
         "load_example": "उदाहरण लोड करें…",
-        "request_failed": "अनुरोध विफल:",
         "run": "चलाएँ",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "इसके चरण, एजेंट और परिणाम यहाँ देखने के लिए कोई वर्कफ़्लो चलाएँ।",
         "running": "चल रहा है…",
@@ -8911,6 +8912,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "मंज़ूरी गेट",
         "approve": "स्वीकृत करें",
         "cancelling": "रद्द हो रहा है",
         "deny": "अस्वीकार करें",

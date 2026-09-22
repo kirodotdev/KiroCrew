@@ -11,9 +11,11 @@
  *   - workspace-picker: after choosing a directory and pressing Create, the
  *     backend's `{ error }` renders in a notice; no hand-off button.
  *   - workflows-page: Validate renders the validator's rejection, a second
- *     Validate renders the 503 as the request-failed notice (each its own frame,
- *     since Run re-validates and clears them), then Run's 500 renders as the
- *     request-failed notice; no hand-off button on any of them.
+ *     Validate renders the 503 as the "Couldn't validate the script" notice (each
+ *     its own frame, since Run re-validates and clears them), then Run's 500
+ *     renders as the "Couldn't start the run" notice — two different titles, so
+ *     the frames assert each title is on its own notice; no hand-off button on
+ *     any of them.
  *   - skill-browser (its own page, `?surface=skill-browser`): pressing Install on
  *     a row lands the 500 as the row's inline notice — the row stays unselected
  *     and carries no hand-off button — then selecting that row shows the detail
@@ -71,7 +73,7 @@ for (const theme of ['dark', 'light']) {
   await wf.locator(ALERT).first().waitFor()
   const wfValidateText = (await wf.locator(ALERT).allInnerTexts()).join(' ')
   const wfValidateShot = await wf.screenshot()
-  // Second Validate → 503 → the request-failed notice replaces the rejection.
+  // Second Validate → 503 → the validate notice replaces the rejection.
   await wf.getByRole('button', { name: 'Validate', exact: true }).click()
   await wf.locator(ALERT).filter({ hasText: /503/ }).waitFor()
   const wfUnreachableText = (await wf.locator(ALERT).allInnerTexts()).join(' ')
@@ -80,12 +82,16 @@ for (const theme of ['dark', 'light']) {
   await wf.locator(ALERT).filter({ hasText: /500/ }).waitFor()
   const wfText = (await wf.locator(ALERT).allInnerTexts()).join(' ')
   const wfHandoffs = await wf.locator(HANDOFF).count()
+  // Each failure is titled after the operation that failed, never the other one.
+  const titledRight =
+    /Couldn't validate the script/.test(wfUnreachableText) && !/Couldn't start the run/.test(wfUnreachableText) &&
+    /Couldn't start the run/.test(wfText) && !/Couldn't validate the script/.test(wfText)
 
   const ok =
-    wspAlerts === 2 && wspText.some(t => /line 3/.test(t) && /line 9/.test(t)) && wspHandoffs === 0 &&
+    wspAlerts === 2 && wspText.some(t => /missing entrypoint/.test(t) && /line 2/.test(t)) && wspHandoffs === 0 &&
     /already exists/.test(wpText) && wpHandoffs === 0 &&
     /line 2/.test(wfValidateText) && /503/.test(wfUnreachableText) && !/line 2/.test(wfUnreachableText) &&
-    /500/.test(wfText) && wfHandoffs === 0
+    /500/.test(wfText) && titledRight && wfHandoffs === 0
   console.log(`${theme}: source-panel alerts=${wspAlerts} handoffs=${wspHandoffs} | workspace "${wpText.slice(0, 60)}" handoffs=${wpHandoffs} | workflows validate "${wfUnreachableText.slice(0, 60)}" run "${wfText.slice(0, 60)}" handoffs=${wfHandoffs} ${ok ? 'OK' : 'MISMATCH'}`)
   if (!ok) { failed = true; continue }
 

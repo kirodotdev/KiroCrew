@@ -1,37 +1,48 @@
 import { useMemo, type ReactNode } from 'react'
-import { Wrench, Shield, Hourglass, Pause, SkipForward, Square, Check, X } from 'lucide-react'
+import { Wrench, Shield, Hourglass, Pause, SkipForward, Square, Check, X, Lock } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 interface DagNode { id: string; title: string; status: string; task_type?: string; requires_approval?: boolean }
 interface DagEdge { from: string; to: string }
 
 const STATUS_FILL: Record<string, string> = {
-  pending: 'var(--muted)', in_progress: 'var(--accent)', reviewing: 'var(--accent)', passed: 'var(--ok)', failed: 'var(--danger)', skipped: 'var(--muted)', cancelled: 'var(--muted)', cancelling: 'var(--accent)', paused: 'var(--info)', pausing: 'var(--accent)', blocked: 'var(--warn)',
+  pending: 'var(--muted)', in_progress: 'var(--accent)', reviewing: 'var(--accent)', passed: 'var(--ok)', failed: 'var(--danger)', skipped: 'var(--muted)', cancelled: 'var(--muted)', cancelling: 'var(--accent)', paused: 'var(--info)', pausing: 'var(--accent)', blocked: 'var(--warn)', gated: 'var(--muted)',
 }
 const StatusDot = ({ color }: { color: string }) => <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
 /**
- * Legend rows under the graph. `label` is a GETTER, not a value: this table is
- * evaluated once at import, so an `i18nT()` call in the initialiser would freeze
- * the boot language and never re-resolve on a language switch. A getter runs on
- * every property access, and the only access is the `Object.values(...)` map in
- * the render below.
+ * Legend rows under the graph. `label` and `text` are GETTERS, not values: this
+ * table is evaluated once at import, so an `i18nT()` call in the initialiser
+ * would freeze the boot language and never re-resolve on a language switch. A
+ * getter runs on every property access; `label` is read by the
+ * `Object.values(...)` map in the legend and `text` by each node card's status
+ * word, which is an SVG `<text>` and so cannot hold the legend's icon markup.
  *
  * `failed` / `skipped` / `cancelled` deliberately point at the `phasedView` keys:
  * PhasedView groups the very same aidlc task statuses under those exact words, so
  * the two views must not be able to drift apart. The rest have no existing key.
+ *
+ * `blocked` and `gated` are the two approval states, told apart by which node
+ * owns the decision. `blocked` is the node WAITING for one: the executor sets a
+ * task in_progress before it enters the approval gate, so the node that is
+ * in_progress with an entry in `approvalMap` is the one the Approve / Deny
+ * buttons act on, and it is the one that reads "needs approval". `gated` is a
+ * pending node with `requires_approval`: a gate that has not been reached yet,
+ * so it is drawn like any other pending node and named as a gate, not as a
+ * decision to make now.
  */
-const STATUS_DOT: Record<string, { color: string; label: ReactNode; key: string }> = {
-  pending: { color: 'var(--muted)', get label() { return <><StatusDot color="var(--muted)" /> {i18nT('pages.aidlc.dagView.pending')}</> }, key: 'pending' },
-  in_progress: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {i18nT('pages.aidlc.dagView.running')}</> }, key: 'in_progress' },
-  reviewing: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {i18nT('pages.aidlc.dagView.reviewing')}</> }, key: 'reviewing' },
-  passed: { color: 'var(--ok)', get label() { return <><StatusDot color="var(--ok)" /> {i18nT('pages.aidlc.dagView.done')}</> }, key: 'passed' },
-  failed: { color: 'var(--danger)', get label() { return <><StatusDot color="var(--danger)" /> {i18nT('pages.aidlc.phasedView.failed')}</> }, key: 'failed' },
-  skipped: { color: 'var(--muted)', get label() { return <><SkipForward className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.skipped')}</> }, key: 'skipped' },
-  cancelled: { color: 'var(--muted)', get label() { return <><Square className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.cancelled')}</> }, key: 'cancelled' },
-  cancelling: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.cancelling')}</> }, key: 'cancelling' },
-  paused: { color: 'var(--info)', get label() { return <><Pause className="lucide-inline" /> {i18nT('pages.aidlc.dagView.paused')}</> }, key: 'paused' },
-  pausing: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.pausing')}</> }, key: 'pausing' },
-  blocked: { color: 'var(--warn)', get label() { return <><StatusDot color="var(--warn)" /> {i18nT('pages.aidlc.dagView.needs_approval')}</> }, key: 'blocked' },
+const STATUS_DOT: Record<string, { color: string; label: ReactNode; text: string; key: string }> = {
+  pending: { color: 'var(--muted)', get label() { return <><StatusDot color="var(--muted)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.pending') }, key: 'pending' },
+  in_progress: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.running') }, key: 'in_progress' },
+  reviewing: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.reviewing') }, key: 'reviewing' },
+  passed: { color: 'var(--ok)', get label() { return <><StatusDot color="var(--ok)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.done') }, key: 'passed' },
+  failed: { color: 'var(--danger)', get label() { return <><StatusDot color="var(--danger)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.phasedView.failed') }, key: 'failed' },
+  skipped: { color: 'var(--muted)', get label() { return <><SkipForward className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.phasedView.skipped') }, key: 'skipped' },
+  cancelled: { color: 'var(--muted)', get label() { return <><Square className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.phasedView.cancelled') }, key: 'cancelled' },
+  cancelling: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.cancelling') }, key: 'cancelling' },
+  paused: { color: 'var(--info)', get label() { return <><Pause className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.paused') }, key: 'paused' },
+  pausing: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.pausing') }, key: 'pausing' },
+  blocked: { color: 'var(--warn)', get label() { return <><StatusDot color="var(--warn)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.needs_approval') }, key: 'blocked' },
+  gated: { color: 'var(--muted)', get label() { return <><Lock className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.approval_gate') }, key: 'gated' },
 }
 /** Typed nodes tint their card with the stroke token at 8% (`fillOpacity`),
  *  which needs no `*-subtle` variant of the token. Both types share the
@@ -44,6 +55,19 @@ const TYPE_STYLE: Record<string, { fill: string; stroke: string; icon: ReactNode
 }
 const TYPE_FILL_OPACITY = 0.08
 const NODE_W = 180, NODE_H = 56, GAP_X = 60, GAP_Y = 40, PAD = 40
+
+/**
+ * The status a node is DRAWN with. Two approval states overlay the task's own
+ * status (see STATUS_DOT): the in_progress node that has a pending approval is
+ * `blocked` — it owns the halo and the Approve / Deny buttons — and a pending
+ * node whose gate has not been reached yet is `gated`. Every other status is
+ * drawn as the backend reports it.
+ */
+function effectiveStatusOf(n: DagNode, approvalMap?: Record<number, string>): string {
+  if (approvalMap?.[Number(n.id)] && n.status === 'in_progress') return 'blocked'
+  if (n.requires_approval && n.status === 'pending') return 'gated'
+  return n.status
+}
 
 export default function DagView({ nodes, edges, onNodeClick, selectedId, pendingEditIds, approvalMap, onApprove }: {
   nodes: DagNode[]; edges: DagEdge[]; onNodeClick: (id: string) => void
@@ -122,7 +146,8 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
         })}
         {layout.positioned.map(n => {
           const ts = TYPE_STYLE[n.task_type || '']
-          const effectiveStatus = n.requires_approval && n.status === 'pending' ? 'blocked' : n.status
+          const effectiveStatus = effectiveStatusOf(n, approvalMap)
+          const awaitingDecision = effectiveStatus === 'blocked'
           const stroke = ts?.stroke || STATUS_FILL[effectiveStatus] || 'var(--muted)'
           const fill = ts?.fill || 'var(--card)'
           const fillOpacity = ts ? TYPE_FILL_OPACITY : 1
@@ -136,7 +161,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
                   too, so the dash pattern is what tells "selected" from "running". */}
               {isSelected && <rect x={n.x - 3} y={n.y - 3} width={NODE_W + 6} height={NODE_H + 6} rx={10}
                 fill="none" stroke="var(--accent)" strokeWidth={2} strokeDasharray="6 3" opacity={0.7} />}
-              {approvalMap?.[Number(n.id)] && effectiveStatus === 'in_progress' && <rect x={n.x - 4} y={n.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={12}
+              {awaitingDecision && <rect x={n.x - 4} y={n.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={12}
                 fill="none" stroke="var(--warn)" strokeWidth={3}>
                 <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.5s" repeatCount="indefinite"/>
               </rect>}
@@ -147,8 +172,11 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
               ) : (
                 <circle cx={n.x + 14} cy={n.y + 16} r={4} fill={dotColor} />
               )}
+              {/* The same word the legend uses for this status, so a card can be
+                  matched to its legend row in every language; a status the legend
+                  does not name falls back to the raw value. */}
               <text x={n.x + (icon ? 30 : 24)} y={n.y + 19} fontSize={10} fill={stroke} fontWeight="600">
-                {effectiveStatus === 'blocked' ? 'needs approval' : n.status === 'reviewing' ? 'in progress' : n.status.replace('_', ' ')}
+                {STATUS_DOT[effectiveStatus]?.text ?? n.status.replace('_', ' ')}
               </text>
               <foreignObject x={n.x + 8} y={n.y + 28} width={NODE_W - 16} height={24}>
                 <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -157,7 +185,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
               </foreignObject>
               {/* Same token as PhasedView's EDIT_DOT, so an unsaved edit looks the same in both views. */}
               {hasPendingEdit && <circle cx={n.x + NODE_W - 8} cy={n.y + 8} r={5} fill="var(--warn)" stroke="var(--card)" strokeWidth={1.5} />}
-              {approvalMap?.[Number(n.id)] && onApprove && effectiveStatus === 'in_progress' && (
+              {awaitingDecision && onApprove && (
                 <foreignObject x={n.x} y={n.y + NODE_H + 4} width={NODE_W} height={24}>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
                     <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--ok)', color: 'var(--ok-fg)', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> {i18nT('pages.aidlc.dagView.approve')}</button>

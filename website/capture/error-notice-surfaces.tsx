@@ -12,8 +12,9 @@
  *     then Re-run.
  *   - WorkflowsPage: the first `/validate` answers `ok: false` (the validator's
  *     rejection under the editor), the second answers 503 (`validateMutation.error`,
- *     the request-failed notice), later ones pass so Run proceeds, then `/run`
- *     answers 500 and `runMutation.error` is set.
+ *     the "Couldn't validate the script" notice), later ones pass so Run proceeds,
+ *     then `/run` answers 500 and `runMutation.error` is set (the "Couldn't start
+ *     the run" notice).
  *   - WorkspacePicker: `/api/workspaces` (create) answered with `{ error }`, so
  *     `requestError` is set after the script chooses a directory and presses Create;
  *     the "name is required" hint stays a plain hint and is NOT part of this state.
@@ -74,10 +75,13 @@ const json = (status: number, body: unknown) =>
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   const method = (init?.method || 'GET').toUpperCase()
+  // The two problems name what the two-line script mounted below actually has:
+  // a `def run` where the validator wants `async def workflow(ctx)`, and an
+  // un-awaited `ctx.agent(...)` on its line 2.
   if (url.includes('/rerun') && method === 'POST') {
     return json(400, {
       error: 'invalid script',
-      errors: ['line 3: `ctx.agent` is not a phase; use `ctx.phase(...)`', 'line 9: unterminated string literal'],
+      errors: ["missing entrypoint: 'async def workflow(ctx)'", "line 2: ctx.agent(...) is async; call it with 'await'"],
     })
   }
   // First Validate press: the validator rejects (the notice under the editor).
@@ -90,8 +94,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json(200, { ok: true, errors: [] })
   }
   if (url.endsWith('/run') && method === 'POST') return json(500, { error: 'workflow runner unavailable' })
+  // The browse stub lists one directory, `docs`, under `/home/me/projects`; the
+  // create stub refuses the same name, so the notice matches the picker above it.
   if (url.includes('/api/workspaces') && method === 'POST') {
-    return json(200, { error: 'A workspace named "docs" already exists in this directory.' })
+    return json(200, { error: 'A workspace named "docs" already exists in /home/me/projects.' })
   }
   if (url.includes('/api/browse-dirs')) return json(200, { path: '/home/me/projects', parent: '/home/me', dirs: [{ name: 'docs', path: '/home/me/projects/docs' }] })
   if (url.includes('/api/skills/-/discover/install') && method === 'POST') {

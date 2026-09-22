@@ -126,13 +126,14 @@ describe('WorkflowsPage', () => {
     expect(screen.getByText('error:zzq agent blew up')).toBeInTheDocument()
   })
 
-  it('surfaces a transport failure as the request-failed banner', async () => {
+  it('surfaces a transport failure as the could-not-start-the-run banner', async () => {
     routes['/run'] = { ok: false, status: 500, body: {} }
     wrap(<WorkflowsPage />)
     fireEvent.click(runBtn())
 
     await screen.findByText(new RegExp(`POST /run`))
-    expect(screen.getByText(new RegExp(i18nT('apps.workflows.workflowsPage.request_failed')))).toBeInTheDocument()
+    expect(screen.getByText(i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run'))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script'))).not.toBeInTheDocument()
     expect(screen.queryByTestId('zzq-tree-stub')).not.toBeInTheDocument()
   })
 

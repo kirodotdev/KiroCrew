@@ -223,7 +223,7 @@ export default function WorkflowsPage() {
             message={validation && !validation.ok ? validation.errors.join('\n') : null}
             messageClassName="font-mono whitespace-pre-line"
           />
-          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.request_failed')} message={validateError} />
+          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script')} message={validateError} />
         </div>
 
         {/* ----- Live run view ----- */}
@@ -238,7 +238,7 @@ export default function WorkflowsPage() {
           </div>
 
           {/* No hand-off: the workflow `source` in the editor is unsaved local state. */}
-          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.request_failed')} message={error} />
+          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run')} message={error} />
 
           {events.length === 0 && !error && (
             <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">

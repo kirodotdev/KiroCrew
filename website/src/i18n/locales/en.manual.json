@@ -3515,6 +3515,7 @@
         "this_gate_blocks_force_approval_true": "This gate blocks. force_approval=true."
       },
       "dagView": {
+        "approval_gate": "Approval gate",
         "cancelling": "Cancelling",
         "done": "Done",
         "needs_approval": "Needs Approval",

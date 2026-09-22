@@ -4862,9 +4862,10 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "동적 워크플로 작성, 실행, 관찰",
         "budget": "예산",
+        "couldn_t_start_the_run": "실행을 시작할 수 없습니다",
+        "couldn_t_validate_the_script": "스크립트를 검증할 수 없습니다",
         "invalid_fix_before_running": "유효하지 않음 — 실행하기 전에 수정하세요:",
         "load_example": "예제 불러오기…",
-        "request_failed": "요청 실패:",
         "run": "실행",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "워크플로를 실행하면 여기서 단계, 에이전트, 결과를 볼 수 있습니다.",
         "running": "실행 중…",
@@ -8794,6 +8795,7 @@
     },
     "aidlc": {
       "dagView": {
+        "approval_gate": "승인 게이트",
         "approve": "승인",
         "cancelling": "취소 중",
         "deny": "거부",
