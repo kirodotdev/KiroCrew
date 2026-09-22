@@ -31,6 +31,31 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 
+
+class _OwnerReq(SimpleNamespace):
+    """Request double carrying dashboard claims as a real MAPPING.
+
+    ``handlers_instances._guard`` runs the owner predicate, which calls
+    ``request.get("user")``, tests ``"app" in request`` and then compares
+    ``request["app"]`` -- a plain ``SimpleNamespace`` with a ``get`` attribute
+    raises on the ``in`` test. Defaults to the configured owner with no app token;
+    pass ``claims=`` for any other caller.
+    """
+
+    def __init__(self, *, claims=None, **kw):
+        super().__init__(**kw)
+        self._claims = dict(claims or {"user": "owner", "app": ""})
+
+    def get(self, key, default=None):
+        return self._claims.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._claims
+
+    def __getitem__(self, key):
+        return self._claims[key]
+
+
 # ── bundle construction ──────────────────────────────────────────────────
 
 
@@ -190,12 +215,12 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
         conversation_log=_Log(),
         instances_manager=_Mgr(),
         instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
     )
-    request = SimpleNamespace(
+    request = _OwnerReq(
         app={"state": state},
         match_info={"id": "peer"},
         headers={},
-        get=lambda k, default="": {"user": "owner"}.get(k, default),
         json=_async_value({"slot": "slot-1"}),
     )
 
@@ -777,20 +802,27 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
         _slots={"slot-1": slot},
         instances_manager=_Mgr(),
         instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
     )
-    request = SimpleNamespace(
+    request = _OwnerReq(
         app={"state": state},
         match_info={"id": "peer"},
         headers={},
-        # A DIFFERENT app than the slot's owner.
-        get=lambda k, default="": {"user": "owner", "app": "other-app"}.get(k, default),
+        # An app token, and a DIFFERENT app than the slot's owner.
+        claims={"user": "owner", "app": "other-app"},
         json=_async_value({"slot": "slot-1"}),
     )
 
     resp = await hi.api_instances_send_session(request)
 
-    assert resp.status == 404
-    assert json.loads(resp.body)["code"] == "transfer_slot_not_found"
+    # An app token never reaches the transfer body: ``_guard`` demands the
+    # positively-identified owner, and the owner predicate treats any non-empty
+    # ``app`` claim as not-the-owner. The slot-ownership check further in
+    # (``api_instances_send_session``'s 404 for a slot another app owns) is kept as
+    # defence in depth behind that gate, so an app that does reach the body still
+    # cannot name a slot it does not own.
+    assert resp.status == 403
+    assert json.loads(resp.body)["code"] == "owner_only"
     assert sent == [], "nothing may be delivered for a slot the app does not own"
 
 

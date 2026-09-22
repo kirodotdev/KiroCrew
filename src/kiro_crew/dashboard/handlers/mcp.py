@@ -962,6 +962,15 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     Merges ``enabled`` and ``disabledTools`` from global mcp.json so
     probe results don't reset user's previous enable/disable choices.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_probe")
+    if denied is not None:
+        return denied
     global _mcp_probe_ts
     from kiro_crew.mcp_discovery import probe_all  # noqa: F811
 
@@ -1081,6 +1090,15 @@ async def api_mcp_measure_start(request: web.Request) -> web.Response:
     A second call while a pass is running is reported rather than queued, because
     both passes would select the same unmeasured set and simply double the spawns.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_measure")
+    if denied is not None:
+        return denied
     if _measure_progress["running"]:
         return web.json_response({"ok": False, "running": True, **_measure_progress})
     _measure_progress.update(running=True, done=0, measured=0, total=0, error="")
@@ -1139,6 +1157,15 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
     off by hand stays off. It does not mount or unmount anything either -- the
     server was never unmounted.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_quarantine_clear")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1194,6 +1221,15 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
        ``sessions_reset: 0``. Otherwise every session and the warm pool are
        reset so the next message cold-starts on the new file.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_sync")
+    if denied is not None:
+        return denied
     from kiro_crew.mcp_discovery import (  # noqa: F811
         kirocrew_managed_names,
         sync_discovered_servers,
@@ -1408,6 +1444,15 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     1. Sets ``disabled`` in ``~/.kiro/settings/mcp.json`` (ACP runtime).
     2. Syncs ``tools``/``allowedTools`` in ``kirocrew.json`` (non-ACP mode).
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_toggle")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1474,6 +1519,15 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
     Updates ``disabledTools`` in ``~/.kiro/settings/mcp.json``.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_toggle_tool")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1539,6 +1593,15 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
 async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle-all — enable or disable all MCP servers."""
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_toggle_all")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1586,6 +1649,15 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     on PATH it is also asked to uninstall (best-effort); on a vanilla
     machine ``aim`` is absent and that step is skipped gracefully.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_remove")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1651,7 +1723,34 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         { "command": "node", "args": ["server.js"], "env": {"KEY": "val"} }
 
     DELETE removes the server from the config.
+
+    Two caller classes, two authorizations. ``/api/mcp/servers`` is listed in
+    ``server._STRICT_INTERNAL_API_PATHS``, so its designed caller is an internal
+    loopback process presenting ``X-Internal-Secret`` -- the App Kit SDK's
+    ``register_mcp_server`` / ``remove_mcp_server``
+    (``packages/kirocrew-client-py``) is exactly that. ``token_auth`` grants such a
+    request and marks it ``internal_auth``, and it deliberately leaves
+    ``request["app"]`` ABSENT for the person-behind-the-secret case, which
+    ``is_owner_dashboard_request`` reads as not-the-owner. So the owner predicate
+    applies to the COOKIE caller only: a ``local_only=False`` deployment
+    reclassifies strict paths as mixed and a browser session can then arrive here,
+    and that session must be the owner, because a PUT writes a command later agent
+    sessions execute. Gating the internal caller too would answer 403 to the one
+    caller the route exists for.
     """
+    # Only authentication middleware publishes ``internal_auth``, and only on a
+    # constant-time ``X-Internal-Secret`` match -- a request header claiming to
+    # carry a secret is not evidence, so this cannot be spoofed by a browser.
+    if request.get("internal_auth") is not True:
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "mcp_server_detail")
+        if denied is not None:
+            return denied
     name = request.match_info["name"]
     if not name or not name.strip():
         return web.json_response({"error": "server name is required"}, status=400)
@@ -2342,6 +2441,15 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
     closes that; the narrower file lock is retained inside ``_do_mcp_apply`` for
     cross-process coordination with bridges.py.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_apply")
+    if denied is not None:
+        return denied
     async with _get_apply_lock():
         return await _do_mcp_apply(request)
 
@@ -2915,6 +3023,15 @@ async def api_mcp_resolve_refresh(request: web.Request) -> web.Response:
     ``ready`` / ``unresolved`` / ``error``. A server that fails to resolve is not
     an error for the request: it simply keeps launching the way it does today.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_resolve_refresh")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     refresh = getattr(state, "_mcp_resolve_refresh", None)
     if refresh is None:
@@ -2959,6 +3076,15 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     so the dashboard session stays authenticated.  Returns the verified state
     ``{ok, enabled, running, ping_ok}``.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_gateway_enable")
+    if denied is not None:
+        return denied
     from kiro_crew.config.loader import config_path  # circular import
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular import
 
@@ -3488,6 +3614,15 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     Returns ``{ok, name, stub, ...}`` for the single form and
     ``{ok, names, stub, ...}`` for the batch form.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_gateway_set_stub")
+    if denied is not None:
+        return denied
     from kiro_crew.config.loader import (  # noqa: F811
         ConfigReadError,
         config_path,

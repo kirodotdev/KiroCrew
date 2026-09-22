@@ -422,17 +422,37 @@ class TestTunnelManager:
 
 
 class _Req:
+    """Request double for the instances handlers.
+
+    ``_guard`` demands the positively-identified owner, and the predicate reads the
+    request as a MAPPING as well as calling ``.get`` -- ``"app" in request`` then
+    ``request["app"]`` -- so all three reads come from one claims dict. ``app`` is
+    "" because a browser session carries no app token.
+    """
+
     def __init__(self, state, *, match=None, query=None):
         self.app = {"state": state}
         self.headers = {}
         self.match_info = match or {}
         self.query = query or {}
+        self._claims = {"user": "owner", "app": ""}
 
     def get(self, key, default=None):
-        return {"user": "owner"}.get(key, default)
+        return self._claims.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._claims
+
+    def __getitem__(self, key):
+        return self._claims[key]
 
 
 class _State:
+    """Dashboard-state stand-in; ``owner_id`` matches ``_Req``'s caller because
+    ``_guard`` compares the subject against it."""
+
+    owner_id = "owner"
+
     def __init__(self, registry, manager):
         self.instances_registry = registry
         self.instances_manager = manager

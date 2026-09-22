@@ -59,29 +59,9 @@ _PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset()
 # --------------------------------------------------------------------------- #
 _KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
-        # --- MCP management routes (mcp.py) ---
-        # These routes configure MCP servers and assume any authenticated
-        # dashboard session may manage MCP configuration. Owner-gating them
-        # is tracked as future work.
-        ("POST", "/api/mcp/probe"),
-        ("POST", "/api/mcp/quarantine/clear"),
-        ("POST", "/api/mcp/measure"),
-        ("POST", "/api/mcp/sync"),
-        ("POST", "/api/mcp/apply"),
-        ("POST", "/api/mcp/toggle"),
-        ("POST", "/api/mcp/toggle-tool"),
-        ("POST", "/api/mcp/toggle-all"),
-        ("POST", "/api/mcp/remove"),
-        ("PUT", "/api/mcp/servers/{name}"),
-        ("DELETE", "/api/mcp/servers/{name}"),
-        ("POST", "/api/mcp-gateway/enable"),
-        ("POST", "/api/mcp-gateway/servers/stub"),
-        ("POST", "/api/mcp-gateway/resolve-refresh"),
-        # --- MCP custom/discover routes (mcp_custom.py, mcp_discover.py) ---
-        # Custom MCP server registration and discovery-based installation.
-        # Authenticated-only, predating the owner-gate migration.
-        ("POST", "/api/mcp/custom"),
-        ("PUT", "/api/mcp/custom/{name}"),
+        # --- MCP discover route (mcp_discover.py) ---
+        # Discovery-based installation. Authenticated-only, predating the
+        # owner-gate migration.
         ("POST", "/api/mcp/discover/install"),
         # --- Kiro Crew config routes (core.py) ---
         # Application-level configuration routes that predated owner-gating.
@@ -97,7 +77,7 @@ _KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 # ``test_known_ungated_routes_not_growing``. Raising it is the reviewable act
 # that adding a new ungated route costs; lower it whenever an entry is gated and
 # removed, so the ratchet stays tight.
-_MAX_KNOWN_UNGATED_ROUTES = 20
+_MAX_KNOWN_UNGATED_ROUTES = 4
 
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.
@@ -112,7 +92,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # back to the real count is a manual, unenforced step -- do it whenever you
 # touch this file, or the slack this floor exists to prevent regrows.
 # --------------------------------------------------------------------------- #
-_MINIMUM_GATED_ROUTES = 28
+_MINIMUM_GATED_ROUTES = 59
 
 
 class _FakeState:

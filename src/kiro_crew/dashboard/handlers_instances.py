@@ -135,17 +135,23 @@ def _guard(request: web.Request, operation: str) -> web.Response | None:
             {"error": "instances control plane is owner-only (not reachable via Slack)"},
             status=403,
         )
-    # Deny-by-default: positively confirm an authenticated owner. The dashboard's
-    # require_auth middleware sets request["user"] ONLY after validating the
-    # owner's dashboard token; its absence means the caller is unauthenticated, so
-    # we reject rather than relying on the middleware implicitly (defense in depth
-    # for this SSH-pivoting control plane).
+    # Deny-by-default in two steps, because ``request["user"]`` proves
+    # AUTHENTICATED and nothing more: ``token_auth`` publishes it for any valid
+    # dashboard token, and the messaging transports mint such a token per
+    # allow-listed user, so its presence alone admits a non-owner subject to this
+    # SSH-pivoting control plane. Step one refuses an unauthenticated caller;
+    # step two demands the positive owner identity, which is the same predicate
+    # the capabilities, federated-search, chat-slot and proxy routes in this
+    # module apply for the same reason.
     if not request.get("user"):
         _audit(operation, "denied", error="unauthenticated (no owner identity)")
         return web.json_response(
             {"error": "authentication required (owner-only control plane)"},
             status=401,
         )
+    if not is_owner_dashboard_request(request):
+        _audit(operation, "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request)
     cfg = KiroCrewConfig.load()
     if not cfg.instances.enabled:
         _audit(operation, "denied", error="feature disabled")

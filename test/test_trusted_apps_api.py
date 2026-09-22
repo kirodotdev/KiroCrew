@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
@@ -160,7 +161,11 @@ def _make_app() -> web.Application:
     app.router.add_put("/api/security/trusted-apps/allow-all", api_trusted_apps_allow_all)
     app.router.add_post("/api/security/trusted-apps/{name}", api_trusted_app_grant)
     app.router.add_delete("/api/security/trusted-apps/{name}", api_trusted_app_revoke)
-    return app
+    # The three mutating routes are owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``); ``as_owner`` supplies
+    # the claims the token-auth middleware normally publishes, so each test keeps
+    # exercising its own subject rather than the gate.
+    return as_owner(app)
 
 
 def _client() -> TestClient:

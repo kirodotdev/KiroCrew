@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from body_stream_helpers import attach_body
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.platform.interfaces import McpScope
 
@@ -31,10 +32,14 @@ def _make_request(body: dict) -> MagicMock:
     """
     state = MagicMock()
     state._background_tasks = set()
+    # ``POST /api/mcp/apply`` is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``): ``owner_id == ""``
+    # plus the signed local bootstrap subject is the standalone-local owner shape.
+    state.owner_id = ""
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
     attach_body(request, body)
-    return request
+    return owner_claims(request)
 
 
 # ---------------------------------------------------------------------------
@@ -529,9 +534,12 @@ def _make_stub_request(body: dict) -> MagicMock:
     state = SimpleNamespace(_mcp_gateway_apply_stub=None)
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-    request.get = MagicMock(return_value="dashboard")
     attach_body(request, body)
-    return request
+    # ``POST /api/mcp-gateway/servers/stub`` is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``). ``state`` declares no
+    # ``owner_id``, which the predicate reads as the standalone-local shape, so the
+    # signed local bootstrap subject ``owner_claims`` installs IS the owner here.
+    return owner_claims(request)
 
 
 class TestApplyBodyCeiling:

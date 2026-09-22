@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 _STDIO = {"command": "npx", "args": ["-y", "@acme/weather-mcp"], "env": {"KEY": ""}}
 _REMOTE = {"url": "https://mcp.example.com/sse"}
@@ -69,11 +70,18 @@ def _make_app() -> web.Application:
     from kiro_crew.dashboard.handlers import mcp_custom as mod
 
     app = web.Application()
-    app["state"] = MagicMock()
+    state = MagicMock()
+    # The add/update routes are owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``), and the predicate
+    # reads ``state.owner_id`` — a bare MagicMock hands back a Mock, which no
+    # caller can equal. ``""`` is the standalone-local shape ``as_owner``
+    # installs, where the signed local bootstrap subject IS the owner.
+    state.owner_id = ""
+    app["state"] = state
     app.router.add_post("/api/mcp/custom", mod.api_mcp_custom_add)
     app.router.add_get("/api/mcp/custom/{name}", mod.api_mcp_custom_get)
     app.router.add_put("/api/mcp/custom/{name}", mod.api_mcp_custom_update)
-    return app
+    return as_owner(app)
 
 
 async def _client() -> TestClient:
@@ -1116,12 +1124,16 @@ class TestServersListSurfacesCustomAdds:
         app = web.Application()
         state = MagicMock()
         state._background_tasks = set()
+        # ``owner_id == ""`` is the standalone-local shape the owner gate on the
+        # add route accepts for the signed local bootstrap subject ``as_owner``
+        # supplies; a bare MagicMock attribute is a Mock no caller can equal.
+        state.owner_id = ""
         app["state"] = state
         from kiro_crew.dashboard.handlers import mcp_custom as custom_mod
 
         app.router.add_post("/api/mcp/custom", custom_mod.api_mcp_custom_add)
         app.router.add_get("/api/mcp", mcp_mod.api_mcp_servers)
-        client = TestClient(TestServer(app))
+        client = TestClient(TestServer(as_owner(app)))
         await client.start_server()
         try:
             resp = await client.post(

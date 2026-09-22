@@ -227,6 +227,15 @@ class TestManagementRoutesOffloadStoreIo:
 
         req.json = _json
         req.get = lambda *a, **k: "dashboard"
+        # The switch route is owner-gated, same as the mint route above, and the
+        # predicate reads ``state.owner_id`` plus the claims the token-auth
+        # middleware publishes. Present the owner the way this caller already
+        # spells itself, ``dashboard``, so the offload assertion stays on its own
+        # subject rather than landing on the gate. The gate's denial behaviour is
+        # covered in ``test_webhooks_api.TestTokenMintIsOwnerOnly``.
+        req.app = {"state": MagicMock(owner_id="dashboard")}
+        req.__contains__ = lambda _self, key: key in {"user", "app"}
+        req.__getitem__ = lambda _self, key: {"user": "dashboard", "app": ""}[key]
 
         with patch.object(webhooks.WebhookTokenStore, "set_switch", switch), \
                 patch.object(hooks_handlers, "_sel", MagicMock()):

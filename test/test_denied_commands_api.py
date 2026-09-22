@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers.security import (
     api_denied_command_builtin_toggle,
@@ -85,7 +86,11 @@ def _make_app() -> web.Application:
     app.router.add_post("/api/security/denied-commands/user", api_denied_command_user_add)
     app.router.add_patch("/api/security/denied-commands/user/{id}", api_denied_command_user_toggle)
     app.router.add_delete("/api/security/denied-commands/user/{id}", api_denied_command_user_delete)
-    return app
+    # The five mutating routes are owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``); ``as_owner`` supplies
+    # the claims the token-auth middleware normally publishes, so each test keeps
+    # exercising its own subject rather than the gate.
+    return as_owner(app)
 
 
 def _client() -> TestClient:

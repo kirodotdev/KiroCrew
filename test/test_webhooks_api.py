@@ -1807,12 +1807,15 @@ class TestTokenMintIsOwnerOnly:
     async def test_the_probe_route_still_mints_its_throwaway_credential(
         self, wired, monkeypatch
     ):
-        """POSITIVE CONTROL: ``POST /api/webhooks/test`` is not gated by this fix.
+        """POSITIVE CONTROL: the owner's own probe keeps working.
 
-        It mints through ``token_store().create`` directly rather than through
-        the handler, so the gate must not reach it. Driven with the SAME
-        non-owner the defect test uses, which is what makes it a control on the
-        blast radius rather than a restatement of the owner path.
+        ``POST /api/webhooks/test`` mints a throwaway credential and drives a real
+        agent turn through it, so it carries the owner gate like the rest of this
+        management surface. The control that matters is therefore that the OWNER
+        still gets the full 200 body: a gate that refused here would take the
+        Webhooks page's "Send test" button away from the one caller entitled to it.
+        The non-owner direction is asserted in
+        ``test_the_sibling_routes_are_gated_too``.
         """
 
         class _Resp:
@@ -1847,7 +1850,7 @@ class TestTokenMintIsOwnerOnly:
                 "POST",
                 "/api/webhooks/test",
                 {"message": "ping"},
-                user="U0NONOWNER",
+                user="U0THEOWNER",
                 owner_id="U0THEOWNER",
             )
         )
@@ -1855,15 +1858,18 @@ class TestTokenMintIsOwnerOnly:
         assert (await _payload(resp))["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_the_sibling_routes_answer_exactly_as_before(self, wired):
-        """POSITIVE CONTROL: this fix gates ONE route and no other.
+    async def test_the_sibling_routes_are_gated_too(self, wired):
+        """The whole credential lifecycle and the kill switch share this gate.
 
-        PATCH, DELETE and the kill switch reach their own logic for the same
-        non-owner caller, so none of them acquired an owner gate as a side
-        effect. Their missing gates are separate findings, and a test that
-        expected 403 here would silently swallow the decision to fix them.
+        Editing, revoking and the inbound kill switch are the same authorization
+        decision as minting: the caller controls credentials it does not own, or
+        one operator-owned boolean that silences every inbound integration. Each
+        must refuse the same non-owner with the same 403 body, and the assertion
+        reads the body rather than only the status so a refusal for some OTHER
+        reason -- a 403 from a store error, say -- cannot pass as the gate.
         """
         non_owner = {"user": "U0NONOWNER", "owner_id": "U0THEOWNER"}
+        refused = {"error": "owner authorization required", "code": "owner_only"}
 
         patched = await H.api_webhook_token_update(
             _req(
@@ -1874,7 +1880,8 @@ class TestTokenMintIsOwnerOnly:
                 **non_owner,
             )
         )
-        assert patched.status == 404
+        assert patched.status == 403
+        assert await _payload(patched) == refused
 
         deleted = await H.api_webhook_token_delete(
             _req(
@@ -1884,9 +1891,17 @@ class TestTokenMintIsOwnerOnly:
                 **non_owner,
             )
         )
-        assert deleted.status == 404
+        assert deleted.status == 403
+        assert await _payload(deleted) == refused
 
         switched = await H.api_webhooks_switch(
             _req("POST", "/api/webhooks/switch", {"enabled": False}, **non_owner)
         )
-        assert switched.status == 200
+        assert switched.status == 403
+        assert await _payload(switched) == refused
+
+        probed = await H.api_webhook_test(
+            _req("POST", "/api/webhooks/test", {"message": "ping"}, **non_owner)
+        )
+        assert probed.status == 403
+        assert await _payload(probed) == refused

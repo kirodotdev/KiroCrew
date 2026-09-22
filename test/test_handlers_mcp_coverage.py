@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from body_stream_helpers import BodyStreamPayload
+from dashboard_owner_helpers import owner_claims
 
 from conftest import host_abs
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
@@ -62,12 +63,21 @@ def _request(
     req.query = query or {}
     req.match_info = match_info or {}
     req.method = method
-    req.get = lambda key, default=None: default
-    return req
+    # Every mutating handler in handlers/mcp.py is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``), so the double has to
+    # carry the claims the token-auth middleware publishes or each test lands on
+    # the gate instead of its own subject.
+    return owner_claims(req)
 
 
 class _State:
-    """Stand-in for DashboardState's background-task registry."""
+    """Stand-in for DashboardState's background-task registry.
+
+    ``owner_id`` is ``""`` -- the standalone-local shape, where the owner gate on
+    these routes accepts the signed local bootstrap subject ``owner_claims`` sets.
+    """
+
+    owner_id = ""
 
     def __init__(self) -> None:
         self._background_tasks: set[asyncio.Task] = set()

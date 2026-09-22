@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import mcp_quarantine
 
@@ -633,9 +634,15 @@ def endpoint(tmp_path, monkeypatch):
 
 async def _client(mod) -> TestClient:
     app = web.Application()
-    app["state"] = MagicMock()
+    state = MagicMock()
+    # The clear route is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``); ``owner_id == ""`` is
+    # the standalone-local shape ``as_owner``'s bootstrap subject satisfies, and a
+    # bare MagicMock attribute would be a Mock no caller can equal.
+    state.owner_id = ""
+    app["state"] = state
     app.router.add_post("/api/mcp/quarantine/clear", mod.api_mcp_quarantine_clear)
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(as_owner(app)))
     await client.start_server()
     return client
 
