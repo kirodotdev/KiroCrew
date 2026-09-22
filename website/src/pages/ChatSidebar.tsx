@@ -43,7 +43,7 @@ import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../compone
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
@@ -4095,7 +4095,15 @@ function ChatSidebar({
   // Per-instance id: ChatPage mounts a mobile-drawer sidebar and a desktop one, so a
   // literal id would collide and point one panel's checkbox at the other's label.
   const bulkSkipRunningLabelId = useId()
-  const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
+  const bulkModelsQuery = useAvailableModelsQuery({ enabled: bulkModelOpen })
+  const bulkModelOptions = bulkModelsQuery.data
+  // The roster failed to load when EITHER flag is up. The ACP adapter never
+  // rejects: a 503 / network error / empty response resolves with the last-good
+  // cached list or Auto alone and marks the provider degraded, so `isError`
+  // alone would stay false through every real failure and the panel would show
+  // a one-entry list as if that were the whole catalog. Same pair Settings >
+  // Chat reads for its model selects.
+  const bulkModelsFailed = bulkModelsQuery.isError || bulkModelsQuery.isDegraded
   const bulkRunningCount = useMemo(() => localSlots.filter(s => s.running).length, [localSlots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running
@@ -8032,6 +8040,27 @@ function ChatSidebar({
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.switch_all_sessions')}</div>
           <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.pick_a_model_for_every_session_switching_a_sessi')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>.</div>
+          {bulkModelsFailed && (
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              {/* No hand-off: the chosen bulkModel/skipRunning selection is unsaved,
+                  and the navigation would discard it. Retry stays in the panel.
+                  Its own row above the listbox, wrapping the Retry button under
+                  the notice when the sidebar is too narrow for both: an inline
+                  notice sharing a fixed row collapses to one character per line
+                  at sidebar width, and the Cancel/Switch row below is already at
+                  the two-button limit. */}
+              <ErrorNotice
+                className="flex-1 min-w-[12rem]"
+                message={i18nT('pages.chatSidebar.model_list_failed')}
+                testId="bulk-model-roster-error"
+              />
+              <Btn
+                className="text-[12px] px-3 py-1 shrink-0"
+                disabled={bulkModelsQuery.isFetching}
+                onClick={() => bulkModelsQuery.refetch()}
+              >{i18nT('pages.chatSidebar.retry')}</Btn>
+            </div>
+          )}
           <div ref={bulkListRef} role="listbox" aria-label={i18nT('pages.chatSidebar.model_list')} tabIndex={-1} onKeyDown={bulkOnListKeyDown} className="max-h-[220px] overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 mb-2 outline-hidden">
             <ModelDropdownList models={bulkModelOptions} activeModel={bulkModel} onSelect={setBulkModel} />
           </div>

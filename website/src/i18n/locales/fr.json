@@ -11004,7 +11004,8 @@
       "opening_session_locally": "Ouverture de cette session ici…",
       "opens_here_runs_on_instance": "Ouvre cette session ici — son exécution continue sur {{name}}",
       "opens_on_crew_switches_there": "S'ouvre sur {{name}} — bascule vers ce Crew, pas ici",
-      "remote_instances_list_unavailable": "Impossible de lister les crews distantes, leurs sessions ne sont donc pas affichées."
+      "remote_instances_list_unavailable": "Impossible de lister les crews distantes, leurs sessions ne sont donc pas affichées.",
+      "model_list_failed": "Impossible de charger la liste des modèles. Ce qui est affiché peut être incomplet ou obsolète."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

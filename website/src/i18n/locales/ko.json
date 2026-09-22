@@ -10690,7 +10690,8 @@
       "opening_session_locally": "이 세션을 여기서 여는 중…",
       "opens_here_runs_on_instance": "이 세션을 여기서 엽니다 — 실행은 {{name}}에서 계속됩니다",
       "opens_on_crew_switches_there": "{{name}}에서 엽니다 — 해당 Crew로 전환하며 여기서는 열지 않습니다",
-      "remote_instances_list_unavailable": "원격 크루를 나열할 수 없어 해당 세션이 표시되지 않습니다."
+      "remote_instances_list_unavailable": "원격 크루를 나열할 수 없어 해당 세션이 표시되지 않습니다.",
+      "model_list_failed": "모델 목록을 불러올 수 없습니다. 표시된 내용이 불완전하거나 오래된 것일 수 있습니다."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
