@@ -175,7 +175,14 @@ Exact template and body matches omit initial manual copies. The complete-envelop
 budget is checked BEFORE omission: 64,000 characters including wrappers; reads
 refuse above 256,000 bytes per source, and resource expansion is bounded to 64
 unique documents. KAS's existing registration ceiling is 50 custom agents, not a
-file-body budget. This repository does not establish a universal native model or
+file-body budget. An id in `agent_files.KAS_RESERVED_AGENT_IDS` (`default` and
+the built-in mode ids `vibe`, `spec`, `quick-spec`, `bug-fix`, `plan`,
+`autonomous`; exact, case-sensitive) is refused by the projection before
+`session/new` -- the engine accepts such an entry and either drops it or keeps
+its own built-in under the id, so it would surface only as an unadvertised mode
+or as the built-in running under the crewmate's name -- and the refusal names
+the crewmate-side remedy (`crew-mode.md`, "Template names the harness cannot
+activate"). This repository does not establish a universal native model or
 resource truncation limit; real harness versions still need that integration check.
 Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
 conditional discovery index: the agent reads a guide only after its explicit

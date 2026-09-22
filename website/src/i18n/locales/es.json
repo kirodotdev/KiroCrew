@@ -8822,6 +8822,7 @@
       "publish_hint": "Publica la definición de este agente como una plantilla desde la que pueden partir otros agentes. El nombre se convierte en la identidad permanente de la plantilla.",
       "publish_name_label": "Nombre de la plantilla",
       "publish_name_rule": "Usa letras, dígitos, puntos, guiones o guiones bajos (hasta 63 caracteres).",
+      "publish_name_reserved": "“{{name}}” está reservado para un agente integrado. Elige otro nombre, por ejemplo “{{name}}-custom”. El compañero conserva su nombre; solo su plantilla necesita uno nuevo.",
       "publish_action": "Guardar plantilla",
       "switch_confirm_title": "¿Cambiar a “{{name}}”?",
       "switch_confirm_body": "Tus cambios en “{{origin}}” (“{{fields}}”) se descartarán. Este agente usará la plantilla “{{name}}” tal cual.",
@@ -13183,6 +13184,7 @@
         "name_rule": "Letras, dígitos, puntos, guiones y guiones bajos; hasta 63 caracteres. No debe coincidir con una plantilla instalada ni con un compañero.",
         "err_read_only": "Esta plantilla es de solo lectura aquí. Duplícala para editar una plantilla propia.",
         "err_name_taken": "Ese nombre ya lo usa una plantilla o un compañero.",
+        "err_name_reserved": "“{{name}}” está reservado para un agente integrado. Elige otro nombre.",
         "err_generic": "La solicitud falló. Inténtalo de nuevo."
       }
     },

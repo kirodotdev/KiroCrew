@@ -6348,6 +6348,14 @@ class AcpRuntime:
             if self._activates_agent_by_mode()
             else None
         )
+        # Guard (C): the id may be advertised, yet as the HOST's own agent; a
+        # set_mode would succeed and run that agent under the crewmate's name.
+        # Asked of the harness as a seam (H13): the spawn-time hosts answer None
+        # and the wire-registered one reads the stamp the engine put on the mode.
+        refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
+        if refusal:
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(refusal)
         if mode_agent and self._mode_available(mode_agent, resp):
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized
@@ -6811,6 +6819,11 @@ class AcpRuntime:
         # Same routing-table question as create_session: a host with no agent
         # spec has no mode to resume onto either.
         mode_agent = agent if self._activates_agent_by_mode() else None
+        # Guard (C) -- see create_session: advertised, but as the host's own.
+        refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
+        if refusal:
+            await self.terminate_session(resume_sid)
+            raise AcpRuntimeError(refusal)
         if mode_agent and self._mode_available(mode_agent, resp):
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized

@@ -51,6 +51,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
 from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
@@ -2957,7 +2958,12 @@ async def api_agent_fork(request: web.Request) -> web.Response:
         # ...) are rebuilt on boot; a copy landing on one of those stems while
         # the managed file is absent would be overwritten by that rebuild, so
         # they count as taken whether or not the file exists right now. Same
-        # rule the publish handler applies to a user-chosen name.
+        # rule the publish handler applies to a user-chosen name. The ids the
+        # KAS engine keeps for itself (``KAS_RESERVED_AGENT_IDS``: ``default``,
+        # the seeded first crewmate's own name, and the built-in mode ids) are
+        # taken for the same reason, matched exactly as the engine matches
+        # them: a copy on such a stem binds the crew to a mode KAS never
+        # advertises, or to the engine's own agent instead of the copy.
         managed_stems = {Path(f).stem.lower() for f in OWNED_KIRO_AGENT_FILES}
 
         def _create_record_bind() -> tuple[str, Path]:
@@ -3028,6 +3034,7 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         copy_name.lower() in taken
                         or copy_name.lower() in bound
                         or copy_name.lower() in managed_stems
+                        or copy_name in KAS_RESERVED_AGENT_IDS
                         or _is_reserved_basename(copy_name)
                         or _spec_stem_on_disk(agents_dir, copy_name)
                     ):
@@ -3161,6 +3168,19 @@ async def api_agent_publish(request: web.Request) -> web.Response:
     if f"{new_name.lower()}.json" in {f.lower() for f in OWNED_KIRO_AGENT_FILES}:
         return web.json_response(
             {"error": f"'{new_name}' is reserved", "code": "template_name_reserved"}, status=400
+        )
+    if new_name in KAS_RESERVED_AGENT_IDS:
+        # The KAS engine keeps its own agent under this id (or drops the entry)
+        # without an error, so a template published under it never runs there.
+        # Exact match, as the engine matches: ``Default`` registers normally.
+        # Its own code, distinct from the runtime-owned stems above, so the
+        # dashboard can say WHOSE name it is rather than "reserved" alone.
+        return web.json_response(
+            {
+                "error": f"'{new_name}' is reserved by the KAS agent engine",
+                "code": "template_name_reserved_by_engine",
+            },
+            status=400,
         )
 
     from kiro_crew.dashboard.handlers.agent_capabilities import inherited_template_action

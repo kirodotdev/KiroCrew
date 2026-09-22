@@ -263,6 +263,41 @@ async def test_publish_rejects_reserved_name(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name", ["default", "vibe", "spec", "quick-spec", "bug-fix", "plan", "autonomous"]
+)
+async def test_publish_rejects_the_kas_reserved_ids(tmp_path, name):
+    """The KAS engine drops or shadows a wire-injected agent under these ids, so
+    a template published under one never runs there."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": name}))
+
+    assert resp.status == 400
+    assert json.loads(resp.text)["code"] == "template_name_reserved_by_engine"
+    assert not (agents_dir / f"{name}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_publish_accepts_the_case_variant_of_a_reserved_id(tmp_path):
+    """``Default`` registers on KAS as an ordinary client agent (measured), so the
+    engine check is exact-case: a fold to ``.lower()`` would refuse it here."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "Default"}))
+
+    assert resp.status == 200, resp.text
+    assert json.loads(resp.text)["template"] == "Default"
+    assert (agents_dir / "Default.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_publish_404_on_unknown_template_and_crew(tmp_path):
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()

@@ -106,6 +106,41 @@ member DM thread's pin covers the namespace too: the same name picked as a templ
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.
 
+## Template names the harness cannot activate
+
+A crewmate's private copy is named after the crewmate, and a published or
+created template after the user's choice. Three name classes are taken before
+either lookup runs: a Windows device basename (`CON`, `NUL`, ...), a stem the
+runtime rebuilds on boot (`OWNED_KIRO_AGENT_FILES`, present or not), and an id
+the KAS engine keeps for itself (`agent_files.KAS_RESERVED_AGENT_IDS`:
+`default` plus the built-in mode ids `vibe`, `spec`, `quick-spec`, `bug-fix`,
+`plan`, `autonomous`). The last class exists because the seeded first crewmate
+is itself named `default`, and because kiro-cli's v3 engine accepts a
+`customAgents` batch under any of those ids without an error and then does not
+run it: `default` is left out of `availableModes`, so `session/set_mode` finds
+nothing to switch to; a built-in id keeps the engine's own definition
+(`origin: bundled`), so `set_mode` would activate the built-in with the
+crewmate's name on it. Measured on kiro-cli 2.23.0, with each injected entry
+carrying a distinctive description: every case variant (`Default`, `Vibe`,
+`PLAN`) and every collision with an on-disk `~/.kiro/agents/<id>.json`
+(`kirocrew-conductor`) registered the client entry (`origin: client`, the wire
+definition replacing the on-disk one), so the match is exact and
+case-sensitive. The fork suffixes past a reserved stem (`default-2`), publish
+and create refuse it as `400 template_name_reserved_by_engine` (its own code,
+so the runtime-owned stems' `template_name_reserved` is not blamed on the
+engine), and the KAS projection
+(`acp/kas_agents.to_client_custom_agent`) refuses the id before the wire with
+the remedy in the dashboard's own labels -- the crewmate's Agent Template tab;
+on the crewmate's own copy 'Save as new template…' under another name, which
+moves the crewmate to the copy and keeps its edits, or 'Reset my changes' to the
+shared template; on a shared template bound under a reserved id, where neither
+control renders, the template picker at the top of the tab -- raised without the generic
+`cannot project agent ... onto KAS` prefix (`KasReservedAgentIdError`), instead of letting the activation guard report the spec as
+missing or a built-in run in the crewmate's place. The dashboard renders the
+refusal in the user's language inside the dialog that sent the name
+(`components.agentTemplateDetail.publish_name_reserved`,
+`pages.overview.agentTemplatesTab.err_name_reserved`), naming the typed name.
+
 ## Agent templates tab
 
 The Template pane inside a crew editor edits that crew's PRIVATE copy of a

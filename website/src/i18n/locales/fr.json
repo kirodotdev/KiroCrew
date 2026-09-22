@@ -8822,6 +8822,7 @@
       "publish_hint": "Publie la définition de cet agent comme un modèle dont d’autres agents peuvent partir. Le nom devient l’identité permanente du modèle.",
       "publish_name_label": "Nom du modèle",
       "publish_name_rule": "Utilise des lettres, des chiffres, des points, des tirets ou des traits de soulignement (jusqu’à 63 caractères).",
+      "publish_name_reserved": "« {{name}} » est réservé à un agent intégré. Choisis un autre nom, par exemple « {{name}}-custom ». Le coéquipier garde son nom ; seul son modèle en a besoin d'un nouveau.",
       "publish_action": "Enregistrer le modèle",
       "switch_confirm_title": "Passer à « {{name}} » ?",
       "switch_confirm_body": "Tes modifications sur « {{origin}} » (« {{fields}} ») seront abandonnées. Cet agent utilisera le modèle « {{name}} » tel quel.",
@@ -13183,6 +13184,7 @@
         "name_rule": "Lettres, chiffres, points, tirets et traits de soulignement, 63 caractères au plus. Ne doit pas entrer en conflit avec un modèle installé ou un coéquipier.",
         "err_read_only": "Ce modèle est en lecture seule ici. Duplique-le pour modifier un modèle qui t'appartient.",
         "err_name_taken": "Ce nom est déjà pris par un modèle ou un coéquipier.",
+        "err_name_reserved": "« {{name}} » est réservé à un agent intégré. Choisis un autre nom.",
         "err_generic": "La requête a échoué. Réessaie."
       }
     },

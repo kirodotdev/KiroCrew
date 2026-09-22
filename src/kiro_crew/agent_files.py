@@ -69,3 +69,47 @@ REQUIRED_KIRO_AGENT_FILES = (
     AGENT_FILENAME,
     LITE_AGENT_FILENAME,
 )
+
+# Agent ids the KAS engine (``kiro-cli acp --agent-engine v3``) will not run
+# from the wire. A ``_meta.kiro.customAgents`` entry under one of these ids is
+# accepted without an error and then either never appears in the session's
+# ``availableModes`` or is shadowed by the engine's own built-in agent of that
+# id, so a ``session/set_mode`` for it is refused, or activates the built-in
+# instead of the definition Crew sent. Measured against kiro-cli 2.23.0 by
+# injecting every id below in ONE ``session/new``, each with a distinctive
+# ``description``, and reading the advertised mode back:
+#
+#   injected id                       advertised mode         definition that runs
+#   ------------------------------    --------------------    --------------------
+#   default                           none (dropped)          none: set_mode refused
+#   vibe / spec / quick-spec /        the built-in            the built-in; the
+#     bug-fix / plan / autonomous     (origin: bundled)       client entry discarded
+#   Default / DEFAULT / Vibe / Spec   the client entry        the client entry
+#     / PLAN / kiro_default / kiro    (origin: client)
+#     / kiro-default / default_agent
+#   kirocrew-conductor /              the client entry        the client entry: the
+#     semantic_reviewer (also on      (origin: client)        wire definition replaces
+#     disk, advertised from there)                            the on-disk one
+#
+# The match is therefore exact and case-sensitive: the built-in ids are all
+# lower-case, and every case variant registers as an ordinary client agent.
+#
+# Why this lives with the FILENAMES: Kiro Crew names a crewmate's private
+# template copy after the crewmate, and the seeded first crewmate is called
+# ``default``, so without this set its first template edit writes
+# ``~/.kiro/agents/default.json`` and binds the crewmate to an id that can never
+# be activated on KAS. The template writers (fork, publish, create) consult it
+# when choosing a stem, and the KAS projection refuses the id with the remedy
+# instead of letting the misleading "spec is likely missing" refusal fire, or
+# letting a built-in silently run in the crewmate's place.
+KAS_RESERVED_AGENT_IDS = frozenset(
+    {
+        "default",
+        "vibe",
+        "spec",
+        "quick-spec",
+        "bug-fix",
+        "plan",
+        "autonomous",
+    }
+)

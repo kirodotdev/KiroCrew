@@ -80,6 +80,7 @@ from kiro_crew.agent_discovery import (
     spec_by_declared_name,
     spec_welcome_message,
 )
+from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
 from kiro_crew.agent_spec_format import agent_spec_candidates
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
@@ -177,6 +178,18 @@ UNSUPPORTED_SPEC_KEYS = frozenset(
 
 class KasAgentTranslationError(ValueError):
     """A spec cannot be projected onto KAS's schema at all."""
+
+
+class KasReservedAgentIdError(KasAgentTranslationError):
+    """The agent's id is one the KAS engine keeps for itself.
+
+    A translation error like its parent -- every caller that handles that
+    handles this -- but its message is already the user's whole instruction
+    (action first, in the dashboard's own labels), so the harness raises it as
+    is rather than behind the ``cannot project agent ... onto KAS`` prefix the
+    other translation failures get, which a blind reader rated as noise before
+    the remedy.
+    """
 
 
 #: System prompt fed to a prompt-less agent when projecting onto KAS. KAS
@@ -710,6 +723,22 @@ def to_client_custom_agent(
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
+    if agent_id in KAS_RESERVED_AGENT_IDS:
+        # Refused HERE, before the wire, because the engine does not refuse it:
+        # it accepts the batch and either drops this entry (``default``) or
+        # keeps its own built-in agent under the id (``vibe``, ``spec``, ...).
+        # The first would surface one step later as "mode not advertised" with
+        # a remedy (regenerate the spec) that cannot help -- the spec exists;
+        # the second would not surface at all, and the session would run the
+        # engine's agent with the crewmate's name on it.
+        raise KasReservedAgentIdError(
+            f"Rename this crewmate's template: “{agent_id}” is reserved for a built-in "
+            "agent, so the crewmate's own prompt and tools would not run under it. "
+            "Both fixes are on the crewmate's Agent Template tab: for the crewmate's own "
+            "copy, 'Save as new template…' under another name (it keeps its "
+            "customizations) or 'Reset my changes'; for a shared template, the template "
+            "picker at the top of the tab."
+        )
     if not prompt.strip():
         raise KasAgentTranslationError(f"agent {agent_id!r} prompt is empty")
 

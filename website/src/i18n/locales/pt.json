@@ -8822,6 +8822,7 @@
       "publish_hint": "Publica a definição deste agente como um modelo do qual outros agentes podem partir. O nome se torna a identidade permanente do modelo.",
       "publish_name_label": "Nome do modelo",
       "publish_name_rule": "Use letras, dígitos, pontos, traços ou sublinhados (até 63 caracteres).",
+      "publish_name_reserved": "“{{name}}” está reservado para um agente integrado. Escolha outro nome, por exemplo “{{name}}-custom”. O colega mantém o nome; só o modelo dele precisa de um novo.",
       "publish_action": "Salvar modelo",
       "switch_confirm_title": "Mudar para “{{name}}”?",
       "switch_confirm_body": "Suas alterações em “{{origin}}” (“{{fields}}”) serão descartadas. Este agente usará o modelo “{{name}}” como está.",
@@ -13183,6 +13184,7 @@
         "name_rule": "Letras, dígitos, pontos, hifens e sublinhados; até 63 caracteres. Não pode coincidir com um modelo instalado nem com um colega.",
         "err_read_only": "Este modelo é somente leitura aqui. Duplique-o para editar um modelo seu.",
         "err_name_taken": "Esse nome já é usado por um modelo ou por um colega.",
+        "err_name_reserved": "“{{name}}” está reservado para um agente integrado. Escolha outro nome.",
         "err_generic": "A solicitação falhou. Tente novamente."
       }
     },

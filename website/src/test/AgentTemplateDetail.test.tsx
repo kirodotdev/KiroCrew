@@ -33,6 +33,7 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
+import { ApiError } from '../api/apiError'
 
 const DENIED = Array.from({ length: 11 }, (_, i) => `denied-${i}`)
 const FIELD_LABEL = 'Agent Template'
@@ -352,6 +353,30 @@ describe('Save as new template', () => {
       expect(mockApi.agentPublish).toHaveBeenCalledWith('atlas-crewA', 'crewA', 'my-template'),
     )
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('my-template'))
+  })
+
+  it('names a reserved template id in the dialog when the server refuses it', async () => {
+    // `default`, `vibe`, `plan`, ... are ids the KAS engine keeps for itself;
+    // the server answers 400 template_name_reserved_by_engine and the dialog must say
+    // which word to change, in the user's language, not relay the English
+    // server sentence.
+    mockApi.agentPublish.mockRejectedValue(
+      new ApiError(400, "'default' is reserved by the KAS agent engine", JSON.stringify({
+        error: "'default' is reserved by the KAS agent engine",
+        code: 'template_name_reserved_by_engine',
+      })),
+    )
+    renderPane({ template: 'atlas-crewA', crew: 'crewA' })
+    fireEvent.click(await screen.findByRole('button', { name: /Save as new template/ }))
+
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'default' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save template' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('“default” is reserved for a built-in agent. Pick another name, such as “default-custom”. The crewmate keeps its name; only its template needs a new one.')
+    expect(alert).not.toHaveTextContent('KAS')
+    // The dialog stays open with the typed name, so the user can retype.
+    expect(screen.getByRole('textbox')).toHaveValue('default')
   })
 
   it('renders the name rule as a hint, not an ErrorNotice (Opus round-41)', async () => {

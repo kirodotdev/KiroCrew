@@ -22,7 +22,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { ChevronDown, Lock } from 'lucide-react'
 import { api } from '../../api/client'
-import { isNotFoundError } from '../../api/apiError'
+import { ApiError, isNotFoundError } from '../../api/apiError'
 import AgentSkillsEditor from '../AgentSkillsEditor'
 import { Btn } from '../ui'
 import ErrorNotice from '../ErrorNotice'
@@ -32,6 +32,7 @@ import { useConfirm } from '../ConfirmDialog'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { i18nT } from '../../i18n/t'
+import { parseErrorCode } from '../../utils/errorReport'
 import { templateSourceBadge, type TemplateProvenance } from '../../lib/templateSource'
 
 /** How many chips render before the list collapses behind a "+N more". */
@@ -411,7 +412,17 @@ export default function AgentTemplateDetail({
       setPublishError('')
       afterRebind(r?.template || name)
     } catch (e) {
-      setPublishError(e instanceof Error ? e.message : String(e))
+      // The one refusal a user can act on by retyping: the agent engine keeps
+      // some ids for itself (`template_name_reserved_by_engine`, its own code
+      // so the runtime-owned stems' plain `template_name_reserved` is not
+      // blamed on the engine), so name the rule in the user's language
+      // instead of relaying the server's English sentence.
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      setPublishError(
+        code === 'template_name_reserved_by_engine'
+          ? i18nT('components.agentTemplateDetail.publish_name_reserved', { name })
+          : e instanceof Error ? e.message : String(e),
+      )
     }
   }
 

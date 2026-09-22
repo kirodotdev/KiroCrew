@@ -8822,6 +8822,7 @@
       "publish_hint": "Pubblica la definizione di questo agente come un modello da cui altri agenti possono partire. Il nome diventa l’identità permanente del modello.",
       "publish_name_label": "Nome del modello",
       "publish_name_rule": "Usa lettere, cifre, punti, trattini o trattini bassi (fino a 63 caratteri).",
+      "publish_name_reserved": "“{{name}}” è riservato a un agente integrato. Scegli un altro nome, ad esempio “{{name}}-custom”. Il compagno mantiene il suo nome; solo il suo modello ne richiede uno nuovo.",
       "publish_action": "Salva modello",
       "switch_confirm_title": "Passare a «{{name}}»?",
       "switch_confirm_body": "Le tue modifiche a «{{origin}}» («{{fields}}») verranno scartate. Questo agente userà il modello «{{name}}» così com’è.",
@@ -13183,6 +13184,7 @@
         "name_rule": "Lettere, cifre, punti, trattini e trattini bassi; al massimo 63 caratteri. Non deve coincidere con un modello installato o con un compagno.",
         "err_read_only": "Questo modello è in sola lettura qui. Duplicalo per modificare un modello tuo.",
         "err_name_taken": "Quel nome è già usato da un modello o da un compagno.",
+        "err_name_reserved": "“{{name}}” è riservato a un agente integrato. Scegli un altro nome.",
         "err_generic": "La richiesta non è riuscita. Riprova."
       }
     },

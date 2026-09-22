@@ -8588,6 +8588,7 @@
       "publish_hint": "把该代理的定义发布为一个模板，其他代理可以从它开始。这个名称将成为模板的永久标识。",
       "publish_name_label": "模板名称",
       "publish_name_rule": "使用字母、数字、点、短横线或下划线（最多 63 个字符）。",
+      "publish_name_reserved": "“{{name}}”是内置智能体的保留名称。请换一个名字，比如“{{name}}-custom”。队友的名字不变，只需要给它的模板换个名字。",
       "publish_action": "保存模板",
       "switch_confirm_title": "切换到 “{{name}}”？",
       "switch_confirm_body": "你在 “{{origin}}” 上的改动（“{{fields}}”）将被丢弃。该代理将原样使用 “{{name}}” 模板。",
@@ -12813,6 +12814,7 @@
         "name_rule": "字母、数字、点、短横线和下划线，最长 63 个字符。不能与已安装的模板或队友重名。",
         "err_read_only": "此模板在这里只读。复制一份即可编辑自己的模板。",
         "err_name_taken": "该名称已被某个模板或队友占用。",
+        "err_name_reserved": "“{{name}}”是内置智能体的保留名称。请换一个名字。",
         "err_generic": "请求失败，请重试。"
       }
     },

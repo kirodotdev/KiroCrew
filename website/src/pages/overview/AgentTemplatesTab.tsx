@@ -352,15 +352,23 @@ export default function AgentTemplatesTab() {
   }, [dirty])
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['agent-templates'] })
-  const writeErrorText = (e: unknown): string => {
+  const writeErrorText = (e: unknown, name = ''): string => {
     const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
     return code === 'template_read_only'
       ? i18nT('pages.overview.agentTemplatesTab.err_read_only')
       : code === 'name_taken' || code === 'name_bound'
         ? i18nT('pages.overview.agentTemplatesTab.err_name_taken')
-        : code === 'invalid_template_name'
-          ? i18nT('pages.overview.agentTemplatesTab.name_rule')
-          : errMessage(e) || i18nT('pages.overview.agentTemplatesTab.err_generic')
+        : code === 'template_name_reserved_by_engine'
+          // The agent engine keeps a few ids for itself; the server refuses
+          // them so a template under one never silently runs as something
+          // else. Its own code, so the runtime-owned stems' plain
+          // `template_name_reserved` keeps its server text and is not blamed
+          // on the engine. Named with the typed name so the user knows which
+          // word to change.
+          ? i18nT('pages.overview.agentTemplatesTab.err_name_reserved', { name })
+          : code === 'invalid_template_name'
+            ? i18nT('pages.overview.agentTemplatesTab.name_rule')
+            : errMessage(e) || i18nT('pages.overview.agentTemplatesTab.err_generic')
   }
   const writeError = (e: unknown) => setNotice({ kind: 'err', text: writeErrorText(e) })
   // A refused save is reported IN the save bar, beside the button that was
@@ -407,7 +415,7 @@ export default function AgentTemplatesTab() {
       setSelectedName(r.name)
       openDetail()
     },
-    onError: writeError,
+    onError: (e: unknown, f) => setNotice({ kind: 'err', text: writeErrorText(e, f.name.trim()) }),
   })
   const remove = useMutation({
     mutationFn: (name: string) => api.agentTemplateDelete(name),
@@ -913,7 +921,7 @@ export default function AgentTemplatesTab() {
         </div>
       )}
       <label className="block text-[12px] text-muted mb-1" htmlFor="tpl-new-name">{i18nT('pages.overview.agentTemplatesTab.name')}</label>
-      <input id="tpl-new-name" aria-label={i18nT('pages.overview.agentTemplatesTab.name')} className="w-full px-2.5 py-1.5 rounded-md border border-border bg-bg-elevated text-[12.5px] font-mono text-text" value={createForm.name} onChange={e => setCreateForm(f => ({ ...f, name: e.target.value }))} autoFocus />
+      <input id="tpl-new-name" aria-label={i18nT('pages.overview.agentTemplatesTab.name')} className="w-full px-2.5 py-1.5 rounded-md border border-border bg-bg-elevated text-[12.5px] font-mono text-text" value={createForm.name} onChange={e => { setCreateForm(f => ({ ...f, name: e.target.value })); if (notice?.kind === 'err') setNotice(null) }} autoFocus />
       <p className={`text-[11.5px] mt-1 ${nameProblem(createForm.name) ? 'text-danger' : 'text-muted'}`}>{i18nT('pages.overview.agentTemplatesTab.name_rule')}</p>
       <label className="block text-[12px] text-muted mb-1 mt-3" htmlFor="tpl-new-desc">{i18nT('pages.overview.agentTemplatesTab.description')}</label>
       <input id="tpl-new-desc" aria-label={i18nT('pages.overview.agentTemplatesTab.description')} className="w-full px-2.5 py-1.5 rounded-md border border-border bg-bg-elevated text-[12.5px] text-text" value={createForm.description} onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))} placeholder={i18nT('pages.overview.agentTemplatesTab.description_placeholder')} />

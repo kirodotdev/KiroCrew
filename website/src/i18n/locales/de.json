@@ -8705,6 +8705,7 @@
       "publish_hint": "Veröffentlicht die Definition dieses Agenten als Vorlage, von der andere Agenten ausgehen können. Der Name wird zur dauerhaften Identität der Vorlage.",
       "publish_name_label": "Vorlagenname",
       "publish_name_rule": "Verwende Buchstaben, Ziffern, Punkte, Bindestriche oder Unterstriche (bis zu 63 Zeichen).",
+      "publish_name_reserved": "„{{name}}“ ist für einen integrierten Agenten reserviert. Wähle einen anderen Namen, etwa „{{name}}-custom“. Der Crew-Kamerad behält seinen Namen; nur seine Vorlage braucht einen neuen.",
       "publish_action": "Vorlage speichern",
       "switch_confirm_title": "Zu „{{name}}“ wechseln?",
       "switch_confirm_body": "Deine Änderungen an „{{origin}}“ („{{fields}}“) werden verworfen. Dieser Agent verwendet die Vorlage „{{name}}“ unverändert.",
@@ -12998,6 +12999,7 @@
         "name_rule": "Buchstaben, Ziffern, Punkte, Bindestriche und Unterstriche, höchstens 63 Zeichen. Darf nicht mit einer installierten Vorlage oder einem Crew-Kameraden kollidieren.",
         "err_read_only": "Diese Vorlage ist hier schreibgeschützt. Dupliziere sie, um eine eigene Vorlage zu bearbeiten.",
         "err_name_taken": "Dieser Name ist bereits durch eine Vorlage oder einen Crew-Kameraden belegt.",
+        "err_name_reserved": "„{{name}}“ ist für einen integrierten Agenten reserviert. Wähle einen anderen Namen.",
         "err_generic": "Die Anfrage ist fehlgeschlagen. Bitte erneut versuchen."
       }
     },

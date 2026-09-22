@@ -547,6 +547,36 @@ The resume ID is consumed on attempt (no retry loop). After successful load,
 
 Step 3 (`set_mode`) is **conditional**: sent for all kiro-cli backend agents.
 Skipped for claude-agent-acp backend (which does not support set_mode).
+Two of the guards in front of it, on `session/new` and `session/load` alike,
+end the session rather than let it run as a different agent. Guard (A): when
+the response advertises a `modes` list, the requested agent must be in it
+(`AcpRuntime._mode_available`); an absent id is refused naming the spec file
+and `kirocrew setup --agent-only`, never silently left on the host's default
+mode. Guard (C): the shared runtime asks its harness
+`activation_refusal(agent, resp)` (harness-parity H13: a seam, not a backend
+test); the spawn-time hosts answer `None`, and the KAS harness reads the
+advertised entry's `_meta.kiro.resource.source.origin`
+(`_dispatch.advertised_mode_origin`). The value `bundled` -- the one stamp
+MEASURED on kiro-cli 2.23.0 for the engine's own agents -- means the engine kept
+its OWN built-in under that id and discarded the `customAgents` definition; a
+`set_mode` would succeed and run the built-in under the crewmate's name, so the
+harness answers the refusal text -- the id is reserved for a built-in agent,
+plus the crewmate-side remedy in the dashboard's own labels (the Agent Template
+tab; on the crewmate's own copy 'Save as new template…' under another name or
+'Reset my changes'; on a shared template -- one created under a reserved id
+before the refusal existed, where neither control renders -- the template
+picker at the top of the tab), in plain words with no wire vocabulary or
+session id, the id in curly quotes as the dialogs render it. Only that measured stamp refuses: an absent stamp (kiro-cli,
+the offline fake, an older engine) is not evidence and never refuses, and a
+positive stamp this code has never measured (an engine that renames `client`)
+is logged at WARNING and let through, because kiro-cli is the operator's own
+install, not pinned by Crew, and an unmeasured value must not become a
+session-start denial of every crewmate with a rename remedy that cannot help.
+The ids measured to trip (C) on kiro-cli 2.23.0 are refused before the wire by
+the projection (`agent_files.KAS_RESERVED_AGENT_IDS`); (C) is the read of the
+wire itself, so a built-in a later engine adds under a new id fails loudly
+instead of resurrecting the silent substitution. (Guard (B) is the spawn-flag check for a markdown-only spec on a
+JSON-only host, `_spawn_agent_not_loaded_reason`.)
 
 Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so

@@ -66,7 +66,7 @@ from kiro_crew.agent_discovery import (
     iter_agent_spec_files,
     list_agents,
 )
-from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import is_markdown_spec
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -469,6 +469,19 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
     }:
         return web.json_response(
             {"error": f"'{name}' is reserved", "code": "template_name_reserved"}, status=400
+        )
+    if name in KAS_RESERVED_AGENT_IDS:
+        # The KAS engine keeps its own agent under this id (or drops the entry)
+        # without an error, so a template created under it never runs there.
+        # Exact match, as the engine matches: ``Default`` registers normally.
+        # Its own code, distinct from the runtime-owned stems above, so the
+        # dashboard can say WHOSE name it is rather than "reserved" alone.
+        return web.json_response(
+            {
+                "error": f"'{name}' is reserved by the KAS agent engine",
+                "code": "template_name_reserved_by_engine",
+            },
+            status=400,
         )
     description = body.get("description", "")
     if not isinstance(description, str) or len(description) > MAX_TEMPLATE_DESCRIPTION_CHARS:

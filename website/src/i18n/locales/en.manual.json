@@ -3333,6 +3333,7 @@
       "publish_hint": "Publishes this agent's definition as a template other agents can start from. The name becomes the template's permanent identity.",
       "publish_name_label": "Template name",
       "publish_name_rule": "Use letters, digits, dots, dashes or underscores (up to 63 characters).",
+      "publish_name_reserved": "“{{name}}” is reserved for a built-in agent. Pick another name, such as “{{name}}-custom”. The crewmate keeps its name; only its template needs a new one.",
       "publish_action": "Save template",
       "switch_confirm_title": "Switch to “{{name}}”?",
       "switch_confirm_body": "Your changes to “{{origin}}” (“{{fields}}”) will be discarded. This agent will use the “{{name}}” template as-is.",
@@ -5609,6 +5610,7 @@
         "name_rule": "Letters, digits, dots, dashes and underscores; up to 63 characters. Must not collide with an installed template or a crewmate.",
         "err_read_only": "This template is read-only here. Duplicate it to edit a template of your own.",
         "err_name_taken": "That name is already taken by a template or a crewmate.",
+        "err_name_reserved": "“{{name}}” is reserved for a built-in agent. Pick another name.",
         "err_generic": "The request failed. Try again."
       }
     },

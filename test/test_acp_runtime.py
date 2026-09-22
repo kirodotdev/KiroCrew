@@ -9044,6 +9044,83 @@ def test_mode_available_helper():
     assert AcpRuntime._mode_available("kirocrew", _new_resp({"currentModeId": "x"})) is True
 
 
+def test_advertised_mode_origin_reads_the_v3_stamp_and_nothing_else():
+    """The v3 engine stamps ``_meta.kiro.resource.source.origin`` per mode;
+    ``client`` is a definition Crew sent, ``bundled`` the engine's own. Any
+    other shape -- no stamp, an older engine, an odd entry -- reads as ''."""
+    from kiro_crew.acp._dispatch import advertised_mode_origin
+
+    def stamped(mode_id, origin):
+        return {
+            "id": mode_id,
+            "_meta": {
+                "kiro": {"resource": {"resourceType": "agent", "source": {"origin": origin}}}
+            },
+        }
+
+    resp = _new_resp(
+        {"availableModes": [stamped("plan", "bundled"), stamped("kirocrew", "client")]}
+    )
+    assert advertised_mode_origin(resp, "plan") == "bundled"
+    assert advertised_mode_origin(resp, "kirocrew") == "client"
+    assert advertised_mode_origin(resp, "absent") == ""
+    assert advertised_mode_origin(_new_resp({"availableModes": [{"id": "plan"}]}), "plan") == ""
+    assert advertised_mode_origin(_new_resp(None), "plan") == ""
+    assert advertised_mode_origin({}, "plan") == ""
+    odd = _new_resp({"availableModes": [{"id": "plan", "_meta": {"kiro": {"resource": "x"}}}]})
+    assert advertised_mode_origin(odd, "plan") == ""
+
+
+def test_activation_refusal_is_a_harness_seam_kas_reads_the_stamp_kiro_answers_none(caplog):
+    """Guard (C): the runtime asks the harness, never a backend identity. The KAS
+    harness refuses only the MEASURED built-in stamp (``bundled``) on the
+    requested id, in plain words naming the remedy; a stamp it has never
+    measured is logged and let through (kiro-cli is the operator's install,
+    so an unmeasured value must not deny every crewmate); the spawn-time
+    hosts answer None for every response, so the Kiro path carries no
+    branch."""
+    from kiro_crew.acp.harness.kas import KasHarness
+    from kiro_crew.acp.harness.kiro import KiroHarness
+
+    def stamped(origin):
+        return _new_resp(
+            {
+                "availableModes": [
+                    {"id": "plan", "_meta": {"kiro": {"resource": {"source": {"origin": origin}}}}}
+                ]
+            }
+        )
+
+    kas = KasHarness()
+    with caplog.at_level("WARNING", logger="kiro_crew.acp.harness.kas"):
+        refusal = kas.activation_refusal("plan", stamped("bundled"))
+    assert refusal and refusal.startswith("Rename this crewmate's template: “plan” is reserved")
+    assert " -- " not in refusal
+    assert "Agent Template tab" in refusal and "KAS" not in refusal
+    # The raw stamp is logged: the refusal blames the name, so the log is the
+    # only place a changed engine stamping would show as the real cause.
+    assert any(
+        "origin='bundled'" in r.getMessage() and "'plan'" in r.getMessage() for r in caplog.records
+    )
+    # An unmeasured positive stamp is NOT a refusal: logged once, activated.
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="kiro_crew.acp.harness.kas"):
+        assert kas.activation_refusal("plan", stamped("custom")) is None
+    assert any(
+        "unmeasured" in r.getMessage() and "origin='custom'" in r.getMessage()
+        for r in caplog.records
+    )
+    caplog.clear()
+    assert kas.activation_refusal("plan", stamped("client")) is None
+    assert not caplog.records
+    assert kas.activation_refusal("plan", stamped("client")) is None
+    assert kas.activation_refusal("plan", _new_resp({"availableModes": [{"id": "plan"}]})) is None
+    assert kas.activation_refusal("absent", stamped("bundled")) is None
+    assert kas.activation_refusal("plan", _new_resp(None)) is None
+    kiro = KiroHarness()
+    assert kiro.activation_refusal("plan", stamped("bundled")) is None
+
+
 def test_parse_session_modes_shapes():
     """The shared parser: absent/odd `modes` ⇒ ([], '', False); a present
     availableModes list ⇒ advertised=True (even when empty); id read from

@@ -312,6 +312,17 @@ async def test_create_blank_writes_a_minimal_runnable_spec(agents_dir):
 
 
 @pytest.mark.asyncio
+async def test_create_accepts_the_case_variant_of_an_engine_reserved_id(agents_dir):
+    """``Default`` registers on KAS as an ordinary client agent (measured), so the
+    engine check is exact-case: a fold to ``.lower()`` would refuse it here."""
+    _seed_config()
+    resp = await api_agent_template_create(_request("POST", body={"name": "Default"}))
+    assert resp.status == 201, resp.text
+    assert (await _body(resp))["name"] == "Default"
+    assert (agents_dir / "Default.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_create_from_copies_a_package_template_without_lineage(agents_dir):
     _write(agents_dir, "SomePkg-atlas.json", name="atlas", prompt="Be grounded.", tools=["x"])
     _seed_config()
@@ -332,6 +343,11 @@ async def test_create_from_copies_a_package_template_without_lineage(agents_dir)
     [
         ({"name": "has space"}, 400, "invalid_template_name"),
         ({"name": "kirocrew"}, 400, "template_name_reserved"),
+        # Kept by the KAS engine for itself when injected over the wire
+        # (agent_files.KAS_RESERVED_AGENT_IDS); exact match, so `Default` is fine.
+        ({"name": "default"}, 400, "template_name_reserved_by_engine"),
+        ({"name": "vibe"}, 400, "template_name_reserved_by_engine"),
+        ({"name": "plan"}, 400, "template_name_reserved_by_engine"),
         ({"name": "x", "from": "nope"}, 404, "template_not_found"),
         ({"name": "reviewer"}, 409, "name_taken"),
         ({"name": "pr-bot"}, 409, "name_bound"),

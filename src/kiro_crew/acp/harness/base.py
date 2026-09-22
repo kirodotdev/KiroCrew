@@ -405,6 +405,19 @@ class HarnessAdapter(abc.ABC):
         unchanged, which is what keeps its wire byte-identical.
         """
 
+    def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
+        """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.
+
+        Read after ``session/new`` / ``session/load`` and before ``set_mode``,
+        on every host, as a seam rather than a backend test (harness-parity
+        H13): the shared runtime asks, and a host that took its agent at spawn
+        time has nothing on the wire to judge, so this base answer is ``None``
+        and the Kiro path gains no branch. A wire-registered host overrides it
+        to read what the engine did with the definition it was sent. The string
+        returned is the user-facing refusal, ready to raise as-is.
+        """
+        return None
+
     # ── Seam 4: inbound requests the host answers ──
 
     @property

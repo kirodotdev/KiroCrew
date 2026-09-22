@@ -471,6 +471,49 @@ describe('AgentTemplatesTab actions', () => {
     expect(option('reviewer')).toBeInTheDocument()
   })
 
+  it('names a reserved template id in the create dialog when the server refuses it', async () => {
+    // The KAS engine keeps `default`, `vibe`, `plan`, ... for itself; the
+    // server refuses them as 400 template_name_reserved_by_engine and the dialog must
+    // say which word to change rather than relay the server's English text.
+    mockApi.agentTemplateCreate.mockRejectedValue(
+      new StubApiError(400, "'plan' is reserved", { error: "'plan' is reserved", code: 'template_name_reserved_by_engine' }),
+    )
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    fireEvent.click(screen.getByRole('button', { name: /New template/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New template' })
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'plan' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create and edit' }))
+    await waitFor(() => expect(mockApi.agentTemplateCreate).toHaveBeenCalledWith({ name: 'plan', description: '' }))
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent('“plan” is reserved for a built-in agent. Pick another name.')
+    // Still open with the typed name: nothing was created, nothing to reopen.
+    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('plan')
+    // Editing the name clears the refusal: the live "Create and edit" button then
+    // reads as a fresh attempt, not as a press that would fail the same way.
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'planner' } })
+    await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull())
+    expect(within(dialog).getByRole('button', { name: 'Create and edit' })).toBeEnabled()
+  })
+
+  it('does not blame the engine for a runtime-owned reserved name', async () => {
+    // `kirocrew` and the Windows device names answer the plain
+    // template_name_reserved code; that refusal keeps the server's own text
+    // rather than the engine sentence, which would name the wrong owner.
+    mockApi.agentTemplateCreate.mockRejectedValue(
+      new StubApiError(400, "'kirocrew' is reserved", { error: "'kirocrew' is reserved", code: 'template_name_reserved' }),
+    )
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    fireEvent.click(screen.getByRole('button', { name: /New template/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New template' })
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'kirocrew' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create and edit' }))
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent("'kirocrew' is reserved")
+    expect(alert).not.toHaveTextContent('built-in agent')
+  })
+
   it('creates a blank template, and a duplicate sends `from`', async () => {
     renderTab()
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
