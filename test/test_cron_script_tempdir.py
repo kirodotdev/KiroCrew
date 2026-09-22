@@ -55,7 +55,21 @@ def _passthrough_sandbox(monkeypatch):
 
 
 @pytest.fixture
-def vanished_tempdir(tmp_path, monkeypatch) -> Path:
+def live_tempdir(tmp_path) -> Path:
+    """Where re-resolution must land: a later env candidate, under ``tmp_path``.
+
+    ``tempfile`` probes ``TMPDIR``, ``TEMP``, ``TMP`` in that order before the
+    platform defaults. Keeping ``TEMP`` on a live directory inside the test's
+    own root means the fallback never reaches the host's shared temp dir, so a
+    run killed mid-way leaves nothing outside ``tmp_path``.
+    """
+    live = tmp_path / "live-temp"
+    live.mkdir()
+    return live
+
+
+@pytest.fixture
+def vanished_tempdir(tmp_path, monkeypatch, live_tempdir) -> Path:
     """The inherited temp dir: named by the env AND by tempfile's cache, then gone.
 
     Mirrors the production sequence exactly -- the env var and the cache are
@@ -64,8 +78,9 @@ def vanished_tempdir(tmp_path, monkeypatch) -> Path:
     """
     gone = tmp_path / "scratch" / "runtime-dead0000"
     gone.mkdir(parents=True)
-    for key in _TEMP_KEYS:
-        monkeypatch.setenv(key, str(gone))
+    monkeypatch.setenv("TMPDIR", str(gone))
+    monkeypatch.setenv("TMP", str(gone))
+    monkeypatch.setenv("TEMP", str(live_tempdir))
     monkeypatch.setattr(tempfile, "tempdir", str(gone))
     assert tempfile.gettempdir() == str(gone)
     shutil.rmtree(gone)
@@ -80,10 +95,6 @@ def _make_script(tmp_path: Path, body: str) -> Path:
     return script
 
 
-def _is_inside(path: Path, root: Path) -> bool:
-    return path == root or root in path.parents
-
-
 class TestDefaultTempDir:
     def test_existing_default_is_kept(self, tmp_path, monkeypatch):
         """A live cached default is returned as-is: no re-resolution, no churn."""
@@ -93,10 +104,11 @@ class TestDefaultTempDir:
         assert _default_temp_dir() == str(keep)
         assert tempfile.gettempdir() == str(keep)
 
-    def test_vanished_default_is_replaced_by_an_existing_dir(self, vanished_tempdir):
+    def test_vanished_default_is_replaced_by_next_live_candidate(
+        self, vanished_tempdir, live_tempdir
+    ):
         resolved = Path(_default_temp_dir())
-        assert resolved.is_dir()
-        assert not _is_inside(resolved, vanished_tempdir)
+        assert resolved == live_tempdir
         # The vanished directory is never recreated: under the managed scratch
         # root that would be a directory with no owner record, which the sweep
         # never deletes, so a skipped run would become a permanent leak.
@@ -104,13 +116,11 @@ class TestDefaultTempDir:
 
 
 class TestChildEnv:
-    def test_present_temp_keys_point_at_an_existing_dir(self, vanished_tempdir):
+    def test_present_temp_keys_point_at_the_live_dir(self, vanished_tempdir, live_tempdir):
         env = _clean_cron_env()
         for key in _TEMP_KEYS:
             assert key in env
-            assert Path(env[key]).is_dir()
-            assert not _is_inside(Path(env[key]), vanished_tempdir)
-        assert len({env[key] for key in _TEMP_KEYS}) == 1
+            assert Path(env[key]) == live_tempdir
 
     def test_absent_temp_keys_stay_absent(self, monkeypatch):
         for key in _TEMP_KEYS:
@@ -120,7 +130,9 @@ class TestChildEnv:
 
 
 class TestRunScriptSandboxed:
-    def test_ungranted_run_survives_vanished_tempdir(self, tmp_path, monkeypatch, vanished_tempdir):
+    def test_ungranted_run_survives_vanished_tempdir(
+        self, tmp_path, monkeypatch, vanished_tempdir, live_tempdir
+    ):
         """Launcher and secret file are born in a directory that exists.
 
         Both were created with ``dir=None`` -- the cached, vanished default.
@@ -140,11 +152,12 @@ class TestRunScriptSandboxed:
         assert result["status"] == "ok", result
         launcher = Path(seen["launcher"])
         assert launcher.name.startswith("kirocrew_cron_")
-        assert launcher.parent.is_dir()
-        assert not _is_inside(launcher, vanished_tempdir)
+        assert launcher.parent == live_tempdir
         assert not vanished_tempdir.exists()
 
-    def test_granted_run_survives_vanished_tempdir(self, tmp_path, monkeypatch, vanished_tempdir):
+    def test_granted_run_survives_vanished_tempdir(
+        self, tmp_path, monkeypatch, vanished_tempdir, live_tempdir
+    ):
         """The private pinned dir is created with ``dir=None`` too, one step
         earlier than the launcher, so a granted run dies at ``mkdtemp``. It
         must instead be born under an existing directory and stay PRIVATE: the
@@ -171,6 +184,5 @@ class TestRunScriptSandboxed:
         assert result["status"] == "ok", result
         launcher = Path(seen["launcher"])
         assert launcher.parent.name.startswith("kirocrew_cron_pin_")
-        assert launcher.parent.parent == Path(tempfile.gettempdir())
-        assert not _is_inside(launcher, vanished_tempdir)
+        assert launcher.parent.parent == live_tempdir
         assert not vanished_tempdir.exists()
