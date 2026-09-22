@@ -3644,7 +3644,12 @@ export default function App() {
             as a fourth grid child: `.topbar` declares exactly three tracks, so a
             bare sibling would be auto-placed into `.tb-right` and land inside the
             readout capsule's cluster. Two controls, which is the ceiling
-            website/AUTOSDE.yaml's max-two-buttons-per-row sets. */}
+            website/AUTOSDE.yaml's max-two-buttons-per-row sets.
+
+            `data-topbar-overlay` is read by the crew-pin capture harnesses
+            (website/scripts/capture-crew-pin-chips.mjs, record-crew-pin-chips.mjs,
+            capture-crew-chip-shrink.mjs) to find this cell; nothing in src/
+            reads it any more. Keep it. */}
         {!isMobile && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
           <button

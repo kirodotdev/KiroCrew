@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useRailWidth } from '../../hooks/useRailWidth'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
@@ -313,9 +314,9 @@ interface SidePanelProps {
    *  a fresh strip opens on it and focus can fall back to it. */
   leadingTab?: SidePanelLeadingTab
   /** Extra px the panel must keep clear to its left, on top of the shell's
-   *  own reserve (`measureSidePanelReservedW`, which budgets the nav rail and a
-   *  minimum chat pane). A host with more siblings in the row — the Members
-   *  page's roster column — passes their live width so a drag can never fold
+   *  own reserve (the live nav rail width plus `CHAT_PANE_MIN_W`). A host with
+   *  more siblings in the row -- the chat page's session sidebar, the Members
+   *  page's roster column -- passes their live width so a drag can never fold
    *  the pane beside the panel to nothing. */
   extraReserveW?: number
   /** Views this host WITHDRAWS from the strip: dropped from the pinned block
@@ -370,24 +371,19 @@ interface SidePanelProps {
 /** Panel minimum width (also the resize handle's lower clamp). */
 export const SIDE_PANEL_MIN_W = 320
 /**
- * Space reserved to the panel's left so the chat column never collapses:
- * the app nav rail (up to 220px expanded) plus a working minimum for the
- * chat column itself. The panel's effective width shrinks before eating
- * into this; when even SIDE_PANEL_MIN_W no longer fits beside it, ChatPage
- * auto-collapses the panel (and reopens it when space returns).
+ * Worst-case static budget for the space left of the panel: the nav rail at
+ * its EXPANDED width plus a working chat-pane minimum. Used only for the
+ * layout-mode gate on pages that decide beside-vs-overlay before the rail is
+ * known (MembersPage.panelSitsBeside). The panel's own width ceiling does NOT
+ * use it: that follows the live rail width (`useRailWidth`) plus
+ * `CHAT_PANE_MIN_W`, so a collapsed rail hands its space to the panel.
+ *
+ * Deliberately not a measurement of the top bar either: the header spans all
+ * three grid columns ('"topbar topbar topbar"'), so the panel sits UNDER it and
+ * cannot shorten it.
  */
 export const SIDE_PANEL_RESERVED_W = 560
 
-/**
- * Live minimum space the panel must leave to its left. The static reserve
- * only budgets the content row (nav rail + chat minimum) — but the actbar
- * grid column shortens the header row too, and the header's clusters
- * (branding + Request a Feature on the left; readout capsule + bell on the
- * right) can need more than 560px when the capsule is expanded. Without
- * accounting for that, the panel overlapped the bell/capsule before it
- * started shrinking. Returns the larger of the two constraints; falls back
- * to the static reserve when there's no header (embed/popout frames).
- */
 /** Usable minimum for the chat pane itself, beside the panel. */
 export const CHAT_PANE_MIN_W = 320
 
@@ -435,32 +431,6 @@ export function sidePanelEffectiveWidth(
   if (isMobile) return '100%'
   if (expanded) return Math.max(SIDE_PANEL_MIN_W, maxW)
   return Math.max(SIDE_PANEL_MIN_W, Math.min(width, maxW))
-}
-
-export function measureSidePanelReservedW(): number {
-  const header = document.querySelector('header.topbar-glass')
-  if (!header) return SIDE_PANEL_RESERVED_W
-  const clusters = Array.from(header.children).filter(
-    c => c.tagName !== 'A' && !c.hasAttribute('data-topbar-overlay'),
-  ) as HTMLElement[]
-  // Measure each cluster's CONTENT extent, not its box. The header is a grid
-  // whose side tracks are `minmax(0,1fr)` remainders and whose items stretch, so
-  // a cluster's own box tracks the TRACK width (about half the window) rather
-  // than what it holds — summing boxes inflated the reserve enough to halve a
-  // maximized panel. The extent spans first-child left to last-child right, so
-  // it includes the cluster's internal gaps but not the stretch slack.
-  const extent = (c: HTMLElement) => {
-    const kids = Array.from(c.children)
-      .map(k => k.getBoundingClientRect())
-      .filter(r => r.width > 0)
-    if (kids.length === 0) return 0
-    return Math.max(...kids.map(r => r.right)) - Math.min(...kids.map(r => r.left))
-  }
-  const content = clusters.reduce((sum, c) => sum + extent(c), 0)
-  const cs = getComputedStyle(header as HTMLElement)
-  const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
-  // +24: minimum breathing gap between the two clusters.
-  return Math.max(SIDE_PANEL_RESERVED_W, Math.ceil(content + pad + 24))
 }
 
 export default function SidePanel({
@@ -629,34 +599,33 @@ export default function SidePanel({
   // Responsive clamp: the user's chosen width is persisted untouched, but the
   // rendered width yields to the window so the chat keeps its reserved
   // minimum. On mobile the panel simply takes the full width. Re-measured on
-  // window resize AND when the header clusters change size (e.g. the readout
-  // capsule expanding), since the header's content need is part of the reserve.
+  // window resize.
   const isMobile = useIsMobile()
   // Bottom dock only applies on desktop; mobile always renders as the
   // full-width inline panel regardless of the stored preference.
   const isBottom = canDockBottom && dock === 'bottom' && !isMobile
-  const [maxW, setMaxW] = useState(() => window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+  // The ceiling is what the ROW actually leaves for the panel: the live nav
+  // rail track (0 / 74 / 236 -- it collapses, so a static budget at its expanded
+  // width wasted up to 236px), the chat pane's minimum, and whatever sibling
+  // column the host adds via `extraReserveW`.
+  const railW = useRailWidth()
+  const reserveW = railW + CHAT_PANE_MIN_W + extraReserveW
+  const [maxW, setMaxW] = useState(() => window.innerWidth - reserveW)
   // Bottom-dock height cap: leave the topbar row + a usable chat minimum
   // visible above the panel. Re-measured on resize.
   const [maxH, setMaxH] = useState(() => Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
   useEffect(() => {
     const recalc = () => {
-      setMaxW(window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+      setMaxW(window.innerWidth - reserveW)
       setMaxH(Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
     }
     recalc()
     window.addEventListener('resize', recalc)
-    // Observe the header's clusters (their intrinsic width is independent of
-    // the panel's own width, so this can't feed back into itself).
-    const header = document.querySelector('header.topbar-glass')
-    const ro = new ResizeObserver(recalc)
-    if (header) Array.from(header.children)
-      .filter(c => !c.hasAttribute('data-topbar-overlay'))
-      .forEach(c => ro.observe(c))
-    return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
-    // `extraReserveW` is a sibling column's LIVE width (the Members roster is
-    // drag-resizable), so the clamp re-derives when it moves.
-  }, [extraReserveW])
+    return () => window.removeEventListener('resize', recalc)
+    // `reserveW` folds in LIVE widths (the rail collapses; the Members roster
+    // and the chat sidebar are drag-resizable), so the clamp re-derives when
+    // any of them moves.
+  }, [reserveW])
   const effectiveWidth = sidePanelEffectiveWidth({ fillWidth, isMobile, expanded, width, maxW })
   const effectiveHeight = Math.max(MIN_H, Math.min(height, maxH))
   // While the user drags the resize handle, every mousemove shifts the whole
@@ -672,7 +641,11 @@ export default function SidePanel({
     onStart: () => { startWRef.current = widthRef.current; setResizing(true) },
     onMove: ({ dx }) => {
       // Left-edge handle with the right edge pinned: dragging left (dx < 0) widens.
-      const max = Math.min(Math.round(window.innerWidth * 0.7), window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+      // The ceiling is the SAME reserve-based clamp the render path and the
+      // preview-expand toggle use (the chat keeps its minimum) — not a viewport
+      // fraction on top of it. A 70% cap sat well under that reserve on wide
+      // windows and read as an arbitrary stop.
+      const max = window.innerWidth - reserveW
       setWidth(Math.max(MIN_W, Math.min(startWRef.current - dx, max)))
     },
     onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },

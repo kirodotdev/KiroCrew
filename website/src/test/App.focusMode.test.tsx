@@ -318,21 +318,6 @@ describe('focus mode — shell layout', () => {
     expect(header.style.transform).toBe('translateY(-100%)')
   })
 
-  it('keeps the topbar-overlay marker on a DIRECT child of the header', async () => {
-    // measureSidePanelReservedW filters only header.children for
-    // data-topbar-overlay. Wrapping the ⌘K trigger (to pair it with the focus
-    // toggle) without moving the marker onto the wrapper makes the centre track
-    // count toward the activity panel's reserve, clamping the panel to ~25% of
-    // the window. The marker must sit on the header's direct child AND that
-    // child must be the cell holding the search trigger.
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByTestId('focus-mode-toggle')
-    const header = document.querySelector('header.topbar-glass') as HTMLElement
-    const marked = Array.from(header.children).filter(c => c.hasAttribute('data-topbar-overlay'))
-    expect(marked.length).toBeGreaterThan(0)
-    expect(marked.some(c => c.querySelector('[data-testid="focus-mode-toggle"]'))).toBe(true)
-  })
-
   it('reveals the chrome when the pointer settles on a peek strip', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTestId('focus-mode-toggle')
