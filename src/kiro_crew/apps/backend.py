@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -55,6 +56,11 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.constants import (
+    KIROCREW_SPAWN_INSTANCE_ENV,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import GOVERNANCE_ERROR_REASON
@@ -71,6 +77,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_pid import group_vouching_available, signal_orphaned_spawn_group
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
@@ -2244,6 +2251,23 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         KIROCREW_HOME=str(config_dir()),
         **_platform_extra,
     )
+    # Identity this backend's whole tree carries, so the startup stale-reap can
+    # still find it once the LEADER is gone. The backend is spawned with
+    # start_new_session=True, so its group outlives it: when the gateway is
+    # SIGKILLed the leader can exit while a uvicorn worker or a build child keeps
+    # the assigned PORT bound, and the next generation then spawns onto a port an
+    # orphan still owns (the observed 502). The group number is the dead leader's
+    # pid and a bare number is indistinguishable from a recycled one, so the reap
+    # signals VOUCHED MEMBERS instead -- see _reap_orphaned_backend_group and
+    # session_pid.signal_orphaned_spawn_group.
+    #
+    # KIROCREW_SPAWNED says a Kiro Crew spawned the process; the instance says
+    # WHICH spawn, and is minted here (before the process exists) because it has
+    # to travel in the child's environment where /proc/<pid>/environ can read it
+    # back. Random rather than pid-derived so a recycled pid cannot false-match.
+    spawn_instance = uuid.uuid4().hex[:16]
+    env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
@@ -2698,7 +2722,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     logger.info("Started app %s backend on port %d (pid %d)", app_name, port, proc.pid)
 
     # Persist identity for the startup stale-reap (see _reap_stale_app_backends).
-    ap.pid_start_time = _record_app_pid(app_name, proc.pid, port)
+    ap.pid_start_time = _record_app_pid(app_name, proc.pid, port, spawn_instance)
 
     # Health check in background, then a standing liveness watch for as long as the
     # backend is tracked — see _supervise_backend_health.
@@ -4541,8 +4565,17 @@ def _write_pidfile(data: dict[str, dict[str, Any]]) -> None:
         logger.debug("Could not write app-backend pidfile: %s", exc)
 
 
-def _record_app_pid(app_name: str, pid: int, port: int) -> str | None:
-    """Persist a spawned backend's identity for the startup stale-reap. Never raises."""
+def _record_app_pid(
+    app_name: str, pid: int, port: int, spawn_instance: str | None = None
+) -> str | None:
+    """Persist a spawned backend's identity for the startup stale-reap. Never raises.
+
+    *spawn_instance* is the per-spawn ``KIROCREW_SPAWN_INSTANCE`` stamped on the
+    backend's environment and inherited by its whole tree. It is what lets the
+    reap vouch the group's MEMBERS once the leader itself is gone; a row written
+    by an older build carries none, and the reap then declines to touch that
+    group rather than aim a signal at a bare (possibly recycled) group number.
+    """
     if pid <= 0:
         return None
     start_time: str | None = None
@@ -4556,7 +4589,10 @@ def _record_app_pid(app_name: str, pid: int, port: int) -> str | None:
         start_time = _proc_start_time(pid)
         with _pidfile_lock:
             data = _read_pidfile()
-            data[app_name] = {"pid": pid, "start_time": start_time, "port": port}
+            entry: dict[str, Any] = {"pid": pid, "start_time": start_time, "port": port}
+            if spawn_instance:
+                entry["spawn_instance"] = spawn_instance
+            data[app_name] = entry
             _write_pidfile(data)
     except Exception as exc:  # noqa: BLE001 — persistence must never break a spawn
         logger.debug("Could not record app pid for %s: %s", app_name, exc)
@@ -4619,6 +4655,108 @@ def retire_windows_app_tracking(pid: int, creation: int) -> None:
             atomic_write(_pidfile_path(), json.dumps(data), fsync=True)
 
 
+def _reap_orphaned_backend_group(
+    app_name: str, pid: int, entry: dict[str, Any]
+) -> tuple[dict[int, str | None], dict[int, str | None], bool]:
+    """SIGTERM the members a DEAD backend leader left behind in its group.
+
+    The gap this closes: the leader is the only thing the pidfile names, and the
+    live-leader branch reaches its whole tree because ``kill_process_tree``
+    resolves the group through ``getpgid(pid)``. Once the leader has exited there
+    is no pid to resolve the group from -- ``getpgid`` raises -- yet the group
+    itself outlives it and its members keep the app's PORT bound. Dropping the
+    row there leaks exactly the orphan that makes the next generation's spawn
+    collide and serve 502s.
+
+    The group number is recoverable from the contract rather than from the dead
+    pid: a backend is spawned with ``start_new_session=True``, so its pgid IS its
+    leader's pid. What is NOT safe is signalling that number -- the kernel may
+    have reissued it to an unrelated session leader, and ``killpg`` would take a
+    stranger's tree. So this hands the number to
+    :func:`session_pid.signal_orphaned_spawn_group`, which lists the group's live
+    members, keeps only those whose ``/proc/<pid>/environ`` carries THIS spawn's
+    instance token, and signals each of them pinned to its own pid + start
+    instant. No vouching member means no signal.
+
+    Returns ``(vouched, signalled, keep_row)``.
+
+    *vouched* is every live member this census FOUND, and it answers exactly one
+    question: is there a group here worth escalating at all. It is NOT the basis for
+    retention -- it is a snapshot taken BEFORE the SIGTERM, so it cannot contain a
+    member the SIGTERM itself caused to be forked, and the caller re-reads the group
+    at decision time instead. *signalled* is the subset a signal actually reached,
+    and is ONLY the escalation's target set: a member that never took a SIGTERM owes
+    no grace and no SIGKILL. Keeping the two apart is the whole point -- a signal can
+    fail on one member and land on another (``pidfd_open`` answering EMFILE, or
+    EPERM), so the signalled set is an INCOMPLETE census and anything that treats it
+    as the membership will call a group gone while a live member holds the port.
+
+    *keep_row* is consulted only when *vouched* is empty, and answers whether the
+    pidfile row -- this orphan's only handle -- should survive a start that took no
+    census at all: a scan that raised tells us nothing, so the row stays for a later
+    attempt, while the two declines detected BEFORE any signal (no instance token,
+    a host that cannot read the vouch) are permanent on this host and drop it
+    rather than growing the pidfile forever. When *vouched* is non-empty the caller
+    decides retention from that census's liveness instead. Never raises: a failed
+    reap must not abort the rest of the startup sweep.
+    """
+    instance = entry.get("spawn_instance")
+    if not isinstance(instance, str) or not instance:
+        # Written by a build that did not stamp the token (or hand-edited). There
+        # is nothing to vouch the group with, and a signal aimed at the bare
+        # number could hit a recycled leader's tree, so decline. The row goes: a
+        # token is never added to an existing row, so every later start would
+        # decline identically. Self-healing forward -- the next spawn records one.
+        logger.info(
+            "Not reaping %s's orphaned group (pid %d): no spawn instance recorded", app_name, pid
+        )
+        return {}, {}, False
+    if not group_vouching_available():
+        # The vouch reads /proc/<pid>/environ, which exists on Linux alone. Say so
+        # rather than reporting a reap that did not happen. Nothing else picks
+        # these up: the periodic orphan sweep's positive-identity paths are an
+        # agent runtime, an MCP entrypoint, a gatewayd, a browser daemon and a
+        # TEST-RUNNER argv, and an app backend's worker is none of those -- so
+        # these survivors are neither reaped NOR reported anywhere, and this log
+        # line is the only record they exist. A leak we can name beats a signal to
+        # a stranger; the operator's recourse is to kill the process holding the
+        # port by hand. The row goes: the platform is the same on the next start.
+        logger.info(
+            "Cannot vouch %s's orphaned group (pid %d) on this platform; its members are "
+            "left running and are not covered by the periodic orphan sweep",
+            app_name,
+            pid,
+        )
+        return {}, {}, False
+    try:
+        vouched, signalled = signal_orphaned_spawn_group(pid, platform_compat.SIGTERM, instance)
+    except Exception as exc:  # noqa: BLE001 — one app's reap must not end the sweep
+        # A /proc scan that raised mid-listing: no census, so KEEP the row and let
+        # a later start look again.
+        logger.warning("Orphaned-group reap of %s (pid %d) failed: %s", app_name, pid, exc)
+        return {}, {}, True
+    if vouched:
+        logger.info(
+            "Startup stale-reap: SIGTERM %d of %s's %d orphaned group member(s) (group %d)",
+            len(signalled),
+            app_name,
+            len(vouched),
+            pid,
+        )
+    # An EMPTY census is not evidence of an empty group. Every read the vouch makes
+    # is fail-OPEN: ``_marked_group_members`` swallows OSError on the /proc scan and
+    # on each stat, and ``_env_spawn_instance`` returns None when it cannot read a
+    # member's environ -- so under fd exhaustion (EMFILE/ENFILE) every member is
+    # silently dropped and the census comes back empty WITHOUT raising, which means
+    # the caller's ``except`` above never sees it. Keying the drop on the census
+    # would then discard the orphan's only handle at precisely the moment the host
+    # is under pressure. So absence has to be confirmed POSITIVELY, by a probe that
+    # cannot fail open: ``pgroup_exists`` is ``killpg(pgid, 0)``, which answers False
+    # only on ESRCH and reads an unsignalable group as alive. A group that still
+    # exists keeps its row even when the census could not name anything in it.
+    return vouched, signalled, platform_compat.pgroup_exists(pid)
+
+
 def _reap_stale_app_backends() -> int:
     """Reap app backends left running by a prior gateway generation.
 
@@ -4629,6 +4767,20 @@ def _reap_stale_app_backends() -> int:
     left alone — declining to reap leaks a recoverable orphan, whereas killing an
     unverifiable pid could signal an unrelated recycled process group. Returns
     the count terminated.
+
+    A leader that is already DEAD is not the end of the story: its process group
+    outlives it and its members can still hold the app's port, so that branch
+    hands the group to :func:`_reap_orphaned_backend_group` instead of merely
+    dropping the row. The row is that orphan's ONLY handle, so retention follows a
+    census taken at DECISION time rather than the signals or the opening snapshot:
+    the row is dropped once that final reading finds no live member, kept while it
+    finds any (one no signal could reach, or one forked after the first census), and
+    a declined reap drops it only when no later start could do better -- no instance
+    token, or a host that cannot read the vouch. That retention is bounded by the
+    spawn path: a successful respawn of the same app re-records the row, so the
+    handle survives to a later start only while the app stays down. Group members
+    are reported separately from leaders in the log and are not counted in the
+    return value, which stays "leaders terminated" for the callers that read it.
     """
     with _pidfile_lock:
         data = _read_pidfile()
@@ -4645,6 +4797,16 @@ def _reap_stale_app_backends() -> int:
     # orphan leak this feature prevents).
     handled: dict[str, Any] = {}
     reaped: list[tuple[str, int, Any]] = []
+    # Groups whose opening census found live members, as ``(app, pgid, instance,
+    # signalled, entry)``. Only the SIGNALLED set is carried: it is the escalation's
+    # target set, and it is the one thing a later pass cannot re-derive. The opening
+    # census is deliberately NOT carried -- retention re-reads the group at decision
+    # time, because a snapshot taken before the SIGTERM cannot contain a member the
+    # SIGTERM caused to be forked. The entry rides along because the final merge
+    # drops a row only when it still equals the exact entry we acted on.
+    # Escalated in the same second pass as the leaders, for the same reason: the
+    # grace window is seconds long and must not be paid serially inside the scan.
+    group_reaped: list[tuple[str, int, str, dict[int, str | None], dict[str, Any]]] = []
     for app_name, entry in data.items():
         try:
             pid = int(entry.get("pid", 0))
@@ -4664,7 +4826,27 @@ def _reap_stale_app_backends() -> int:
         # three-way policy: drop-dead, skip-unsignalable, proceed-alive.
         liveness = platform_compat.pid_liveness(pid)
         if liveness == platform_compat.PID_DEAD:
-            handled[app_name] = entry  # already gone — drop
+            # The leader is gone, but its GROUP may not be: the leader was a
+            # session leader, so the group survives it holding the app's port.
+            # This is the leak that made the next spawn collide; see
+            # _reap_orphaned_backend_group.
+            #
+            # The row is this orphan's ONLY handle, so it is NOT dropped up front:
+            # a signalled group's retention is decided after the escalation, by
+            # whether its members actually died, and an outcome a later start
+            # could do better on keeps the row for that retry. Only an outcome
+            # nothing can improve on drops it.
+            group_vouched, group_signalled, keep_row = _reap_orphaned_backend_group(
+                app_name, pid, entry
+            )
+            if group_vouched:
+                # A non-empty census proves the row carried a usable instance —
+                # the helper returns {} otherwise — so this read cannot be None.
+                group_reaped.append(
+                    (app_name, pid, str(entry["spawn_instance"]), group_signalled, entry)
+                )
+            elif not keep_row:
+                handled[app_name] = entry
             continue
         if liveness == platform_compat.PID_UNSIGNALABLE:
             handled[app_name] = entry
@@ -4770,6 +4952,75 @@ def _reap_stale_app_backends() -> int:
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("SEL audit failed for app_backend_stale_reap sigkill %s: %s", app_name, exc)
+    # Escalate the orphaned GROUP members that ignored SIGTERM. Same per-group
+    # grace as the leaders above, and the same re-verification discipline: the
+    # escalation passes back the exact members the first pass vouched, so
+    # signal_orphaned_spawn_group signals only those still alive under the SAME
+    # start id. A member seen for the first time now is not escalated — it owes no
+    # grace, and it is what a fresh occupant of the recycled group number would
+    # look like.
+    for app_name, pgid, instance, group_signalled, entry in group_reaped:
+        # The grace is owed to the members that actually TOOK a SIGTERM, so it is
+        # waited out over ``group_signalled``; a member the signal never reached has
+        # nothing to respond to, and waiting on it would just spend the window.
+        deadline = time.monotonic() + _REAP_SIGTERM_GRACE
+        while any(_pid_alive(m) for m in group_signalled) and time.monotonic() < deadline:
+            time.sleep(_REAP_POLL_INTERVAL)
+        # One call does both remaining jobs, and it must be made even when nothing
+        # is left to kill: it re-censuses the group, and THAT fresh reading -- not
+        # the pre-SIGTERM snapshot -- is what retention is allowed to trust. A
+        # backend whose SIGTERM handler forks a replacement into the same session
+        # group (a supervisor/worker server does) produces a live member that the first
+        # census could not have seen, and deciding on the snapshot would drop the
+        # row while that replacement holds the port, with nothing left naming it.
+        # ``expected`` still restricts the SIGNAL to the members the first pass
+        # vouched, so the newcomer is observed but never signalled -- it owes no
+        # grace, and it is indistinguishable from a fresh occupant of a recycled
+        # group number. The next start reaps it with a census of its own.
+        try:
+            final_vouched, killed = signal_orphaned_spawn_group(
+                pgid, platform_compat.SIGKILL, instance, expected=group_signalled
+            )
+        except Exception as exc:  # noqa: BLE001 — one app's reap must not end the sweep
+            # No final reading, so nothing may be concluded: KEEP the row.
+            logger.warning(
+                "Orphaned-group SIGKILL of %s (group %d) failed: %s", app_name, pgid, exc
+            )
+            continue
+        if killed:
+            logger.info(
+                "Startup stale-reap: SIGKILL %d orphaned member(s) of %s's group %d",
+                len(killed),
+                app_name,
+                pgid,
+            )
+        # Retention reads the FINAL census, never the subset a signal reached and
+        # never the opening snapshot. A member the signal could not reach
+        # (``pidfd_open`` answering EMFILE, or EPERM) and a member forked after the
+        # first census are both alive and both still holding the port.
+        alive = [m for m in final_vouched if _pid_alive(m)]
+        # The final reading is fail-open in the same way the opening one is, so an
+        # empty ``alive`` is only half the question. The row is dropped only once the
+        # GROUP is positively gone -- ``pgroup_exists`` answers False on ESRCH alone,
+        # so an unreadable or unsignalable group keeps its handle. The cost of being
+        # wrong this way is one retained pidfile row that the app's next successful
+        # spawn replaces; the cost of being wrong the other way is a port held
+        # forever by a process nothing names.
+        if not alive and not platform_compat.pgroup_exists(pgid):
+            handled[app_name] = entry
+            continue
+        # Row deliberately KEPT (omitted from ``handled``) so a later start reaps
+        # this group again. The retention is real but not unconditional: a
+        # successful respawn of this app re-records the row under the same app name
+        # (_record_app_pid), so the handle survives to a later start only while the
+        # app does not come back up -- disabled, failing to spawn, or not restarted.
+        logger.warning(
+            "Orphaned group %d of %s still has %d live member(s) after the kill pass; keeping "
+            "its pidfile record, though a successful respawn of this app replaces that row",
+            pgid,
+            app_name,
+            len(alive),
+        )
     # Drop only the entries we handled, re-reading under the lock so a concurrent
     # enable/disable that wrote during the scan is merged, not clobbered. Drop an
     # entry ONLY if it still equals what we handled: a mid-scan re-record (new
@@ -4786,6 +5037,16 @@ def _reap_stale_app_backends() -> int:
         _write_pidfile(current)
     if reaped:
         logger.info("Startup stale-reap: terminated %d orphaned app backend(s)", len(reaped))
+    if group_reaped:
+        # Reported separately because the count this function RETURNS is leaders
+        # terminated, and a group reap has no live leader to count. A start that
+        # reaps only groups would otherwise log nothing at all, which is exactly
+        # the case a port-collision investigation needs to see.
+        logger.info(
+            "Startup stale-reap: signalled orphaned group members for %d app backend(s) "
+            "whose leader was already gone",
+            len(group_reaped),
+        )
     return len(reaped)
 
 

@@ -9,7 +9,7 @@ but that are still alive are KEPT for a later attempt; handled entries are dropp
 from __future__ import annotations
 
 import signal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -425,3 +425,447 @@ def test_reap_hands_the_recorded_identity_to_the_pinned_kill(pidfile):
     assert n == 1
     assert mock_pinned.call_args.args[:2] == (4321, "ST-1")
     assert backend_mod._read_pidfile() == {}
+
+
+class TestDeadLeaderOrphanedGroup:
+    """The leak behind the reported 502.
+
+    A backend is spawned with ``start_new_session=True``, so it leads its own
+    process group and the group OUTLIVES it. When the gateway is SIGKILLed the
+    leader can exit while a worker child keeps the app's port bound. The reap used
+    to read ``PID_DEAD``, drop the pidfile row, and stop -- so the survivor stayed,
+    the next generation spawned onto the port it still owned, and the route
+    answered 502. These pin that a dead leader now costs its group a signal, and
+    that the signal is never aimed at the bare group number.
+    """
+
+    @staticmethod
+    def _dead_leader(monkeypatch):
+        monkeypatch.setattr(
+            backend_mod.platform_compat,
+            "pid_liveness",
+            lambda _pid: backend_mod.platform_compat.PID_DEAD,
+        )
+        monkeypatch.setattr(backend_mod, "sel", lambda: None)
+
+    def test_a_dead_leader_still_costs_its_group_a_signal(self, pidfile, monkeypatch):
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        calls: list[tuple[int, int, str, object]] = []
+
+        def _signal(pgid, sig, instance, *, expected=None):
+            calls.append((pgid, sig, instance, expected))
+            members = {555: "s555"}
+            return (members, {}) if sig == backend_mod.platform_compat.SIGKILL else (members, members)
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        # The member ignores SIGTERM, so the escalation must be reached. It stays
+        # alive after the SIGKILL pass too, which is what keeps the row (below).
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        # The return value stays "leaders terminated": there was no live leader.
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        assert [(c[0], c[1]) for c in calls] == [
+            (4321, backend_mod.platform_compat.SIGTERM),
+            (4321, backend_mod.platform_compat.SIGKILL),
+        ], "the group is resolved from the session-leader contract (pgid == leader pid)"
+        assert all(c[2] == "inst-a" for c in calls), "every pass is pinned to this spawn"
+        assert calls[0][3] is None
+        assert calls[1][3] == {555: "s555"}, (
+            "the escalation must target the members the FIRST pass vouched, not a "
+            "fresh census -- a member seen only now owes no grace and is what a "
+            "fresh occupant of the recycled group number looks like"
+        )
+        assert "app" in backend_mod._read_pidfile(), (
+            "a member outlived the SIGKILL pass, so the row -- this orphan's only "
+            "handle -- must be KEPT for a later start to retry"
+        )
+
+    def test_a_group_whose_members_exit_on_sigterm_reaches_no_member_with_sigkill(
+        self, pidfile, monkeypatch
+    ):
+        """A member that exited owes no SIGKILL.
+
+        The escalation call still happens — it doubles as the final census — but its
+        target set is the members that took a SIGTERM, so a group that already exited
+        is signalled by nothing.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        calls: list[tuple[int, object]] = []
+
+        def _signal(pgid, sig, inst, *, expected=None):
+            calls.append((sig, expected))
+            if sig == backend_mod.platform_compat.SIGTERM:
+                return {555: "s555"}, {555: "s555"}
+            # Real code filters ``expected`` down to members still alive under the
+            # same start id; every one of them exited, so nothing is signalled.
+            return {}, {}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert [c[0] for c in calls] == [
+            backend_mod.platform_compat.SIGTERM,
+            backend_mod.platform_compat.SIGKILL,
+        ]
+        assert calls[1][1] == {555: "s555"}, "the escalation is scoped to the signalled members"
+        assert backend_mod._read_pidfile() == {}, (
+            "the final census found nothing live, so nothing is left for the row to recover"
+        )
+
+    def test_a_row_is_kept_when_the_reap_itself_fails(self, pidfile, monkeypatch):
+        """A transient failure must not discard the orphan's only record.
+
+        Dropping the row on a /proc scan that raised, or a signal the kernel
+        refused, would strand the port holder with nothing naming it — no later
+        start could ever retry, and the periodic sweep does not cover an app
+        backend's worker.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+
+        def _boom(*_a, **_k):
+            raise OSError("group listing failed")
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _boom)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+        assert "app" in backend_mod._read_pidfile(), "a retryable failure must keep the row"
+
+    def test_a_row_is_kept_when_the_escalation_fails(self, pidfile, monkeypatch):
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+
+        def _signal(pgid, sig, instance, *, expected=None):
+            if sig == backend_mod.platform_compat.SIGKILL:
+                raise OSError("signal refused")
+            return {555: "s555"}, {555: "s555"}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert "app" in backend_mod._read_pidfile(), "a refused SIGKILL must keep the row"
+
+    def test_a_member_the_signal_could_not_reach_still_keeps_the_row(
+        self, pidfile, monkeypatch
+    ):
+        """Retention must read the CENSUS, not the subset a signal reached.
+
+        A group can hold a member A the signal reaches and a member B it cannot
+        (``pidfd_open`` answering EMFILE, or EPERM). Measuring liveness over the
+        signalled set alone reports the group gone the moment A dies -- and drops the
+        row that names B, which is still alive and still holding the app's port.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        # A (=111) was signalled; B (=222) was vouched but unreachable.
+        monkeypatch.setattr(
+            backend_mod,
+            "signal_orphaned_spawn_group",
+            lambda pgid, sig, inst, **_k: ({111: "s111", 222: "s222"}, {111: "s111"}),
+        )
+        # A died on SIGTERM; B is still alive.
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda pid: pid == 222)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        assert "app" in backend_mod._read_pidfile(), (
+            "a live vouched member the signal never reached must KEEP the row, even "
+            "though every SIGNALLED member is gone"
+        )
+
+    def test_a_replacement_forked_on_sigterm_keeps_the_row(self, pidfile, monkeypatch):
+        """Retention must read the group at DECISION time, not the opening snapshot.
+
+        A supervisor/worker backend can fork a replacement from its SIGTERM handler. That
+        child inherits the session group and the instance token, so it is a vouched
+        member — but it did not exist when the first census ran. Deciding on that
+        snapshot drops the row once the originally-censused members die, leaving the
+        replacement holding the app's port with nothing left naming it.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        # First census sees only 111. It takes the SIGTERM, forks 999 and exits, so
+        # the FINAL census sees 999 — which the opening snapshot could not contain.
+        state = {"forked": False}
+
+        def _signal(pgid, sig, inst, *, expected=None):
+            if sig == backend_mod.platform_compat.SIGTERM:
+                state["forked"] = True
+                return {111: "s111"}, {111: "s111"}
+            return ({999: "s999"} if state["forked"] else {}), {}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        # 111 died on the SIGTERM; the forked 999 is alive.
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda pid: pid == 999)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        assert "app" in backend_mod._read_pidfile(), (
+            "a member forked after the opening census is still a live port holder, so "
+            "the row must be KEPT for a later start"
+        )
+
+    def test_the_final_scan_runs_even_when_nothing_needs_killing(self, pidfile, monkeypatch):
+        """The kill pass is also the fresh reading, so it is never skipped.
+
+        Gating it on a surviving signalled member is what would leave retention with
+        only the stale snapshot to go on.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        sigs: list[int] = []
+
+        def _signal(pgid, sig, inst, *, expected=None):
+            sigs.append(sig)
+            return {111: "s111"}, ({111: "s111"} if sig == backend_mod.platform_compat.SIGTERM else {})
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        # Every signalled member exited during the grace: nothing to escalate.
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert sigs == [
+            backend_mod.platform_compat.SIGTERM,
+            backend_mod.platform_compat.SIGKILL,
+        ], "the second call is the final census and must happen regardless"
+
+    def test_the_escalation_targets_only_the_signalled_subset(self, pidfile, monkeypatch):
+        """A member that never took a SIGTERM owes no grace and no SIGKILL."""
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        expected_seen: list[object] = []
+
+        def _signal(pgid, sig, inst, *, expected=None):
+            if sig == backend_mod.platform_compat.SIGKILL:
+                expected_seen.append(expected)
+                return {111: "s111"}, {111: "s111"}
+            return {111: "s111", 222: "s222"}, {111: "s111"}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert expected_seen == [{111: "s111"}], (
+            "the escalation is owed only to the members a SIGTERM actually reached"
+        )
+
+    def test_a_group_whose_signals_are_all_refused_keeps_its_row(self, pidfile, monkeypatch):
+        """The regression the signalled-count could not see.
+
+        The members are ALIVE and the kernel refused every signal (EPERM, or no
+        pidfd to pin the identity with), so nothing was signalled. Reading that as
+        "the group is gone" discards the only record naming a process that still
+        holds the app's port — and no later start could find it again, since the
+        periodic sweep does not cover an app backend's worker. The vouch census is
+        what tells this apart from a genuinely empty group.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        # Vouched members exist and are ALIVE; none of them could be signalled.
+        monkeypatch.setattr(
+            backend_mod,
+            "signal_orphaned_spawn_group",
+            lambda pgid, sig, inst, **_k: ({555: "s555"}, {}),
+        )
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda pid: pid == 555)
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        assert "app" in backend_mod._read_pidfile(), (
+            "live vouched members that refused the signal must KEEP the row"
+        )
+
+    def test_a_vouched_member_that_has_since_exited_drops_its_row(self, pidfile, monkeypatch):
+        """Retention needs a LIVE member, not merely a member in the census.
+
+        The census is a snapshot; if the member it named has exited by the time
+        retention is decided, there is nothing left for the row to recover.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(
+            backend_mod,
+            "signal_orphaned_spawn_group",
+            lambda pgid, sig, inst, **_k: ({555: "s555"}, {555: "s555"}),
+        )
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+        assert backend_mod._read_pidfile() == {}
+
+    def test_an_empty_census_drops_the_row_only_once_the_group_is_gone(
+        self, pidfile, monkeypatch
+    ):
+        """An empty census is not evidence of an empty group.
+
+        Every read the vouch makes is fail-OPEN — the /proc scan, each stat and each
+        environ read all swallow OSError — so fd exhaustion produces an empty census
+        without raising. Dropping on that would discard the orphan's only handle
+        exactly when the host is under pressure, so absence has to be confirmed by a
+        probe that cannot fail open.
+        """
+        row = {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(
+            backend_mod, "signal_orphaned_spawn_group", lambda pgid, sig, inst, **_k: ({}, {})
+        )
+
+        # Census empty AND the group is positively gone: nothing to recover.
+        backend_mod._write_pidfile({"app": dict(row)})
+        monkeypatch.setattr(backend_mod.platform_compat, "pgroup_exists", lambda _pgid: False)
+        assert backend_mod._reap_stale_app_backends() == 0
+        assert backend_mod._read_pidfile() == {}
+
+        # Census empty but the group still EXISTS (unreadable, or unsignalable):
+        # something is in it, so the handle must survive.
+        backend_mod._write_pidfile({"app": dict(row)})
+        monkeypatch.setattr(backend_mod.platform_compat, "pgroup_exists", lambda _pgid: True)
+        assert backend_mod._reap_stale_app_backends() == 0
+        assert "app" in backend_mod._read_pidfile(), (
+            "an unreadable census must not be read as an empty group"
+        )
+
+    def test_a_vouched_group_that_dies_under_sigkill_drops_its_row(self, pidfile, monkeypatch):
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        alive = {"v": True}
+
+        def _signal(pgid, sig, instance, *, expected=None):
+            if sig == backend_mod.platform_compat.SIGKILL:
+                alive["v"] = False  # the kill landed
+            return {555: "s555"}, {555: "s555"}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+        monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: alive["v"])
+        monkeypatch.setattr(backend_mod, "_REAP_SIGTERM_GRACE", 0.0)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert backend_mod._read_pidfile() == {}, (
+            "the group is gone, so the row has nothing left to recover"
+        )
+
+    def test_a_row_without_an_instance_token_is_never_signalled(self, pidfile, monkeypatch):
+        """No incarnation pin, no authority.
+
+        A row written by a build that did not stamp the token leaves nothing to
+        vouch the group with, and the group NUMBER is the dead leader's pid --
+        which the kernel may have reissued to an unrelated session leader. Leaking
+        is the correct trade; ``killpg`` on that number would take a stranger's
+        tree. The row IS dropped here: a token is never added to an existing row,
+        so no later start could do better and keeping it would grow the pidfile
+        forever.
+        """
+        backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        signal_group = MagicMock()
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", signal_group)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        signal_group.assert_not_called()
+        assert backend_mod._read_pidfile() == {}, "no later start could act on this row"
+
+    def test_a_host_that_cannot_vouch_signals_nothing(self, pidfile, monkeypatch):
+        """The vouch reads /proc/<pid>/environ, which is Linux-only.
+
+        The row is dropped rather than kept: the platform is the same on the next
+        start, so no retry could do better and an accumulating pidfile would be the
+        only result. The decline log line is the record.
+        """
+        backend_mod._write_pidfile(
+            {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: False)
+        signal_group = MagicMock()
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", signal_group)
+
+        assert backend_mod._reap_stale_app_backends() == 0
+
+        signal_group.assert_not_called()
+        assert backend_mod._read_pidfile() == {}
+
+    def test_one_app_failing_does_not_end_the_sweep(self, pidfile, monkeypatch):
+        backend_mod._write_pidfile(
+            {
+                "a": {"pid": 11, "start_time": "S", "port": 1, "spawn_instance": "i1"},
+                "b": {"pid": 22, "start_time": "S", "port": 2, "spawn_instance": "i2"},
+            }
+        )
+        self._dead_leader(monkeypatch)
+        monkeypatch.setattr(backend_mod, "group_vouching_available", lambda: True)
+        seen: list[int] = []
+
+        def _signal(pgid, sig, inst, **_k):
+            seen.append(pgid)
+            if pgid == 11:
+                raise OSError("group listing failed")
+            return {}, {}
+
+        monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
+
+        backend_mod._reap_stale_app_backends()
+
+        assert seen == [11, 22], "a failed reap must not abort the remaining apps"
+
+    def test_spawn_instance_is_recorded_so_the_group_can_be_vouched_later(self, pidfile):
+        """The reap can only vouch a group the spawn stamped an instance on."""
+        with patch.object(backend_mod, "_proc_start_time", return_value="ST-1"):
+            backend_mod._record_app_pid("app", 4321, 9100, "inst-a")
+        assert backend_mod._read_pidfile()["app"] == {
+            "pid": 4321,
+            "start_time": "ST-1",
+            "port": 9100,
+            "spawn_instance": "inst-a",
+        }

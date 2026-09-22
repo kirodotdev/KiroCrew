@@ -1490,7 +1490,12 @@ def group_vouching_available() -> bool:
     return sys.platform == "linux"
 
 
-def _marked_group_members(pgid: int, instance: str) -> dict[int, str | None]:
+def _marked_group_members(
+    pgid: int,
+    instance: str,
+    *,
+    require_runtime_identity: bool = True,
+) -> dict[int, str | None]:
     """Live members of process group *pgid* spawned as incarnation *instance*.
 
     Returned as ``pid -> start id`` so a caller that signals the group twice can
@@ -1519,6 +1524,20 @@ def _marked_group_members(pgid: int, instance: str) -> dict[int, str | None]:
     so the answer is ``{}`` on macOS and Windows and the caller signals nothing
     -- a missed reap there, never a wrong kill. Zombies are skipped: they hold
     no memory and cannot be signalled into exiting.
+
+    *require_runtime_identity* is the ARGV gate
+    (:func:`_tracked_child_has_runtime_identity`), on by default because it is the
+    shape the ACP runtime's own group has. A caller whose tree is not an agent
+    runtime turns it OFF -- an app backend's members are whatever its manifest runs
+    (a uvicorn worker, a build subprocess), so requiring the runtime shape excludes
+    every one of them and the reap reaches nothing. Turning it off is not "no
+    identity": the group and instance checks above still apply and are already
+    conclusive, because the instance is a fresh value per spawn and cannot be
+    inherited from an earlier or later incarnation of the same group number. The
+    ACP path's reason for the extra gate -- an intentional survivor that merely
+    inherited the TREE-WIDE ``KIROCREW_SPAWNED`` marker -- does not reach a member
+    of THIS group: a process that deliberately detaches calls ``setsid`` and
+    thereby leaves the group. See :func:`signal_orphaned_spawn_group`.
     """
     if not group_vouching_available() or pgid <= 1 or not instance:
         return {}
@@ -1548,7 +1567,7 @@ def _marked_group_members(pgid: int, instance: str) -> dict[int, str | None]:
         if (
             _env_spawn_instance(member) == instance
             and _env_has_kirocrew_marker(member)
-            and _tracked_child_has_runtime_identity(member)
+            and (not require_runtime_identity or _tracked_child_has_runtime_identity(member))
         ):
             members[member] = _pid_start_token(member)
     return members
@@ -1633,13 +1652,14 @@ def _signal_pid_by_identity(pid: int, sig: int, start: str) -> bool:
         os.close(fd)
 
 
-def _signal_orphaned_runtime_group(
+def _vouch_and_signal_orphaned_group(
     pgid: int,
     sig: int,
     instance: str,
     *,
     expected: Mapping[int, str | None] | None = None,
-) -> dict[int, str | None]:
+    require_runtime_identity: bool = True,
+) -> tuple[dict[int, str | None], dict[int, str | None]]:
     """Signal a runtime's group members after its leader has been reaped, if ours.
 
     The kill path that signals a live tree is ``killpg(getpgid(root))``, and it
@@ -1675,19 +1695,28 @@ def _signal_orphaned_runtime_group(
     incarnation, the start id proves the pass is looking at the same processes,
     and a process that was not signalled on the first pass owes no escalation.
 
-    Returns the members actually signalled, ``pid -> start id`` -- the value a
-    caller hands back as *expected* -- or an empty map when nothing was. A
-    member that exited between the vouch and the signal, or whose identity no
-    longer reads as vouched, is skipped. A refused signal is logged and skipped:
-    a teardown must finish clearing its own state and pruning its PID entries
-    whatever the kernel answered, and a signal this process was refused is one
-    the periodic sweep retries on its own cadence.
+    Returns ``(vouched, signalled)``: the live members the vouch FOUND, and the
+    subset a signal was actually delivered to -- the latter being the value a
+    caller hands back as *expected*. A member that exited between the vouch and the
+    signal, or whose identity stops reading as vouched, is skipped; so is one
+    whose signal the kernel REFUSED, which is why the two maps are reported
+    separately. A teardown that only has to clear its own state can ignore the
+    census (see :func:`_signal_orphaned_runtime_group`); a caller deciding whether
+    to keep an orphan's only record cannot, because an empty ``signalled`` alone
+    cannot say whether the group is gone or merely unreachable right now.
+
+    *require_runtime_identity* is passed through to :func:`_marked_group_members`;
+    a caller whose tree is not an agent runtime turns it off. See
+    :func:`signal_orphaned_spawn_group`, the public entry point for those.
     """
     if platform_compat.IS_WINDOWS or pgid <= 1 or pgid == os.getpgrp() or not instance:
-        return {}
-    members = _marked_group_members(pgid, instance)
-    if not members:
-        return {}
+        return {}, {}
+    vouched = _marked_group_members(
+        pgid, instance, require_runtime_identity=require_runtime_identity
+    )
+    if not vouched:
+        return {}, {}
+    members = vouched
     if expected is not None:
         still_ours: dict[int, str | None] = {
             p: start
@@ -1696,13 +1725,13 @@ def _signal_orphaned_runtime_group(
         }
         if not still_ours:
             logger.info(
-                "_signal_orphaned_runtime_group: none of the %d member(s) vouched for "
+                "_vouch_and_signal_orphaned_group: none of the %d member(s) vouched for "
                 "group %d are still alive; not re-signalling a group that may be a "
                 "newer runtime's",
                 len(expected),
                 pgid,
             )
-            return {}
+            return vouched, {}
         # The escalation's target set is the FIRST pass's, not a fresh census: a
         # member found only now was not signalled then, owes no grace, and is
         # exactly what a newer incarnation of the number would look like.
@@ -1727,8 +1756,8 @@ def _signal_orphaned_runtime_group(
             continue
         except OSError:
             logger.warning(
-                "_signal_orphaned_runtime_group: signal %d to pid %d (group %d) refused; "
-                "leaving it to the orphan sweep",
+                "_vouch_and_signal_orphaned_group: signal %d to pid %d (group %d) refused; "
+                "leaving the member alive; the caller decides what a refusal means",
                 sig,
                 member,
                 pgid,
@@ -1736,7 +1765,76 @@ def _signal_orphaned_runtime_group(
             )
             continue
         signalled[member] = start
-    return signalled
+    return vouched, signalled
+
+
+def _signal_orphaned_runtime_group(
+    pgid: int,
+    sig: int,
+    instance: str,
+    *,
+    expected: Mapping[int, str | None] | None = None,
+) -> dict[int, str | None]:
+    """The ACP teardown's view of :func:`_vouch_and_signal_orphaned_group`.
+
+    Returns only what was SIGNALLED, which is all this caller acts on: an ACP
+    teardown clears its own state and prunes its PID entries whatever the kernel
+    answered, so a refused signal changes nothing it does next. A caller that must
+    tell "the group is empty" apart from "every signal was refused" -- because it
+    is deciding whether to keep a record that is an orphan's only handle -- needs
+    the vouched census too and calls the implementation through
+    :func:`signal_orphaned_spawn_group`.
+    """
+    return _vouch_and_signal_orphaned_group(pgid, sig, instance, expected=expected)[1]
+
+
+def signal_orphaned_spawn_group(
+    pgid: int,
+    sig: int,
+    instance: str,
+    *,
+    expected: Mapping[int, str | None] | None = None,
+) -> tuple[dict[int, str | None], dict[int, str | None]]:
+    """Signal a NON-agent-runtime spawn's group members after its leader is gone.
+
+    Public entry point onto :func:`_vouch_and_signal_orphaned_group` for a tree
+    that Kiro Crew spawned as its own session leader but which is not an ACP
+    runtime -- today an app backend (``kiro_crew.apps.backend``), whose members are
+    whatever the app's manifest runs. Read that function's docstring for the
+    reasoning; the single difference in the signalling is that the per-member ARGV
+    gate is off, because an app backend's tree never has the runtime shape and
+    would otherwise vouch for nothing.
+
+    Every other guarantee is the one the ACP path makes and is deliberately not
+    re-implemented here: the group is resolved from the session-leader contract
+    rather than from the dead pid, each member is vouched by the caller's exact
+    per-spawn instance token, each signal is pinned to a pid plus its start
+    instant (never aimed at the group NUMBER, which the kernel may have reissued),
+    an escalation signals only members the first pass vouched, and a host that
+    cannot read the vouch signals nothing at all.
+
+    Returns ``(vouched, signalled)``: the live members the vouch FOUND, and the
+    subset a signal was actually delivered to. The ACP path discards the census
+    because a refused signal changes nothing it does next, but this caller is
+    deciding whether to keep a record that is an orphan's only handle, and for that
+    the two must be told apart: an empty ``signalled`` with a non-empty ``vouched``
+    means the members are alive and the kernel refused (a later attempt can
+    succeed), while both empty means the group is genuinely gone. Collapsing them
+    into one count is how a refusal comes to look like a completed reap.
+
+    Callers must stamp a fresh ``KIROCREW_SPAWN_INSTANCE`` on the tree's root at
+    spawn time and persist it with the pid they will later reap by; without the
+    token there is no identity to vouch with and both maps come back empty. Check
+    :func:`group_vouching_available` to report a host where the vouch cannot be
+    read as the leak it is, rather than as a completed reap.
+    """
+    return _vouch_and_signal_orphaned_group(
+        pgid,
+        sig,
+        instance,
+        expected=expected,
+        require_runtime_identity=False,
+    )
 
 
 def _provider_tree_gone(

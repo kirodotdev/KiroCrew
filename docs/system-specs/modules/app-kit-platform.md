@@ -766,6 +766,58 @@ gateway spawned** (`apps/hooks_integration.py::on_gateway_shutdown` →
 `stop_app_backend`). Spawned backends are gateway children: without this stop
 they reparent to PID 1 when the gateway exits and keep listening on their
 ports, and the startup stale-reap only recovers them at the **next** boot.
+A backend is spawned with `start_new_session=True`, so it **leads its own process
+group** and that group outlives it. A SIGKILLed gateway can therefore leave the
+recorded leader dead while a worker or build child keeps the app's port bound, and
+the leader pid is the only thing the pidfile names. The stale-reap handles both
+shapes: a leader still alive is torn down through its group
+(`kill_process_tree_pinned` resolves it via `getpgid`), while a leader already
+**dead** is not simply dropped — its pgid is recoverable from the session-leader
+contract (`pgid == leader pid`) and the group's members are reaped through
+`session_pid.signal_orphaned_spawn_group`. That path never signals the group
+NUMBER, which the kernel may have reissued to an unrelated session leader; it
+lists the group's live members, keeps only those whose environment carries the
+spawn's own `KIROCREW_SPAWN_INSTANCE` token (minted per spawn and persisted in the
+pidfile row beside `(pid, start_time)`), and signals each one pinned to its own pid
+plus start instant. No vouching member means no signal, and the vouch reads
+`/proc/<pid>/environ`, so off Linux nothing is signalled at all. Nothing else
+recovers those survivors either: the periodic orphan sweep identifies an agent
+runtime, an MCP entrypoint, a gatewayd, a browser daemon or a **test-runner**
+argv, and an app backend's worker is none of those — so off Linux such a group is
+neither reaped nor reported, and the decline log line is its only record. That is
+the deliberate trade against signalling a stranger's tree, and the operator's
+recourse is to kill the process holding the port by hand. Without
+this the next generation spawns onto a port an orphan still owns and the app's
+routes answer 502.
+
+The pidfile row is that orphan's **only** handle, so retention is decided from a
+census taken at DECISION time. `signal_orphaned_spawn_group` reports the live members
+it VOUCHED separately from the subset a signal actually reached, and the reap trusts
+neither as the membership: the signalled set is incomplete, because a signal can fail
+on one member and land on another (`pidfd_open` answering EMFILE, or EPERM), and the
+OPENING census is stale, because a backend whose SIGTERM handler forks a replacement
+into the same session group (a supervisor/worker server does) produces a live member that
+snapshot could not contain. So the kill pass runs unconditionally — it is also the
+fresh reading — with its `expected` restricting the SIGNAL to the members the first
+pass vouched, so a post-census newcomer is observed but never signalled: it owes no
+grace, and it is indistinguishable from a fresh occupant of a recycled group number.
+An empty census is not evidence of an empty group either: every read the vouch makes
+is fail-OPEN (the `/proc` scan, each `stat` and each `environ` read all swallow
+`OSError`), so fd exhaustion silently yields an empty census rather than an error. The
+row is therefore dropped only once absence is confirmed POSITIVELY — no live member in
+the final reading AND `pgroup_exists` answering False, which it does on ESRCH alone and
+never for a group it merely cannot read or signal. Being wrong that way costs one
+retained pidfile row, which the app's next successful spawn replaces; being wrong the
+other way costs a port held forever by a process nothing names. The two declines
+detected before any census (no instance token, a host that cannot read the vouch) still
+drop the row, since neither changes between starts.
+
+That retention is real but **bounded by the spawn path**: `start_enabled_app_backends`
+reaps and then spawns every enabled app, and `_record_app_pid` re-records the row
+under the same app name, so a retained handle survives to a later start only while
+the app stays down — disabled, failing to spawn, or not restarted. A start that
+reaped only groups logs its own summary line, because the count the reap RETURNS is
+leaders terminated and would otherwise be zero with nothing said.
 Ordering is deliberate — hooks first, so an app's `on_shutdown` still has its
 own backend alive. Stop targets come from the runtime tracking table
 (`apps/backend.py::spawned_backend_names`), never from persisted `enabled`

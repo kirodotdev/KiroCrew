@@ -1046,9 +1046,16 @@ class TestSpawnPublicationOwnership:
         assert bmod._processes == {"app": successor}
         assert popen_calls == [701, 702]
         assert kills == [(701, bmod.platform_compat.SIGTERM)]
-        assert bmod._read_pidfile() == {
-            "app": {"pid": 702, "start_time": "start-702", "port": successor.port}
-        }
+        row = bmod._read_pidfile()["app"]
+        # Exact key set, not a projection: an extra key must fail here, which is
+        # what makes this a ratchet on the persisted row rather than a spot check.
+        # The value itself cannot be pinned (a fresh uuid per spawn), so only its
+        # presence and non-emptiness are asserted.
+        assert set(row) == {"pid", "start_time", "port", "spawn_instance"}
+        assert (row["pid"], row["start_time"], row["port"]) == (702, "start-702", successor.port)
+        # The successor's own incarnation token, which the startup reap needs to
+        # vouch its process group once the leader is gone.
+        assert row["spawn_instance"]
 
     def test_restart_joins_a_public_start_already_in_flight(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
@@ -3153,11 +3160,11 @@ class TestSpawnOutcome:
     ) -> None:
         (spawn_root / "server.py").write_text("x = 1\n")
         monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: True)
-        recorded: list[tuple[str, int, int]] = []
+        recorded: list[tuple[str, int, int, str | None]] = []
         monkeypatch.setattr(
             bmod,
             "_record_app_pid",
-            lambda name, pid, port: recorded.append((name, pid, port)),
+            lambda name, pid, port, instance=None: recorded.append((name, pid, port, instance)),
         )
         monkeypatch.setattr(bmod, "popen_limited", lambda *_a, **_k: _FakeProc(pid=777))
         ap = bmod._start_app_backend_body("okapp", _manifest("server.py"))
@@ -3166,7 +3173,16 @@ class TestSpawnOutcome:
         # Surviving the bind is NOT health: the health loop owns that transition.
         assert ap.healthy is False
         assert bmod._processes["okapp"] is ap
-        assert recorded == [("okapp", 777, ap.port)]
+        # Exact arity, not a slice: the unpack fails if the call grows another
+        # argument, which is what keeps this a ratchet on the recorded call.
+        assert len(recorded) == 1
+        name, pid, port, instance = recorded[0]
+        assert (name, pid, port) == ("okapp", 777, ap.port)
+        # The spawn's incarnation token is persisted WITH the pid: it is the only
+        # thing that can vouch this backend's process group after the leader dies,
+        # and a row without it costs the startup reap that group entirely. The
+        # value is a fresh uuid per spawn, so only its presence is pinned.
+        assert instance
 
     def test_a_child_that_dies_on_its_bind_is_not_reported_as_started(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
