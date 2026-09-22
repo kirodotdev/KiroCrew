@@ -684,13 +684,98 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   relaunches itself once with software rendering
   (`--in-process-gpu --use-angle=swiftshader`) when the GPU process dies
   before the dashboard has loaded, and keeps that choice for the installed
-  version under `gpuSoftwareFallback` in `%APPDATA%\KiroCrew\config.json`; a
+  version under `gpuSoftwareFallback` in `%APPDATA%\kirocrew-desktop\config.json`; a
   new version tries hardware rendering again once. The launch log then reads
   `gpu: software rendering ACTIVE`. `--no-sandbox` is never applied: if the
   relaunched app still cannot start, every Chromium child is being blocked
   (typically an endpoint-security DLL injected into every process), which is a
   different failure and needs a process exclusion for the app, not a rendering
   switch.
+- **A gray/blank window that exits, while `kirocrew gateway` plus a browser
+  work fine** — that "different failure" above, seen from the other side:
+  Chromium cannot start a sandboxed child process on this device at all, so the
+  software-rendering relaunch does not help, because rendering is not what is
+  failing.
+
+  `gateway-launch.log` (in `%APPDATA%\kirocrew-desktop\logs\`; a nightly install
+  uses `kirocrew-desktop-nightly`) shows `renderer died` lines up to the reload
+  limit. The exit code they carry is commonly `-2147483645`, which
+  `chromium.log` beside it echoes as `exit_code=-2147483645`; that value is
+  `0x80000003` (`STATUS_BREAKPOINT`) in hex, and Event Viewer may show it as
+  unsigned `2147483651`. A different code does not rule this failure out — the
+  launch check below settles it, not the number. It is not a graphics fault and
+  not a shortcut or gateway problem: it is usually software that injects a DLL
+  into every process (endpoint security, or a display driver such as
+  DisplayLink), which the sandbox then refuses to admit.
+
+  The same exit code also appears when a renderer loads and *later* crashes,
+  which is an ordinary V8 abort and unrelated. What separates them is that this
+  failure never renders anything, not even the brief boot splash: a window that
+  showed the splash or the dashboard before dying is the V8 case, not this one,
+  and the launch check below does not rescue it either.
+
+  **First, confirm the sandbox is the failing component:** launch once with
+  `--no-sandbox`. If the dashboard loads, continue below. If it still fails the
+  sandbox is *not* the cause — try `KIROCREW_DISABLE_GPU=1` for a failing
+  GPU/rendering path, then a reinstall for a damaged install; an
+  endpoint-security exclusion cannot fix either. Do not keep `--no-sandbox`
+  either way: it removes renderer, GPU and utility isolation for every child
+  process, and it is a diagnostic rather than a setting.
+
+  <details>
+  <summary>How to pass a flag or set the variable on Windows</summary>
+
+  **Fully exit Kiro Crew first.** This step is not optional: the app is
+  single-instance, and a second launch hands its arguments to the instance
+  already running and then exits, so the flag is silently ignored while the
+  broken window still appears. Close it from the tray icon, then confirm no
+  `KiroCrew.exe` remains in Task Manager > Details.
+
+  **A one-off launch with a flag** — open Command Prompt and run the executable
+  with the flag, so nothing about the installed shortcut changes. To get the
+  exact path for *your* install, right-click the Start-menu entry and choose
+  **Open file location**, then copy the target; a nightly or side-by-side build
+  has a different product name, so do not assume the one below. On a normal
+  stable per-user install (`perMachine: false`, no choice of directory) it is:
+
+  ```
+  "%LOCALAPPDATA%\Programs\KiroCrew\KiroCrew.exe" --no-sandbox
+  ```
+
+  **A one-off launch with the variable**, in the same Command Prompt window, so
+  it applies to that launch only:
+
+  ```
+  set KIROCREW_DISABLE_GPU=1
+  "%LOCALAPPDATA%\Programs\KiroCrew\KiroCrew.exe"
+  ```
+
+  To keep `KIROCREW_DISABLE_GPU` for a host that genuinely has no usable GPU,
+  make it durable with `setx KIROCREW_DISABLE_GPU 1` (no elevation needed; it
+  applies to new processes, so restart the app) or through **System Properties >
+  Environment Variables**. Do **not** make `--no-sandbox` durable this way —
+  editing the shortcut's Target keeps an isolation downgrade in place
+  permanently: the installer preserves an existing shortcut on every update,
+  arguments included, so the edit outlives each new version until you undo it
+  by hand.
+
+  </details>
+
+  **The fix is a process exclusion for the Kiro Crew executable** in the
+  endpoint security product managing the device. That addresses the cause and
+  leaves the sandbox intact. To identify what to exclude, open Event Viewer >
+  Windows Logs > Application and read the faulting module name in the
+  `AppCrash` entry for the child process that died. Microsoft Edge uses the same
+  Chromium sandbox, so if Edge renders normally the sandbox itself works on that
+  device and the difference is that Edge is already excluded.
+
+  **There is deliberately no supported way to make the sandbox opt-out
+  durable.** A persistent switch would let anything running as the user disable
+  process isolation invisibly, and the narrower Chromium hardening switches are
+  not a usable substitute: their names are version-specific and silently ignored
+  when wrong, and the most-cited one
+  (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
+  118 even though the Chrome enterprise *policy* of the same name still works.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and
