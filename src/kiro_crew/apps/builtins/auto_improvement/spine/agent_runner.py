@@ -1357,7 +1357,15 @@ class SessionAgentRunner:
         allowed_tools=None,
         session_key=None,
         provider=None,
+        governance_agent: str = "",
     ) -> AgentResult:
+        # ``governance_agent`` is the identity the platform governance gate judges
+        # tool requests under; it defaults to ``self.agent_name``. A crew member
+        # runs on a shared TEMPLATE (``self.agent_name`` selects the provider and
+        # the tool set) but is governed under its own member ALIAS, which the
+        # dashboard and messaging paths also key their profiles on — so a member
+        # whose alias carries a task-scoped profile is held to that profile here too.
+        governance_agent = governance_agent or self.agent_name
         # Build a provider for THIS task. The factory's FIRST positional is the
         # session_key (namespaces the provider's work dir); ``agent`` selects the
         # KIRO AGENT — which is what scopes the tool set. Passing the app's
@@ -1501,7 +1509,7 @@ class SessionAgentRunner:
                     # (~/.aws/~/.ssh) blocks that the dashboard/Slack paths honor. This
                     # unattended runner must not rely only on the app-local checks below.
                     gov = _governance_denial(
-                        ev, session_key=session_key, agent=self.agent_name, tool_kind=tool
+                        ev, session_key=session_key, agent=governance_agent, tool_kind=tool
                     )
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)

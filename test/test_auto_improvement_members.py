@@ -1024,3 +1024,124 @@ async def test_project_shadow_checks_provider_default_cwd(tmp_path, monkeypatch,
     else:
         assert result.ok, result.error
         assert sessions.acquired[0][1]["cwd"] == str(expected)
+
+
+class _GovernedProvider(Provider):
+    """A provider whose one request is judged by the platform governance gate."""
+
+    def __init__(self):
+        super().__init__()
+        self.approved = []
+        self.rejected = []
+
+    async def stream(self, prompt):
+        from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, AcpEvent
+
+        yield AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            tool_call_id="call-1",
+            request_id="request-1",
+            tool_kind="read",
+            raw_tool_params={"path": "notes.md"},
+        )
+        yield AcpEvent(kind=EVENT_COMPLETE)
+
+    async def approve_tool(self, rid, **kwargs):
+        self.approved.append(rid)
+
+    async def reject_tool(self, rid):
+        self.rejected.append(rid)
+
+
+async def _run_governed_assignment(identities, monkeypatch, *, denied_agent):
+    """Run one discovery assignment under a gate that denies only ``denied_agent``."""
+    judged = []
+
+    def gate(ev, *, session_key, agent, tool_kind=None):
+        judged.append(agent)
+        return "alias profile forbids this" if agent == denied_agent else ""
+
+    monkeypatch.setattr(agent_runner, "_governance_denial", gate)
+    sessions = Sessions(_GovernedProvider)
+    runner = CrewRunner(
+        crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop()), identities
+    ).for_role("discovery")
+    result = await asyncio.wait_for(asyncio.to_thread(runner.run, "Read the notes"), timeout=10)
+    assert result.ok
+    return judged, sessions
+
+
+@pytest.mark.asyncio
+async def test_renamed_member_is_governed_under_its_alias_not_its_template(tmp_path, monkeypatch):
+    identities = await asyncio.to_thread(crew.ensure_team)
+    template = crew.ROLES["discovery"].template
+
+    def rename(data):
+        data["agents"]["my-scout"] = data["agents"].pop(crew.ROLES["discovery"].name)
+        return data
+
+    await asyncio.to_thread(update_config_locked, mutate=rename)
+
+    # A profile that denies the ALIAS refuses the request even though the template is allowed.
+    judged, sessions = await _run_governed_assignment(
+        identities, monkeypatch, denied_agent="my-scout"
+    )
+    assert judged == ["my-scout"]
+    assert sessions.providers[0].rejected == ["request-1"]
+    assert sessions.providers[0].approved == []
+    # Provider allocation still selects the shared template; the alias rides as crew_agent.
+    assert sessions.acquired[0][1]["agent"] == template
+    assert sessions.acquired[0][1]["crew_agent"] == "my-scout"
+
+    # A profile that denies only the TEMPLATE does not reach a renamed member.
+    judged, sessions = await _run_governed_assignment(
+        identities, monkeypatch, denied_agent=template
+    )
+    assert judged == ["my-scout"]
+    assert sessions.providers[0].approved == ["request-1"]
+    assert sessions.providers[0].rejected == []
+
+
+@pytest.mark.asyncio
+async def test_unrenamed_member_governance_is_unchanged(monkeypatch):
+    identities = await asyncio.to_thread(crew.ensure_team)
+    template = crew.ROLES["discovery"].template
+
+    judged, sessions = await _run_governed_assignment(
+        identities, monkeypatch, denied_agent=template
+    )
+    assert judged == [template]
+    assert sessions.providers[0].rejected == ["request-1"]
+
+    judged, sessions = await _run_governed_assignment(
+        identities, monkeypatch, denied_agent="some-other-member"
+    )
+    assert judged == [template]
+    assert sessions.providers[0].approved == ["request-1"]
+
+
+@pytest.mark.asyncio
+async def test_session_runner_default_governs_under_its_agent_name(monkeypatch):
+    """Direct ``SessionAgentRunner`` users (no alias) keep judging under ``agent_name``."""
+    judged = []
+
+    def gate(ev, *, session_key, agent, tool_kind=None):
+        judged.append(agent)
+        return ""
+
+    monkeypatch.setattr(agent_runner, "_governance_denial", gate)
+    provider = _GovernedProvider()
+    runner = agent_runner.SessionAgentRunner(agent_name="auto-improvement-scout")
+    result = await runner._run_async(
+        "Read the notes",
+        factory=None,
+        provider=provider,
+        session_key="s1",
+        cwd=None,
+        append_system=None,
+        timeout_s=5,
+        t0=time.monotonic(),
+    )
+    assert result.ok
+    assert judged == ["auto-improvement-scout"]
+    assert provider.approved == ["request-1"]

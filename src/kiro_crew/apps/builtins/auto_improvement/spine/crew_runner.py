@@ -175,7 +175,7 @@ class MemberSessionRunner(SessionAgentRunner):
 
     async def _assignment(self, prompt, **kwargs):
         config, name, _member = await _io(crew.resolve_role, self.role, self.member_id)
-        execution = resolve_member_execution(config, name, app=store.APP_NAME)
+        execution = await _io(resolve_member_execution, config, name, app=store.APP_NAME)
         key = f"auto-improvement-{uuid.uuid4().hex}"
         # Pin the same default the provider factory uses, so omitted cwd cannot
         # bypass admission or resolve to a different workspace after the check.
@@ -253,6 +253,10 @@ class MemberSessionRunner(SessionAgentRunner):
                     t0=kwargs["t0"],
                     max_turns=kwargs["max_turns"],
                     allowed_tools=kwargs["allowed_tools"],
+                    # Govern under the member's alias, not the shared template: a
+                    # task-scoped profile bound to the alias must hold here as it
+                    # does when the same member is driven from the dashboard.
+                    governance_agent=name,
                 )
             logged_text = await _io(redact_via_context, result.text)
             await _io(log.append, key, "assistant", logged_text, agent=name)
