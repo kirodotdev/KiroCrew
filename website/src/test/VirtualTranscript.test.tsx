@@ -171,4 +171,66 @@ describe('VirtualTranscript', () => {
     expect(onAtBottomChange).toHaveBeenCalled()
     expect(typeof onAtBottomChange.mock.calls[0][0]).toBe('boolean')
   })
+
+  it('exposes the follow / measurement / restore surface the main page reads (P5-f)', () => {
+    const ref = createRef<VirtualTranscriptHandle>()
+    render(
+      <VirtualTranscript ref={ref} items={singles(5)} renderRow={renderRow} sessionId="t:p5f-handle" />,
+    )
+    expect(ref.current).not.toBeNull()
+    // getFollow reports stick-to-bottom state without forcing a render.
+    expect(typeof ref.current!.getFollow()).toBe('boolean')
+    // farmIsMeasured answers per row (nothing measured yet in jsdom).
+    expect(ref.current!.farmIsMeasured(0)).toBe(false)
+    // restoreGate is exposed for the host skeleton cover; a fresh mount at the
+    // live end has no saved anchor to wait on, so it is down.
+    expect(ref.current!.restoreGate).toBe(false)
+  })
+
+  it('accepts the level-triggered older-history walk as an alternative to the earlier bar (P5-f)', () => {
+    const onTopReached = vi.fn()
+    // The walk is scroll/intersection-driven, which jsdom cannot fire; this
+    // pins the prop surface (the migration path off ChatPage's inline wiring),
+    // not the fire. A short transcript never has more history, so no bar shows.
+    const { container } = render(
+      <VirtualTranscript
+        items={singles(3)}
+        renderRow={renderRow}
+        sessionId="t:p5f-walk"
+        onTopReached={onTopReached}
+        prefetchStartIndex={1}
+      />,
+    )
+    expect(mountedIndices(container)).toEqual([0, 1, 2])
+    expect(screen.queryByTestId('load-earlier-messages')).toBeNull()
+  })
+
+  it('warns in dev when a host wires BOTH older-history models, and not when it wires one (P5-f)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const onTopReached = vi.fn()
+    const onLoad = vi.fn()
+    try {
+      // One model (the walk alone): silent.
+      const one = render(
+        <VirtualTranscript items={singles(3)} renderRow={renderRow} sessionId="t:one" onTopReached={onTopReached} />,
+      )
+      expect(warn).not.toHaveBeenCalled()
+      one.unmount()
+
+      // Both models on one mount: the earlier bar (hasMore) AND the walk. This
+      // is the footgun the P5-f surface introduces; the guard names it.
+      render(
+        <VirtualTranscript
+          items={singles(3)}
+          renderRow={renderRow}
+          sessionId="t:both"
+          onTopReached={onTopReached}
+          earlier={{ hasMore: true, loading: false, failed: false, onLoad }}
+        />,
+      )
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('both older-history models'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })

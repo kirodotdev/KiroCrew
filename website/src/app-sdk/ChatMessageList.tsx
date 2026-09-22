@@ -127,6 +127,11 @@ export interface TranscriptMount {
   aboveRows?: React.ReactNode
   belowRows?: React.ReactNode
   earlier?: TranscriptEarlierPaging
+  /** Level-triggered older-history walk (an alternative to `earlier` for a host
+   *  that drives an automatic walk). Supply one older-history model, not both. */
+  onTopReached?: () => void
+  /** Prefetch lead for the older-history walk; only meaningful with `onTopReached`. */
+  prefetchStartIndex?: number
   /** Pin to the bottom on appends. Default true. */
   followOutput?: boolean
   /** Where the list opens with no saved anchor. Default 'bottom'. */
@@ -414,6 +419,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         aboveRows={transcript.aboveRows}
         belowRows={transcript.belowRows}
         earlier={transcript.earlier}
+        onTopReached={transcript.onTopReached}
+        prefetchStartIndex={transcript.prefetchStartIndex}
         isRowHidden={hiddenRow != null ? isRowHidden : undefined}
       />
     )
