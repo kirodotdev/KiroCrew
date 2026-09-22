@@ -82,6 +82,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("app", "Manage Kiro Crew apps"),
             ("agent", "Manage Kiro Crew agent definitions"),
+            ("skills", "List and inspect skill candidates"),
             ("workspace", "Manage workspace definitions"),
         ),
     ),

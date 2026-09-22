@@ -227,6 +227,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
 | `kirocrew app import <package-dir> [--out DIR] [--name NAME] [--install]` | Convert a manifest-declared plugin package into an app directory, reporting every kind that has no target. Reads and copies only; nothing in the package is executed. See [plugin-import.md](plugin-import.md). |
 | `kirocrew learn add/list/remove` | Manage learned corrections |
+| `kirocrew skills list/show` | Read-only inspection of skills: list pending or live skills and show bounded pending body/helper previews through `SkillsLoader`. `list` defaults to pending and supports `--live`, `--all`, and `--json`. `show` prints `[truncated N bytes]` for omitted tails and the loader's fail-closed script verdict; an unavailable verdict never reads clean. Approval and dismissal stay in the dashboard. |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |

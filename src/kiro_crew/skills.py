@@ -81,6 +81,13 @@ _PENDING_SCRIPT_MAX_ENTRIES = 64
 _VALIDATION_REPORT_MAX_FINDINGS = 16
 _VALIDATION_REPORT_MAX_STRING_CHARS = 1024
 _VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
+# Human-facing pending detail is a preview, not an unbounded file reader. These
+# limits sit above generated candidate bodies while keeping direct-staged files
+# from exhausting a foreground CLI or dashboard request.
+_PENDING_DETAIL_SKILL_MAX_BYTES = 64 * 1024
+_PENDING_DETAIL_SKILL_MAX_LINES = 1_000
+_PENDING_DETAIL_SCRIPT_MAX_BYTES = MAX_SCRIPT_BYTES
+_PENDING_DETAIL_SCRIPT_MAX_LINES = 200
 #: Re-exported from ``trigger_match``, which owns the value and the grammar
 #: it belongs to. Kept as a module name because tests and call sites here
 #: reference it.
@@ -5045,25 +5052,92 @@ class SkillsLoader:
         return True
 
     @staticmethod
-    def _collect_scripts(sdir: Path) -> list[dict]:
-        """Recursively collect ``{filename, content}`` for every regular file
-        under ``sdir`` (relative filenames). Recursion + symlink-skip ensure a
-        nested script (``scripts/nested/evil.py``) can't evade validation or
-        review by hiding below the top level."""
+    def _read_pending_display_text(
+        path: Path,
+        *,
+        within_root: Path,
+        max_bytes: int,
+        max_lines: int,
+    ) -> str:
+        """Read a bounded UTF-8 preview and report the exact omitted byte count."""
+        raw = safe_read_file_bytes_nolink(
+            str(path),
+            within_root=str(within_root),
+            max_bytes=max_bytes,
+            allow_truncate=True,
+        )
+        if raw is None:
+            raise OSError(f"could not safely read {path.name}")
+        try:
+            total_bytes = max(path.stat().st_size, len(raw))
+        except OSError:
+            total_bytes = len(raw)
+        clipped = raw
+        try:
+            text = clipped.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # A byte cap may split the final code point. Internal decode errors
+            # remain errors so callers can distinguish malformed source.
+            if total_bytes > len(raw) and exc.end == len(clipped):
+                clipped = clipped[: exc.start]
+                text = clipped.decode("utf-8")
+            else:
+                raise
+        lines = text.splitlines(keepends=True)
+        if len(lines) > max_lines:
+            text = "".join(lines[:max_lines])
+        retained_bytes = len(text.encode("utf-8"))
+        omitted_bytes = max(0, total_bytes - retained_bytes)
+        if omitted_bytes:
+            separator = "" if not text or text.endswith(("\n", "\r")) else "\n"
+            text += f"{separator}[truncated {omitted_bytes} bytes]\n"
+        return text
+
+    @classmethod
+    def _collect_scripts(
+        cls,
+        sdir: Path,
+        *,
+        display_limits: bool = False,
+    ) -> list[dict]:
+        """Collect regular helper files for validation or bounded display.
+
+        Approval callers retain the full-file, fail-closed behavior. Detail
+        callers read at most the display budgets and omit undecodable helpers;
+        their authoritative ``script_validation`` report names those helpers.
+        """
         out: list[dict] = []
         if not sdir.is_dir():
             return out
         for root, _dirs, files in os.walk(sdir):
             for nm in sorted(files):
+                if display_limits and len(out) >= _PENDING_SCRIPT_MAX_ENTRIES:
+                    return out
                 fp = Path(root) / nm
                 if fp.is_file() and not fp.is_symlink():
                     try:
+                        content = (
+                            cls._read_pending_display_text(
+                                fp,
+                                within_root=sdir,
+                                max_bytes=_PENDING_DETAIL_SCRIPT_MAX_BYTES,
+                                max_lines=_PENDING_DETAIL_SCRIPT_MAX_LINES,
+                            )
+                            if display_limits
+                            else fp.read_text(encoding="utf-8")
+                        )
                         out.append(
                             {
                                 "filename": str(fp.relative_to(sdir)),
-                                "content": fp.read_text(encoding="utf-8"),
+                                "content": content,
                             }
                         )
+                    except UnicodeDecodeError:
+                        if not display_limits:
+                            raise
+                        # The descriptor-pinned verdict reports this as an
+                        # unreadable helper; keep other sections printable.
+                        continue
                     except OSError:
                         continue
         return out
@@ -5374,8 +5448,8 @@ class SkillsLoader:
             v_report.setdefault(fn, []).extend(findings)
         return (v_ok and not extra), v_report
 
-    def get_pending_skill(self, slug: str) -> dict | None:
-        """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
+    def get_pending_skill(self, slug: str, *, display_limits: bool = False) -> dict | None:
+        """Return pending detail, with optional bounded human-facing previews."""
         if not self._is_pending_slug_safe(slug):
             return None
         pdir = self._pending_root() / slug
@@ -5389,7 +5463,7 @@ class SkillsLoader:
             logger.warning("Refusing to read pending %s: candidate contains a symlink", slug)
             return None
         meta = self._read_pending_meta(slug)
-        scripts = self._collect_scripts(pdir / "scripts")
+        scripts = self._collect_scripts(pdir / "scripts", display_limits=display_limits)
         # Same hardened verdict as the pending LIST (descriptor-pinned walk,
         # fail-closed on unreadable/oversized entries) — deriving it from the
         # display collection instead would let a silently omitted unreadable
@@ -5408,7 +5482,16 @@ class SkillsLoader:
             "kind": meta.get("kind", "new"),
             "target": meta.get("target"),
             "base_version": meta.get("base_version"),
-            "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
+            "content": self._redact_text(
+                self._read_pending_display_text(
+                    skill_file,
+                    within_root=pdir,
+                    max_bytes=_PENDING_DETAIL_SKILL_MAX_BYTES,
+                    max_lines=_PENDING_DETAIL_SKILL_MAX_LINES,
+                )
+                if display_limits
+                else skill_file.read_text(encoding="utf-8")
+            ),
             "scripts": scripts,
         }
         if verdict is not None:

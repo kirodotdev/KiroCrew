@@ -26,6 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, NoReturn
 from zoneinfo import ZoneInfo
 
 from kiro_crew import __version__, app_lifecycle_client, beacon, platform_compat
@@ -127,6 +128,7 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skills import SkillsLoader
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
@@ -2415,6 +2417,138 @@ _LEARN_EMBED_NOTE = (
     "  gateway's re-embed sweep after it next starts, once its embedding backend\n"
     "  is ready."
 )
+
+
+def _skills_fail(code: str, message: str) -> NoReturn:
+    print(f"{code}: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _skills_terminal_line(value: object) -> str:
+    """Strip controls before redacting and bounding one terminal line."""
+    text = _TERMINAL_CTRL_RE.sub("", str(value))
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return safe_terminal_line(text)
+
+
+def _skills_terminal_value(value: object) -> Any:
+    """Sanitize and redact every untrusted string before terminal rendering."""
+    if isinstance(value, str):
+        return _skills_terminal_line(value)
+    if isinstance(value, dict):
+        return {
+            _skills_terminal_line(key): _skills_terminal_value(item) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_skills_terminal_value(item) for item in value]
+    return value
+
+
+def _skills_multiline(value: object) -> str:
+    """Frame each sanitized candidate-body line as untrusted terminal text."""
+    return "\n".join(f"| {_skills_terminal_line(line)}" for line in str(value).split("\n"))
+
+
+def _skills(args: argparse.Namespace) -> None:
+    """List and inspect skill candidates without changing them."""
+
+    action = getattr(args, "skills_action", None)
+    slug = getattr(args, "slug", "")
+    try:
+        loader = SkillsLoader(install_builtins=False)
+    except OSError:
+        _skills_fail("skills_unreadable", "the skills directory could not be read")
+
+    if action == "list":
+        include_live = bool(getattr(args, "live", False) or getattr(args, "all", False))
+        include_pending = bool(getattr(args, "all", False) or not include_live)
+        payload: dict[str, list[dict]] = {}
+        try:
+            if include_pending:
+                payload["pending"] = loader.list_pending_skills()
+            if include_live:
+                payload["live"] = loader.list_skills()
+        except UnicodeDecodeError:
+            _skills_fail("invalid_skill_encoding", "a SKILL.md is not valid UTF-8")
+        except OSError:
+            _skills_fail("skills_unreadable", "the skills directory could not be read")
+        safe_payload = _skills_terminal_value(payload)
+        if getattr(args, "json", False):
+            print(json.dumps(safe_payload, indent=2, sort_keys=True))
+            return
+        if include_pending:
+            pending = safe_payload["pending"]
+            if not pending:
+                print("No pending skill candidates.")
+            else:
+                for row in pending:
+                    print(
+                        f"PENDING  {row['slug']}  [{row.get('kind', 'new')}]  "
+                        f"{row.get('description', '')}".rstrip()
+                    )
+        if include_live:
+            live = safe_payload["live"]
+            if not live:
+                print("No live skills.")
+            else:
+                for row in live:
+                    print(f"LIVE     {row['key']}  {row.get('description', '')}".rstrip())
+        return
+
+    if action == "show":
+        try:
+            detail = loader.get_pending_skill(slug, display_limits=True)
+        except UnicodeDecodeError:
+            _skills_fail(
+                "invalid_skill_encoding",
+                "the pending SKILL.md is not valid UTF-8",
+            )
+        except OSError:
+            _skills_fail(
+                "candidate_unreadable",
+                f"pending skill '{_skills_terminal_line(slug)}' could not be read",
+            )
+        if detail is None:
+            _skills_fail(
+                "not_found",
+                f"pending skill '{_skills_terminal_line(slug)}' was not found or cannot be read",
+            )
+        content = _skills_multiline(detail.get("content", "")).rstrip()
+        meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+        script_items = detail.get("scripts")
+        scripts = script_items if isinstance(script_items, list) else []
+        loader_validation = detail.get("script_validation")
+        if isinstance(loader_validation, dict) and isinstance(loader_validation.get("ok"), bool):
+            validation = {
+                "ok": loader_validation["ok"],
+                "scripts": loader_validation.get("report", {}),
+            }
+        else:
+            validation = {"status": "unavailable", "scripts": {}}
+        print("--- SKILL.md (untrusted; each line is prefixed with '| ') ---")
+        print(content)
+        print("\n--- .meta.json ---")
+        print(json.dumps(_skills_terminal_value(meta), indent=2, sort_keys=True))
+        for script in scripts:
+            if not isinstance(script, dict):
+                continue
+            filename = _skills_terminal_line(script.get("filename", "<unnamed>"))
+            body = _skills_multiline(script.get("content", "")).rstrip()
+            print(f"\n--- scripts/{filename} (untrusted; each line is prefixed with '| ') ---")
+            print(body)
+        print("\n--- validation ---")
+        print(
+            json.dumps(
+                _skills_terminal_value(validation),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    _skills_fail("missing_action", "choose list or show")
+
 
 # INSERTED only. An enrichment resolves against the ONE existing row it rewrites
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over
