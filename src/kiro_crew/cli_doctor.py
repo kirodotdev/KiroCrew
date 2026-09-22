@@ -3831,6 +3831,12 @@ def _report_kas_backend(issues: list[str]) -> None:
     # probe rejected -- that is exactly the one worth seeing.
     if identity_line:
         print(f"  crew vault:  {identity_line}")
+    # Before the help probe, not after: the row reads ``--version``, which is a
+    # different spawn from ``acp --help``, so a failed help probe establishes
+    # nothing about it. The early ``return`` below is for the ENGINE rows alone;
+    # letting it swallow this row would hide a withheld auto-approve on exactly
+    # the host where kiro-cli is misbehaving.
+    _report_kas_spec_permissions(issues)
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a
@@ -3865,7 +3871,6 @@ def _report_kas_backend(issues: list[str]) -> None:
             f"  token:       ➖ {entitlement_label(ACP_BACKEND_KAS)} "
             "(see the sign-in rows above)"
         )
-    _report_kas_spec_permissions(issues)
 
 
 def _report_kas_spec_permissions(issues: list[str]) -> None:

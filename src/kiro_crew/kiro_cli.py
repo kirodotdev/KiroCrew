@@ -51,6 +51,13 @@ _STATE_DB_TIMEOUT_SECS = 5.0
 #: lowering it once an older release is verified is a one-line change, while
 #: granting it to a release that refuses the field costs the user every tool with
 #: nothing red to say why.
+#:
+#: What authorizes lowering it: install the candidate release (a 2.x between
+#: 2.10.0 and 2.23.0), put a spec carrying ``"permissions": {"rules": []}`` in
+#: its agents directory, start a session with ``--agent`` naming that spec, and
+#: confirm the agent resolves -- its MCP servers present, no ``unknown field
+#: 'permissions'`` in the log. The floor becomes the lowest release that passes.
+#: A changelog entry is not a probe; a release nobody ran stays above the floor.
 SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 
 #: ``--version`` is a local read of an already-resolved binary, so it gets the
