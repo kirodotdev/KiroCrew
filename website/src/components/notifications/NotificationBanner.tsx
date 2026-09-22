@@ -104,6 +104,14 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   const deadline = useRef(0)
   const remaining = useRef<number | null>(null)
   const paused = useRef(false)
+  // The two independent reasons a card is held open, tracked apart. One boolean
+  // cannot say WHICH of them still holds: with a single flag the pointer
+  // leaving released a hold the KEYBOARD had taken, so a card the user had
+  // tabbed into flew off under their focus, and a blur released the POINTER's
+  // hold, hiding a card still under the cursor. `paused` stays the one thing
+  // the timer reads; these two say who is asking for it.
+  const hovering = useRef(false)
+  const focusedWithin = useRef(false)
   const pendingRef = useRef(pending)
   pendingRef.current = pending
 
@@ -130,6 +138,11 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
     pendingRef.current = next
     setPending(next)
     if (next.length <= 1) setExpanded(false)
+    // With the deck empty there is no card left to hover or focus, and neither
+    // owner gets to say so: removing the focused element fires no blur, and a
+    // pointer over the space a card VACATED gets no leave. Left standing, the
+    // hold outlives its card and the next arrival never starts its clock.
+    if (next.length === 0) { hovering.current = false; focusedWithin.current = false; paused.current = false }
   }, [measureExit])
 
   const fireAutoHide = useCallback(() => {
@@ -151,24 +164,25 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
     armTimer(BANNER_AUTO_HIDE_MS)
   }, [armTimer])
 
-  const pause = useCallback(() => {
-    if (paused.current) return
-    paused.current = true
-    if (timer.current !== null) {
-      remaining.current = Math.max(0, deadline.current - Date.now())
-      clearTimer()
+  /** Apply the holds: pause while either owner wants it, resume only when
+   *  BOTH have let go. */
+  const syncPaused = useCallback(() => {
+    const hold = hovering.current || focusedWithin.current
+    if (hold === paused.current) return
+    paused.current = hold
+    if (hold) {
+      if (timer.current !== null) {
+        remaining.current = Math.max(0, deadline.current - Date.now())
+        clearTimer()
+      }
+      return
     }
-  }, [clearTimer])
-
-  const resume = useCallback(() => {
-    if (!paused.current) return
-    paused.current = false
     const hasDefault = pendingRef.current.some(n => notePriority(n) !== 'critical')
     if (hasDefault && remaining.current !== null) {
       armTimer(remaining.current)
       remaining.current = null
     }
-  }, [armTimer])
+  }, [armTimer, clearTimer])
 
   useEffect(() => clearTimer, [clearTimer])
 
@@ -291,10 +305,14 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
     >
       <div
         className={`relative pointer-events-auto ${expanded ? 'flex flex-col gap-2' : ''}`}
-        onPointerEnter={pause}
-        onPointerLeave={resume}
-        onFocusCapture={pause}
-        onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) resume() }}
+        onPointerEnter={() => { hovering.current = true; syncPaused() }}
+        onPointerLeave={() => { hovering.current = false; syncPaused() }}
+        onFocusCapture={() => { focusedWithin.current = true; syncPaused() }}
+        onBlurCapture={e => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+          focusedWithin.current = false
+          syncPaused()
+        }}
       >
         <AnimatePresence custom={exitDeltas.current} initial={false}>
           {visible.map((n, idx) => {

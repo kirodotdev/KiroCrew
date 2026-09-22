@@ -273,6 +273,57 @@ describe('NotificationBanner: auto-hide', () => {
     act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS) })
     expect(cards()).toHaveLength(0)
   })
+
+  it('keeps the card while focus is inside it after the pointer leaves', () => {
+    const n = mkN()
+    renderBanner({ items: [n] })
+    vi.useFakeTimers()
+    arrive(n)
+    const stack = cards()[0].parentElement!
+    const x = screen.getByTestId('notification-banner-dismiss')
+    // Keyboard first, pointer second: two independent holds on the same card.
+    act(() => { x.focus() })
+    fireEvent.pointerEnter(stack)
+    // The pointer goes; focus stays. The hold the keyboard took is still on.
+    fireEvent.pointerLeave(stack)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+    expect(cards()).toHaveLength(1)
+    expect(document.activeElement).toBe(x)
+  })
+
+  it('keeps the card while the pointer is over it after focus leaves', () => {
+    const n = mkN()
+    renderBanner({ items: [n] })
+    vi.useFakeTimers()
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    arrive(n)
+    const stack = cards()[0].parentElement!
+    fireEvent.pointerEnter(stack)
+    act(() => { screen.getByTestId('notification-banner-dismiss').focus() })
+    // Focus leaves the card; the pointer is still resting on it.
+    act(() => { outside.focus() })
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+    expect(cards()).toHaveLength(1)
+    // And it still hides once that last hold is released.
+    fireEvent.pointerLeave(stack)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS + 1) })
+    expect(cards()).toHaveLength(0)
+  })
+
+  it('starts the clock for the next card after a FOCUSED one was dismissed', () => {
+    renderBanner()
+    vi.useFakeTimers()
+    arrive(mkN())
+    // Dismissing the focused button removes it; no blur follows, so the hold
+    // it took has to be released by the emptying deck or it outlives the card.
+    act(() => { screen.getByTestId('notification-banner-dismiss').focus() })
+    fireEvent.click(screen.getByTestId('notification-banner-dismiss'))
+    expect(cards()).toHaveLength(0)
+    arrive(mkN())
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS + 1) })
+    expect(cards()).toHaveLength(0)
+  })
 })
 
 describe('NotificationBanner: stack and interaction', () => {
