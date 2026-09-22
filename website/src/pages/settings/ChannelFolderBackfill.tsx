@@ -70,11 +70,27 @@ export function ChannelFolderBackfill(props: {
   const qc = useQueryClient()
   const [pending, setPending] = useState(false)
   const [report, setReport] = useState<BackfillReport | null>(null)
+  // Receipts whose content cannot be recovered by clicking again. Only one shape
+  // qualifies: a `folder_gone` report that MOVED something. Those sessions were
+  // stamped with the deleted folder's id, so a later pass refuses to offer them
+  // (`needs_backfill_filing` treats either stamp as filed) and recreating the
+  // folder mints a fresh id that does not reattach them. The named list is the
+  // only thing that says WHICH sessions to move back by hand, so it stays on the
+  // panel, beneath later runs, until the panel closes.
+  //
+  // Every other receipt is re-derivable by one more click: "nothing to move",
+  // "save the folder name first", "no folder exists yet", a `folder_gone` that
+  // filed nothing, an all-failed count (failed writes are never stamped, so the
+  // next pass retries them), and a store failure. None of those is kept.
+  const [stranded, setStranded] = useState<BackfillReport[]>([])
   const [error, setError] = useState('')
 
   const run = () => {
     setPending(true)
     setError('')
+    if (report?.reason === 'folder_gone' && report.moved.length > 0) {
+      setStranded(prev => [...prev, report])
+    }
     // The previous report is dropped BEFORE the request, not after it returns: a
     // stale "moved 3" sitting under a spinner reads as the current run's result.
     setReport(null)
@@ -113,6 +129,14 @@ export function ChannelFolderBackfill(props: {
           : i18nT('pages.settings.botChannelPanel.backfill_existing')}
       </Btn>
       {report && <BackfillOutcome report={report} folderName={folderName} />}
+      {stranded.length > 0 && (
+        <div data-testid="backfill-stranded">
+          {/* Append-only, so a receipt's position is a stable identity for it. */}
+          {stranded.map((r, i) => (
+            <BackfillOutcome key={i} report={r} folderName={folderName} stranded />
+          ))}
+        </div>
+      )}
       {/* No hand-off: the failure is a refused bulk move, and the panel around
           this button holds the user's unsaved settings draft (the folder name
           they may be mid-edit, and on the token panels a pasted credential).
@@ -139,11 +163,20 @@ export function ChannelFolderBackfill(props: {
 
 /** What one completed run says. Split out so each outcome is one branch rather
  *  than a chain of ternaries inside the button's JSX. */
-function BackfillOutcome(props: { report: BackfillReport; folderName: string }) {
-  const { report, folderName } = props
+function BackfillOutcome(props: {
+  report: BackfillReport
+  folderName: string
+  /** A kept `folder_gone` receipt from an EARLIER run. It renders the note and
+   *  the named list only: its failed and remaining counts describe sessions the
+   *  next click retries, so repeating them under a later run's own counts would
+   *  put two answers to "can clicking again help" on one card. */
+  stranded?: boolean
+}) {
+  const { report, folderName, stranded = false } = props
   // Collapsed for each new report rather than remembered: the button drops the
   // previous report before it requests, so this component unmounts between runs
-  // and a later run's list cannot inherit an earlier one's expanded state.
+  // and a later run's list cannot inherit an earlier one's expanded state. A
+  // stranded receipt is its own mounted instance and keeps its own toggle.
   const [expanded, setExpanded] = useState(false)
   // The folder the SERVER acted on wins over the panel's copy of the name: on a
   // `folder_missing` answer they are the same, but after a rename that has not
@@ -230,7 +263,7 @@ function BackfillOutcome(props: { report: BackfillReport; folderName: string }) 
   // dropped the count in exactly those cases -- the count that tells the user
   // whether clicking again can help.
   const failureNotice =
-    report.failed > 0 ? (
+    !stranded && report.failed > 0 ? (
       <ErrorNotice
         variant="inline"
         className="mt-2 text-[11.5px]"
@@ -274,7 +307,7 @@ function BackfillOutcome(props: { report: BackfillReport; folderName: string }) 
     // interrupting, which is the failure the `errors-use-error-notice` rule
     // exists to prevent. Status semantics belong on the non-error output only:
     // the receipt sentence below, and `BackfillNote`, which carries its own.
-    <div className="mt-2" data-testid="backfill-result">
+    <div className="mt-2" data-testid={stranded ? 'backfill-stranded-result' : 'backfill-result'}>
       {reasonNote}
       <p
         className="inline-flex items-center gap-1.5 text-[12px] text-ok mt-0 mb-1"
@@ -311,7 +344,7 @@ function BackfillOutcome(props: { report: BackfillReport; folderName: string }) 
       )}
       {/* A capped run failed at nothing, so it stays a plain note: it is
           guidance that another click continues, not a failure report. */}
-      {report.remaining > 0 && report.failed === 0 && (
+      {!stranded && report.remaining > 0 && report.failed === 0 && (
         <BackfillNote
           text={i18nT('pages.settings.botChannelPanel.backfill_remaining', {
             count: report.remaining,

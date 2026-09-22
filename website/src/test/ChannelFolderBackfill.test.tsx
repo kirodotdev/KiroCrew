@@ -610,6 +610,128 @@ describe('ChannelFolderBackfill', () => {
     release({ ok: true, status: 200, json: () => Promise.resolve(report({ moved: [] })) })
   })
 
+  it('keeps a stranded receipt beneath the next run instead of dropping it', async () => {
+    // Issue #12114. A `folder_gone` receipt that MOVED something is the only record
+    // of which conversations are stranded on the deleted folder's id: a second
+    // pass refuses to offer them again (either stamp reads as filed) and recreating
+    // the folder mints a fresh id. So it survives the next click, beneath that
+    // click's own output, until the panel closes.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(
+          200,
+          report({
+            moved: [
+              { key: 'slack:1', title: 'Standup', label: 'Slack' },
+              { key: 'slack:2', title: 'Release plan', label: 'Slack' },
+            ],
+            reason: 'folder_gone',
+            remaining: 3,
+            failed: 1,
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        response(200, report({ moved: [{ key: 'slack:3', title: 'Retro', label: 'Slack' }] })),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Standup')).toBeTruthy()
+    // On the CURRENT run the failure count still renders.
+    expect(screen.getByTestId('backfill-write-failures')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Retro')).toBeTruthy()
+
+    // The first run's names are still on the card, with the note that explains
+    // why they are listed at all.
+    const stranded = screen.getByTestId('backfill-stranded')
+    expect(stranded.textContent).toContain('Standup')
+    expect(stranded.textContent).toContain('Release plan')
+    expect(stranded.textContent).toMatch(/removed while this ran/i)
+    expect(stranded.textContent).not.toContain('Retro')
+    // The current run renders as itself, ABOVE the kept receipt.
+    const current = screen.getByTestId('backfill-result')
+    expect(current.textContent).toContain('Retro')
+    expect(current.textContent).not.toContain('Standup')
+    expect(current.compareDocumentPosition(stranded) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // A kept receipt does not repeat its counts: its failed and remaining
+    // sessions are exactly what the click that just happened retried, so the
+    // only answer to "can clicking again help" is the current run's.
+    expect(screen.queryByTestId('backfill-write-failures')).toBeNull()
+    expect(screen.queryByText(/still unfiled/i)).toBeNull()
+    expect(screen.getAllByText(/removed while this ran/i)).toHaveLength(1)
+  })
+
+  it('accumulates every stranded receipt across clicks', async () => {
+    // Two folders deleted mid-pass on two different runs strand two disjoint
+    // lists; "Moved 1" and "Moved 1" must survive together, not the latest only.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(
+          200,
+          report({
+            moved: [{ key: 'slack:1', title: 'Standup', label: 'Slack' }],
+            reason: 'folder_gone',
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        response(
+          200,
+          report({
+            moved: [{ key: 'slack:2', title: 'Release plan', label: 'Slack' }],
+            reason: 'folder_gone',
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(response(200, report({ moved: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Standup')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Release plan')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText(/Nothing to move/i)).toBeTruthy()
+
+    expect(screen.getAllByTestId('backfill-stranded-result')).toHaveLength(2)
+    expect(screen.getByText('Standup')).toBeTruthy()
+    expect(screen.getByText('Release plan')).toBeTruthy()
+  })
+
+  it('drops a first receipt that clicking again can reproduce', async () => {
+    // Only a `folder_gone` receipt WITH moved sessions is irrecoverable. A
+    // `folder_gone` that filed nothing stamped nothing, so saving the settings and
+    // clicking again really does redo it -- keeping that note under later runs
+    // would tell the user to recreate a folder the later run already found.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, report({ reason: 'folder_gone', remaining: 2, failed: 2 })),
+      )
+      .mockResolvedValueOnce(
+        response(200, report({ moved: [{ key: 'slack:3', title: 'Retro', label: 'Slack' }] })),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText(/so nothing was filed/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Retro')).toBeTruthy()
+
+    expect(screen.queryByTestId('backfill-stranded')).toBeNull()
+    expect(screen.queryByText(/removed while this ran/i)).toBeNull()
+    expect(screen.queryByTestId('backfill-write-failures')).toBeNull()
+  })
+
   it('cannot be clicked while a run is in flight', async () => {
     let release: (v: unknown) => void = () => {}
     const fetchMock = vi.fn().mockImplementation(() => new Promise(r => (release = r)))

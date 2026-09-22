@@ -96,6 +96,7 @@ def test_denies_non_loopback(monkeypatch: Any) -> None:
     """
     mod = _mod()
     monkeypatch.setattr(mod, "is_direct_local_request", lambda req: False)
+    monkeypatch.setattr(mod.platform, "node", lambda: "studio-mini.lan")
     resp = asyncio.run(mod.api_channel_folder_backfill(_mocked(b'{"namespace": "slack"}')))
     assert resp.status == 403
     assert json.loads(resp.body)["code"] == "read_only_remote"
@@ -109,6 +110,40 @@ def test_denies_non_loopback(monkeypatch: Any) -> None:
     assert "remote sessions" not in body["error"], body["error"]
     assert "hosts this dashboard" in body["error"], body["error"]
     assert body["error"].rstrip().endswith("click again."), body["error"]
+    # And it names WHICH computer: the host's first DNS label, as
+    # ``session_transfer.local_instance_label`` spells it. "The computer that
+    # hosts this dashboard" alone tells a remote reader what to look for, not
+    # where -- a blind read of it recorded "I have no idea how I'd find out
+    # which computer that is".
+    assert "studio-mini, the computer that hosts this dashboard" in body["error"], body["error"]
+    assert "studio-mini.lan" not in body["error"], body["error"]
+
+
+def test_remote_refusal_survives_a_nameless_host(monkeypatch: Any) -> None:
+    """No host label, no gap: the sentence keeps its description alone.
+
+    An empty ``platform.node()`` and one that raises are both possible on a
+    container, and a refusal path must answer either way. Neither may leave a
+    dangling comma or a blank where the name was.
+    """
+    mod = _mod()
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: False)
+
+    monkeypatch.setattr(mod.platform, "node", lambda: "")
+    resp = asyncio.run(mod.api_channel_folder_backfill(_mocked(b'{"namespace": "slack"}')))
+    assert resp.status == 403
+    error = json.loads(resp.body)["error"]
+    assert error.startswith("Filing runs only on the computer that hosts this dashboard."), error
+
+    def _raise() -> str:
+        raise OSError("no hostname")
+
+    monkeypatch.setattr(mod.platform, "node", _raise)
+    resp = asyncio.run(mod.api_channel_folder_backfill(_mocked(b'{"namespace": "slack"}')))
+    assert resp.status == 403
+    error = json.loads(resp.body)["error"]
+    assert error.startswith("Filing runs only on the computer that hosts this dashboard."), error
+    assert json.loads(resp.body)["code"] == "read_only_remote"
 
 
 def test_denies_a_forwarded_loopback_request() -> None:
