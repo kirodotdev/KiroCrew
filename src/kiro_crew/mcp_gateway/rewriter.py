@@ -48,6 +48,7 @@ from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import (
     STUB_FLAGS_FLAG,
@@ -119,7 +120,13 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # Windows (8.3 short form when the interpreter path carries a metacharacter),
 # and kept overlays must fingerprint that derived spelling to avoid launching
 # through cmd.exe with a quote-stripped interpreter path.
-_FINGERPRINT_SCHEMA = 7
+# 8: a registry-governed or muted entry passes through unwrapped instead of
+# becoming a broker stub. The inputs are unchanged for such an entry, so a kept
+# overlay keeps a stub whose name ``session_servers.injection_server_names``
+# still collects -- launching, at session level, the very server the marker
+# hands to the administrator's catalog and the mute silences. The output shape
+# for identical inputs is what changed, which is exactly what this knob rejects.
+_FINGERPRINT_SCHEMA = 8
 
 
 @dataclass
@@ -900,9 +907,25 @@ def _rewrite_single_spec(
             # HTTP/SSE MCP entries — already shareable by nature, skip.
             new_servers[name] = entry
             continue
-        if entry.get("disabled") is True:
-            # Honour the user's mute: a server explicitly disabled in the agent
-            # spec must never be wrapped into a live pooling stub.
+        if mcp_entry_is_registry_governed(entry):
+            # A registry-governed entry defers its launch to the administrator's
+            # catalog, so there is nothing here to pool. Wrapping it produced a
+            # stub the catalog overrides anyway (in registry mode it resolves the
+            # entry by map key and supplies its own command) or that the client
+            # drops outright (outside registry mode the marked entry is the one
+            # dropped) -- while making the name a "stubbed name" the session
+            # projections subtract, so the server reached a session as a live
+            # local process with the marker governing nothing. Pass it through so
+            # the client's own filter decides, like the mute below.
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if mcp_entry_is_muted(entry):
+            # Honour the user's mute: a server disabled in the agent spec must
+            # never be wrapped into a live pooling stub. Read fail-closed, so a
+            # non-boolean ``disabled`` mutes too -- reading only a literal ``True``
+            # wrapped such an entry, and a wrapped name is subtracted from the
+            # session projections as a broker stub before their own mute check
+            # runs, which mounted the server the spec had silenced.
             # _build_stub_entry returns a fixed shape and would DROP ``disabled``,
             # silently re-enabling the muted server in the overlay. Pass the
             # entry through unchanged (minus the internal ``poolable`` hint) so
@@ -1149,10 +1172,16 @@ def _injectable_settings_servers(
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             continue
-        if entry.get("disabled") is True:
-            # Honour the user's mute: a server explicitly disabled in
-            # settings/mcp.json must never be injected as a live stub (which
-            # would silently re-enable it in every agent overlay).
+        if mcp_entry_is_registry_governed(entry):
+            # Never inject a catalog-governed server as a live stub, for the
+            # reason the wrap guard states -- and here it would enter EVERY
+            # agent's overlay at once.
+            continue
+        if mcp_entry_is_muted(entry):
+            # Honour the user's mute: a server disabled in settings/mcp.json must
+            # never be injected as a live stub (which would silently re-enable it
+            # in every agent overlay). Fail-closed like the wrap guard above: the
+            # two decide the same thing about the same field.
             continue
         if name in UNPOOLABLE_SERVERS:
             continue

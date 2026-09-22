@@ -66,7 +66,12 @@ from kiro_crew.agent_discovery import (
     spec_by_declared_name,
 )
 from kiro_crew.agent_spec_format import agent_spec_candidates
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_cleanup import (
+    KIROCREW_BIN_MCP_SERVERS,
+    MCP_REGISTRY_TYPE,
+    mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
+)
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -105,12 +110,6 @@ _MANAGED_ENV_KEYS_KEPT = frozenset({"KIROCREW_HOME"})
 #: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
 #: unknown field can fail a strict schema, and it means nothing to the backend.
 _WRAPPER_MARKERS = ("_kirocrew_mcp_gateway_wrapped", "_mc_mcp_gateway_wrapped")
-
-#: kiro-cli's enterprise-governance discriminator, mirrored rather than imported
-#: (``agent._MCP_REGISTRY_TYPE`` is private), exactly as
-#: :mod:`kiro_crew.acp.session_mcp` mirrors it. A ratchet test pins all three
-#: equal.
-_KIRO_REGISTRY_TYPE = "registry"
 
 #: Per-server keys KAS's wire schema ACCEPTS and then throws away, so projecting
 #: one is indistinguishable from omitting it. ``ClientAgentMcpServerSchema``
@@ -400,7 +399,9 @@ def _project_mcp_servers(
 
     * **stubbed names** — those arrive as the session-level ``mcpServers`` param,
       which outranks an agent-declared entry. Emitting both is the double
-      registration this block exists to avoid.
+      registration this block exists to avoid. Applied LAST: the withholds below
+      are decisions about whether the server may run at all, and a name handed to
+      the injection escapes every one of them.
     * **``autoApprove``** — an auto-approved MCP tool is approved by the host and
       emits no permission request, so ``hooks.on_tool_call`` (the always-on deny
       floor, the sensitive-path check, the governance ceiling) never runs for it.
@@ -472,18 +473,18 @@ def _project_mcp_servers(
     for name, entry in servers.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
-        if name in stub_server_names:
-            continue
         managed = name in MANAGED_MCP_SERVER_NAMES
-        disabled = entry.get("disabled", False)
-        if disabled is not False:
-            # Anything but a literal ``False`` is read as a mute, the same reading
-            # ``session_mcp._kiro_override_elements`` applies. A non-boolean is not
-            # coerced and not forwarded either: ``disabled: z.boolean()`` fails the
-            # wire schema, and a client agent that fails it is dropped WHOLE
+        if mcp_entry_is_muted(entry):
+            # ``mcp_entry_is_muted`` is the shared launch-decision reading, so the
+            # gateway rewriter cannot wrap an entry this function would withhold --
+            # a wrapped name arrives as a stubbed name and is subtracted above,
+            # before any check here. A non-boolean is not coerced and not forwarded
+            # either: ``disabled: z.boolean()`` fails the wire schema, and a client
+            # agent that fails it is dropped WHOLE
             # (``validateAndConvertClientCustomAgents`` logs
             # ``client.agent.drop.invalid`` and moves on), so Crew injects its one
             # agent and the session silently runs on KAS's default mode instead.
+            disabled = entry.get("disabled")
             logger.info(
                 "agent %r: not declaring MCP server %r — %s",
                 agent_id,
@@ -499,7 +500,7 @@ def _project_mcp_servers(
                 ),
             )
             continue
-        marked = entry.get("type") == _KIRO_REGISTRY_TYPE
+        marked = mcp_entry_is_registry_governed(entry)
         if not managed and (registry_mode or marked):
             logger.info(
                 "agent %r: withholding MCP server %r — %s",
@@ -533,8 +534,18 @@ def _project_mcp_servers(
                 "is `kirocrew config set agent.mcp_registry_mode false` on an "
                 "install whose profile is not actually registry-governed.",
                 agent_id,
-                _KIRO_REGISTRY_TYPE,
+                MCP_REGISTRY_TYPE,
             )
+        if name in stub_server_names:
+            # LAST of the subtractions, deliberately. A stubbed name is declared by
+            # the session-level injection instead of here, and that path answers
+            # none of the questions above -- so a name subtracted before them is a
+            # server admitted without them. The gateway declines to wrap a muted or
+            # catalog-governed entry, which keeps such a name out of this set in the
+            # first place; this ordering is what makes the answer here true on its
+            # own rather than by trusting that. It is the order
+            # :func:`kiro_crew.acp.session_mcp.session_mcp_servers` uses.
+            continue
         projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
         projected.pop("autoApprove", None)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]

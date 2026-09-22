@@ -9,6 +9,7 @@ the one the operator configured.
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 
@@ -695,11 +696,21 @@ def _kas_wire_maps(entry: dict) -> dict:
     one from ``url``/``headers``/``env``/``timeout``, and an entry with neither is
     dropped. Everything else the wire schema accepted is thrown away here.
 
-    This is the leg of the round trip that cannot be tested against the real
-    backend from this repo, and it is the whole reason the projection withholds
-    rather than annotates. When kiro-agent starts copying these fields through,
-    THIS fixture is what has to change, and the assertions below are the note
-    telling you the Crew-side workaround can go.
+    PROVENANCE, because everything the projection withholds rests on it:
+    transcribed from ``packages/kiro-agent/src/services/custom-agents/
+    resolve-client-agents.ts`` on ``kiro-team/kiro-agent``'s ``main``. It is a
+    reading of source, NOT a live measurement -- no KAS process is startable from
+    this repo's test environment -- so an upstream change makes this fixture wrong
+    before it makes the projection wrong, which is why it is pinned here rather
+    than left implicit. The host-contract row records the same, with the date.
+
+    When kiro-agent starts copying these fields through, THIS fixture is what goes
+    red. Two Crew-side behaviours become removable at that point, not one: the mute
+    handled by omission (``TestMutedServersAreNotDeclared``) AND the withhold of a
+    third-party registry entry under registry mode
+    (``TestRegistryGovernedEntries``), which exists only because the marker cannot
+    reach the host's own filter. The ``TODO(kiro-agent)`` beside
+    ``_KAS_DISCARDED_ENTRY_KEYS`` names the upstream change.
     """
     if entry.get("command"):
         keys = ("command", "args", "env", "timeout")
@@ -826,6 +837,105 @@ class TestMutedServersAreNotDeclared:
         spec = _spec(mcpServers={"muted": {"command": "x", "disabled": True}})
         to_client_custom_agent("a", spec, "p")
         assert spec["mcpServers"]["muted"] == {"command": "x", "disabled": True}
+
+
+class TestAMutedServerCannotArriveThroughThePoolingStub:
+    """The mute has to hold on the path that does NOT go through this block.
+
+    A stubbed name is subtracted from the projection before any check here, so the
+    projection alone cannot honour a mute on a pooled server -- the decision has to
+    be the same one the gateway rewriter makes when it chooses to wrap. Both now
+    read ``mcp_entry_is_muted``, and this drives the real chain rather than
+    asserting the predicate twice.
+    """
+
+    @staticmethod
+    def _stub_names(spec: dict, tmp_path: Path) -> frozenset[str]:
+        """The names the gateway would inject at session level for *spec*.
+
+        Derived the way ``session_servers.injection_server_names`` derives them --
+        from the wrapper marker the rewriter leaves -- so a change in what the
+        rewriter wraps changes this answer.
+        """
+        from kiro_crew.mcp_gateway import rewriter
+
+        rewritten, _ = rewriter._rewrite_single_spec(
+            dict(spec),
+            stubs_dir=tmp_path / "stubs",
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path,
+            sandbox_mode="off",
+            approval_mode="",
+            stub_servers=frozenset(spec.get("mcpServers", {})),
+        )
+        return frozenset(
+            name
+            for name, entry in rewritten["mcpServers"].items()
+            if entry.get(rewriter._WRAPPER_MARKER) or entry.get(rewriter._WRAPPER_MARKER_LEGACY)
+        )
+
+    @pytest.mark.parametrize("value", [True, "true", 1], ids=repr)
+    def test_a_muted_poolable_server_is_never_stubbed_and_so_is_withheld(
+        self, value: object, tmp_path: Path
+    ):
+        spec = _spec(mcpServers={"muted": {"command": sys.executable, "disabled": value}})
+        stubbed = self._stub_names(spec, tmp_path)
+
+        assert stubbed == frozenset(), "a muted server must not become a live stub"
+        out = to_client_custom_agent("kirocrew", spec, "p", stub_server_names=stubbed)
+        assert "mcpServers" not in out
+
+    def test_a_registry_governed_poolable_server_is_never_stubbed_either(self, tmp_path: Path):
+        """The peer of the mute case, and the same escape.
+
+        A catalog-governed entry an operator lists for pooling was wrapped by the
+        rewriter (which had no reading of the marker at all), became a stubbed
+        name, and was subtracted here before the marker guard -- so it reached the
+        session as a live local process that kiro-cli would have refused.
+        """
+        spec = _spec(
+            mcpServers={"governed": {"command": sys.executable, "type": "registry"}},
+            tools=["@governed"],
+        )
+        stubbed = self._stub_names(spec, tmp_path)
+
+        assert stubbed == frozenset(), "a catalog-governed server must not become a stub"
+        out = to_client_custom_agent("kirocrew", spec, "p", stub_server_names=stubbed)
+        assert "mcpServers" not in out
+
+    def test_a_withhold_outranks_the_stub_subtraction(self, caplog):
+        """Ordering, pinned on the one thing the two orders differ on: the REASON.
+
+        Both orders leave the block empty for a stubbed name, so an
+        absent-``mcpServers`` assertion passes either way and pins nothing. What
+        subtract-first loses is the refusal itself: the name is handed to the
+        injection silently, and nothing records that this entry was muted or
+        catalog-governed. Withhold-first says so, which is what makes a server
+        that does not appear in the session explicable.
+        """
+        spec = _spec(
+            mcpServers={
+                "muted": {"command": "x", "disabled": True},
+                "governed": {"command": "y", "type": "registry"},
+            }
+        )
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_agents"):
+            out = to_client_custom_agent(
+                "kirocrew", spec, "p", stub_server_names=frozenset({"muted", "governed"})
+            )
+
+        assert "mcpServers" not in out
+        assert "not declaring MCP server 'muted'" in caplog.text
+        assert "withholding MCP server 'governed'" in caplog.text
+
+    def test_an_unmuted_poolable_server_still_takes_its_stub(self, tmp_path: Path):
+        """The other direction, so the guard cannot pass by stubbing nothing."""
+        spec = _spec(mcpServers={"live": {"command": sys.executable}})
+        stubbed = self._stub_names(spec, tmp_path)
+
+        assert stubbed == frozenset({"live"})
+        out = to_client_custom_agent("kirocrew", spec, "p", stub_server_names=stubbed)
+        assert "mcpServers" not in out, "a stubbed name is declared by the injection, not here"
 
 
 class TestRegistryGovernedEntries:
@@ -957,12 +1067,19 @@ class TestRegistryGovernedEntries:
         assert caplog.text.strip() == ""
 
     def test_the_registry_type_matches_the_spec_writer(self):
-        """A rename in ``agent.py`` must not silently stop this filter matching."""
+        """A rename in ``agent.py`` must not silently stop the readers matching.
+
+        The WRITER owns the literal; every reader shares one copy of it in
+        ``mcp_cleanup``, and ``session_mcp`` keeps its own mirror with its own
+        filter. All three have to agree or a governed entry stops being
+        recognized as one.
+        """
         from kiro_crew import agent as agent_mod
         from kiro_crew.acp import session_mcp
+        from kiro_crew.mcp_cleanup import MCP_REGISTRY_TYPE
 
-        assert kas_agents._KIRO_REGISTRY_TYPE == agent_mod._MCP_REGISTRY_TYPE
-        assert kas_agents._KIRO_REGISTRY_TYPE == session_mcp._KIRO_REGISTRY_TYPE
+        assert MCP_REGISTRY_TYPE == agent_mod._MCP_REGISTRY_TYPE
+        assert MCP_REGISTRY_TYPE == session_mcp._KIRO_REGISTRY_TYPE
 
 
 class TestDiscardedRestrictionsAreReported:

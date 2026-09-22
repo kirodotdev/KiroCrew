@@ -90,7 +90,7 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.env import sanitize_spec_env
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 
 logger = logging.getLogger(__name__)
 
@@ -923,7 +923,7 @@ def kiro_control_plane_servers(
             not isinstance(source, dict)
             or set(source) - supported
             or source.get("type", "stdio") != "stdio"
-            or source.get("disabled", False) is not False
+            or mcp_entry_is_muted(source)
             or source.get("disabledTools", []) != []
             or ("command" in source and source["command"] != managed.get("command"))
             or ("args" in source and source["args"] != managed.get("args", []))

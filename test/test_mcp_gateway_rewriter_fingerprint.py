@@ -639,6 +639,27 @@ def test_pre_cmd_safe_schema_forces_regeneration(
     assert rewrite_counter["n"] == before + 2
 
 
+def test_pre_governed_passthrough_schema_forces_regeneration(
+    tmp_path: Path, rewrite_counter: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema 7 overlay can hold a stub for a server that must not be pooled.
+
+    A registry-governed or muted entry passes through unwrapped, and its inputs
+    are identical either way -- so the stat fingerprint alone sees no change and
+    a kept overlay keeps a stub whose name ``injection_server_names`` collects.
+    That stub launches the server at session level: for a marked entry, one whose
+    launch belongs to the administrator's catalog; for a muted one, the server the
+    user silenced. The schema is what rejects such an overlay on upgrade.
+    """
+    _mk_tree(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 7)
+        _rewrite(tmp_path)
+    before = rewrite_counter["n"]
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == before + 2
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows executable casing")
 @pytest.mark.parametrize("transient_settings_fault", [False, True])
 @pytest.mark.parametrize("rename_command", [False, True])
