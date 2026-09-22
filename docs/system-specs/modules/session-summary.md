@@ -138,7 +138,7 @@ Each intent carries:
 | `origin_turn` | The turn that triggered this intent, or `null` |
 | `initial_intent` | Why the work started |
 | `progress` | A runbook of what is true now, not a history |
-| `next_steps` | `{what, why, expect}` — the summarizer's inferences |
+| `next_steps` | List of `{what, why, expect}` objects — the summarizer's inferences |
 
 **`ranges` is a list, and ranges may overlap.** An intent can go dormant and
 resume days later, and one intent can sit inside another's span (a question asked
@@ -160,8 +160,8 @@ into the single word the panel shows, so both surfaces agree by construction:
 
 `constraints` is session-level, not per-intent: recurring operational facts about
 how this project has to be run (a required build flag, a step that must follow a
-change, a name the user corrected). Capped by `max_constraints`, default 5 — a
-long list stops being read. Durable cross-session preferences belong in
+change, a name the user corrected). The `max_constraints` safety ceiling defaults
+to 50; a long list stops being read. Durable cross-session preferences belong in
 **lessons**, not here; this field is scoped to the session's project.
 
 ## Extraction: what the model actually reads
@@ -349,7 +349,8 @@ would be accepted and broadcast a summary omitting that turn as *current*. So
 `running` and `_dirty` are re-read immediately before the write. Together the three
 answer one question — is the transcript I summarized still the whole session?
 
-`stale: true` means a summary exists but the transcript has moved on. The storedpayload is still returned: an empty panel reads as "this is broken" while a stale
+`stale: true` means a summary exists but the transcript has moved on. The stored
+payload is still returned: an empty panel reads as "this is broken" while a stale
 one reads as "not regenerated yet", which is the truth. `read_intent_summary()` is
 the non-strict accessor for this; `get_cached_intent_summary()` is the strict one
 the generator uses.

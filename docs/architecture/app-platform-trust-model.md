@@ -13,11 +13,14 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
 - Manifest `setup` lifecycle scripts run via `/bin/bash -c` (OS-sandbox-wrapped, but
   the script body comes from the app's `app.json`)
 
-The app **permission system** (`permissions.py`, `context.py`, `app.json`
-`permissions.mcpTools`) gates only the **SDK tool surface** handed to the app
-context. It does **not** restrict imports, filesystem, network, or subprocess use
-by the loaded module. There is currently **no process-level sandbox** around app
-code itself.
+The `AppContext` capability permissions (`permissions.cron`,
+`permissions.events`, `permissions.spawn`, `permissions.storage`, and
+`permissions.jobs`) gate only which SDK objects `context.py` populates.
+`permissions.mcpTools` is validated and displayed by `permissions.py`, but it
+currently has no runtime call site and must not be treated as an execution
+boundary. Neither mechanism restricts imports, filesystem, network, or
+subprocess use by the loaded module. There is currently **no process-level
+sandbox** around app code itself.
 
 > **Admitting and enabling an app is therefore equivalent to running that code with the same privileges as Kiro Crew itself.** Only trust apps you trust.
 

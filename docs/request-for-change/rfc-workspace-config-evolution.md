@@ -15,13 +15,14 @@ superseded-by: []
 
 > **Current behaviour: see [`../system-specs/modules/config.md`](../system-specs/modules/config.md)**
 > and [`../system-specs/modules/memory-skills-hooks.md`](../system-specs/modules/memory-skills-hooks.md),
-> which own Phases 1–2. **Phase 3's vector-store isolation was reversed on
-> purpose** and this document was not revised afterwards, so read that phase as
-> a rejected option rather than a plan.
+> which own the shipped configuration and memory contracts. Phase 3 did not ship
+> as written: Global Memory remains V1, while explicitly created Crew Members
+> receive isolated V2 stores with immutable member/store identities. Treat the
+> concrete Phase 3 paths, query parameter, and migration plan below as historical.
 
 **Author:** KiroCrew contributors  
 **Date:** 2026-03-25 (rev 2: 2026-03-25)  
-**Status:** partial — Phases 1 and 2 are verifiably on main (schema registry + `/api/config/schema`; `WorkspaceConfig`, `MemoryStoreConfig`, `resolve_agent_bindings` with seven real callers, auto-migration). Phase 3 is partly built and the split is not the one this doc describes: a crew bound to a NON-DEFAULT store gets its own markdown tree, FTS index and `memory.db`, on both the read and the write side, and the default store is reached by a byte-identical path (`test/test_memory_v1_golden.py` pins it). What is NOT built is reach — the dashboard chat turn, `spawn_run`, the consolidator and every surface that carries a session binding (Slack, Discord, Telegram, the shared messaging dispatch, auto-nudge, the subagent-completion injections) resolve a store, while cron, the heartbeat, the webhook runner, the task runner and the eval harness still read the global store because nothing in their scope names a crew. `security.scan_memory` audits every declared store, attributing each finding to the store it came from. Read [memory-skills-hooks](../system-specs/modules/memory-skills-hooks.md#what-is-not-isolated-yet) for the current boundary rather than this doc's Phase 3 text. The read-through proposed below IS built, spelled `?store=` rather than `?memory_store=` and gated on the parameter's presence by the dashboard owner check, so an agent or MCP caller cannot name a store; cross-store fan-out remains unbuilt, and per-store `embedding_provider` is unreachable while the embedder is a process singleton. Phase 4 (`MemoryBackend` / `EmbeddingBackend` plugin entry points) is unstarted. Two deviations: the merge shipped as `resolve_memory_store_config`, not `resolve_effective_config`, and per-workspace `agent` overrides were never built.
+**Status:** partial — Phases 1–2 are implemented in `config/sections.py`, `config/loader.py`, and `memory_stores.py`. Current member-memory routing is captured in `execution_context.py` and carried by sessions, runs, and scheduled jobs; owner-authorized dashboard reads use `?store=`, while agent and MCP recall derive the store from the trusted execution context. Phase 4 is partial: `embeddings.py` provides `EmbeddingBackend` and `register_embedding_backend()`, but there is no `MemoryBackend` or per-store backend plugin system. Per-workspace agent overrides and `resolve_effective_config` were not implemented.
 **Branches:** both named below are **gone** — neither `feat/workspace-scoped-vector-memory` nor `config-standarize-` exists on the remote; Phases 1–2 landed via the pre-fork import commit `64e47961`.
 **Branch (parked):** `feat/workspace-scoped-vector-memory`  
 **Branch (active):** `config-standarize-`

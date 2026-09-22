@@ -11,7 +11,8 @@ transcript.
 ## Where the link lives
 
 The link is persisted on the session map entry (`session_map.py`,
-`~/.kiro/crew/session_map.json`), not in a gateway-lifetime dict, so it survives a
+`<data home>/session_map.json`, where the data home is `KIROCREW_HOME` or
+`~/.kiro/crew` by default), not in a gateway-lifetime dict, so it survives a
 restart. Two fields on the entry:
 
 ```

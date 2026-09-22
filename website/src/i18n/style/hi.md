@@ -31,12 +31,10 @@ Devanagari has its own sentence-ending punctuation:
 ## 2. Spacing and script mixing
 
 Devanagari uses a shirorekha (headline stroke) that visually connects characters within a
-word. When a Latin-script term (product name) appears inside Devanagari text, a natural
-visual break already exists at the script boundary — **do not add extra spaces** around
-Latin runs.
+word. At a Latin/Devanagari word boundary, use normal Hindi word spacing.
 
-Write: `Kiro Crewसे कनेक्ट करें` or `Kiro Crew से कनेक्ट करें` — a single space after the
-Latin term is acceptable because Hindi uses spaces between words, but do not double-space.
+Write `Kiro Crew से कनेक्ट करें`: keep one space before the postposition. Do not glue it as
+`Kiro Crewसे`, and do not double-space.
 
 **Font fallback**: ensure CSS `font-family` lists a Devanagari font (Noto Sans Devanagari)
 before the Latin fallback so conjuncts render correctly.
@@ -45,9 +43,9 @@ before the Latin fallback so conjuncts render correctly.
 
 ## 3. Do not translate
 
-Product names stay in Latin script. The list is in `glossary.json` under `dnt`.
-`KiroCrew` / `Kiro Crew`, `MCP`, `Slack`, `GitHub` etc. must appear verbatim — do not transliterate
-into Devanagari (not `किरोक्रू`).
+Product names stay in Latin script. The canonical list in `glossary.json` includes
+`KiroCrew`, `MCP`, `Slack`, `GitHub`, and others. The prose brand `Kiro Crew` also remains
+unchanged; do not transliterate it into Devanagari (not `किरोक्रू`).
 
 Checked by `glossary.test.ts`.
 
@@ -69,11 +67,11 @@ CLDR defines **2 plural categories** for Hindi:
 
 | category | condition | example |
 |---|---|---|
-| one | i = 0, 1 | `{{count}} फ़ाइल` (0 files, 1 file) |
-| other | everything else | `{{count}} फ़ाइलें` (2+ files) |
+| one | i = 0 or n = 1 | `0 फ़ाइल`, `0.5 फ़ाइल`, `1 फ़ाइल` |
+| other | everything else | `1.1 फ़ाइलें`, `2 फ़ाइलें` |
 
-Note: Hindi `one` includes **zero** — `0 फ़ाइल` is grammatically correct. i18next handles
-selection via `_one` / `_other` key suffixes.
+Note: Hindi `one` includes **zero and decimals whose integer part is zero**. i18next
+handles selection via `_one` / `_other` key suffixes.
 
 Checked by `catalogParity.test.ts` which enforces exactly 2 categories.
 
@@ -84,8 +82,8 @@ Checked by `catalogParity.test.ts` which enforces exactly 2 categories.
 Hindi has grammatical gender (masculine/feminine) with no neuter. Past-tense verbs and
 adjectives agree with the subject's gender:
 
-- `आपका कॉन्फ़िगरेशन सहेजा गया` (masculine)
-- `आपकी फ़ाइल सहेजी गई` (feminine)
+- `तुम्हारा कॉन्फ़िगरेशन सहेजा गया` (masculine)
+- `तुम्हारी फ़ाइल सहेजी गई` (feminine)
 
 For UI strings addressing the user (whose gender is unknown), **prefer masculine default
 or infinitive constructions** (`सहेजना` → "saving") that avoid gender agreement entirely.
@@ -100,6 +98,8 @@ This is a known limitation — Hindi cannot address an unknown-gender user witho
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| sentence-final Latin-period debt does not exceed 30 | `hiStyle.test.ts` |
+| formal-address debt does not exceed 118 | `hiStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no full-width alphanumerics | `qa.test.ts` |

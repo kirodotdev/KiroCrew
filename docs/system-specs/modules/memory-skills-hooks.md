@@ -204,7 +204,7 @@ from every backup while a restore writes a copy nothing reads. A NAMED store's i
 does live beside its own markdown, which is what makes the index per-store and puts
 it behind the `memory_stores/` fence. The snapshot `memory` component and
 `portability`'s export both carry the whole `memory_stores/` tree (see
-[Named stores ride the backup paths](#named-stores-ride-the-backup-paths)), so a
+[Named stores and backup paths](#named-stores-and-backup-paths)), so a
 named store's index rides beside its markdown; `scripts/sync-to-remote.sh` still
 names only the root paths.
 
@@ -367,7 +367,7 @@ canonical execution context before its first await and refuses incognito or
 temporary sessions before reading their transcripts. V2 uses that context's exact
 member store and commits learned records, history and the retry receipt in one
 SQLite transaction. V1 retains `context.store_of_session(log, key)` and its
-Markdown and lesson fallback behavior. See [The write path](#the-write-path).
+Markdown and lesson fallback behavior. See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
 Neither path owns a timer. The prefs path is checked inline on every
 `maybe_consolidate()`; the history path is driven entirely by the heartbeat
@@ -2141,11 +2141,11 @@ alignment requires readiness.
 - On failure: status resets to `idle` with error message, frontend shows error + Retry button
 - Prevents concurrent setup attempts (409 if already in progress)
 - `can_retry` flag in status response for frontend retry button
-- `GET /api/memory/embedding-status` — `enabled` is always `true`; `provider` reports the legacy `"ollama"` token (the shipped frontend hard-checks `provider === "ollama"` — kept until the frontend companion change lands); `setup_step` maps the manager's steps to the legacy vocabulary the shipped polling loop terminates on (`ready`→`done`, `failed`→`error`, `downloading`/`verifying`/`waiting_retry`→`downloading`); the raw step and attempt are additionally exposed as `download_step` + `download_attempt` for newer frontends; `server_healthy` requires a present or loaded model and no custom-model validation error; `setup_warning` exposes inherited legacy-vector identity until explicit model apply; `model_id` + `model_dim` disclose the embedding model producing vectors (read live from the shared embedder — e.g. `qwen3-embedding:0.6b` / `1024`) so the Memory tab can show which model runs locally
+- `GET /api/memory/embedding-status` — `enabled` is always `true`; `provider` reports the legacy `"ollama"` token for older frontend compatibility; `setup_step` maps the manager's steps to the legacy vocabulary the shipped polling loop terminates on (`ready`→`done`, `failed`→`error`, `downloading`/`verifying`/`waiting_retry`→`downloading`); the raw step and attempt are additionally exposed as `download_step` + `download_attempt` for newer frontends; `server_healthy` requires a present or loaded model and no custom-model validation error; `setup_warning` exposes inherited legacy-vector identity until explicit model apply; `model_id` + `model_dim` disclose the embedding model producing vectors (read live from the shared embedder — e.g. `qwen3-embedding:0.6b` / `1024`) so the Memory tab can show which model runs locally
 - `POST /api/memory/embedding-model` — changes the local embedding model at runtime. Two modes, and note which one is the default: `{"path": "...", "validate_only": true}` validates only (returns `size_bytes` without touching the live backend), while **omitting `validate_only` performs the swap** — there is no `apply` flag, so a caller that sends only `path` applies the model. An empty `path` reverts to the bundled model. Refuses with 403 on a restricted session (SEL-audited), 409 while a re-embed is already running (single-flight), and 409 `env_override_active` when `KIROCREW_EMBED_MODEL_PATH` is set, because the env var wins at load and persisting a config path under it would store a path/dim pair the process never uses
 - **Apply ordering**: build the gated candidate, install it while retiring the outgoing model, advance the store generation, wait for readiness (600s bound), persist the verified model configuration, retarget and reconcile stores, verify every recorded signature, activate, then backfill. Configuration-write failure preserves stored vectors. Alignment failure conditionally restores the prior model settings before resetting the candidate and restoring widths; rollback failure leaves the candidate gated with an actionable error. Unrelated configuration fields are not rolled back.
 - `GET /api/memory/embedding-status` additionally returns a `reembed` snapshot (`step`: `idle`/`applying`/`running`/`done`/`failed`, plus `done`/`total`/`error`) so the dashboard can render background re-embed progress; the card polls only while that step is busy
-- `POST /api/memory/disable-embeddings` — **gone**: embeddings are always-on. Kept as a graceful HTTP 410 stub (not a 404) because the shipped frontend still renders a Disable button; remove together with the frontend button
+- `POST /api/memory/disable-embeddings` — **gone**: embeddings are always-on. Kept as a graceful HTTP 410 compatibility stub (not a 404) for older clients; the current frontend does not call it
 
 ### Model Security & Policy
 
@@ -2243,7 +2243,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/embedding-status` | Embedding health + download progress. `enabled` always true; `setup_step` in legacy vocabulary (done/error/idle/downloading); raw `download_step` (idle/downloading/verifying/waiting_retry/ready/failed) + `download_attempt` + `bytes_downloaded`/`bytes_total`; `model_id` + `model_dim` disclose the embedding model + vector dimension; `reembed` reports background re-embed progress (`step` idle/applying/running/done/failed + `done`/`total`/`error`) |
 | POST | `/api/memory/enable-embeddings` | Non-blocking: kicks/adopts the background model download and returns `{"ok": true, "status": "downloading"}` when the model is absent; wires embeddings + updates config when present. The persisted `memory.embedding_dim` is the width of the **live** backend (`get_shared_embedder().dim`), never a literal — a width that cannot be read, or is not positive, is a 500 `embedding_dim_unreadable` that persists nothing, because `_load_model` refuses a model whose `n_embd` disagrees with the stored width and a wrong value leaves that model unloadable on every later restart |
 | POST | `/api/memory/embedding-model` | Change the embedding model. `{"path", "validate_only": true}` validates only; **omitting `validate_only` applies** (no `apply` flag exists). Empty path reverts to bundled. 403 restricted session, 409 while re-embedding, 409 `env_override_active` under `KIROCREW_EMBED_MODEL_PATH` |
-| POST | `/api/memory/disable-embeddings` | HTTP 410 stub — embeddings are always-on; kept only until the frontend removes its Disable button |
+| POST | `/api/memory/disable-embeddings` | HTTP 410 compatibility stub for older clients — embeddings are always-on; the current frontend does not call it |
 | POST | `/api/memory/migrate` | Migrate markdown → structured memory (gated) |
 | POST | `/api/memory/import` | Import from JSON export (gated) |
 | POST | `/api/memory/promote` | Promote repeated episodic patterns to semantic facts, tombstoning the rows folded in (gated) |
@@ -2466,7 +2466,7 @@ the unconditional gate is the stronger check layered in front of it.
 
 ### CLI
 
-`kirocrew memory {list,search,show,stats,audit,export,migrate,import,carve}` — manage memory from the command line:
+The canonical command and flag inventory is in the [CLI spec](cli.md#member-memory-commands); this section records the memory-side behavior behind those commands:
 - `carve --store <name>` — filter or count one store's rows by their carve facets; see [Who reads a facet](#who-reads-a-facet). Dispatched before the shared vector store is opened, because it opens the store NAMED on the command line rather than the default one
 - `show [preferences|projects|history]` — read the markdown layer through `MemoryStore` (all three targets when none given); `--format md|json` (json entries carry `path`, `updated_at` mtime in UTC ISO-8601, `content`), `--since YYYY-MM-DD` filters history days. Missing/empty files print as empty rather than erroring
 - `search <query>` — searches BOTH memories and labels each section: the vector store's episodic recall, then keyword hits from the markdown layer's FTS5 index (`MemoryStore.search`, over `preferences.md` / `projects.md` / every `history/*.md`). `--layer vector|history|all` (default `all`); `--layer vector` reproduces the previous vector-only output exactly, and `--layer history` skips constructing the vector store entirely, the same way `show` does. The two indexes answer different questions — "where did I write this word" versus "what does this mean like" — so they are reported separately rather than merged into one ranking. `search_episodic` text-searches whenever `query_embedding` is None and does not auto-embed, so the vector section embeds the query in-process, blocking once on the model load (`_SEARCH_MODEL_LOAD_TIMEOUT_SECS`, 120 s) — a one-shot read cannot lean on the gateway's boot re-embed sweep the way a WRITE can. It degrades to keyword matching, naming the reason on **stderr** (stdout shape is unchanged), when the model is not downloaded (a one-shot CLI never kicks the download), when the store's vectors were produced by a different model, or when the model fails to load; and when the semantic pass returns nothing it retries the keyword leg once before reporting "No episodic memories found.", because the vector legs score only rows with a non-NULL embedding and deferred/imported/re-embed-pending rows are keyword-searchable only until the gateway's sweep reaches them
@@ -4161,19 +4161,18 @@ security decision or the copied content.
 Success is 200 `{"approved": "<auto/name>"}`; a malformed slug is still an uncoded 400 `invalid slug`, and a non-refusal exception an uncoded 500 `internal error`. Before this contract every refusal collapsed into one uncoded 409 (`not found, a live skill already exists, or script validation failed`). **Dismiss has no 409**: 200 `{"dismissed": slug}`, uncoded 400 `invalid slug`, 404 `pending_skill_not_found` (the same code as approve's not-found, so the dashboard's refetch-and-explain recovery keys on one code), uncoded 500. **Dismiss-all** has no 409 either: it REQUIRES a JSON object body with a non-empty `slugs` string array — 400 `invalid_body`, `invalid_slugs` or `slugs_required` otherwise — and answers 200 `{"dismissed_count": n}` or 500 `internal_error`. The detail 404 (`not found`, uncoded) also covers a candidate `get_pending_skill` refuses to read because it contains a symlink. The `script_validation` verdict the list and detail payloads may carry, and the SEL outcomes of a refused approval, are specified under Auto Skill Creation → Pending review contract.
 
 **LLM tool mechanisms:**
-- MCP tools (native): kiro-cli calls directly — **preferred for all LLM-facing operations**
-  - `kirocrew-cron`: cron scheduling
-  - `kirocrew-core`: spawn, learn, task tools
+- MCP tools (native): kiro-cli calls directly — **preferred for all LLM-facing operations**. The complete managed-server inventory, emission gates and per-agent opt-in sets are canonical in [MCP architecture](../../architecture/mcp.md#managed-servers).
 - Skills are for on-demand knowledge only (not for CLI command wrappers — use MCP tools instead)
 
 ## MCP Discovery (`mcp_discovery.py`)
 
-Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kirocrew-cron`, `kirocrew-core`.
+Auto-sync runs at startup and on demand from the dashboard. The authoritative managed-server inventory and its always-on, gated and opt-in rules are in [MCP architecture](../../architecture/mcp.md#managed-servers).
 
 **Server sources** (merged by `list_servers()`):
 1. `agents/defaults.json` → `mcpServers` (default: none beyond the managed servers)
 2. `~/.kiro/agents/kirocrew.json` → `mcpServers` (installed config, merged)
 3. `~/.kiro/settings/mcp.json` and `~/.kiro/crew/mcp.json` (scanned at startup and on-demand)
+4. Edition-contributed provider-global scopes from `extra_mcp_scopes()` (the public edition contributes none)
 
 **Startup behavior**: gateway calls `_init_mcp_discovery()` which runs `discover_servers_to_sync()` + `sync_to_agent_config()` to auto-add new servers from mcp.json, then logs all configured servers. Discovery/sync failures are caught independently so `list_servers()` always runs. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache.
 
@@ -4190,7 +4189,7 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 - On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
 - A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
-**Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. **Both calls must succeed for `ok`** — an initialize that answers and a tools/list that does not is a server no session can get a tool out of, so it reports as an error rather than certifying an unusable server. Each result carries `probedAt` (wall-clock) and `probeMode` (`handshake`, or `declared` for a managed server served from its in-process declaration) so the UI can say when and how the status was established. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
+**Probing**: external servers are spawned and must complete both JSON-RPC `initialize` and `tools/list`; managed servers may instead use their in-process declaration. An initialize that answers without a successful tool list is an error, not a usable server. Each result carries `probedAt` (wall-clock) and `probeMode` (`handshake` or `declared`) so the UI can say when and how the status was established. The handshake timeout defaults to 15 seconds and is configurable through `dashboard.mcp_probe_timeout_secs` from 5 to 120 seconds. The stdout buffer is 1 MiB (responses can exceed the default 64 KiB), and subprocess cleanup runs in `finally`. Results are cached in `handlers.py` for 10 minutes; GET `/api/mcp/probe` returns cached results non-blocking, while POST `/api/mcp/probe` forces a fresh probe and updates the cache.
 
 **MCP temp**: the probe and runtime apply one rule through `sandbox.classify_declared_temp_env`. The probe, `gatewayd._spawn`, and `spawn_backend` run that rule off the event loop before honouring a spec-declared `TMPDIR`/`TMP`/`TEMP` (matched case-insensitively). A cleared declaration is re-emitted under canonical uppercase keys with ambient siblings dropped. A refused declaration is dropped as a whole, the managed temp takes over, and one WARNING names each refused key, its path and the cause. `sealed` means the path lies inside `<data home>/run`; the classifier checks the original `realpath`, the lexical spelling, and `(st_dev, st_ino)` identity against the sealed parent. `unclassifiable` means the canonical form cannot be established, or the declaration is relative. Relative values are refused because the daemon would classify them against its cwd while the backend child resolves them against `work_dir`, so one classification cannot describe both paths. A classifier exception refuses every declared key under `check-failed` and names the exception. If managed allocation fails after a refusal, no refused temp value reaches the child. On `win32`, `classify_declared_temp_path` returns `None` without resolving the path because Kiro Crew has no native Windows sandbox backend and nothing seals `run/` there. The probe's managed directory lives under `<data home>/run/mcp-tmp/probe-<id>/tmp`, is carved out of the sandbox seal, and is exported on all three canonical keys. This rule prevents the known sealed-parent conflict. It does not certify that every arbitrarily declared temp directory exists or is writable.
 
@@ -4232,7 +4231,7 @@ data-home file, Kiro global settings, bundled/project/installed agent config,
 managed servers, and edition-contributed server/scope files. An exact or
 alias-equivalent foreign name is rejected, so a disabled import cannot shadow
 an enabled global or installed server. Existing server definitions win on
-collision, and KiroCrew-managed servers (including `kirocrew-core` and
+collision, and Kiro Crew-managed servers (including `kirocrew-core` and
 `kirocrew-cron`) are protected from replacement, deletion, or shadowing by an
 imported definition. Malformed effective-source JSON or non-object
 `mcpServers` values contribute no names and cannot abort an import. Repeated
@@ -4256,7 +4255,9 @@ session ends → HistoryConsolidator (3h idle path)
             → LLM consolidation prompt gains new_skill / refined_skill keys
             → result piped through redact_credentials + redact_exfiltration_urls
             → SkillsLoader.find_similar() dedup check
-            → SkillsLoader.create_auto_skill() writes SKILL.md under auto/<slug>/
+            → default or script-bearing path: stage_skill_candidate() writes auto/.pending/<slug>/
+            → owner approval promotes the candidate to auto/<slug>/
+            → approval_required=false: prose-only candidates may publish directly
             → SEL audit event emitted
 ```
 
@@ -4350,7 +4351,7 @@ No new command. Users interact via the existing skill management surface:
 - Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
 - Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
 - List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
-- Remove unwanted auto skill: `rm -rf ~/.kiro/crew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
+- Remove unwanted auto skill: use the dashboard Skills delete action
 - Audit trail: `kirocrew security events -n 20 | grep auto_skill`
 
 ## Hooks (`hooks.py`)

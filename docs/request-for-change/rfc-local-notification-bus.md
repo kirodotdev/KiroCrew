@@ -17,12 +17,14 @@ superseded-by: []
 > That spec owns the shipped bus — `NotificationBus.push`, the
 > token/rate-limit/lifecycle-lock ordering, lazy channel registration,
 > `RESERVED_APP_NAMES` and the `system.agent` agent-push path. Read the phase
-> plan below only for Phase 2's missing producer and Phase 5's third item.
+> plan below only for Phase 2's original app-token reference-producer criterion
+> and Phase 5's remaining kind-routing cleanup.
 
-- Status: partial — Phases 1, 3 and 4 are fully on main (bus core + schema v2, per-channel settings + priority UX, inline actions + `group_key` stacking + dock badge). Phase 2's mechanism is complete and wired (`POST /api/notifications/push`, manifest `notifications.channels`, rate limiter) but has **no producer**: zero shipped `app.json` declares a channel, so its exit criterion is unproven end-to-end. Phase 5 shipped 2 of 3 (the `send_notification` MCP tool and the TTL sweeper); removing the kind-based routing fallbacks is unstarted — `NotificationDetailPanel.tsx` still branches on `n.kind`. Slack escalation was **withdrawn**, not shipped, and is superseded by `rfc-notification-bridge.md`.
+- Status: partial — Phases 1, 3 and 4 are fully on main (bus core + schema v2, per-channel settings + priority UX, inline actions + `group_key` stacking + dock badge). Phase 2's mechanism is complete and now has a shipped in-process producer: `ops-mission-control` declares three channels and pushes through the state-owned bus while applying the same channel and rate-limit guards. The original app-token HTTP producer criterion remains unproven. Phase 5 shipped 2 of 3 (the `send_notification` MCP tool and the TTL sweeper); removing the kind-based routing fallbacks is unstarted — `NotificationDetailPanel.tsx` still branches on `n.kind`. Slack escalation was **withdrawn**, not shipped, and is superseded by `rfc-notification-bridge.md`.
 - Author: KiroCrew contributors
 - Created: 2026-07-10
-- Related: rfc-federated-app-platform.md (apps as notification producers), rfc-event-loop-fault-isolation.md (gateway process boundaries)
+- Related: [`rfc-federated-app-platform.md`](rfc-federated-app-platform.md)
+  (apps as notification producers)
 
 ## Summary
 

@@ -4,8 +4,8 @@ status: partial
 revision: v1
 author: zejiangg, with Kiro
 created: 2026-09-02
-last-audited: 2026-09-05
-audited-at: 424efa423
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,14 +14,13 @@ superseded-by: []
 ---
 # RFC: Agent Config Mirror — one declared contract for projecting the agent spec onto every backend
 
-- Status: draft — nothing proposed here has shipped. The three mirrors it
-  describes all exist on main today; what does not exist is the contract that
-  names them, the per-field disposition vocabulary, or any declared extension
-  point. The migration is additive and consolidating: no mirror is rewritten in
-  the first wave, each is re-expressed as an implementation of one interface.
+- Status: partial — the declared mirror contract, projection-kind and disposition
+  vocabularies, registry, parity guards, and Claude Code, Codex, OpenCode, and
+  Goose mirrors are on main. KAS remains an external projection and kiro-cli
+  remains native, so the relocation plan is not complete.
 - Author: zejiangg, with Kiro
 - Created: 2026-09-02
-- Audited against: `f51e65947`
+- Audited against: `80bd0a81f`
 - Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this RFC adds a bucket to),
   `../system-specs/modules/claude-code-provider.md`,

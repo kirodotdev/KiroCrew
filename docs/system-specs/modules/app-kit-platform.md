@@ -287,9 +287,9 @@ emitted: besides the external-source label and older clients,
 `appManifest.ts::keysFor` (first-party copy gate) and `pickFeatured`'s
 legacy arm still read it.
 
-## 1. App MCP servers land in KiroCrew's agent config, never the shared kiro file
+## 1. App MCP servers land in Kiro Crew's agent config, never the shared kiro file
 
-An app's `mcpServers` are written into KiroCrew's own agent config
+An app's `mcpServers` are written into Kiro Crew's own agent config
 (`<kiro agents dir>/kirocrew.json`, resolved through `config.paths.kiro_agents_dir`
 so test/dev home redirects are honoured), **not** the shared
 `~/.kiro/settings/mcp.json`.
@@ -298,7 +298,7 @@ Why it is a contract and not a detail: the shared file is read by everything els
 living under `~/.kiro` — the Kiro IDE and every other kiro-cli agent — so
 registering an app's servers there leaked that app's private tools into surfaces
 that never installed it, and a dead HTTP entry there broke EVERY kiro session, not
-just the app's. KiroCrew sessions read only the agent config (`includeMcpJson` is
+just the app's. Kiro Crew sessions read only the agent config (`includeMcpJson` is
 pinned False in `agent.py`), so the narrower target is also sufficient.
 
 **Migration is finished at boot, not at disable.** `reconcile_enabled_app_resources`
@@ -978,7 +978,7 @@ stamp instead of running pip twice.
 ## 12. Store visibility is a manifest flag, not a code removal
 
 Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single
-source of truth for the exemption (`projects`, the Task Runner, and `command-bar`,
+source of truth for the exemption (`projects` (the Task Runner) and `command-bar`,
 which replaces the quick-search gesture rather than adding a sidebar entry),
 read by the policy tests over both the hardcoded list and the file-based
 manifests, so a builtin cannot become default-on through one registration path
@@ -1900,14 +1900,14 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   itself and have no port to be dead, so removing them because an HTTP backend died would
   take working tools away for a reason unrelated to them. That path pops each HTTP entry
   and keeps the rest, and its port lookup is health-gated, so it cannot resurrect the
-  port it is removing. It calls `_register_mcp_servers` DIRECTLY rather than
-  `reregister_app_mcp_servers`, because the latter also re-materializes the app's agents
-  — an ungated write that would land before the caller's enablement check and make a
-  disabled app's agents dispatchable in the gap. The scrub owns the mcp.json half only;
-  the agent refresh belongs to the caller, which gates it. The admission gate is applied
-  explicitly here so a denied app still gets a FULL removal rather than the selective
-  keep-stdio treatment. It falls back to removing EVERY entry for the app when the
-  manifest cannot be resolved or declares no servers: that case cannot tell a
+  port it is removing. It calls `scrub_backend_mcp_url` and then, after a positive
+  enablement check, `refresh_app_agents`; the latter re-materializes the agent copies so
+  the dead URL is removed from the config kiro-cli actually loads. A failed refresh leaves
+  reconciliation unlanded for retry. A confirmed disabled app takes the resource-removal
+  path instead, while an unreadable enabled state neither refreshes nor deletes.
+  The admission gate is applied explicitly here so a denied app still gets a FULL
+  removal rather than the selective keep-stdio treatment. It falls back to removing
+  EVERY entry for the app when the manifest cannot be resolved or declares no servers: that case cannot tell a
   backend-dependent server from an independent one, and the dead url must not survive on
   the strength of not knowing. The fallback **never deletes the app's materialized
   agents**. Deleting them is unrecoverable — it takes the user-owned fields

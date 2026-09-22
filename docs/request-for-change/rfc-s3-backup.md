@@ -14,6 +14,17 @@ superseded-by: []
 
 # RFC: Off-host backup — a bundle a dead machine cannot take with it
 
+> **Partly shipped, with the off-host destination moved to the AWS Control app.**
+> `src/kiro_crew/snapshot.py` now owns the purpose/policy seam, a self-contained
+> `memory` component, and local artifact/upload components. The AWS Control backup
+> path owns the hardened S3 drive, snapshot and transcript uploads, nightly runs,
+> retention, and download-to-staging restore; see
+> [`../system-specs/modules/aws-control.md`](../system-specs/modules/aws-control.md).
+> The proposed `kirocrew backup setup`, `snapshot --to-s3`, and direct
+> `kirocrew restore s3://…` commands did not ship: the CLI explicitly directs
+> those operations to the app. Read the milestones below as the original design,
+> not the current command surface.
+
 ## TL;DR
 
 * Nothing in the product survives losing the host. Two of the three

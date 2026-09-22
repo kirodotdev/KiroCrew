@@ -6,8 +6,10 @@ only**: it owns which facts matter and where they are known, not storage or its 
 
 The emitter is gated behind `KIROCREW_CREW_LOG=1` (`constants.env_flag_enabled`,
 read per call, truthy set `{1, true, yes, on}`) and defaults **OFF**, so this module is
-inert until a later change turns it on. With the flag off no crew log directory is created
-and no call reaches the storage library.
+inert until a later change turns it on. With the flag off no per-session crew-log unit is
+created and no emitter call reaches the storage library. The shared `crew-log` root is still
+pre-created by `ensure_data_home()` as a security boundary, and member-kind logs are governed
+independently by [member-event-log.md](member-event-log.md).
 
 There is ONE flag. An earlier design gated streamed deltas behind a second one; that
 emitter does not exist, for the reason "Bodies, and the flag" gives below, so there is
@@ -63,11 +65,11 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |
-| `tool/called` | `EVENT_TOOL_CALL` | `tool_call_id`, trusted `tool_name`, `mcp_server_name`, kind |
-| `tool/completed` | `EVENT_TOOL_RESULT` when `tool_final` | same id, outcome, elapsed ms measured by the emitter |
+| `tool/called` | `EVENT_TOOL_CALL` | `call_id`, trusted `name`, `server`, and `kind`; optional `step`, `call_index`, and argument digest/size |
+| `tool/completed` | `EVENT_TOOL_RESULT` when `tool_final` | `call_id`, remembered `name` and `server`, `status`; optional `elapsed_ms`, `is_error`, `step`, `call_index`, and result digest/size |
 | `model/selected` | the fallback swap in `_run_chat`, after the pick lock is released | model id, source, turn |
 | `compaction/applied` | `_settle_compact_cooldown` when the after-reading is confirmed; `_compaction_gate_decision` when a deferred verdict settles | `pct_before`, `pct_after`, freed |
-| `session/closed` | `SessionLifecycle.reset` | the gateway's own `end_reason` |
+| `session/closed` | `SessionLifecycle.reset` and `SessionLifecycle.destroy` | the gateway's own teardown reason |
 | `message/received` | `_run_chat`, before the dispatch gates | turn, role, redacted text, surface, attachment ids |
 | `message/sent` | `_flush_segment`, beside the assistant `slot.append`; `_persist_partial_reply` on a recovery path | turn, step, redacted text or cited `chunks`, `interrupted` |
 | `message/chunk` | the overflow split ONLY | turn, step, one slice of an already-redacted body |
@@ -948,7 +950,7 @@ began.
 Tool arguments and tool results are recorded as a DIGEST and a byte count, never as
 bytes; message bodies ARE recorded, redacted, and split when they exceed the line cap.
 A tool call is identified by
-its `tool_call_id` inside `data`, not by `ref`: a `Ref` cites lines of another crew log, and
+its `call_id` inside `data`, not by `ref`: a `Ref` cites lines of another crew log, and
 an ACP frame is not a crew log unit. That id is the join key the transcript already uses.
 
 A tool's `name` and `server` carry ONLY the trusted `_meta.kiro` identity, so both are
@@ -1147,25 +1149,19 @@ that point unbounded growth is the worse failure.
 
 The writer holds two rules at once, and neither may be traded for the other.
 
-A lifecycle record is never dropped while the process is healthy, at any depth of
-backlog. A hole in an append-only log is permanent and silent: a reader cannot tell a turn that
-never completed from one whose completion was discarded, which is precisely the distinction this
-crew log exists to record, and several subsystems read it to decide what happened. A crash-shaped
-loss is different in kind -- the repair names and closes what a kill left behind -- but a discard
-chosen while nothing is wrong has nothing that can recover it and no reader that can detect it.
-So there is no cap past which an entry is thrown away, and an entry is given up on only when the
-filesystem refuses it or keeps refusing to take it -- see "Retention" below.
+Crossing `_PENDING_HIGH_WATER` alone never drops a lifecycle record; it reports
+backpressure while producers continue to enqueue without waiting. The buffer is
+nevertheless bounded by the hard `_MAX_PENDING_COUNT` and `_MAX_PENDING_BYTES`
+ceilings. Once either ceiling is reached, the newest tail entry is refused, counted
+by `overflow_writes()`, and folded into the session's pending `write/dropped`
+account. The create job and loss marker are ceiling-exempt, so the log can still
+exist and record that loss. This is the smaller, explicit failure than an OOM that
+would lose every session's unwritten tail without an account.
 
-The cost is stated rather than hidden: a filesystem that stops answering grows this buffer
-without limit, and if that reaches the point of killing the process then every session's
-unwritten entries go with it, uncounted. That is worse in the tail than shedding one session's
-newest entries would be. It is accepted because a ceiling only makes the hole less likely while
-guaranteeing that it happens, and because a filesystem this stuck is a failure the log cannot be
-available across in any case. What the design owes instead is VISIBILITY, so an operator sees a
-cause rather than a quiet gap: `buffered_writes()` and `peak_buffered_writes()` make the backlog
-readable, crossing `_PENDING_HIGH_WATER` is reported once, and a write in flight past
-`_WRITE_STALL_SECS` is named -- which is the only outward sign a hung write has, since it never
-returns to advance the attempt counter that bounds every other failure.
+A storage append that raises is governed separately by `_MAX_WRITE_ATTEMPTS`; the
+retained batch preserves order until it lands or exhausts that retry budget. These
+two bounds cover different failures: hard ceilings bound producer-side memory,
+while the attempt ceiling bounds a storage call that returns an error.
 
 The event loop is never BLOCKED. A producer appends its entry to an in-memory buffer and
 returns -- it never writes, and never waits for the writer. So a filesystem that has stopped
@@ -1183,33 +1179,21 @@ entries stay in its own bucket, in order, and land when the wedge clears -- but 
 watching a healthy session sees nothing arrive while an unrelated one is stuck. A worker per
 session would trade that for concurrent appends to one file from several threads, which
 `flock` serializes without ordering, so the cure would cost the seq-follows-causality property
-this log is for. The stall is bounded by the same retry budget and per-session ceiling as any
-other failure.
+this log is for. The backlog behind a hang is bounded by the hard count and byte ceilings; the
+in-flight storage call itself has no retry bound until it returns.
 
-**A write that HANGS is the one failure no counter bounds, and nothing is shed for it.** Every
-loss described above is bounded by ATTEMPTS: an append raises, its batch is retained, and a
-fixed number of failed passes gives up on it. A write that never returns and never raises
-reaches none of that machinery, because the counter only moves when a call comes back.
-Producers meanwhile keep appending, so the buffer grows for as long as they do. From the
-producer side a filesystem that never answers is indistinguishable from a slow one, and the
-second must not be punished -- but the answer is NOT a ceiling. There is no per-session cap past
-which an entry is discarded, for the reason stated above: a hole chosen while the process is
-healthy reads exactly like a fact that never occurred, and nothing can recover or detect it.
+**A write that HANGS is the one failure no attempt counter bounds.** A call that
+never returns cannot advance `_MAX_WRITE_ATTEMPTS`, and the single writer cannot
+drain another session meanwhile. Producers continue until the hard count or byte
+ceiling is reached; later tail entries are then refused and counted as overflow.
+The memory backlog is bounded, but the in-flight filesystem call itself cannot be
+cancelled safely from this thread.
 
-So the cost is stated rather than absorbed. A filesystem that stops answering grows this buffer
-until memory runs out, and if that kills the process then every session's unwritten entries go
-with it, uncounted -- worse in the tail than shedding one session's newest entries, and accepted
-because a ceiling only makes the hole less likely while guaranteeing that it happens. What the
-design owes instead is VISIBILITY, which is the only thing standing between a hung write and a
-silently growing process.
-
-That is why the writer publishes what it is working on and how long it has been at it. A job
-past `_WRITE_STALL_SECS` is reported once as a stall, by a PRODUCER -- the thread that would
-otherwise notice is the one blocked in the call, so `_submit` checks before it hands over each
-entry, which names the stall while the backlog behind it is still growing. A stalled job is not
-a failed one: it may still land, and its retry budget has not moved because nothing raised.
-Together with `buffered_writes()` and the high-water report, that line is the whole account a
-hung write gives of itself.
+Visibility is therefore still required. A job past `_WRITE_STALL_SECS` is reported
+once as a stall by a producer -- the thread that could report from the write is the
+one blocked in it -- while `buffered_writes()`, `peak_buffered_writes()`, and the
+high-water warning expose the queued backlog. A stalled job may still land and has
+not spent a retry attempt until it returns.
 
 One worker drains it in batches. It pauses `_BATCH_DEADLINE_SECONDS` before each pass, so a
 turn's burst of entries becomes one pass rather than a wake per entry; the deadline is fixed

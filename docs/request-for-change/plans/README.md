@@ -9,7 +9,7 @@ that, and read the **State** column here for whether a plan is being worked.
 
 | Plan | Spec | State |
 |---|---|---|
-| [2026-08-22-durable-run-coordinator.md](2026-08-22-durable-run-coordinator.md) | [rfc-durable-run-coordinator.md](../rfc-durable-run-coordinator.md) | **Dormant.** 0 of 53 steps done and `RunCoordinator` has zero hits in `src/` and `test/`. The plan is unstarted, not obsolete — it is still the execution plan for a live RFC. |
-| [2026-08-27-agentcore-identity-gateway.md](2026-08-27-agentcore-identity-gateway.md) | [rfc-agentcore-identity-gateway.md](../rfc-agentcore-identity-gateway.md) | **Live.** 11 of 30 steps done. `platform/agentcore_schema.py` ships and `AgentIdentityProvider` is real across `platform/interfaces.py`, `context.py`, `defaults.py` and `bootstrap.py`. |
+| [2026-08-22-durable-run-coordinator.md](2026-08-22-durable-run-coordinator.md) | [rfc-durable-run-coordinator.md](../rfc-durable-run-coordinator.md) | **Obsolete.** 0 of 52 checklist steps are done. The RFC is superseded by `rfc-overload-resilience.md`; its durable store now ships as `src/kiro_crew/taskq/`. |
+| [2026-08-27-agentcore-identity-gateway.md](2026-08-27-agentcore-identity-gateway.md) | [rfc-agentcore-identity-gateway.md](../rfc-agentcore-identity-gateway.md) | **Partial on main.** 11 of 29 checklist steps are marked done, but current code contains only the AWS-free core seam (`platform/agentcore_schema.py`, `AgentIdentityProvider`, public Default, and governance row); later AWS/IAM/Gateway work is absent. |
 
 Indexed from [../README.md](../README.md).

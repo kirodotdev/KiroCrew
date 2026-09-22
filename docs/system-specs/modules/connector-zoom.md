@@ -34,7 +34,7 @@ The concerns that are generic across every provider stream live in
   values `oauth_user` and `service_to_service` (Zoom issues no
   `fine_grained_pat`), not a parallel Zoom enum; and an operation is described
   by the shared `OperationDescriptor`'s `service_id`/`operation_kind`/`effect`/
-  `credential_mode`.
+  `credential_modes`.
 
 What stays **vendor logic** here is everything Zoom-specific: the UUID
 double-encoding rule, the recurrence/occurrence and time semantics, the
@@ -47,9 +47,9 @@ Scope boundary, stated up front so a reader with only this repo checked out can
 place it: this document governs **what a Zoom identifier/cursor/state/error
 MEANS and how it is classified** — the invariants a correct adapter must not
 violate — and the tests that pin those invariants. It does not implement the
-adapter, the manifest entries for Zoom (those are a later slice, `W11-B`, whose
-manifest directory and validator ride a separate, not-yet-landed PR and are not
-created here), or any live call. Where this slice's code changes what this
+adapter, the manifest entries for Zoom (those remain a later slice, `W11-B`;
+no manifest directory or validator exists in the current tree), or any live
+call. Where this slice's code changes what this
 document states, the owning-spec rule applies exactly as everywhere else in this
 tree: the doc is updated in the same commit as the code.
 
@@ -318,7 +318,7 @@ contract has:
    sent without double-encoding maps to the ambiguous-`3001` class, not to a
    genuine absence.
 2. **Recurrence update missing `occurrence_id`** — an update meant for a single
-   occurrence but missing `occurrence_id` is recognized as hitting the parent series
+   occurrence but missing `occurrence_id` is recognized as hitting the parent
    series, not silently accepted as the intended single-occurrence edit.
 3. **Cursor assumed on a cursor-less endpoint** — asking the paging unit to
    follow a cursor on the instances list or a single-resource GET is refused: the

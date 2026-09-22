@@ -1,8 +1,10 @@
 # AgentCore Identity and Gateway Implementation Plan
 
-> **Live plan.** 11 of 30 steps are done: `platform/agentcore_schema.py` ships and
-> `AgentIdentityProvider` is real across `platform/interfaces.py`, `context.py`,
-> `defaults.py` and `bootstrap.py`. Its spec is
+> **Partial implementation on main.** 11 of 29 checklist steps are marked done,
+> but the checkboxes include work not present in this snapshot. At `80bd0a81f`,
+> `platform/agentcore_schema.py` and the AWS-free `AgentIdentityProvider` core
+> seam ship; the AWS adapter, IAM helpers, Gateway attachment, consent flow,
+> and Settings surfaces do not. Its spec is
 > [`../rfc-agentcore-identity-gateway.md`](../rfc-agentcore-identity-gateway.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use

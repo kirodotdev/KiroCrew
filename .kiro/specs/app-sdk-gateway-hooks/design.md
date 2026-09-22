@@ -1,5 +1,7 @@
 # Design Document: App SDK Gateway Hooks
 
+Status: implemented in `src/kiro_crew/apps/hooks_integration.py` and the related `apps` modules.
+
 ## Overview
 
 This design introduces a gateway-side hook system that allows KiroCrew apps to register HTTP routes, manage cron jobs, and participate in gateway lifecycle events through declarative manifest entries and Python entry points. The core principle is **convention over configuration**: apps declare capabilities in `app.json`, implement them in their own directory, and the gateway discovers and wires them up automatically.

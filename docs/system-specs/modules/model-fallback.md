@@ -9,7 +9,7 @@ successful swap is observable before it is recorded.
 ## Configuration
 
 `AgentConfig.fallback_model` is normalized by
-`config/loader.py:coerce_fallback_model`. `llm_helpers.configured_fallback_chain`
+`config/sections.py:coerce_fallback_model`. `llm_helpers.configured_fallback_chain`
 is the shared derivation used by the fallback callers:
 
 - The automatic-routing sentinel is the field default; its configured value
@@ -33,7 +33,7 @@ The fallback path is eligible only after the normal transient retry budget is
 spent on a transient error with no qualifying prior activity. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
-no emitted or thought activity, and `subagent._stream_with_transient_retry`
+no emitted or thought activity, and `subagent_manager/run.py::RunEventCoordinator._run_impl`'s nested `_stream_with_transient_retry`
 requires no activity. Post-activity recovery does not enter the model-fallback
 walk.
 
@@ -85,7 +85,7 @@ and each error surface must receive the same safe text.
   pre-activity transient branch, persists a notice, and requeues the same
   message as a synthetic recovery item. Its fallback condition excludes nested
   prompts. On exhaustion it renders the slot-local walk in the terminal error.
-- `subagent._stream_with_transient_retry` follows the zero-activity branch,
+- `subagent_manager/run.py::RunEventCoordinator._run_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
   the completed result.
 

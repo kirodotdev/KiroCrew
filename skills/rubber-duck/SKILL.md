@@ -79,7 +79,7 @@ extra model run per round *and* real Presenter effort. A deliberate, occasional 
 
 ## Constraints the live prototype exposed — READ THESE
 
-- **Listener must be LEAN + LARGE-WINDOW.** Subagents inherit the full injected KiroCrew
+- **Listener must be LEAN + LARGE-WINDOW.** Subagents inherit the full injected Kiro Crew
   context (skill *descriptions*, memory, lessons — not full skill bodies, but still
   large). A small-window model **overflows its context window before it can read your
   task** (a real prototype failure), so pin the Listener to a large-window model from a

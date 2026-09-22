@@ -12,9 +12,11 @@ older SSH-over-`ProxyCommand` workaround.
 > (grant/revoke `ssm:StartSession`, CloudTrail-audited), not a networking decision
 > gated by a key someone holds.
 
-## The two transports
+## The two EC2 connection methods
 
-The Instances registry supports two `connection_method` values. Both end at the
+The Instances registry supports three `connection_method` values overall:
+`ssh`, `ssm`, and `fargate`. An EC2 box uses the first two; `fargate` is reserved
+for ECS task targets and is outside this comparison. Both EC2 methods end at the
 same place — a loopback-bound gateway on the remote — but they get there very
 differently.
 
@@ -39,7 +41,11 @@ reg.add(
 
 Requirements on the remote: only the **SSM agent** (preinstalled on Amazon Linux)
 and an instance role that permits Session Manager. Requirements on the client:
-only the `aws` CLI + `session-manager-plugin` and `ssm:StartSession` permission.
+the `aws` CLI + `session-manager-plugin`; `ssm:StartSession` opens the tunnel,
+while managed token and remote-command operations also require
+`ssm:SendCommand` and `ssm:GetCommandInvocation`. The policy printed by
+`kirocrew cloud iam-policy` includes these permissions with the launcher-managed
+resource bounds.
 
 ### Legacy SSH over an SSM `ProxyCommand` (`connection_method="ssh"`)
 
@@ -134,5 +140,5 @@ cleaned up too.
 
 - `docs/system-specs/modules/cloud.md` — the cloud launcher module (provisioning,
   security model, bootstrappers).
-- `docs/system-specs/modules/instances.md` — the Instances registry and the two
-  transports; §9 documents the manual SSH-over-`ProxyCommand` option.
+- `docs/system-specs/modules/instances.md` — the Instances registry and all three
+  connection methods; §9 documents the manual SSH-over-`ProxyCommand` option.

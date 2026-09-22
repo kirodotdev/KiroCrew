@@ -5,7 +5,7 @@ The `kiro_crew.platform` package defines the **Composed Platform Providers
 edition and an enterprise companion without the core ever importing
 enterprise-specific code.
 
-> Authoring note: KiroCrew is the public edition of this seam. The daily
+> Authoring note: Kiro Crew is the public edition of this seam. The daily
 > de-branding content sync from the upstream authoring home strips the
 > enterprise-tinted Defaults (e.g. the internal git host, `.midway` sandbox dirs)
 > down to the public baseline; the enterprise companion re-adds them via overrides.
@@ -16,7 +16,7 @@ enterprise-specific code.
 
 The core defines a set of **extension points** — interfaces where behavior
 differs between editions — and ships a `Default*` adapter for each that
-reproduces today's KiroCrew behavior. An enterprise companion package (module
+reproduces today's Kiro Crew behavior. An enterprise companion package (module
 separate from `kiro_crew`) depends on the public wheel and supplies enterprise
 adapters for the same interfaces.
 
@@ -33,8 +33,8 @@ interface, the public edition is complete standalone.
 | `contract_version` | carrier (int) | `CONTRACT_VERSION` | must match core |
 | `profile` | carrier (str) | `"standalone"` | `"enterprise"` |
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
-| `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers a companion-registered backend |
-| `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers enterprise artifact/publish providers |
+| `providers` | adapter | `DefaultProviderRegistry` (the baseline in `agent_sdk/backends.py`; registration is a no-op) | registers an edition backend after the core knows and verifies its routing |
+| `publish` | adapter | `DefaultPublishRegistry` (registers the personal cloud drive under `PERSONAL_DRIVE_PROVIDER`; leaves the unnamed default unregistered) | registers enterprise artifact/publish providers |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
@@ -386,11 +386,14 @@ companion can pin against a frozen contract.
 
 The companion declares (in its `pyproject.toml`):
 ```toml
+[project]
+dependencies = ["kirocrew"]
+
 [project.entry-points."kirocrew.plugins"]
 enterprise = "kirocrew_enterprise.compose:build_enterprise_context"
+
 [project.scripts]
 kirocrew-enterprise = "kirocrew_enterprise.cli:main"
-dependencies = ["kirocrew"]
 ```
 The `kirocrew-enterprise` binary sets `KIROCREW_PROFILE=enterprise` and delegates to the
 core `main` — the explicit composition-root path that a security review reads.

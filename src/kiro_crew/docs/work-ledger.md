@@ -157,16 +157,17 @@ either. Confusing them is the common mistake:
 
 | | Work ledger | [Session ledger](session-ledger.md) | [Subagents](subagents.md) |
 |---|---|---|---|
-| Holds | work items shared by two sessions | one session's own goal, phase, next step | nothing durable |
+| Holds | work items shared by two sessions | one session's own goal, phase, next step | a task plus a retained transcript/result, but no shared acceptance ledger |
 | Who writes | a conductor and its workers, disjoint field sets | the session itself | n/a |
-| Survives | compaction, restart, and the worker's own session ending | compaction and restart | only the delivered result, for a grace window |
+| Survives | compaction, restart, and the worker's own session ending | compaction and restart | the retained conversation/result for its bounded grace window |
 | Unit | an item with an acceptance condition | a phase and a next step | a task string |
 | Completion | settled by the acceptance evaluator | the session marks its ledger finished | the parent reads the result |
-| Steerable | yes — each worker is its own session you can open | n/a | no, a subagent has no session of its own |
+| Steerable | yes — each worker is its own session you can open | n/a | yes while running via `spawn_steer`; follow-ups use `spawn_continue` while retained |
 
-Reach for subagents for fan-out that finishes inside one turn and needs no
-supervision. Reach for a conductor when each piece needs its own long-lived
-session, its own acceptance bar, and a record that outlives any one transcript.
+Reach for subagents for bounded background fan-out that needs no visible,
+long-lived workstream or shared acceptance record. Reach for a conductor when
+each piece needs its own long-lived session, its own acceptance bar, and a
+record that outlives any one transcript.
 
 A conductor keeps both ledgers: the work ledger for the items, and its own
 session ledger for its goal, its current round, and the approaches it already

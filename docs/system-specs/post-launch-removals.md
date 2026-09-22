@@ -24,8 +24,9 @@ the user removes it, so this is stricter than a "post-launch" cutoff. Removing
 the spelling while any legacy home could persist would un-gate real credentials
 (`.env`, `token_signing.key`, `security_policy.json`, …).
 
-**What to delete then:** the `.kirocrew` spelling in `src/kiro_crew/security/__init__.py`
-(`_CREW_HOME_PREFIXES`). Keep `.kiro/crew`. The
+**What to delete then:** the `.kirocrew` spelling in `src/kiro_crew/security/paths.py`
+(`_CREW_HOME_PREFIXES`; re-exported by `src/kiro_crew/security/__init__.py`). Keep
+`.kiro/crew`. The
 `kirocrew ... token` credential-exfil rule (`.*kirocrew.*token`) matches the CLI
 *name*, not the path — leave it.
 

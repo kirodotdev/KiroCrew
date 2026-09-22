@@ -351,7 +351,8 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
 | `website/src/components/ChatInput.tsx` | Composer wiring, pending file/folder preview strip |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
-| `website/src/pages/ChatPage.tsx` | Token-derived staging, send/steer serialization, bubble chips |
+| `website/src/pages/ChatPage.tsx` | Token-derived staging and send/steer serialization |
+| `website/src/pages/chat/ChatPageMessageContent.tsx` | User-message folder marker resolution and inline folder chips |
 
 ## Tests
 

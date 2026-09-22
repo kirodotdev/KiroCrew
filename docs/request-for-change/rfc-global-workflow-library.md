@@ -1,6 +1,6 @@
 ---
 title: Global Workflow System — reusable definitions and TaskRunner composition
-status: partial
+status: implemented
 revision: v2
 author: Kyle Seaman, with Codex
 created: 2026-08-25
@@ -14,8 +14,10 @@ superseded-by: []
 ---
 # RFC: Global Workflow System — reusable definitions and TaskRunner composition
 
-- Status: in-progress — nothing from this RFC is on `main`. RFC and
-  implementation are proposed together in PR #5951.
+- Status: implemented — reusable definitions, exact MCP and `/workflow`
+  invocation, the Agent Capabilities library UI, and TaskRunner `task-plan`
+  composition are on `main`. The shipped contract is
+  [`../system-specs/modules/workflows.md`](../system-specs/modules/workflows.md).
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-25
 - Audited against: `3407351dd`

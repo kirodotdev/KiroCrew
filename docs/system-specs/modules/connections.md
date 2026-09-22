@@ -2,13 +2,19 @@
 
 Third-party account connections: the provider registry and its tiers, the mint
 endpoints a card drives, where credential custody sits, warm prewarming, owner-only
-disconnect, and the two launch-gate rungs. The subsystem is
+disconnect, the automated L0/L1 gates, and the manual L2 gate. The subsystem is
 `src/kiro_crew/connections/` (`registry.py`, `mint.py`, `warm.py`, `status.py`,
-`ownership.py`, `tool_aliases.py`, `alias_record.py`, `l0_probe.py`, `l0_drift.py`,
-`l0_record.py`, `l1_smoke.py`, `tool_test.py`), plus
-`dashboard/handlers/connections.py` and `website/src/pages/connections/`.
+`ownership.py`, `oauth_clients.py`, `tool_aliases.py`, `alias_record.py`,
+`l0_probe.py`, `l0_drift.py`, `l0_record.py`, `l1_smoke.py`, `tool_test.py`, and
+`control_plane/`), plus `dashboard/handlers/connections.py` and
+`website/src/pages/connections/`.
 
-The `src/kiro_crew/connections/vendors/zoom/` subtree is a separate connector-campaign slice with its own owning spec — [connector-zoom.md](connector-zoom.md) (`W11-A` Zoom contract semantics) — not this subsystem's OAuth-grant plumbing.
+The `control_plane/` and `vendors/` subtrees are connector-campaign slices rather
+than this subsystem's OAuth-grant plumbing. Their current contracts include the
+[capability-manifest](connector-capability-manifest.md),
+[conformance](connector-conformance.md), [GitHub](connector-github.md),
+[Microsoft Graph](microsoft-graph-runtime.md), and [Zoom](connector-zoom.md)
+specs.
 
 **Kiro Crew never holds a connection's credential.** kiro-cli owns the OAuth chain
 end to end; Kiro Crew observes grant presence by `stat`, and every rule below follows
@@ -672,7 +678,7 @@ removes both entries — leaving the credential behind. So a configured row whos
 with provenance. A row the census does *not* carry still votes, so a source the
 census misses can never lose a real sharer.
 
-Residuals, stated rather than papered over: the handler awaits `cancel_mint`first, so a wedged teardown can keep a Disconnect busy for its shutdown timeout
+Residuals, stated rather than papered over: the handler awaits `cancel_mint` first, so a wedged teardown can keep a Disconnect busy for its shutdown timeout
 (firing it as a task would let a grant arrive after the user disowned the
 connection); the census reads the per-project `.kiro/agents` dirs of every OPEN
 chat slot as well as the user-level one, so a project with no open slot is still
@@ -786,7 +792,7 @@ shipped with the tiers note. Test is not broken today; it performs a real probe,
 just a shallower one than its name suggests. Splitting it keeps the
 security-relevant fix from waiting on the expensive one.
 
-## Launch gates: L0 and L1
+## Launch gates: automated L0/L1 and manual L2
 
 A visible Connect card is a promise the flow works; each rung of the launch
 ladder asserts something the rung below structurally cannot:
@@ -897,7 +903,7 @@ governed, audited agent path.
 
 ### Running it by hand
 
-`python3 -m kiro_crew.connections.l1_smoke --report /tmp/l1.json` (under a
+`python3 -m kiro_crew.connections.l1_smoke --report connections-l1-report.json` (under a
 pipx/venv install, use that environment's interpreter). `--min-exercised 1`
 reproduces the lane's gate; `--concurrency`/`--timeout` are in `--help`.
 

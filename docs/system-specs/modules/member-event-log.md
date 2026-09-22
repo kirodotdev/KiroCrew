@@ -1,12 +1,20 @@
 # Member Event Log
 
-Owners: `kiro_crew.eventlog`, `kiro_crew.eventlog_hooks`, `kiro_crew.dashboard.handlers.members`, `website/src/state/memberProjectionStore.ts`
+Owners: `kiro_crew.eventlog`, `kiro_crew.eventlog_hooks`,
+`kiro_crew.dashboard.handlers.members`, `kiro_crew.dashboard.websocket_hub`,
+`website/src/state/memberProjectionStore.ts`, `website/src/state/useMemberProjection.ts`,
+`website/src/api/membersQuery.ts`
 
 ## 1. Purpose
 
 `kiro_crew.eventlog` gives every crew member one append-only log and derives the Members page's state from it. Before this module the page assembled each roster row at request time from thirteen sources — the agents config, a binding file, a rules file, a rotated activity file, the in-memory slot table, the auto-nudge registry and several client caches — and refreshed by re-fetching the whole roster on a coarse `refresh` frame plus a 60-second patrol poll. None of those sources recorded *what changed*, and a stop that the auto-nudge registry had forgotten collapsed into "no patrol scheduled".
 
-The log is the record; every view is a fold of it. A change appends one event, the event folds into projections, and the changed projected values are pushed to connected dashboards as whole values. The page renders from those values and re-fetches nothing.
+The log is the record; every view is a fold of it. A change appends one event,
+the event folds into projections, and changed projected values are pushed to
+connected dashboards as whole values. Projection-backed fields update without a
+roster refetch. `GET /api/members` remains the cold-start baseline and a
+finite-stale registry read, and the activity query remains the source of
+loading/error state and its `capped` flag.
 
 ## 2. Storage and the envelope
 
@@ -29,7 +37,13 @@ Damage is answered at three grains. A torn trailing line — trailing bytes that
 
 Writes are serialized per member in-process and across processes by the store's own lock, which re-reads committed state under the lock so a second writer takes the next `seq` rather than duplicating one.
 
-Listing the roster reads only each log's header line, so listing cost follows the number of members, not the size of their logs. The slug comes from the header rather than the directory name, and only when it folds back to the directory it was found in — the fold is not reversible, and a directory carrying another unit's id must not be enumerated as that other unit.
+Discovering member logs through `MemberEventLogService.slugs()` reads only each
+log's header line, so that directory scan follows the number of members rather
+than the size of their logs. This is service-level log discovery; the full roster
+request separately ensures and folds each configured row. A slug comes from the
+header rather than the directory name, and only when it folds back to the directory
+it was found in — the fold is not reversible, and a directory carrying another
+unit's id must not be enumerated as that other unit.
 
 ## 3. Event vocabulary
 
@@ -70,15 +84,24 @@ An open span whose owner is gone is closed by the reader, not by a bystander wri
 
 ## 6. Transport
 
-`GET /api/members` rows carry `projections: {asOfSeq, values}` — the baseline. A raw-envelope read over the same log is deliberately absent here: #12112 ships one generalized `GET /api/eventlog/{kind}/{id}/events` for every kind, so a member-only spelling of it would be superseded the moment that lands.
+`GET /api/members` rows carry `projections: {asOfSeq, values}` — the baseline.
+This tree currently exposes no raw-envelope HTTP read for member logs;
+`MemberEventLogService.history()` is an internal page API.
 
-Each envelope's `data` is redacted through the shared exfiltration-URL and credential chain on its way out, the same chain the sibling `/activity` route runs, because this response crosses the same network boundary and would otherwise leak what its sibling protects. The pass covers dict KEYS as well as values. Every writer in this tree names its keys with code-owned structural words, so a credential-shaped key should be unproducible — but that is a property of today's writers rather than of the boundary, and one nested writer keying a dict by operator-supplied text would leak straight past a value-only pass. Two keys whose redaction collides merge, which requires both to have carried a credential, so what is lost is a value already destroyed.
+Raw envelopes therefore stay in-process. At the network boundaries,
+`GET /api/members/{slug}/activity` emits an allowlisted record and redacts its
+operator-supplied `project`, while roster baselines and WebSocket projection values
+run through the shared recursive exfiltration-URL and credential chain. The
+projection pass covers dict KEYS as well as values, so a future nested writer cannot
+leak operator-supplied text through a key. Two keys whose redaction collides merge,
+which requires both to have carried a credential, so what is lost is already-redacted
+content.
 
 Two WebSocket frames, both `{type, data}` like every other broadcast and both classified owner-only in `ws_event_scope`:
 
 | frame | data | client rule |
 |---|---|---|
-| `members_subscribed` | `{lastSeqs: {slug: seq}}`, sent once to a new owner socket right after the connect snapshot | drop held rows whose `seq` exceeds `lastSeq` for that slug — they rode state a restart's torn-tail repair rolled back |
+| `members_subscribed` | `{lastSeqs: {slug: seq}}`, sent once to a new owner socket right after the connect snapshot | drop held rows whose `seq` exceeds `lastSeq`, plus cached slugs omitted from the readable baseline; refetch the roster if anything was dropped |
 | `member_projection` | `{slug, key, value, seq}` — a whole projected value, emitted only when a unit's view changed | higher `seq` wins; a replay or a stale frame is dropped without checking contiguity |
 
 The two rules are deliberately different. A whole-value frame needs no gap detection because a stale frame is simply lost to a newer one; only a delta channel would need a contiguity check, and this transport carries none.
@@ -91,15 +114,24 @@ Sending the baseline before registration does not fix it: the connect snapshot i
 
 `website/src/state/memberProjectionStore.ts` holds `Map<slug, Map<key, {value, seq}>>` under those two rules; `seed()` applies an ATTRIBUTABLE baseline through the same higher-seq-wins path and never truncates, so a live frame that raced ahead of the baseline keeps winning. An UNATTRIBUTABLE one is the exception, and the distinction is the sequence: `asOfSeq < 0` is not a position but the sentinel `api_members` emits when it will not attribute the slug — a shared slug, a header naming another member, or a failed read. Every real row's seq is above it, so comparing them would keep the whole cache, which for a collision is the OTHER member's projection. That block therefore clears the slug unconditionally and marks it refused, which also drops the live frames `apply()` would otherwise take: the roster is the only surface that checks attribution, while the publish and the on-connect replay both read a snapshot straight out of the service. The mark lifts on the next baseline carrying a real sequence. `useMemberProjection(slug, key)` binds a component through `useSyncExternalStore`; `useMemberRosterViews(slugs)` gives the page one referentially stable map for derived values — the starred count and filter, search and sort — so a pushed frame moves the row, the chip and the filter together.
 
-`MembersPage` reads the roster row, the drawer's configuration and recent activity, and the patrol verdict from projections. The patrol block has two sources with two roles: the live auto-nudge registry is presence (a loop it holds as active is active), while the `wake` projection is the durable record, so a stop the registry has forgotten still renders with its reason. The registry query remains only for detail fields the projection does not carry (interval, cycle counts, next wake) and no longer polls.
+`MembersPage` overlays projected roster fields on the `GET /api/members` query,
+whose 30-second stale floor still provides cold-start and focus refresh. Recent
+activity comes from the pushed projection when present, while the per-member
+activity query remains for loading/error state, its `capped` flag, and older-gateway
+fallback. The patrol block has two sources with two roles: the live auto-nudge
+registry is presence (a loop it holds as active is active), while the `wake`
+projection is the durable record, so a stop the registry has forgotten still
+renders with its reason. The registry query remains only for detail fields the
+projection does not carry (interval, cycle counts, next wake) and no longer polls.
 
 ## 8. Migration
 
 **A folded activity row is MARKED as unverified.** The log is fenced, ordered and
 append-only, and a reader is entitled to treat what is in it as having been written
 through those guarantees. Legacy rows were not: `activity.jsonl` is agent-writable
-and is read on the first `ensure` for a member, so whoever can write it before the
-fold chooses what the fold imports. Each imported row therefore carries
+and is read during `ensure` until the fenced completion marker exists, so whoever
+can write it before that completed fold chooses what the fold imports. Each imported
+row therefore carries
 `legacy_unverified: true`, which records that its provenance is the file rather than
 this log. The rows are not dropped -- they are that member's real history as far as
 anything can tell, and discarding them would lose activity the dashboard has always
@@ -122,9 +154,18 @@ text -- an activity record's `project` can embed a credential or a presigned URL
 Falling back to the unredacted value would publish exactly what the redaction was
 added to withhold, and would do it on the one input redaction could not handle, so
 the failure mode would leak more reliably than the success path protects. A dropped
-frame costs one projection update that the next event re-sends.
+frame costs one projection update that the next change to that projection re-sends.
 
-The first `ensure(slug, name)` for a member with no log creates the header and folds the legacy files into events, in order: the DM binding, the rules text, then every line of `activity.jsonl.1` and `activity.jsonl`. The activity files are then retired by rename, as described below; the binding and rules sources are left in place, because each of those is gated on its own event already being in the log and so cannot be re-imported. `api_members` reconciles the folded roster against the agents config on read, so a config edited by hand becomes one `member/config` event with the fields that differed.
+The first `ensure(slug, name)` for a member with no log creates the header. Every
+`ensure` then resumes the legacy fold under the member unit's cross-process lease,
+in order: the DM binding, the rules text, then every line of `activity.jsonl.1` and
+`activity.jsonl`. Each item is deduplicated independently, so a crash can resume
+without replaying completed work. Once the activity read completes, the service
+durably creates `.legacy-activity-folded` inside the fenced unit directory before
+retiring the source files by rename; the binding and rules sources remain because
+their own events gate re-import. `api_members` reconciles the folded roster against
+the agents config on read, so a hand edit becomes one `member/config` event with the
+fields that differed.
 
 A slug is LOSSY: `slug_for_name` says so in its own docstring, and `Review_Agent`
 and `review-agent` both fold to `review-agent`. Colliding names are SUPPORTED, and
@@ -180,10 +221,11 @@ exactly like a member who has no such projection.
 counting matching rows, which cannot tell a row it has not reached from a row written
 after it finished -- so counting alone would leave that agent-writable file a way to
 enter the fenced ledger as trusted activity indefinitely. Completion is recorded by
-renaming the source to `activity.jsonl.migrated`, and the rename happens only after
-the rows are appended, so a crash in the middle leaves the source in place and the
-next `ensure` folds it again. The read itself is streamed under a byte budget,
-because it runs on every `ensure` and the roster projection calls that.
+the fenced `.legacy-activity-folded` sidecar, written and directory-synced only after
+all rows are appended and before the live names are freed. The sources are then
+renamed to `activity.jsonl.migrated[.1]` as hygiene. A crash before the marker leaves
+the fold resumable; a crash after it cannot reopen the legacy name as a trusted input.
+The read itself is streamed under a byte budget because it runs from `ensure`.
 
 **This log has no rotation and accumulates over a member's lifetime.** Rotation
 renames a file out from under its readers and drops its oldest rows, which a reader
@@ -191,7 +233,10 @@ folding by sequence cannot survive: the projection would silently lose rows it h
 already folded. So the bounds here are per append and per value, and the growth bound
 over a lifetime is the member's own activity rate. Stated rather than implied, because
 the file-backed writer this replaced did rotate, and a reader who remembers that would
-otherwise assume it still does.
+otherwise assume it still does. `MemberLog` nevertheless retains only the newest
+`MAX_RETAINED_EVENTS` (5,000) envelopes in memory. `history()` pages older rows from
+the crew-log store and projection priming streams the full history, so the memory
+bound does not silently shorten either read.
 
 **What that costs, measured.** The bounds above are per append and per value, so they
 say nothing about the cost of reading a log that has grown, and it is the read that
@@ -268,7 +313,9 @@ is still there, handed the CURRENT projection rather than the caller's snapshot,
 writes nothing when it is not. Declining is a normal outcome, not a failure: it means
 the state closed itself while the reconcile was deciding.
 
-`emit` never PROPAGATES a failure, because a caller recording a transition must notbe brought down by its own bookkeeping, but it does not discard the outcome either.
+`emit` never PROPAGATES a failure, because a caller recording a transition must
+not be brought down by its own bookkeeping, but it does not discard the outcome
+either.
 It answers whether the event landed, so a caller whose only record is this event can
 tell an omitted transition from one that never happened, and it reports a failure
 rather than logging it at debug, because that distinction is the one a projection
@@ -290,10 +337,9 @@ member's bindings, rules and activity unmigrated on every later call, because
 nothing deletes the legacy files and so their presence cannot say whether the pass
 ran. It now runs on every `ensure`, and each of the three items is skipped once the
 log carries that item's event -- so whatever a dead run got through stays done and
-the rest is picked up next time. A completion-marker event would answer the same
-question in one check and is deliberately not used: it would sit in every member's
-log forever and shift the seq of every event after it, for a concern that ends with
-the first successful pass.
+the rest is picked up next time. A completion-marker EVENT is deliberately not used:
+it would sit in every member's sequence forever. The fenced sidecar file records only
+the activity fold's one-time completion without shifting later event numbers.
 
 **Only a regular file is read at the legacy path.** That path is agent-writable --
 which is the whole reason the completion marker lives in the fenced log root -- so
@@ -301,9 +347,9 @@ the party the marker defends against also chooses what KIND of thing sits there.
 plain `open` trusts that choice: a FIFO blocks until a writer appears, and no writer
 ever has to. The read runs inside `ensure` under the per-slug lock the roster request
 path holds, and the hang happens BEFORE the marker can be written, so the FIFO
-survives a restart and the marker never lands. The open therefore carries
-`O_NONBLOCK`, so a FIFO returns at once rather than waiting, and `O_NOFOLLOW`, so a
-symlink is refused in the kernel; an `fstat` then rejects anything that is not a
-regular file. Both flags are feature-detected rather than platform-detected, so a
-platform without either keeps the regular-file check, which is the part that decides.
-A refusal reads as "migrate nothing from it", the same answer an absent file gives.
+survives a restart and the marker never lands. The service therefore calls
+`platform_compat.open_file_no_reparse(..., nonblocking=True)`: POSIX adds
+`O_NONBLOCK` and `O_NOFOLLOW`, while Windows opens the reparse point itself with
+`FILE_FLAG_OPEN_REPARSE_POINT`. An `fstat` then rejects anything that is not a
+regular file. A non-regular entry contributes no rows; a genuine I/O failure keeps
+the migration incomplete so a later `ensure` retries instead of retiring unread data.

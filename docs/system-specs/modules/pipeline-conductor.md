@@ -7,13 +7,16 @@ one deterministic probe call per cycle, verifies claimed results independently,
 intervenes on stalls, adjudicates blocked items, governs host capacity and
 per-item credit budgets, and reports verified greens to the person.
 
-**It never does a work item's work.** No file edits, no builds, no fixes in its
-own turns. That is a property of the generated spec, not only of the prompt: the
-agent has no dedicated file-writing tool, and a work item never goes to
-`spawn_run`, `task_run` or `workflow_run`.
+**It never does a work item's work.** Repository edits, builds, and fixes belong
+to worker sessions; the conductor writes only its own state beside the pipeline
+spec. The generated agent reinforces that operating contract by withholding
+`fs_write` and `code`, but this is not an OS-level no-write boundary:
+`execute_bash` remains mounted (approval-gated) so it can run the bundled scripts
+and maintain conductor-owned state. A work item never goes to `spawn_run`,
+`spawn_sub_agents`, `task_run` or `workflow_run`.
 
 The shape is *agent plus agent skill*: the `pipeline-conductor` builtin skill
-carries the operating procedure, three bundled scripts carry the bookkeeping, and
+carries the operating procedure, five bundled scripts carry the bookkeeping, and
 the agent carries the judgment. The skill is the procedure of record; this spec
 is the contract for the machinery underneath it.
 
@@ -74,7 +77,7 @@ agent work from ingested context, so unattended operation gets them from the
 operator arming the conductor's own session in trust mode, not from a standing
 spec-level bypass. `execute_bash` is the same case and is the sharper one in
 practice: every script call goes through it, because `allowedTools` cannot match
-arguments, so trusting the three bundled scripts cannot be told apart from
+arguments, so trusting the five bundled scripts cannot be told apart from
 trusting arbitrary shell. A conductor session that was not armed therefore stalls
 on its first probe, not on its first intervention.
 
@@ -99,6 +102,8 @@ with the defaults that apply when the spec omits them:
   "governance": {"max_in_flight": 32, "max_per_cycle": 3,
                  "idle_alert_secs": 900, "session_ceiling": 30,
                  "credit_budget_per_item": 100, "topup_ceiling": 2},
+  "policy": {"keep_unused_seams": true, "refuse_design_asks": true,
+             "refuse_benign_duplication": true},
   "interface": {"folder_name": "pipeline-{id}", "digest_language": "auto"}
 }
 ```
@@ -106,9 +111,13 @@ with the defaults that apply when the spec omits them:
 The governance block is what bounds the fleet: a ceiling on dispatched workers, a
 per-cycle dispatch limit, the silence a worker may accumulate before the probe
 fires `IDLE`, a session budget for the run, a per-item credit allowance, and how
-many budget top-ups an item may receive. The interface block names the chat
-folder the pipeline's sessions live in and the language its digests are written
-in. `verifier.repro_gate` selects the campaign's admission policy — `best_effort`
+many budget top-ups an item may receive. The `policy` block controls three
+intake dispositions: whether deliberately unused seams are retained,
+design-decision asks are refused, and benign duplication is left alone. Each
+defaults to `true`; setting one to `false` admits that item class. The interface
+block names the chat folder the pipeline's sessions live in and the language its
+digests are written in. `verifier.repro_gate` selects the campaign's admission
+policy — `best_effort`
 (the generic contract) or `pod_required` (a live pod repro is a precondition for
 implementation, not a score attached afterwards) — and it is the one field with a
 closed value set, so `spec_check.py` refuses the run on any third value rather
@@ -162,8 +171,9 @@ properties matter beyond the classification:
 - **Paths are derived, never configurable.** Transcripts come only from
   `<data home>/sessions`, the handled-set state file is always
   `<config path>.state.json`, and the banned-process scan reads `/proc`. The
-  config is authored by an agent with no write tool, and a config-chosen path
-  would quietly widen what an approved run can reach.
+  config is authored without a dedicated file-writing tool (the approved shell is
+  still capable of writing conductor state), and a config-chosen path would quietly
+  widen what that approved run can reach.
 - **Output is metadata only.** No transcript-derived text appears in it, so no
   private session content crosses into the conductor's context whatever keys the
   config watches. Content, when a ruling needs it, is read through the
@@ -202,17 +212,17 @@ The spec path itself is operator-supplied, so the read is a GATED read: the file
 goes through `hooks.safe_read_file`, which re-checks the RESOLVED target against
 `is_sensitive_path` and opens it `O_NOFOLLOW`. A `--spec` symlinked at a
 credential store is therefore refused through the link (`refused spec: Blocked:
-access to sensitive path: …`, exit 2) rather than parsed. A skill's scripts are
-copied out of the package tree and run under whichever `python3` the operator
-has, which under a managed install is not the interpreter Kiro Crew runs on — so
-the gate import frequently fails where the script is invoked. There is no safe
-degradation for a read gate, so the script does not read plainly and does not
-refuse either: it re-execs itself once under the interpreter beside the
-`kirocrew` launcher, which is the one carrying the package, and the child's
-verdict is the invocation's verdict. Refusal is what remains when the gate is
-reachable from no interpreter — no launcher on `PATH`, or a second import failure
-inside the re-exec — because a startup predicate that refuses every spec on a
-healthy install is the same outage as one that admits a bad one.
+access to sensitive path: …`, exit 2) rather than parsed.
+
+The normal startup invokes this script with the ACP-injected
+`KIROCREW_RUNTIME_PYTHON` using `-I -B`, so the interpreter already carries Kiro
+Crew while isolated mode keeps ambient import paths and bytecode writes out. A
+manual invocation under a foreign interpreter can still miss the gate import; in
+that case the script re-execs itself once under the injected runtime or an
+interpreter discovered beside the `kirocrew` launcher, and the child's verdict is
+the invocation's verdict. Refusal is what remains when the gate is reachable from
+no interpreter, because an unenforceable read precondition cannot degrade to a
+plain file read.
 
 ## The patrol cycle
 
@@ -293,7 +303,8 @@ invisible unless it keeps its own list.
   a distinct verdict.
 - **Forge labels and assignees are the cross-operator lock.** The ledger is a
   cache and never the authority on anything another operator can also touch.
-- **A no-write agent still needs a read boundary.** Every probe path is derived
+- **An agent without a dedicated write tool still needs a read boundary.** The
+  approval-gated shell can maintain conductor state, so every probe path is derived
   rather than configurable precisely because the config is agent-authored.
 
 ## Not implemented
@@ -301,7 +312,7 @@ invisible unless it keeps its own list.
 The design of record is
 [`../../request-for-change/rfc-pipeline-conductor.md`](../../request-for-change/rfc-pipeline-conductor.md)
 (status `partial`). M0 is what ships and what this spec documents: the generated
-agent, the builtin skill, its three scripts, and the `conductor-status/v1`
+agent, the builtin skill, its five scripts, and the `conductor-status/v1`
 schema. Unbuilt, and deliberately not described above as behaviour:
 
 - **M1:** a modelled PipelineSpec type and a SQLite event store. That type has
@@ -337,8 +348,9 @@ derive `permissions` from the filtered list; only the conductor mounts
 
 | Test | What it holds |
 |---|---|
-| `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, that the retired verbosity token is absent, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
+| `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, that the retired verbosity token is absent, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no dedicated file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
 | `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
+| `test/test_pipeline_conductor_probe_banned_age.py` | That every banned-process line carries a process age or explicit unknown, and PID recycling cannot splice a new process onto stale ownership/age evidence |
 | `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, closure requests outranking claims, and absent-symbol risk handling |
 | `test/test_pipeline_conductor_coverage_filter.py` | The batch coverage exclusion: that a closing keyword aimed at the item in a pull request's own title or body is coverage while a bare reference is `MENTIONED` and leaves the item in the queue, that fork and draft PRs count while a neighbouring number does not, that an unreadable forge exits 3 with no `uncovered` list, that the filter writes nothing, and that its reference vocabulary agrees with `claim_preflight.py`'s |

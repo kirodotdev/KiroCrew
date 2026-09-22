@@ -8,9 +8,11 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Every prefix is defined once, in `src/kiro_crew/dashboard/state.py`, so the
-frontend has one list to mirror and no second copy can drift. Classification is by
-`str.startswith` on the resolved prefix, never by a loose regex.
+Dashboard-owned prefixes are defined once in `src/kiro_crew/dashboard/state.py`.
+The two core-safe sub-agent completion markers live in `src/kiro_crew/constants.py`
+so `subagent.py` can import them without importing the dashboard layer; `state.py`
+imports and aggregates them. Classification is by `str.startswith` on the resolved
+prefix or prefix tuple, never by a loose regex.
 
 ## Cron notification
 
@@ -80,7 +82,9 @@ Task: <first 100 chars of the task>
 <result detail>
 ```
 
-- Prefix `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'`.
+- `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
+  `constants.py` and included in `state.py`'s `SUBAGENT_COMPLETION_PREFIXES`
+  aggregate.
 - `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
   The agent-name parenthetical is present only when the sub-agent ran under a named
   agent.

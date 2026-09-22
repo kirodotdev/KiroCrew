@@ -59,7 +59,7 @@ Every failure is a typed code, never a traceback.
 
 | Code | Means |
 |---|---|
-| `crew_log_disabled` | The crew log is off. Set `KIROCREW_CREW_LOG=1` in `~/.kiro/crew/.env` and restart the gateway. |
+| `crew_log_disabled` | Session crew-log emission is off. Set `KIROCREW_CREW_LOG=1` in `~/.kiro/crew/.env` and restart the gateway. |
 | `unknown_unit` | No session log for that unit. |
 | `unresolvable_key` | The key names no live ACP session, so no unit is receiving its work right now. |
 | `unknown_projection` | Not one of the five folds. |

@@ -42,7 +42,8 @@ See `probes.gh_pr.PrWatchProbe.observe`.
 `Observation` carries a stable key, a severity, a delivery brief, and whether
 its identity belongs to the current epoch. `Tick` carries the current epoch,
 observations, pending work, fetch status, and a quiet-tick detail. The public
-surface is `irq.__all__`; `test_probe_tuning_overrides_a_bound` and
+**probe-authoring** surface is `irq.__all__`; the qualified `irq.poll` entry point
+is the in-process driver's internal seam. `test_probe_tuning_overrides_a_bound` and
 `test_probe_tuning_cannot_hand_the_kernel_a_fatal_bound` pin the exercised
 probe-tuning contract.
 

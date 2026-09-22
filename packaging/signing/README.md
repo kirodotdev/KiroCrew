@@ -1,11 +1,11 @@
 # Signing Infrastructure
 
 This directory contains the macOS code signing and notarization scaffolding
-for the KiroCrew desktop app, using an enterprise code-signing service.
+for the Kiro Crew desktop app, using an enterprise code-signing service.
 
 ## Why identifiers are committed here
 
-KiroCrew is distributed as a signed desktop application under a shared Apple
+Kiro Crew is distributed as a signed desktop application under a shared Apple
 Developer identity. The bundle identifier and team ID are required by Apple's
 code signing infrastructure and are not secrets — they're embedded in every
 signed `.app` bundle users download.
@@ -113,16 +113,18 @@ rather than carrying copies, so there is one signer to audit. The two schemas
 keep the two verifiers apart; the key grant is one grant, and a principal that
 may sign videos may sign a CLI manifest.
 
-### Repository bootstrap state
+### Trust-root configuration
 
-The repository intentionally carries `UNCONFIGURED` in both
-`cli-manifest-public.pem` and the two `CLI_MANIFEST_*` constants in `cli.sh`.
-This is fail-closed: the installer exits before network I/O, and a trusted
-publisher configuration with only one of the role/key settings fails before any
-upload. Forks with neither setting still skip publication.
+The upstream repository carries a configured public key in
+`cli-manifest-public.pem` and matching `CLI_MANIFEST_*` constants in `cli.sh`.
+The installer still handles an `UNCONFIGURED` trust root fail-closed by exiting
+before network I/O. The publication workflow likewise fails before upload when
+only one of the role/key settings is configured; forks with neither setting skip
+publication.
 
 No private key should be generated, exported, committed, pasted into CI, or
-handled by an agent. Operational enablement is a human/infrastructure step:
+handled by an agent. Initial enablement for a new distribution is a
+human/infrastructure step:
 
 1. Create a non-exportable asymmetric KMS key in `us-west-2` with key usage
    `SIGN_VERIFY` and key spec `RSA_3072` or `RSA_4096`.

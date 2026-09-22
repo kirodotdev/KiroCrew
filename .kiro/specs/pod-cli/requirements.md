@@ -1,5 +1,7 @@
 # `kirocrew pod` — Requirements
 
+Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`.
+
 ## Overview
 
 `kirocrew pod` gives developers **kubectl-style, throwaway, full-stack test

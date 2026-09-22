@@ -2,13 +2,15 @@
 
 ## Overview
 
-`taskq` is the durable store and state machine under every unit of work the
-gateway accepts and owes an outcome for. A subagent spawn is written to
-`$KIROCREW_HOME/tasks/tasks.db` **before** its id is returned; a gateway that
-crashes finds the row on restart, settles what the previous incarnation left
-active, and dispatches what never started. Memory pressure defers a row instead
-of refusing it. The in-memory spawn queue is a bounded window over the store's
-rows, so 2000 accepted tasks are 2000 rows and at most
+`taskq` is the durable store and state machine under persistent, row-backed
+work the gateway accepts and owes an outcome for. A persistent subagent spawn is
+written to `$KIROCREW_HOME/tasks/tasks.db` **before** its id is returned; a
+gateway that crashes finds the row on restart, settles what the previous
+incarnation left active, and dispatches what never started. Memory pressure
+defers a row instead of refusing it. Incognito and Temporary work, and an
+operator-selected `agent.task_queue_enabled=false`, use the in-memory admission
+path and create no task row. The in-memory spawn queue is a bounded window over
+the store's rows, so 2000 accepted persistent tasks are 2000 rows and at most
 `agent.task_dispatch_window` Python objects.
 
 The package is the single scheduling source of truth. TaskRunner's
@@ -29,10 +31,13 @@ Files:
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
 
-Adapters (who writes rows today): the subagent manager, through the
-`taskq_*` glue in `subagent_manager/admission/taskq_bridge.py` — see
-[subagent.md](subagent.md) § Durable task queue. TaskRunner and workflows are
-imported as rows but not yet dispatched from them (`awaiting_adapter`).
+Adapters (who writes rows today): the subagent manager through the `taskq_*`
+glue in `subagent_manager/admission/taskq_bridge.py`, plus one shared
+`RunnerAdmission` for TaskRunner steps and workflow agent calls — see
+[subagent.md](subagent.md) § Durable task queue and § Runner adapters below.
+After a restart, the generic reconciler marks interrupted runner rows
+`awaiting_adapter` until the owning TaskRunner or workflow adoption sweep settles
+or resumes them; that marker is recovery hand-off, not their normal dispatch path.
 
 ## Schema (v1, the only shape any build has written)
 
@@ -65,9 +70,11 @@ CREATE TABLE task_events (task_id, seq, ts, kind, data_json, PRIMARY KEY(task_id
 CREATE TABLE meta (key PRIMARY KEY, value);   -- schema_version, incarnation
 ```
 
-`task_events` is append-only. Kinds: `accepted`, `claimed`, `transition`,
-`deferred`, `stale_result`, `rejected_transition`, `deliver`, `imported`,
-`awaiting_adapter`, `wake`, `wait_updated`, `child_settled`. `apply_schema`
+`task_events` is append-only. Core store kinds include `accepted`, `claimed`,
+`transition`, `deferred`, `stale_result`, `rejected_transition`, `deliver`,
+`imported`, `awaiting_adapter`, `wake`, `wait_updated`, and `child_settled`;
+wait, dependency, input-answer, and stop-recovery adapters append the additional
+named event kinds described in their sections below. `apply_schema`
 runs the one `CREATE ... IF NOT EXISTS` set above on every open (idempotent; a
 missing index is regained) and stamps `meta.schema_version = SCHEMA_VERSION`
 (`1`); there is no older shape to upgrade from, so the first `if current < N`
@@ -275,7 +282,7 @@ through `store.run(admission.taskq_accept_record, record)`, and only then does
 the sync `spawn(**params, _preassigned_id=id, _store_accepted=True)` start the
 run -- write-before-ack, with the write off-loop. The same shape serves every
 other accept path: `continue_conversation_async` (the follow-up watcher
-and `POST /api/subagents/continue`; the sync `continue_conversation` shares its
+and `POST /api/spawn/{id}/continue`; the sync `continue_conversation` shares its
 prelude, `_continue_prelude`), the app `SpawnSDK` (`apps/spawn_sdk.py`,
 which awaits `spawn_async` when the manager has it), and the CHANNEL keyword
 spawn door -- `spawn <task>` / `bg <task>` from Slack and `/spawn <task>` from
@@ -1499,14 +1506,16 @@ theirs, not the class's:
 
 ### Reverting to pre-queue behaviour
 
-Three flags, all live, and the section is explicit about their LIMIT because a
-default-on rewrite of core spawn semantics is only safe with an accurate rollback
-story. `agent.task_queue_enabled=false` restores the in-memory `_queue` dispatch
-(`tasks.db` stays in place, unread); `agent.adaptive_concurrency=false` stops the
-controller moving any cap; `agent.adaptive_concurrency_mode="fixed"` pins both
-actuators as plain semaphores (the execution cap at
-`min(agent.adaptive_initial, max_subagents)`, the daemon's spawn gate at
-`mcp_gateway.spawn_concurrency_initial`).
+These three flags bound the rollback story for the default-on scheduling change.
+`agent.adaptive_concurrency` and `agent.adaptive_concurrency_mode` apply live.
+`agent.task_queue_enabled` is read when the manager opens its store: changing it
+normally requires a gateway restart; while a failed-open retry is already armed,
+disabling it is observed by the next retry. Setting it false restores the in-memory
+`_queue` dispatch (`tasks.db` stays in place, unread). Setting
+`agent.adaptive_concurrency=false` stops the controller moving any cap;
+`agent.adaptive_concurrency_mode="fixed"` pins both actuators as plain semaphores
+(the execution cap at `min(agent.adaptive_initial, max_subagents)`, the daemon's
+spawn gate at `mcp_gateway.spawn_concurrency_initial`).
 
 **What the three flags do NOT restore.** An operator who sets all three does not
 get pre-queue behaviour, because these are new bounds and new results that no
@@ -1532,17 +1541,25 @@ flag reverts:
 
 | Key | Default | Live? | Meaning |
 |---|---|---|---|
-| `agent.task_queue_enabled` | `true` | yes | `false` keeps the in-memory queue for one release; `tasks.db` stays in place, unread |
+| `agent.task_queue_enabled` | `true` | restart* | `false` keeps the in-memory queue for one release; `tasks.db` stays in place, unread |
 | `agent.task_dispatch_window` | `64` (1..4096) | restart | bound on in-memory queued entries |
 | `agent.task_store_journal_mode` | `auto` (`auto` \| `wal` \| `delete`) | restart | SQLite journal for `tasks.db`: `auto` = WAL only on a volume DETECTED local, DELETE on a detected network filesystem AND on an undecidable one (WAL's shared memory is what SMB/NFS lacks, so unknown takes the slower correct mode); the other two force one and skip detection. Unknown values read as `auto` |
 | `agent.admit_wait_secs` | `30` (1..3600) | restart | admitted → queued after this; also the deferral re-check interval |
 | `agent.start_collect_timeout_secs` | `300` (10..3600) | restart | reserved for the session-start gate's start collector |
-| `agent.dependency_max_attempts` | `20` (1..1000) | yes | coordinated probes a scope gets before its waiters fail |
-| `agent.dependency_wait_deadline_secs` | `3600` (0..86400) | yes | wall-clock ceiling on one dependency wait; 0 = attempts cap only |
-| `agent.dependency_wake_per_tick` | `0` (0..4096) | yes | waiters released per wake tick after the probe; 0 = current effective admission capacity |
-| `agent.dependency_wake_spacing_secs` | `1.0` (0..60) | yes | pause between staged wake ticks |
+| `agent.dependency_max_attempts` | `20` (1..1000) | restart | coordinated probes a scope gets before its waiters fail |
+| `agent.dependency_wait_deadline_secs` | `3600` (0..86400) | restart | wall-clock ceiling on one dependency wait; 0 = attempts cap only |
+| `agent.dependency_wake_per_tick` | `0` (0..4096) | restart | waiters released per wake tick after the probe; 0 = current effective admission capacity |
+| `agent.dependency_wake_spacing_secs` | `1.0` (0..60) | restart | pause between staged wake ticks |
 | `agent.lane_weights` | `{}` (values 1..64) | yes | per-lane weights keyed by root session key or `system`; unlisted lanes weigh 1 |
 | `agent.child_reserve` | `1` (0..8) | yes | slots a depth-0 start may never take while a nested row or a resume waits for a slot; also lifts an adaptive squeeze to `adaptive_floor + child_reserve` while a parent waits (never above `max_subagents`) |
+
+`restart*`: a manager whose durable-store open has failed re-reads the setting on
+its scheduled retry, so disabling the queue can take effect there without another
+restart. An attached store is not detached live, and enabling a storeless manager
+has no retry driver; those changes require restart. Dependency coordinator values
+are snapshotted when its one process-wide instance is first built (normally during
+startup), so later edits require restart. Fairness settings (`lane_weights`,
+`child_reserve`) are re-read through the manager's two-second cache.
 
 ## Invariants (pinned by tests)
 
@@ -1557,7 +1574,7 @@ flag reverts:
 - `test_taskq_waits.py`: each wait kind's record fields and round-trip; `model_text` alone refused; entry keeps the generation and the lease, is fenced, and refuses wait→wait; wake bumps the generation, clears the record and fences old callbacks; park ends residency into `retry_wait` re-claimable at `next_run_at`; cancel semantics per kind (tree children-first with done siblings untouched); deadline → `failed{wait_deadline}`; `signal` wakes one scope only.
 - `test_taskq_nested_propagation.py` (real admission, fake worker): 3-level tree holds zero slots while unrelated work completes; one slot + waiting parents still progresses to completion; wake on the LAST child (`child_settled` events); two waking parents re-admitted one at a time; `continue` vs `fail_parent`; parent cancel cascades to live and store-only children; wait deadline fails the parent; restart preserves links, revives nothing, cancels the orphaned queued grandchild; `rebuild` wakes a parent whose children finished; a `spawn_run` (non-blocking) parent keeps its slot; yield/resume idempotent and generation-fenced.
 - `test_dependency_signals.py`: each adapter maps its real error shapes (GitHub 403 rate limit + `X-RateLimit-Reset`, 429 + `Retry-After` delay and HTTP-date, GraphQL `RATE_LIMITED`, `gh` stderr; generic 429/503 with host scope; Bedrock throttle / usage limit / auth / model-unavailable via `AcpError`); `Retry-After` and `X-RateLimit-Reset` become an exact `retry_at`; auth and parameter errors are terminal whatever the adapter said; pre-attached signals win; a raising adapter is skipped; the monitors' `_classify_cli_error` answers exactly what the shared parser does.
-- `test_dependency_coordinator.py`: five tasks on one scope → one schedule, one probe at `retry_at`, and a probe failure costs the scope ONE attempt — one per wake WAVE however wide the ramp, while a newcomer arriving mid-wave spends none of the probe budget (`dependency_max_attempts` counts probe cycles, not arrivals) and a woken waiter's failure still spends one and still exhausts the scope; two scopes: one throttled, the other's waiter completes; staged wake = probe, then capacity-sized batches per spacing, never all at once; a server `retry_at` is honoured exactly and only extends, and an unexpired one floors the backoff a headerless probe or ramp failure would otherwise shorten (the published `shared_retry_at` included), with expiry and `recovered` as its only exits, so a scope keeps its attempts for after the stated reset instead of failing its waiters early; jitter stays in `[0, min(cap, base·2^(n−1))]`; attempts cap and wall-clock deadline fail every waiter with the reason; `auth_failed` → `waiting_input`, `permanent_param_error` → `failed`, neither scheduled; a fresh coordinator's `rebuild()` restores the schedule, its waiters and the server floor from the rows and events, so a restart mid-throttle keeps the stated reset (a row written without the floor key restores no floor, and a restored floor still expires into the ladder); a `starting` row parks in `retry_wait` with `next_run_at` = the scope deadline and wakes to `queued`, and the verdict names that state rather than the live one; a wake the store could not WRITE keeps the waiter on its scope with no wake event and nothing reported woken, while a wake the store REFUSED drops it (also with no event); a wait that persisted NOWHERE answers `unpersisted` — no `dependency_wait` event, nothing for `rebuild()` to find, and no waiter left on the schedule; a give-up reached through `report()` on the writer thread runs its hooks ON the loop their `asyncio.Event`s belong to; and no store write of any kind is made with the schedule lock held.
+- `test_dependency_coordinator.py`: five tasks on one scope → one schedule, one probe at `retry_at`, and a probe failure costs the scope ONE attempt — one per wake WAVE however wide the ramp, while a newcomer arriving mid-wave spends none of the probe budget (`dependency_max_attempts` counts probe cycles, not arrivals) and a woken waiter's failure still spends one and still exhausts the scope; two scopes: one throttled, the other's waiter completes; staged wake = probe, then capacity-sized batches per spacing, never all at once; a server `retry_at` is honoured exactly and only extends, and an unexpired one floors the backoff a headerless probe or ramp failure would otherwise shorten (the published `shared_retry_at` included), with expiry and `recovered` as its only exits, so a scope keeps its attempts for after the stated reset instead of failing its waiters early; jitter stays in `[ceiling/2, ceiling]`, where `ceiling = min(cap, base·2^(n−1))`; attempts cap and wall-clock deadline fail every waiter with the reason; `auth_failed` → `waiting_input`, `permanent_param_error` → `failed`, neither scheduled; a fresh coordinator's `rebuild()` restores the schedule, its waiters and the server floor from the rows and events, so a restart mid-throttle keeps the stated reset (a row written without the floor key restores no floor, and a restored floor still expires into the ladder); a `starting` row parks in `retry_wait` with `next_run_at` = the scope deadline and wakes to `queued`, and the verdict names that state rather than the live one; a wake the store could not WRITE keeps the waiter on its scope with no wake event and nothing reported woken, while a wake the store REFUSED drops it (also with no event); a wait that persisted NOWHERE answers `unpersisted` — no `dependency_wait` event, nothing for `rebuild()` to find, and no waiter left on the schedule; a give-up reached through `report()` on the writer thread runs its hooks ON the loop their `asyncio.Event`s belong to; and no store write of any kind is made with the schedule lock held.
 - `test_taskq_startup.py`: the open is off-loop and every spawn is refused typed until it attaches; a failed open keeps that refusal immediately after startup; a TRANSIENT failure (`database is locked`) is re-attempted and the store then attaches, `taskq_accept` going from the refusal reason to a committed row; the reaper sweep is what asks; the delay is `RecoveryPolicy`'s equal-jitter step over `agent.recovery_backoff_*`, nothing is armed before its deadline, and a re-open never un-attaches an open store.
 - `test_task_executor_stall_recovery.py` (real store + real `RunnerAdmission` +
   real `RecoveryLadder`, the executor driven end to end): a stall the ladder

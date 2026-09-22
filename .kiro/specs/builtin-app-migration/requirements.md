@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard migration components.
+
 ## Introduction
 
 Provide a graceful migration mechanism for KiroCrew builtin apps when they are extracted into standalone packages. Users must never suddenly lose an app they were using. The migration spans at least two releases: the first marks the app as "transitioning" with warnings, and the second removes the builtin code while preserving a helpful migration page instead of a 404.

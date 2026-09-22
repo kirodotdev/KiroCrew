@@ -3,14 +3,16 @@
 A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
-(`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), and whatever a
-bring-your-own (BYO) adapter registers next. Adding a harness requires
+(`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
+(`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
+and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+(BYO) adapter registers next. Adding a harness requires reviewing
 reviewing `session_pid.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS and Codex are selectable on a plain public build; Claude Code in
-particular is a shipped harness and not a dormant seam: `acp/client.py` owns the
+Kiro, Claude Code, KAS, Codex, OpenCode, Pi and goose are selectable on a plain
+public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/client.py` owns the
 whole Claude spawn path and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
 capability. Whether the binaries are INSTALLED on a given machine is a different
@@ -33,9 +35,9 @@ set once both halves landed — `backend_install.py` gained its probe, so the in
 names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
-Read the invariants below against that tree: four harnesses can serve a real
+Read the invariants below against that tree: seven harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-three of them.
+six of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro

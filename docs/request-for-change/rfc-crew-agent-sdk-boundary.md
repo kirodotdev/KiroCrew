@@ -17,20 +17,14 @@ superseded-by: []
 ---
 # RFC: Crew Agent SDK Boundary — isolate the codebase from ACP, and name the host contract
 
-- Status: partially implemented. **PR 1 has landed**: the shrink-only import
-  gate (`scripts/check_agent_sdk_boundary.py`), its baseline
-  (`.github/agent-sdk-boundary-baseline.txt`, seeded at **58 files / 107
-  edges**), the `ci.yml` wiring, and the `src/kiro_crew/agent_sdk/`
-  package — which already carries more than the layer docstring PR 1 proposed:
-  `drivers/acp.py`, `backend_install.py`, `backend_identity.py`,
-  `provider_identity.py` and `native_commands.py`. **Part of PR 4 has landed**
-  too, on this branch: the import cycle §2.4 exists to break is closed, and the
-  cycle v3 named was the wrong one. PRs 2, 3, 5 and 6 remain unstarted.
-  The migration is additive: the boundary package sits beside the current
-  provider layer and consumers move behind it one wave at a time under the
-  ratchet. Every question in §12 carries a disposition: the two that gated PR 2
-  and PR 4 are decided, and the rest record a conservative default plus the
-  condition that reopens it.
+- Status: partially implemented. PR 1's shrink-only boundary gate and package
+  are live; PR 3a moved backend/capability tables behind `agent_sdk` and replaced
+  six identity branches with `SessionCapabilities`; the import-cycle half of PR 4
+  is also complete. The current ratchet baseline is **57 files / 102 edges**
+  (64 via `kiro_crew.acp`, 38 via `kiro_crew.providers`). PR 2's SDK-owned event
+  and approval types, the remaining role protocols and supervisor ownership, the
+  consumer migration waves, and the final seal remain incomplete. The migration
+  stays additive: consumers move behind the boundary one wave at a time.
 - Author: zejiangg, with Kiro
 - Created: 2026-08-28
 - Audited against: `73d60a83d`

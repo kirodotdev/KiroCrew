@@ -13,5 +13,7 @@ composed), see
 | [publishing-guide.md](publishing-guide.md) | Publishing to the App Store, including the review guidelines an app must meet. |
 | [migration-guide.md](migration-guide.md) | Moving an app across a breaking platform version. |
 
-`examples/` holds two runnable reference apps: a minimal app and a fuller one with
-skills and a backend.
+`examples/` holds two source fixtures: an installable minimal app and a fuller
+UI/agent/skill/cron example. The full example intentionally omits build tooling,
+a compiled UI bundle, and a backend; use it as a code reference rather than
+installing it directly.

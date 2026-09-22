@@ -240,7 +240,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
 | `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
 | `kirocrew logs -f` | Follow logs live. The Python fallback reopens the log by name on each poll, permits Windows rename-based rotation even during reads, streams appended UTF-8 text, and stops on Ctrl+C. A replacement file or detected truncation resets the read offset; a temporary missing path during rotation is retried on the next poll. Rotated backup files are not replayed. |
-| `kirocrew cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroCrew EC2 instance in the user's AWS account. |
+| `kirocrew cloud launch/list/status/connect/tunnel/login/logout/stop/start/destroy/iam-policy/iam-boundary/doctor` | Provision, connect to, and manage a Kiro Crew EC2 instance in the user's AWS account. `iam-boundary` is the one-time admin step that pre-creates the immutable instance permissions boundary — see [cloud.md](cloud.md). |
 | `kirocrew security events` | Show recent SEL audit events (`-n N` for count) |
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |
 | `kirocrew snapshot` | Create a .tar.gz snapshot of all KiroCrew state |

@@ -43,11 +43,11 @@ kirocrew secrets import --apply   # store the secrets and rewrite .env
 
 Migration is deliberately narrow. Only the Jira credentials are moved today —
 the global `JIRA_API_TOKEN` and the per-host `JIRA_TOKEN_<HEX>` entries — because
-those are the only readers that resolve a `secret://` reference. Every other
-credential in `.env` (Slack, Discord, kiro-cli, and the rest) still reads the
-literal value, so rewriting its line would hand the reader the reference string
-instead of the token and break authentication. Those keys migrate as their
-readers become vault-aware.
+those are the only `.env` consumers in the migration set that resolve a
+`secret://` reference. Every other credential in `.env` (Slack, Discord,
+kiro-cli, and the rest) still reads the literal value, so rewriting its line
+would hand the reader the reference string instead of the token and break
+authentication. Those keys migrate as their readers become vault-aware.
 
 Running the import again is safe: a key whose value is already a `secret://`
 reference is reported as such and skipped.

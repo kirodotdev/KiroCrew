@@ -1,41 +1,50 @@
 # Tests
 
-KiroCrew uses pytest with pytest-asyncio for async tests. ~170 test files, 3000+ tests.
+Kiro Crew uses pytest with pytest-asyncio for async tests. Pytest collects both
+`test/` and the test suites shipped with builtin apps under
+`src/kiro_crew/apps/builtins/`; `setup.cfg` is the source of truth for collection
+and default options.
+
+See the [testing conventions](../docs/system-specs/common/testing-conventions.md)
+for isolation rules, platform guidance, worker budgeting, and the full command
+reference.
 
 ## Running Tests
 
+Run commands from the repository root:
+
 ```bash
-# Full cycle (format + build + test):
-brazil-build format && brazil-build clean && brazil-build && brazil-build test
+# Related backend and frontend checks for the current diff:
+python3 scripts/local-gate.py
 
-# Fast iteration — only tests affected by changes:
-python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+# One test file (serial startup is faster for a narrow selection):
+python -m pytest test/test_dashboard_chat.py -n0 -q
 
-# Specific test file:
-python -m pytest test/test_dashboard_chat.py --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+# One test by keyword:
+python -m pytest -k "test_warm_pool" -n0 -q
 
-# Specific test by keyword:
-python -m pytest -k "test_warm_pool" --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+# Only tests that failed on the previous run:
+python -m pytest --lf -n0 -q
 
-# Only previously failed:
-python -m pytest --lf --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+# Whole suite with the defaults from setup.cfg:
+python -m pytest
 ```
 
-The `--override-ini` flag skips coverage measurement (configured in `setup.cfg`) for faster iteration.
+Coverage is opt-in locally; CI requests it explicitly. For selective runs with
+`pytest-testmon`, use the complete `--override-ini` command in the testing
+conventions so the xdist safety flags are retained.
 
 ## Test Directories
 
-- `test/` — main test directory (170+ files)
-- `tests/` — additional tests (6 files)
+- `test/` — main test directory
+- `src/kiro_crew/apps/builtins/*/tests/` — builtin-app suites included by `testpaths`
 
 ## Conventions
 
-- Test files: `test/test_<module>.py`
-- Use `pytest-asyncio` with `mode=strict` — every async test needs `@pytest.mark.asyncio`
-- Use `tmp_path` fixture for filesystem tests
-- Use `monkeypatch` for config overrides
-- Mock external processes (kiro-cli) — never spawn real processes in tests
-- Group related tests in classes: `class TestFeatureName:`
+- Name test files `test_<module>.py`.
+- Mark each async test with `@pytest.mark.asyncio`; do not mark synchronous tests.
+- Use `tmp_path` for filesystem tests and `monkeypatch` for config overrides.
+- Mock external agent processes; tests must not spawn a real `kiro-cli` process.
 
 ## Smoke Tests
 

@@ -1,11 +1,11 @@
 ---
 title: Append-only ledger — one record per unit, every view a fold
-status: in-progress
+status: partial
 revision: v2
 author: mingweic, with Kiro
 created: 2026-09-11
-last-audited: 2026-09-11
-audited-at: 2f1e2f54a
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr: 10090
 implementation-prs: [10091]
 tracking-issues: []
@@ -20,13 +20,10 @@ superseded-by: []
 > append-only file, read "crew log". The RFC's file name and title are left as they
 > were so external links keep resolving; only the name of the thing changed.
 
-Status: in-progress. The storage below, and the first emitter that writes to it, land
-together in [#10091](https://github.com/kirodotdev/KiroCrew/pull/10091). Nothing is on
-main yet: there `members.py` writes pointer entries with no `type` and no `seq`, and
-`work_ledger.py` and `session_ledger.py` each keep their own head. This is the storage
-under *Crew Mode: Agent-to-Agent Session Collaboration* §8, a companion design outside
-this tree whose sections are cited below as "Crew Mode §N"; scope is Kiro Crew's public
-tree.
+Status: partial. The `kiro_crew.crew_log` store, session emitter, projections,
+routes, and message entries are on main behind `KIROCREW_CREW_LOG`. The flag
+remains opt-in, while the legacy transcript and conductor work-ledger stores
+still exist, so the full cutover described below is incomplete.
 
 ## 1. Introduction: five heads, no history
 

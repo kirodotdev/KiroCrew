@@ -58,7 +58,7 @@ For responses that fit within the read limit but exceed the spill threshold:
 
 1. Parse the response as JSON-RPC.
 2. Check if it's a `tools/call` result (has `result.content` list with `text` items).
-3. Write the **full original response** to `~/.kiro/crew/mcp_spill/<server>-<request_id>-<timestamp>.json`.
+3. Write the **full original response** to `<data home>/mcp_spill/<server>-<request_id>-<timestamp>.json` (`KIROCREW_HOME`, default `~/.kiro/crew`).
 4. Truncate each text item to the first 16 KiB.
 5. Append a marker: `[KiroCrew: response truncated -- full <N> bytes at <path>. Read with bash: head/grep/jq.]`
 6. Forward the rewritten (smaller) response.
@@ -139,7 +139,7 @@ no brokered path renders resource blobs to the model today.
 
 ### Spill file format
 
-- **Directory:** `~/.kiro/crew/mcp_spill/` (mode 0700)
+- **Directory:** `<data home>/mcp_spill/` (mode 0700; `KIROCREW_HOME`, default `~/.kiro/crew`)
 - **Filename:** `<server_name>-<request_id>-<unix_timestamp>.json`
 - **Content:** Complete original JSON-RPC response line
 - **Cleanup:** Files older than 24h are deleted on gatewayd startup
@@ -155,7 +155,7 @@ no brokered path renders resource blobs to the model today.
 If you see `-32000 "MCP response too large"` errors:
 
 1. **Narrow the query** — ask the tool for less data (e.g. specific sections vs full page).
-2. **Raise the limit** — set `KIROCREW_MCP_READ_LIMIT=134217728` (128 MiB) in your env, or add to `~/.kiro/crew/config.json`:
+2. **Raise the limit** — set `KIROCREW_MCP_READ_LIMIT=134217728` (128 MiB) in your env, or add it to `<data home>/config.json` (`KIROCREW_HOME`, default `~/.kiro/crew`):
    ```json
    {
      "mcp_gateway": {

@@ -26,8 +26,11 @@ outside the pooling budget.
 - **`mcp_gateway.poolable_servers`** — deprecated alias, read only when `stub_servers`
   is absent. A pooled server already ran behind a stub, so migrating it to the stub
   set preserves behaviour rather than granting anything.
-- **`mcp_gateway.apps_enabled`** — deprecated and ignored. Capability follows the stub;
-  a preference cannot grant it and cannot honestly withdraw it.
+- **`mcp_gateway.apps_enabled`** — retired from the UI and no longer written by
+  MCP Management, but a stored `false` remains an honoured opt-out. Capability
+  follows the stub, so this key cannot grant MCP Apps; for compatibility it can
+  still withdraw them. The `KIROCREW_MCP_APPS` environment flag is the other
+  kill switch, and explicit off wins.
 - **The broker starts iff something is stubbed.**
 
 A stub for every stdio server is the shape this note originally argued for, and the
@@ -95,12 +98,13 @@ from a hand-written config or an overlay predating the token is unaffected.
 
 ## Where the stub comes from
 
-Two paths emit stubs, and both are now unconditional for stdio servers:
+Two paths can emit stubs, and both apply the same explicit
+`mcp_gateway.stub_servers` roster to stdio servers:
 
 - **Agent-declared servers** in `~/.kiro/agents/*.json`, wrapped in that agent's
-  overlay.
-- **Global `settings/mcp.json` servers**, injected into each agent's overlay so
-  the stub carries the right agent identity. The injected stub takes precedence
+  overlay only when the server name is in the roster.
+- **Global `settings/mcp.json` servers**, injected into each agent's overlay only
+  when rostered so the stub carries the right agent identity. The injected stub takes precedence
   over the raw same-named global entry at ACP `session/new`
   (`session_servers.py`), which is what keeps a server from being wrapped twice
   under two identities; no settings overlay is written and the real settings
@@ -261,10 +265,10 @@ requires the token that hashes to the name.
 ## Out of scope
 
 - Changing `PoolKey`. It gains no dimension, in this change or any other.
-- `UNPOOLABLE_SERVERS` — Kiro Crew's own MCP servers, passed through unwrapped.
-  They are already per-session by construction; giving them stubs is a separate
-  change — and no longer one their IDENTITY waits on, since the signed session-token
-  mapping above reaches them with no stub at all.
+- `UNPOOLABLE_SERVERS` currently excludes nothing: the set is empty. Kiro
+  Crew's own MCP servers stay direct only while they are absent from
+  `mcp_gateway.stub_servers`; the signed session-token mapping gives them identity
+  without requiring a stub.
 - HTTP/SSE MCP entries. They need no stub and merge raw from the real settings
   file.
 - Per-server MCP Apps control. Orthogonal to stub emission.

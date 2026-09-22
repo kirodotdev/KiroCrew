@@ -1,12 +1,12 @@
 # Running Kiro Crew in Docker
 
 The official image runs the Kiro Crew **gateway** — dashboard, channel bots
-(Slack / Discord / Telegram / WeCom / WeChat / Webex — Teams, Feishu and
-WhatsApp need their own extras, which the image does not install), crons, and
-the kiro-cli agent
-runtime — as a headless container. It is the recommended way to run Kiro Crew
-24/7 on a server or NAS; the strongest fit is the always-on channel bot that
-does not need a desktop session.
+(Slack / Discord / Telegram / WeCom / Weixin / Webex), crons, and the kiro-cli
+agent runtime — as a headless container. Microsoft Teams, Feishu, and WhatsApp
+need optional dependencies that the stock image does not install; iMessage
+requires macOS and cannot run in this Linux image. It is the recommended way to
+run Kiro Crew 24/7 on a server or NAS; the strongest fit is the always-on
+channel bot that does not need a desktop session.
 
 The image is public, so no registry login is needed. Start the gateway:
 
@@ -78,7 +78,11 @@ home). Pass them with `-e` / compose `environment:`:
 | `DISCORD_BOT_TOKEN` | Discord bot |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot |
 | `WECOM_BOT_ID`, `WECOM_SECRET` | WeCom bot |
+| `WEIXIN_TOKEN` | Weixin channel |
 | `WEBEX_BOT_TOKEN` | Webex bot |
+| `MICROSOFT_APP_ID`, `MICROSOFT_APP_PASSWORD`, `MICROSOFT_APP_TENANT_ID` | Microsoft Teams bot (requires the `teams` extra) |
+| `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Feishu bot (requires the `feishu` extra) |
+| `KIRO_API_KEY` | kiro-cli model credential alternative to interactive login |
 | `KIROCREW_PORT` | Dashboard port (default 5476) |
 | `KIROCREW_BIND` | Bind address inside the container (image default `0.0.0.0`; see below) |
 | `KIROCREW_ALLOW_UNSANDBOXED` | Set `1` to explicitly allow agent exec without the inner sandbox (see Sandbox below) |
@@ -91,22 +95,26 @@ gateway starts — so they never sit in the long-lived gateway process's
 (same precedence the gateway itself applies), so changing a value in your
 compose `.env` and restarting updates the stored copy.
 
-Two channels cannot run in this image. **WhatsApp** needs the optional
-`neonize` dependency, declared as the `whatsapp` extra in `setup.cfg`, and the
-image installs the bare wheel with no extras (`docker/Dockerfile`), so the
-transport is absent —
+Four channels are unavailable in the stock image. **Microsoft Teams** needs
+`PyJWT[crypto]==2.13.0` (the `teams` extra), **Feishu** needs
+`lark-oapi>=1.4,<2` (the `feishu` extra), and **WhatsApp** needs
+`neonize==0.4.3.post0` (the `whatsapp` extra). The Dockerfile installs the bare
+wheel, so use a custom image that installs the required distribution before
+enabling one of those transports. See the setup guidance in their packaged
+integration docs, including
 [whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md).
-**iMessage** drives Messages.app on the machine the gateway runs on and needs
-macOS 14 or newer plus Full Disk Access and Automation grants, so no Linux
-container can serve it —
+
+**iMessage** cannot be added to this image: it drives Messages.app on the
+machine the gateway runs on and needs macOS 14 or newer plus Full Disk Access
+and Automation grants, so no Linux container can serve it —
 [imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md).
 
 Everything else lives in `config.json` inside the volume. Most settings are
 editable from the (token-authenticated) dashboard; the exceptions are the
-channel-credential pages (Slack/Discord/Telegram/WeCom/Webex tokens) and
-secret-revealing views, which are read-only for any non-direct-local
-browser. The image ships no text editor, so edit those from the host —
-copy the file out, change it, copy it back, restart:
+channel-credential pages (Slack, Discord, Telegram, WeCom, Weixin, Webex,
+Microsoft Teams, and Feishu) and secret-revealing views, which are read-only for
+any non-direct-local browser. The image ships no text editor, so edit those from
+the host — copy the file out, change it, copy it back, restart:
 
 ```
 docker cp kirocrew:/home/kirocrew/.kiro/crew/config.json .
@@ -188,16 +196,15 @@ bind-mounts empty dirs over credential paths (`~/.aws`, `~/.ssh`, etc.) so
 the agent subprocess cannot read gateway credentials. Building it takes three
 syscalls in order — `unshare(CLONE_NEWUSER)`, `unshare(CLONE_NEWNS)`, then a
 `mount(MS_REC|MS_PRIVATE)` on `/` inside the new mount namespace — and two
-different container guards can refuse them. The **Docker default seccomp
-profile blocks the unshares**: the probe inside the container returns
-`EPERM` at the first step, the sandbox marks itself unavailable, and agent
-execution is disabled (fail-closed) until you choose a posture. A runtime's
-**default AppArmor profile blocks the mount** instead (`deny mount`, errno 13
-`EACCES`) while letting both unshares through; the startup probe performs the
-mount too, so that host is reported the same way. Kubernetes applies the
-AppArmor default on AppArmor-enabled nodes and no seccomp profile at all, so
-a Pod is usually the second case — see
-[Kubernetes and AppArmor](#kubernetes-and-apparmor).
+different container guards can refuse them. Seccomp behavior varies by Docker
+and runtime version: modern defaults may permit the unshares, while hardened or
+`RuntimeDefault` profiles commonly return `EPERM`. A runtime's **default
+AppArmor profile** may instead block the mount (`deny mount`, errno 13
+`EACCES`) after both unshares succeed. The startup probe performs all three
+steps, so either failure is reported as no usable backend and agent execution
+stays fail-closed until you choose a posture. Kubernetes commonly combines no
+explicit seccomp profile with a default AppArmor profile, making the mount the
+failing step — see [Kubernetes and AppArmor](#kubernetes-and-apparmor).
 
 ### How the startup probe decides your posture
 
@@ -264,7 +271,7 @@ Then start the container:
 docker run -d --name kirocrew \
   -p 127.0.0.1:5476:5476 \
   -v kirocrew-home:/home/kirocrew \
-  --security-opt seccomp=docker/seccomp/kirocrew-seccomp.json \
+  --security-opt seccomp=kirocrew-seccomp.json \
   ghcr.io/kirodotdev/kirocrew:stable
 ```
 
@@ -272,8 +279,11 @@ Or in compose (add to the `kirocrew` service):
 
 ```yaml
 security_opt:
-  - seccomp:./docker/seccomp/kirocrew-seccomp.json
+  - seccomp:./kirocrew-seccomp.json
 ```
+
+If you run Compose from a repository checkout instead of using the downloaded
+file above, use `seccomp:./docker/seccomp/kirocrew-seccomp.json`.
 
 With this profile the inner sandbox runs normally and credential directories
 are hidden from agent subprocesses inside the container.

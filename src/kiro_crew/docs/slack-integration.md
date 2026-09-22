@@ -143,10 +143,13 @@ inert as a result, and stale allowlist entries are pruned at startup.
 
 `!dashboard` presigned links go to the owner only.
 
-## Channel Monitoring
+## Tracked channels
 
-When `slack.tracking_channels` is configured, Kiro Crew watches for new members
-joining those channels and prompts the owner to allowlist them.
+`slack.tracking_channels` is the allowlist for unattended channel delivery (for
+example, heartbeat reports) and for the startup probe that checks whether each
+tracked channel is readable. It does not grant inbound access or enable member
+allowlisting: Slack remains owner-only, and member-join events do not prompt for
+new users.
 
 ### Channel Activation Modes
 

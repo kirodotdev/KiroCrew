@@ -53,13 +53,15 @@ preserved.
 
 Loops survive a gateway restart.
 
-## Watching a pull request specifically
+## Watching a pull or merge request specifically
 
-For a public GitHub pull request there is a cheaper path than a general loop: a
-structured watch that probes the provider directly and wakes the session **only
-when a new revision needs action**. An unchanged, pending, retrying, or finished
-probe costs no agent turn at all. Ask to watch a PR until it is review-ready and
-you get this instead of a turn every interval.
+For a supported pull or merge request there is a cheaper path than a general
+loop: a structured watch that probes the provider directly and wakes the session
+**only when a new revision needs action**. An unchanged, pending, retrying, or
+finished probe costs no agent turn at all. Ask to watch the change until it is
+review-ready and you get this instead of a turn every interval. See
+[Monitor a pull request](monitoring.md) for the provider and authentication
+matrix.
 
 You can ask what the current watch is doing, or stop it, at any time.
 

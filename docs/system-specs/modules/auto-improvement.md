@@ -922,14 +922,16 @@ committed-status rows record that, so an audit of "what did the bot land?" resol
 Under `app_data_dir("auto-improvement")` (i.e. `$KIROCREW_HOME/apps/auto-improvement/data`):
 
 ```
-config.json          run configuration
-ledger.jsonl         append-only findings ledger (dedup by content fingerprint)
-ruler/ruler.json     calibrated ruler (atomic write)
-results/             run metadata, results.tsv, per-candidate diffs
-pr_queue/            <fp>.diff + <fp>.pr.md — durable draft-PR queue
-profiles/            normalized profiler frame trees
-sessions/<key>.json  chat-session records (resume)
-logs/
+config.json                    active run configuration
+crew.json                      app role-to-Crew-Member mapping
+sessions/<key>.json            chat-session records (resume)
+repos/<repo-branch-key>/
+├── ledger.jsonl               append-only findings ledger
+├── ruler/ruler.json           calibrated ruler (atomic write)
+├── results/                   run metadata, results.tsv, per-candidate diffs
+├── pr_queue/                  <fp>.diff + <fp>.pr.md — durable draft-PR queue
+├── profiles/                  normalized profiler frame trees
+└── logs/
 ```
 
 All archive text is UTF-8, including raw candidate diffs and TSV descriptions. When an
@@ -950,7 +952,7 @@ large, regenerable, and must not be mistaken for the durable record.
 stylistic: the upstream app used a plain write for the ruler and readers caught it
 mid-truncate ~31% of the time, reporting a calibrated ruler as uncalibrated.
 
-Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` and
+Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` and
 rejected — not sanitized — when unsafe, because silently rewriting a key would
 make two subjects share one record. The frontend sanitizer strips dot-runs and
 path separators before the key is ever sent, so the two gates agree.
@@ -1088,7 +1090,7 @@ best-effort, as before. `TestCheckoutPrecedesProfileBuild` pins the ordering.
 
 ## Spine / profile seam
 
-The engine (`spine/`, ~7.8k lines) consumes a target only through a six-field
+The engine (`spine/`) consumes a target only through a six-field
 `TargetProfile` protocol: `ruler`, `build_gate`, `edit_allowlist`, `isolation`,
 `pr_recipe`, `calibration`. The protocols are `runtime_checkable`, so the loader
 validates a profile object before the driver trusts it. Adding a new target means
@@ -1101,7 +1103,7 @@ adding a profile, never editing the engine.
 `website/src/apps/auto-improvement/AutoImprovementPage.tsx`, routed at
 `/auto-improvement` via `builtinRegistry.ts`, code-split into its own chunk.
 React Query for all server state; `i18nT` for every user-facing string (keys under
-`autoImprovement.*`, present in all 10 shipped catalogs); lucide icons only.
+`autoImprovement.*`, present in all 12 production catalogs); lucide icons only.
 
 ## Parity with the upstream app
 
@@ -1173,18 +1175,17 @@ the frontend cases and the full keep-or-revert loop against a real GitHub reposi
 are covered by the **manual acceptance plan** further down, not by an automated
 integration test — nothing in the tree runs the full loop against a live repository.
 
-- `src/kiro_crew/apps/builtins/auto_improvement/tests/` — 439 tests covering verdict
+- `src/kiro_crew/apps/builtins/auto_improvement/tests/` — tests covering verdict
   derivation, check summarization, provider-error degradation, PR-recipe protocol
   conformance, branch naming, draft-only policy, queue degradation, the audit-or-deny
-  approval, MCP dispatch auditing, and evidence redaction. Not in default `testpaths`;
-  run with an explicit path.
-- `test/test_bug_*.py` — reproducing tests for four defects the app found in its own
-  code while dogfooding. They live under `test/` so the default `testpaths` runs them:
-  a regression guard nobody executes is not a guard.
-- `website/src/test/autoImprovementSession.test.ts` — 13 tests covering session-key
-  namespacing/sanitization and prompt constraints.
-- `website/src/test/autoImprovementActivity.test.ts` — 6 tests over the activity-feed
-  line builder, including app-locale (not host-locale) time formatting.
+  approval, MCP dispatch auditing, and evidence redaction. `setup.cfg` includes
+  `src/kiro_crew/apps/builtins` in the default `testpaths`.
+- `test/test_bug_*.py` — reproducing tests for defects the app found while
+  dogfooding. They live under `test/`, which is also in the default `testpaths`.
+- `website/src/test/autoImprovementSession.test.ts` — session-key
+  namespacing/sanitization and prompt-constraint coverage.
+- `website/src/test/autoImprovementActivity.test.ts` — activity-feed line-builder
+  coverage, including app-locale (not host-locale) time formatting.
 
 ### Regression cases
 
@@ -1199,7 +1200,7 @@ Each row is a defect this app shipped once; the assert is what keeps it shipped-
 | D-5 | ANSI in lint output | `_lint_findings` strips SGR **before** parsing (ruff colorizes even when piped), so tokens carry real rule codes. Without that strip every code parses EMPTY and T1's set-difference is unreliable. |
 | D-6 | Push race | A `non-fast-forward` push retries once after fetch+rebase; a conflict aborts; **never `--force`**. Without the retry a concurrent push silently drops gate survivors. |
 | D-7 | Cycle-cap starvation | With the default budget, a multi-surface discovery does not leave most findings at `seen`. A cap that starves discovery leaves most findings at `seen` with budget unspent. |
-| D-8 | Subagent orphaning | The discovery agent runs under a **tool-scoped** agent (no `@kirocrew-core`, hence no `spawn_sub_agents`) yet still has `fs_read`/`grep`/`execute_bash`. Assert a terminal state with no `Reaper: force-killing` lines. |
+| D-8 | Subagent orphaning | The discovery agent runs under a **tool-scoped** agent (no `@kirocrew-core`, hence no `spawn_sub_agents`) and its stage allowlist is read-only (`Read`/`Grep`/`Glob`, no `Bash`). Assert a terminal state with no `Reaper: force-killing` lines. |
 | D-9 | `--dry-run` | The driver's `--dry-run` completes; `spine/stub_profile.py` is importable. |
 | D-10 | Do-not-pollute | Host state hash unchanged across a run; a nonzero diff blocks. |
 | D-11 | Reward-hack guards | A candidate deleting tests to go faster is rejected (`test_count_unchanged`); the edit fence forbids touching `tests/**` on the perf track. |

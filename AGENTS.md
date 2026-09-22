@@ -10,9 +10,11 @@ open before touching that subsystem: see
 
 Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
 CLI, or a messaging channel like Slack and Discord; run multi-step tasks
-unattended; schedule cron jobs; keep memory across sessions. It drives an LLM
-through the KiroACP provider (the ACP adapter running `kiro-cli` over ACP
-JSON-RPC) plus MCP tools.
+unattended; schedule cron jobs; keep memory across sessions.
+
+Kiro Crew's sole LLM provider speaks ACP. Its default backend runs `kiro-cli`
+over ACP JSON-RPC; other verified ACP harnesses are selected with
+`agent.acp_backend`. MCP tools supply the agent's host capabilities.
 
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`. **Frontend:** React
   + TS + Vite SPA in `website/`, built into `src/kiro_crew/static/dist/` and served

@@ -184,20 +184,28 @@ Reputation needs a population that acts on your record, and we do not have one
 before 4.0.
 
 That second limit has a ceiling I can measure, and it is in this repository.
-Episodic ranking multiplies similarity by `math.exp(-0.03 * days_old)`
-(`src/kiro_crew/vector_memory.py:1562` and `:1651`, on `4506e9c92`), which is a
-half-life of about 23 days. The score is then rounded to four decimals
-(`src/kiro_crew/vector_memory.py:1565`), so once a memory is roughly a year old a
-typical score underflows to `0.0000` and the sort order is gone with it.
-Retrieval benchmarking with the harness in
-[#2123](https://github.com/kirodotdev/KiroCrew/pull/2123) measures turn-level
-recall far below session-level recall over a 293-day corpus.
+Episodic ranking defaults to a recency factor of
+`math.exp(-0.03 * days_old)`, with per-tag overrides through
+`memory.decay_rates` (`_DEFAULT_DECAY_RATE` and `_sanitize_decay_rates` in
+`src/kiro_crew/vector_memory.py`, which clamps each rate to
+`[_DECAY_RATE_MIN, _DECAY_RATE_MAX]`). Scores are rounded to four decimals
+(`_rank_from_scoring_set`), so under the default rate a typical
+score reaches `0.0000` after roughly a year. The benchmark harness in
+[#2123](https://github.com/kirodotdev/KiroCrew/pull/2123) measured that default
+decay over a 293-day LoCoMo corpus: session `recall_all@1` fell from 0.4942 to
+0.0814, and turn `recall_all@5` fell from 0.4112 to 0.0754. Current prompt
+injection applies a raw-cosine relevance gate before decay ranking
+(`get_episodic_context`, which drops candidates below the length-aware gate via
+`search_episodic(relevance_filter=True)`), removing irrelevant candidates
+before recency orders the surviving set.
 
-Put those two facts next to each other and the result is uncomfortable. An
-agent's old mistakes are forgotten by construction, right at the point where
-long-horizon accountability would start to bite. So the record cannot ride on
-semantic retrieval. It has to be a field that is always injected, not a memory
-entry we hope gets recalled.
+Put those facts next to each other and the result is uncomfortable. Under the
+default configuration, an agent's old mistakes are aggressively demoted right
+at the point where long-horizon accountability would start to bite. The
+relevance gate and per-tag override soften that behavior, but neither provides
+an accountability guarantee. So the record cannot ride on semantic retrieval.
+It has to be a field that is always injected, not a memory entry we hope gets
+recalled.
 
 ## Agent to agent is two layers, not one
 

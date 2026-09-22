@@ -93,7 +93,7 @@ Publishing refuses, with the reason on stderr and nothing written:
 ## Verify
 
 ```bash
-python3 scripts/feature-videos/verify.py dist/feature-videos/0.7.0
+python3 scripts/feature-videos/verify.py dist/feature-videos/0.8.0
 ```
 
 Recomputes every hash from the bytes on disk, verifies the signature against the
@@ -106,16 +106,16 @@ signed with another key.
 Publishing prints the commands and stops. Run them yourself:
 
 ```bash
-aws s3 sync --dryrun dist/feature-videos/0.7.0/ s3://BUCKET/feature-videos/0.7.0/
-aws s3 sync dist/feature-videos/0.7.0/ s3://BUCKET/feature-videos/0.7.0/
+aws s3 sync --dryrun dist/feature-videos/0.8.0/ s3://BUCKET/feature-videos/0.8.0/
+aws s3 sync dist/feature-videos/0.8.0/ s3://BUCKET/feature-videos/0.8.0/
 aws cloudfront create-invalidation --distribution-id DISTRIBUTION \
-  --paths '/feature-videos/0.7.0/*'
+  --paths '/feature-videos/0.8.0/*'
 ```
 
 The tool enforces immutability on the folder it signs; the bucket side is yours.
-`aws s3 sync` overwrites objects freely, so put the guard where the bytes live: a
-bucket policy that denies `s3:PutObject` on an existing key, or S3 Object Lock on
-the `feature-videos/` prefix.
+`aws s3 sync` overwrites objects freely, so enforce retention where the bytes live,
+for example with S3 Object Lock on every uploaded release object. Versioning alone
+preserves old bytes but does not prevent replacing the current key.
 
 ## Size limits
 

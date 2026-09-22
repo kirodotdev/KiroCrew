@@ -1,5 +1,7 @@
 # Design Document: Builtin App Optional Enable
 
+Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard app navigation/store surfaces.
+
 ## Overview
 
 This feature extends KiroCrew's builtin app registration system to support apps that default to disabled. The change is minimal: add a `defaultEnabled` field to the builtin app definition dictionary, use it during first-time registration, and adjust the frontend Browse tab to show disabled builtin apps alongside registry apps.

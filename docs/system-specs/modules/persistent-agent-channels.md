@@ -4,6 +4,8 @@
 
 `src/kiro_crew/channel.py`, `src/kiro_crew/dashboard/handlers_channel.py`, and `website/src/pages/ChannelPage.tsx` implement persistent multi-agent workspaces where an orchestrator coordinates specialist agents through channel messages, threads, and @mentions.
 
+The UI is a hidden, opt-in built-in app (`name: channels`, `defaultEnabled: false`) on macOS, Linux, and Windows. Enable it with `kirocrew app enable channels`. The app is manifest-only: the dashboard server always initializes the core `ChannelManager` and registers `/api/channels` routes; enabling the app exposes its `/channels` page rather than registering a separate backend.
+
 ## Problem
 
 A shared workspace needs durable coordination, explicit delivery rules, and a human-controlled tool boundary so concurrent agents do not act on ambiguous messages or silently gain authority.
@@ -40,7 +42,9 @@ ChannelAgent
 
 `Channel.add_agent` makes the first member an orchestrator when the request supplies none and forces an orchestrator to listen to all messages; this guarantees that an unmentioned human request has a coordinator. `test/test_channel.py::TestChannelRouting::test_human_no_mention_reaches_orchestrator_only` pins the routing invariant.
 
-`ChannelManager.create` and `Channel.add_agent` enforce configured channel and member capacities, and `test/test_channel.py::TestChannelManager::test_create_capacity` plus `TestChannel::test_add_agent_capacity` pin those boundaries. `api_channel_create` and `api_channel_add_agent` return HTTP 429 with a remediation message when either capacity is reached. `Channel.post` retains the newest bounded message buffer and removes matching index entries when it evicts a message, so a stale thread identifier cannot resolve to discarded state.
+`ChannelManager.create` and `Channel.add_agent` enforce configured channel and member capacities, and `test/test_channel.py::TestChannelManager::test_create_capacity` plus `TestChannel::test_add_agent_capacity` pin those boundaries. `agent.max_channels` defaults to 1 and is clamped to 1–5; `agent.max_channel_agents` defaults to 3 and is clamped to 1–10. Both update live and gate only new channels or members, so lowering a cap does not evict existing work. `api_channel_create` and `api_channel_add_agent` return HTTP 429 with a remediation message for their respective capacity limits.
+
+`Channel.post` retains the newest 200 messages and removes matching index entries when it evicts one, so a stale thread identifier cannot resolve to discarded state. `GET /api/channels/{id}` returns the newest 50 messages while the full bounded buffer remains persisted.
 
 ### Agent Lifecycle
 
@@ -74,7 +78,9 @@ A `trust` decision sets and persists `Channel.trusted`, so subsequent permission
 
 Global YOLO, channel-wide trust, and agent-scoped command trust all run after the containment denylist: `_blocked_tool_named` rejects direct-to-user messaging and session-control tools before every auto-approval branch. `test/test_channel_blocked_tools.py::test_blocked_tool_rejected_even_on_trusted_channel` pins that ordering.
 
-The approval card exposes sanitized, truncated tool input and only renders action buttons while the dashboard is in normal approval mode. Shell cards whose command remains fully visible offer exact-command and base-command tiers; other cards offer only channel-wide trust. Failed decision requests restore the controls and focus rather than displaying an optimistic success. A channel agent must communicate through channel posts; it is prompted not to use direct messaging or subagent spawning, and blocked tool names are enforced rather than treated as prompt-only guidance.
+The approval card exposes sanitized, truncated tool input and only renders action buttons while the dashboard is in normal approval mode. Shell cards whose command remains fully visible offer exact-command and base-command tiers; other cards offer only channel-wide trust. Failed decision requests restore the controls and focus rather than displaying an optimistic success.
+
+A channel agent is prompted to coordinate through channel posts and not to call `spawn_run` or `send_message`. Enforcement is narrower than the prompt: direct messaging/notifications, all session-control tools, and the work-ledger tools in `CHANNEL_AGENT_BLOCKED_TOOLS` are rejected before any auto-approval branch. `spawn_run` is prompt-only here and, if attempted, follows the ordinary provider approval path rather than this hard block.
 
 ## Presets and Configuration
 
@@ -84,9 +90,9 @@ The approval card exposes sanitized, truncated tool input and only renders actio
 
 ## Persistence and Recovery
 
-`Channel.serialize` persists member configuration, message history, exchange counts, the channel trust grant, and routing metadata. `ChannelManager._save_channel` uses `atomic_write`, which protects a channel file from concurrent partial replacement; `ChannelManager._load_all` restores valid channel records at startup.
+`Channel.serialize` writes member metadata, message history, exchange counts, the channel-wide trust grant, and routing metadata. `ChannelManager._save_channel` uses `atomic_write`, which protects a channel file from concurrent partial replacement; `ChannelManager._load_all` restores valid channel records at startup.
 
-`Channel.deserialize` restores members in a terminal state. Dashboard startup then marks each restored member `pending` and launches `run_channel_agent` with a fresh session, so persisted configuration resumes without pretending an old process or tool approval is still live. `test/test_channel.py::TestChannelPersistence::test_serialize_deserialize` pins the terminal deserialization state.
+`Channel.deserialize` restores role, agent name, task, session key, orchestrator flag, and listen mode, but resets every member to terminal `done` and resets its `approval_policy` to the default `writes`. Dashboard startup then marks each restored member `pending` and launches `run_channel_agent` with a fresh session. Runtime-only exact/base command grants are not serialized; channel-wide `Channel.trusted` deliberately is. `test/test_channel.py::TestChannelPersistence::test_serialize_deserialize` pins only the terminal-state and orchestrator parts of this contract.
 
 Closing a channel cancels live agent tasks, broadcasts the close, and removes its persisted record through `ChannelManager.close`.
 
@@ -99,7 +105,7 @@ The handler does not take a per-channel lock. A post concurrent with an all-scop
 ## Security
 
 - `_stream_task` redacts credentials and exfiltration URLs from streamed agent output, tool status, and approval content before channel publication.
-- `CHANNEL_AGENT_BLOCKED_TOOLS` and `_blocked_tool_named` contain direct-to-user messaging and session-control operations so a channel agent cannot move channel content into a private dashboard session or take control of one.
+- `CHANNEL_AGENT_BLOCKED_TOOLS` and `_blocked_tool_named` contain direct-to-user messaging, session-control, and work-ledger operations so a channel agent cannot move channel content into a private dashboard session, take control of one, or write into another dispatch's decision record.
 - `api_channel_approve_agent` validates the decision allowlist. Per-command trust requires a pattern matching the server-bound pending command, records grants as opaque literals, audits both grants and refusals, and resolves the current request as a one-time approval. `_stream_task` repeats the result allowlist check before acting on the approval future.
 - `_json_object` rejects invalid JSON and non-object request bodies before channel handlers read fields.
 - Channel approval and trust decisions are logged through `sel().log_tool_invocation`; context-clear requests are logged through `sel().log_api_access`.
@@ -133,11 +139,16 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 
 | File | Purpose |
 |---|---|
+| `src/kiro_crew/apps/builtins/channels/app.json` | Hidden opt-in app manifest, platform declaration, permissions, and `/channels` page registration. |
 | `src/kiro_crew/channel.py` | Channel model, routing, persistence, containment, and agent execution loop. |
 | `src/kiro_crew/dashboard/handlers_channel.py` | Validated channel REST handlers, agent lifecycle calls, approvals, presets, and context resets. |
 | `src/kiro_crew/dashboard/routes/connections.py` | Dashboard route registration. |
 | `website/src/pages/ChannelPage.tsx` | Channel workspace UI, WebSocket reconciliation, threads, presets, and agent controls. |
 | `website/src/api/client.ts` | Encoded channel API client methods. |
 | `test/test_channel.py` | Model, routing, capacity, and persistence coverage. |
-| `test/test_channel_blocked_tools.py` | Containment ordering coverage. |
+| `test/test_channel_blocked_tools.py` | Containment ordering and blocked-tool-name coverage. |
+| `test/test_channel_trusted_patterns.py` | Exact/base shell-command trust derivation, binding, and auto-approval coverage. |
+| `test/test_channel_prompt_busy.py` | Prompt-busy detection, one replay, terminal report, and replacement teardown coverage. |
+| `test/test_channel_agent_api_validation.py` | Agent add/update field validation and enum coverage. |
+| `test/test_channel_api_input_validation.py` / `test/test_channel_message_api_validation.py` | Create, message, approval, and context-reset request-shape coverage. |
 | `test/test_channel_subscribe_timeout.py` | Terminal-agent subscription shutdown coverage. |

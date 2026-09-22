@@ -199,7 +199,7 @@ re-read indices. Call `computer_end_turn()` when you are done
 with the app. When a screenshot is attached you get a **file path**, not an image —
 open it with the file-read tool only when the outline genuinely cannot answer the
 question (it costs ~8K tokens). Password fields render as `<secure>` and their
-window is never captured. KiroCrew's own dashboard is refused, for reading as well
+window is never captured. Kiro Crew's own dashboard is refused, for reading as well
 as typing, because driving it would let you change your own security settings.
 Read the `computer-use` skill before your first call.
 

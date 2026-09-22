@@ -137,7 +137,7 @@ transcript delivery; explicit cancel and unmount remain discard-only and do not 
 | Endpointing VAD | `src/kiro_crew/stt/vad.py` | Adaptive-RMS speech detection and end-of-utterance |
 | Model catalog | `src/kiro_crew/stt/models.py` | The offered models, their sizes, and the sha256-pinned download |
 | Apple helper | `src/kiro_crew/apple_speech/` | Swift `AppleTranscribe.swift` plus its Python driver |
-| Config fields | `src/kiro_crew/config/loader.py` | `SttConfig`, and the degradation rules for a stored provider or model |
+| Config fields | `src/kiro_crew/config/sections.py` | `SttConfig`, and the degradation rules for a stored provider or model |
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
@@ -939,7 +939,7 @@ newly committed text.
 
 ## Legacy provider values
 
-`_validated_stt_provider` in `config/loader.py` accepts only `local`, `apple`, and `transcribe`. Persisted `whisper`, `mlx`, `parakeet`, or `faster` values degrade to `local` and log the replacement rather than preventing the gateway from loading a voice setting. `stt.models` resolves legacy model aliases to a catalog entry; unknown models fall back through the loader's validation path.
+`_validated_stt_provider` in `config/sections.py` accepts only `local`, `apple`, and `transcribe`. Persisted `whisper`, `mlx`, `parakeet`, or `faster` values degrade to `local` and log the replacement rather than preventing the gateway from loading a voice setting. `stt.models` resolves legacy model aliases to a catalog entry; unknown models fall back through the loader's validation path.
 
 Legacy config fields such as `whisper_path`, `mlx_model`, `parakeet_model`, and `device` are ignored by `KiroCrewConfig.load` because `SttConfig` does not consume them. `config/superseded_defaults.py` records migrated defaults for the config surface.
 

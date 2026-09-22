@@ -68,12 +68,12 @@ CLDR defines **2 plural categories** for Bengali:
 
 | category | condition | example |
 |---|---|---|
-| one | i = 0, 1 | `{{count}} টি ফাইল` |
-| other | everything else | `{{count}} টি ফাইল` |
+| one | i = 0 or n = 1 | `0 টি ফাইল`, `0.5 টি ফাইল`, `1 টি ফাইল` |
+| other | everything else | `1.1 টি ফাইল`, `2 টি ফাইল`, `5 টি ফাইল` |
 
 Note: Bengali uses classifiers (টি, গুলি) rather than noun inflection for plurals. The
 same noun form often works for both categories, but the classifier or verb may change.
-Bengali `one` includes **zero** (same as Hindi).
+Bengali `one` includes **zero and decimals whose integer part is zero** (same as Hindi).
 
 Checked by `catalogParity.test.ts`.
 
@@ -85,6 +85,9 @@ Checked by `catalogParity.test.ts`.
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| sentence-final Latin-period debt does not exceed 30 | `bnStyle.test.ts` |
+| changed values use তুমি, never আপনি | `bnStyle.test.ts` (`I18N_BASE_REF`) |
+| Bengali-digit debt does not exceed 8 | `bnStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

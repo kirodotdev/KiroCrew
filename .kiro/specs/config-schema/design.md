@@ -1,5 +1,7 @@
 # Design Document: Config Schema
 
+Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`.
+
 ## Overview
 
 This feature formalizes KiroCrew's configuration by making the Python dataclass hierarchy the single source of truth for all config keys. Today, several keys (`workspaces`, `default_workspace`, `slack.*`) are parsed ad-hoc in `KiroCrewConfig.load()` outside the dataclass structure. This design eliminates that gap by:

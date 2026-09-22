@@ -2,7 +2,7 @@
 
 ## Overview
 
-The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.
+The primary ACP session transport path spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
 
 ## Native skill startup views
 
@@ -188,7 +188,13 @@ late starts clean the native transcript files supported by the provider. This
 does not add a sandbox or promise control over every external provider's own
 on-disk session format or crash recovery.
 
-`AcpClient(acp_backend=...)` selects which subprocess to launch:
+`AcpClient(acp_backend=...)` validates the id against `ACP_BACKENDS_KNOWN` and
+selects its launch record from `agent_sdk/backends.py`. Current ids are `""`
+(kiro-cli), `"kas"`, `"claude"`, `"codex"`, `"opencode"`, `"pi"`, `"goose"`,
+and `"deepseek"`; public-build selectability is a separate registry. The complete
+launch and host-capability table is in
+[agent-host-contract.md](agent-host-contract.md#column-meaning). Two launch paths
+need additional detail here:
 
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
 - `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` accepts a root only when the hoisted dependency marker `@agentclientprotocol/sdk` is present alongside the entry, so an incomplete vendored copy is skipped in favour of a complete one instead of being spawned and crashed. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: `_spawn` merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
@@ -200,7 +206,7 @@ searched elsewhere.
 
 **Kiro executable resolution at spawn.** Trust is "the CLI runs": any resolvable
 executable Kiro CLI launches for ACP, regardless of install source, owner, or
-fixed path — KiroCrew is not the authority on where Kiro CLI is installed, and
+fixed path — Kiro Crew is not the authority on where Kiro CLI is installed, and
 Kiro CLI's own self-updater legitimately rewrites its bytes as the user, so an
 install-source/owner/path/codesign gate would strand real installs (toolbox,
 Homebrew, winget, a self-updated `/Applications` bundle) with no recovery path.
@@ -217,7 +223,7 @@ searched.
 returns the resolved path; `TrustedAcpExecutableSnapshot` now carries just
 `launch_path`.
 
-**The CLI is always launched IN PLACE — never from a copy.** KiroCrew execs the
+**The CLI is always launched IN PLACE — never from a copy.** Kiro Crew execs the
 binary at the path it resolved, on every platform. This is a hard requirement,
 not a preference:
 
@@ -332,7 +338,7 @@ instead of falling back to the permission frame's agent-authored inline input. A
 genuine miss may carry inline data for display, but both provenance flags remain
 false and consumers that need trusted arguments fail closed.
 
-The host always sends one-shot approvals (`always=False`, the default). KiroCrew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so KiroCrew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip KiroCrew hooks for this exact tool" feature; no caller passes it today.
+The host always sends one-shot approvals (`always=False`, the default). Kiro Crew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so Kiro Crew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip Kiro Crew hooks for this exact tool" feature; no caller passes it today.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
@@ -412,7 +418,7 @@ authoritative. The normal prompt's browser instructions keep approval groups,
 borrowed-browser ownership and subagent session isolation inline rather than
 relying on a skill pointer for those controls.
 
-Default model: `claude-opus-4.8`. Default tools: `execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `use_aws`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `@kirocrew-cron`, `@kirocrew-core`.
+Default model: `auto`. Default tools: `execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `tool_search`, `@kirocrew-cron`, `@kirocrew-core`, `@kirocrew-computer`.
 
 **Agent compatibility repair** (`agent.py`): `repair_agent_configs()` is the single
 entry point (called at install, gateway startup, and periodically ~60s). Its
@@ -432,11 +438,14 @@ output schema.
 
 ## Custom Agent Support
 
-Custom agents (AIM-installed or user-created) are fully supported. The `--agent`
-flag passed to `kiro-cli acp` at spawn time drives all configuration:
+Custom-agent support is backend-specific. Kiro CLI consumes the selected agent
+through `--agent`; KAS projects it on the wire; foreign hosts translate, withhold,
+or decline fields through their provider-mirror contracts. The authoritative
+per-backend matrix is [agent-host-contract.md](agent-host-contract.md#1-agent-definition-and-layout).
+The details below describe the Kiro and Claude paths implemented directly here:
 
-- **Model**: `set_model` is skipped for custom agents — kiro-cli uses the
-  agent's own `model` field. Only the default kirocrew agent gets KiroCrew's
+- **Model (kiro-cli)**: `set_model` is skipped for custom agents — kiro-cli uses the
+  agent's own `model` field. Only the default kirocrew agent gets Kiro Crew's
   configured model override.
 - **MCP servers**: backend-dependent.
   - **kiro-cli**: kiro-cli loads ordinary servers from the agent config. The
@@ -450,7 +459,7 @@ flag passed to `kiro-cli acp` at spawn time drives all configuration:
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
     `mcpServers`. The kirocrew agent loads from global `~/.kiro/settings/mcp.json`
-    where `disabled` and `disabledTools` flags are respected. KiroCrew's dashboard
+    where `disabled` and `disabledTools` flags are respected. Kiro Crew's dashboard
     MCP tab writes directly to the global config. Loading is not one-shot:
     kiro-cli 2.10.0+ watches the agent file and reconciles a RUNNING session
     against an edit (only the changed servers restart, conversation kept, applied
@@ -482,7 +491,9 @@ flag passed to `kiro-cli acp` at spawn time drives all configuration:
 - **Denied commands**: Enforced at Kiro Crew's `hooks.py` PreToolUse gate;
   see [security](security.md).
 
-Custom agents use cold start with `--agent <name>` flag at spawn time.
+Kiro CLI custom agents use a cold start with `--agent <name>` at spawn time.
+Other backends follow the selection and projection contracts in
+[agent-host-contract.md](agent-host-contract.md#1-agent-definition-and-layout).
 
 ## Protocol Flow
 
@@ -817,7 +828,7 @@ the model quotes the text in prose) and complete the turn immediately — `_disp
 also synthesizes a final `EVENT_COMPLETE` so dashboard and CLI callers using
 `stream_events` exit cleanly.  The text itself is still yielded so the user sees what
 happened, and a `tool_interrupted`-tagged SEL audit event is written for the security
-log since kiro-cli's cancellation is a permission decision outside KiroCrew's control.
+log since kiro-cli's cancellation is a permission decision outside Kiro Crew's control.
 
 ### Stale-turn gate (`AcpClient`)
 
@@ -1206,7 +1217,7 @@ Subprocess lifecycle:
 - **The readiness `whoami` runs against the real home, like an ACP session.**
   `kiro_prerequisite._run_auth_command(..., isolate_home=False)` runs the
   resolved CLI against the real environment/home under the standard OS sandbox
-  with only the KiroCrew data home hidden, and executes a sandbox-visible
+  with only the Kiro Crew data home hidden, and executes a sandbox-visible
   private snapshot of the resolved bytes (keeping the resolved basename so a
   multiplexer still dispatches). A rewritten `HOME` breaks any CLI whose session
   or tool registry lives in the real home — a toolbox multiplexer cannot even
@@ -1214,13 +1225,13 @@ Subprocess lifecycle:
   though a real session authenticates fine.
 - **Sign-in is fully delegated to `kiro-cli`.** `kiro-cli login
   --use-device-flow` runs against the user's REAL home and writes its own
-  credential store, exactly as it does from a terminal. KiroCrew stages no
+  credential store, exactly as it does from a terminal. Kiro Crew stages no
   credentials and copies none back — the staged-home publish path (and the
   "Kiro identity changed during sign-in" conflict two racing gateways could
   hit) is gone. The isolated credential-minimal home remains available for
   callers that opt into it, so a probe can never read the real `~/.aws` /
   `~/.ssh`; the operator-initiated login runs in the real home inside the same
-  OS sandbox posture ACP already uses, with the KiroCrew data home hidden.
+  OS sandbox posture ACP already uses, with the Kiro Crew data home hidden.
 - 10MB stdout buffer for large JSON-RPC lines
 - stderr drained in background (`_drain_stderr`) to prevent pipe deadlock. Each line bumps `_last_activity` (liveness for `is_responsive`), is appended to the bounded 20-entry `_stderr_lines` diagnostic ring buffer, and is forwarded as a redacted `WARNING`. **Exception — suppression filter:** lines matching a marker in the module-level `_SUPPRESSED_STDERR_MARKERS` tuple (currently `thinking_tokens`) are dropped — no `WARNING`, not appended to the ring buffer — but **still** bump `_last_activity`. This handles the claude-agent-acp "Unexpected case: {...thinking_tokens...}" stderr noise. **Mechanism** (confirmed by reading the vendored adapter's `dist/acp-agent.js`): claude-code emits a `system` message with subtype `thinking_tokens`, but the adapter's `switch (message.subtype)` enumerates only ~18 known subtypes (`init`, `status`, `compact_boundary`, `memory_recall`, `api_retry`, …) and routes anything else to `default: unreachable(message)`, which writes `logger.error("Unexpected case: " + JSON.stringify(message))` to stderr — one line per token delta, measured at ~10 lines/sec during active thinking (one per 2–4 thinking tokens). The payload is only `estimated_tokens`/`_delta`/`uuid`/`session_id`, so dropping it loses no response content. This is a forward-compat gap in the vendored adapter, **not** new behavior in a specific claude-code build — the `thinking_tokens` event is present in both `2.1.165.357` and `2.1.168.358` (verified by string-matching both bundled `claude` binaries), so it predates the `.168` update that drew attention to it. The cleaner long-term fix is upstream (add a `thinking_tokens` case to the adapter or bump the vendored version); this filter is the version-agnostic stopgap that also absorbs the next unenumerated subtype's flood. (Note `thinking_tokens` is by far the dominant subtype hitting `unreachable` — ~14k occurrences vs. a handful of rare `permission_denied` across retained logs — which is why the marker tuple stays narrow rather than suppressing all "Unexpected case" lines.) Two concrete reasons to drop rather than downgrade the level: (1) **log hygiene** — `gateway.log` uses `RotatingFileHandler(maxBytes=2MB, backupCount=3)` (`cli.py`), so a sustained burst rolls genuine diagnostics out of the retained 8MB window; (2) **event-loop load** — the file handler is a plain *synchronous* handler and `_drain_stderr` runs on the gateway event loop, so each forwarded line costs a synchronous file write + two regex redaction passes on the same loop that streams responses (small per session, compounding across concurrent thinking sessions). Keeping liveness prevents the idle watchdog from killing an actively-thinking turn; skipping the ring buffer stops a burst from evicting the last real errors. A throttled `DEBUG` summary (≥ `_SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS` apart, plus a flush at EOF) keeps the suppression observable. Match substrings are kept narrow so a genuine error is never silently swallowed. This is a log-volume / event-loop-load reduction — **not** a fix for any turn-stall or "agent not responding" symptom (no such causal link was established).
 

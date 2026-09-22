@@ -1,5 +1,7 @@
 # Implementation Plan: Builtin App Optional Enable
 
+Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard app navigation/store surfaces.
+
 ## Overview
 
 Minimal changes to support `defaultEnabled` in builtin app definitions. Backend reads the field during first-time registration; frontend merges disabled builtins into the Browse tab. Existing apps and behavior are unchanged.

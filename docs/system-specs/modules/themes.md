@@ -7,7 +7,7 @@ up to a full "experience pack" (fonts, sandboxed overlays, audio, persona). A
 color theme is the degenerate case of a pack — the whole spectrum lives behind
 **one Theme dropdown** in Settings → Display: install many, select one.
 
-Themes are a **standalone subsystem built on `useTheme`**, not KiroCrew apps. This document is the **source of truth** for the end-to-end subsystem.
+Themes are a **standalone subsystem built on `useTheme`**, not Kiro Crew apps. This document is the **source of truth** for the end-to-end subsystem.
 The frontend pack-author contract (the CSS-var surface and the
 `overrides.css` selector allowlist) lives in
 [`website/docs/theming-contract.md`](../../../website/docs/theming-contract.md);
@@ -18,8 +18,8 @@ where the two overlap, this spec governs.
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,
 mirroring the platform layer's pinned-`CONTRACT_VERSION` precedent). Validation
 rejects a missing/non-integer value, and rejects an unknown major with an
-explicit *"this pack requires a newer version of KiroCrew"* message — never the
-opaque generic-validation errors — so an older KiroCrew degrades honestly when
+explicit *"this pack requires a newer version of Kiro Crew"* message — never the
+opaque generic-validation errors — so an older Kiro Crew degrades honestly when
 handed a newer pack. Semantics changes within a major stay backward-tolerant;
 breaking manifest changes bump the major.
 
@@ -87,7 +87,7 @@ runtime scoper still removes the pin, so the preference is protected either way.
 
 ## Install Pipeline
 
-1. **Source** — a local directory (moved/copied) or an https `github.com` repo
+1. **Source** — a local directory (read in place, then copied into staging) or an https `github.com` repo
    shallow-cloned server-side (`_clone_github`, `--depth 1`, 30s timeout, host
    allowlist). The clone spawns through the sandbox chokepoint, which fails
    **closed** where no OS sandbox backend exists: that refusal answers `503`
@@ -123,7 +123,7 @@ Registered in `dashboard/server.py`. The validation/parsing core lives in
 |---|---|---|
 | `POST` | `/api/themes/install` | Install from local dir or GitHub (overwrite on re-install) |
 | `DELETE` | `/api/themes/{slug}` | Remove an installed theme |
-| `GET` | `/api/themes` | List all themes (built-in + custom + installed) |
+| `GET` | `/api/themes` | List custom + installed themes (the frontend adds built-ins) |
 | `GET` | `/api/themes/{slug}` | Theme detail + resolved `level` |
 | `GET` | `/api/theme/{slug}/assets/{path}` | Serve a pack asset (nosniff + content-type allowlist) |
 | `GET` | `/api/theme/{slug}/overlay/{id}` | Serve overlay HTML (locked CSP) |
@@ -153,8 +153,9 @@ predate this subsystem and remain the color-theme surface.)
   install destination guard, which still refuses a source inside its own
   destination before promotion and preserves source and sibling contents.
 - **postMessage allowlist** — the parent (`ThemeExperienceLayer.tsx`) accepts
-  only `theme:resize`, `theme:sound`, `theme:visibility`, and `theme:state`
-  messages from a pack iframe; all others are dropped.
+  only `theme:resize`, `theme:sound`, and `theme:visibility` messages from a
+  pack iframe; all others are dropped. `theme:state` travels in the opposite
+  direction, from the parent to each live theme iframe.
 - **CSS containment** — install-time denylist (no `@import`, external `url()`,
   dangerous functions/bindings, forbidden selectors, `z-index` >
   `_THEME_OVERLAY_MAX_ZINDEX`) via a string-aware top-level rule tokenizer, plus

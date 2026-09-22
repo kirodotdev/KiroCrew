@@ -42,7 +42,8 @@ no markdown fence, no comments.
 - The key set of your output must be **identical** to the input's. Do not add,
   remove, rename, or reorder keys.
 - Every value must be a non-empty string. There is no "leave for later": a
-  missing or empty value makes `i18n-shard.mjs join` refuse to write the catalog.
+  missing or empty value makes `i18n-translate.mjs verify` refuse the shard before
+  `merge` can write the catalog.
 - Never return the English string unchanged as a way of skipping a key. If a
   value is genuinely identical in this language (a proper noun, a symbol), that
   is fine and expected — but it must be a decision, not a fallthrough.
@@ -143,11 +144,11 @@ and overrides your reading of the English.
 
 ## Reviewing the output
 
-`scripts/i18n-translate.mjs verify <dir> --locale <tag>` checks the contract
+`scripts/i18n-translate.mjs verify <dir> --locale=<tag>` checks the contract
 mechanically — key-set identity, placeholder parity, DNT verbatim, plural
 categories, the whitespace and bracket rules, and English passthrough. It runs
-before `join`, so a violation is reported per key instead of arriving as `join`'s
-single fail-closed refusal.
+before `merge`, so a violation is reported per key instead of reaching the catalog
+write.
 
 What `verify` cannot check is whether the translation is *good*. That still needs
 a speaker, and the style guides exist so a reviewer has something to point at.

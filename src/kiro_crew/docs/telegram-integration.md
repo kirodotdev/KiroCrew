@@ -8,13 +8,13 @@ Telegram is the quickest channel to set up: just a bot token, no plugins, and it
 works from behind a firewall — Kiro Crew reaches out to Telegram, so there's
 nothing to expose.
 
-## The easy way: just ask Kiro Crew
+## The easy way: use Settings
 
-You don't have to edit anything by hand. In any Kiro Crew session — the
-dashboard, Slack, or the CLI — say something like *"set up the Telegram
-channel."* Kiro Crew walks you through creating the bot, then writes the token
-and your user ID into `~/.kiro/crew/.env` and `config.json` and restarts the
-gateway for you. You just hand it the bot token when it asks.
+Open **Settings → Messaging Channels → Telegram**. Paste the BotFather token and add your
+numeric user ID there; the panel verifies the token, stores the credential in
+`~/.kiro/crew/.env`, and writes the non-secret channel settings to `config.json`.
+Restart when the panel asks. Because the bot token is a credential, do not paste
+it into a chat message.
 
 Prefer to wire it up yourself? The manual steps are below.
 

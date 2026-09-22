@@ -25,8 +25,9 @@ and inside `«…»` guillemets.
 
 - **Use U+202F**, not a regular space (U+0020) — a regular space can line-break, leaving
   `?` alone at the start of a line.
-- **Not enforced by CI yet** — candidate for Phase 2. Reviewers must check manually.
-- Apostrophe: use typographic `'` (U+2019), not ASCII `'` (U+0027): `l'utilisateur`.
+- Existing catalog debt is baselined. When CI supplies `I18N_BASE_REF`, changed values
+  are hard-gated for U+202F before `;` `:` `?` `!`; guillemet spacing remains review-only.
+- Apostrophe: use typographic `’` (U+2019), not ASCII `'` (U+0027): `l’utilisateur`.
 - Quotation marks: `«\u202f…\u202f»` (outer), `"…"` (inner/nested).
 - No trailing period on buttons/labels.
 
@@ -55,15 +56,16 @@ Checked by `glossary.test.ts`.
 
 ## 5. Plurals
 
-CLDR defines **2 plural categories** for French:
+The current runtime's CLDR data defines **3 plural categories** for French:
 
 | category | condition | example |
 |---|---|---|
-| one | n = 0, 1 | `{{count}} fichier` |
-| other | n ≥ 2 | `{{count}} fichiers` |
+| one | standard values whose integer part is 0 or 1 | `0 fichier`, `1,5 fichier` |
+| many | exact millions selected by `Intl.PluralRules('fr')` | `1 000 000 fichiers` |
+| other | everything else | `2 fichiers` |
 
-Note: French `one` includes **zero** (`0 fichier` is correct). Checked by
-`catalogParity.test.ts`.
+`many` normally uses the same wording as `other`, but its `_many` key is still required.
+Checked by `catalogParity.test.ts`, which reads `Intl.PluralRules` at runtime.
 
 ---
 
@@ -88,9 +90,13 @@ reforms confirmed it). Missing accent on a capital is an error.
 | rule | gate |
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
-| correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| correct CLDR plural categories (3) | `catalogParity.test.ts` |
+| glued double-punctuation debt does not exceed 50 | `frStyle.test.ts` |
+| changed values use U+202F before double punctuation | `frStyle.test.ts` (`I18N_BASE_REF`) |
+| formal-address debt does not exceed 11 | `frStyle.test.ts` |
+| missing-capital-accent debt does not exceed 11 | `frStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |
 
-**Not yet enforced**: narrow no-break space before double punctuation (Phase 2 candidate).
+The U+202F rule is strict for changed values; only inherited catalog debt remains baselined.

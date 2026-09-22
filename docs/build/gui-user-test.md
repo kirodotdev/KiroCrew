@@ -21,14 +21,14 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 
 | Path | Role |
 |---|---|
-| `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, PR comment, nightly issue, lane status. |
+| `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, run summary, nightly issue, lane status. |
 | `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder at a fixed path (see "Seeds" below). |
 | `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed` and adds `config.agents.<slug>` for each `--member` so the Crew Members page has a roster. |
 | `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the sample notes folder. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
 | `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
-| `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the PR comment and the nightly issue, all grouped by feature; renders `features.md` from the scenario directory. |
+| `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the run summary and the nightly issue, all grouped by feature; renders `features.md` from the scenario directory. |
 | [`test/gui_user/FEATURES.md`](../../test/gui_user/FEATURES.md) + `features.json` | The scenario backlog: every user-visible feature as one record (feature slug, user story, start URL, seed, runnable tier, priority). `features.json` is the source of truth; `FEATURES.md` is rendered from it by `features_catalog.py` (`--write` / `--check`), which also validates every record and refuses cross-slug duplicates. |
 | `test/gui_user/friction.py` | The new-user friction channel: the `report_friction` tool schema, entry validation, the cross-night ledger, the "New-user friction" section and the nightly `ux(<feature>)` issues. |
 
@@ -97,7 +97,7 @@ Create `test/gui_user/scenarios/<name>.yaml`; the file stem must equal `name`:
 
 ```yaml
 name: settings-theme-toggle
-tier: smoke                 # smoke = runs on PRs and nightly; nightly = nightly only
+tier: smoke                 # smoke = on-demand subset + nightly; nightly = nightly-only addition
 feature: settings           # product area -- a key of scenarios.FEATURES (see below)
 user_story: >-              # one sentence a person can read: who wants what, and why
   As a user, I want to switch the dashboard theme in Settings, so that the app
@@ -312,8 +312,9 @@ logged, or fail with none.
   leave the summary. Closing an issue is a human call; the lane never reopens one.
 - **Cost.** The persona adds about 450 input tokens to every model call and each
   `report_friction` call is one extra round trip (~7k input, ~150 output tokens);
-  two to four per scenario in practice. Roughly +$0.10 per scenario, about +$1 a
-  night on the twelve-scenario tier, inside the $10 ceiling. If the ceiling is ever
+  two to four per scenario in practice. Roughly +$0.10 per scenario, or about
+  +$2.70 if all 27 current scenarios run, inside the $10 ceiling. If the ceiling
+  is ever
   the problem, set `persona: none` on the low-priority scenarios first rather than
   dropping the channel.
 
@@ -326,8 +327,9 @@ logged, or fail with none.
   `configure-aws-credentials` -- verify branch changes through the nightly after merge
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
-- **Nightly**: `20 9 * * *` UTC on `main`, full tier. A non-PASS night opens or
-  updates the single open issue labelled `gui-test-report`.
+- **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 24 smoke plus
+  3 nightly-only scenarios). A non-PASS night opens or updates the single open
+  issue labelled `gui-test-report`.
 
 ### Locally
 

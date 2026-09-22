@@ -12,9 +12,9 @@ agent loads only the one it needs.
 
 | Spec | Subsystem |
 |---|---|
-| [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
+| [acp-client.md](acp-client.md) | The ACP JSON-RPC clients that drive supported harnesses: dedicated and shared transports, framing, timeouts, and the backend seam. |
 | [providers.md](providers.md) | The `LLMProvider` interface, the `AcpProvider` the factory selects, and how a backend id is chosen. |
-| [agent-host-contract.md](agent-host-contract.md) | What an agent backend must supply besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes — kiro-cli, KAS and Claude Code side by side, with the new-provider checklist. |
+| [agent-host-contract.md](agent-host-contract.md) | What every known agent backend supplies besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes, and the new-provider checklist. |
 | [claude-code-provider.md](claude-code-provider.md) | Claude Code as a selectable ACP harness: the live spawn path, the two binaries it needs on the machine, and the MCP gap a Claude session still carries. |
 | [harness-parity.md](harness-parity.md) | The invariants keeping the Kiro harness first-class while other harnesses are adapted, and the test pinning each. |
 | [harness-onboarding.md](harness-onboarding.md) | The sequence a new ACP harness walks to land: vocabulary, capability decisions, spawn path, handshake, install probe, selectability, and what a live harness additionally touches. |
@@ -107,7 +107,7 @@ agent loads only the one it needs.
 | [themes.md](themes.md) | The theme tier model and the CSS variable contract. |
 | [md-notebook.md](md-notebook.md) | The inline markdown viewer and editor. |
 | [side.md](side.md) | The chat side panel. |
-| [browser.md](browser.md) | Website browsing through the `playwright-cli` shell commands. |
+| [browser.md](browser.md) | Website browsing through the native Browser-panel MCP transport, with `playwright-cli` as the fallback path. |
 
 ## Built-in apps
 

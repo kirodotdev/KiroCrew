@@ -14,8 +14,8 @@ it is named alongside the test that enforces it; the rest are for translation re
 
 | rule | example |
 |---|---|
-| Quotation marks: `„…"` (low-high) | `„Speichern"` — not `"Speichern"` |
-| Nested quotes: `‚…'` (low-high single) | `„Klicke auf ‚Weiter'"` |
+| Quotation marks: `„…“` (low-high) | `„Speichern“` — not `"Speichern"` |
+| Nested quotes: `‚…‘` (low-high single) | `„Klicke auf ‚Weiter‘“` |
 | Comma before relative clauses: **mandatory** | `Die Datei, die geladen wurde` |
 | No Oxford comma | `rot, blau und grün` |
 | No trailing period on buttons/labels | `Speichern`, not `Speichern.` |
@@ -94,6 +94,8 @@ Rules:
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| formal-address pattern debt does not exceed 12 | `deStyle.test.ts` |
+| selected foreign-compound spacing debt does not exceed 12 | `deStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

@@ -6,7 +6,7 @@ Workflow launches and completions render as durable inline cards in chat. `ChatP
 
 ### Launch card
 
-`website/src/pages/chat/WorkflowRunCard.tsx` renders a launch card only for a `tool` message whose persisted `meta.output` yields a run ID through `extractWorkflowRunId`; `isWorkflowRunTool` enforces the role check. The output contract originates in `src/kiro_crew/mcp_tools/workflows.py::workflow_run`, which returns a successful-launch message for definition, intent, and source launches.
+`website/src/pages/chat/WorkflowRunCard.tsx` renders a launch card only for a `tool` message whose persisted `meta.output` yields a run ID through `extractWorkflowRunId`; `isWorkflowRunTool` enforces the role check. The detector matches the `Started workflow run ...` contract returned by `src/kiro_crew/mcp_tools/workflows.py::workflow_run` for source and intent launches. Exact saved-definition launches currently return `Started saved workflow ... as ...`, so they fall through to the generic tool row rather than rendering this card.
 
 The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice and reconciles it with the workflow-runs API; `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
 

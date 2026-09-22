@@ -58,8 +58,15 @@ These steps create a public-client app registration that matches what Microsoft 
 
 ## What Kiro Crew would need to build
 
-- **A tenant-parameterised provider.** The registry entry would have to accept the tenant ID (and, for Work IQ, the server name) and build the MCP URL at connect time, and it would need to choose between the Work IQ family and the Enterprise server, which have different scopes and audiences.
-- **A public-client OAuth path.** Every other Connections provider is a confidential client with a client secret. Microsoft's documented client is a secret-less public client with PKCE; the Connections card would need a mode with no **Client secret** field, and kiro-cli's callback flow would need to send `code_verifier` and no secret.
+- **A tenant-parameterised target.** The registry entry would have to accept the
+  tenant ID (and, for Work IQ, the server name) and build the MCP URL at connect
+  time, and it would need to choose between the Work IQ family and the Enterprise
+  server, which have different scopes and audiences.
+- **Public-client OAuth wiring.** The Connections registry already supports a
+  pre-registered client with `confidential: false`, the OAuth Apps card already
+  makes its secret optional, and kiro-cli already sends PKCE. A Microsoft 365
+  entry still needs a fixed callback port and must pass its tenant-specific
+  authority without inventing a client secret.
 - **Per-tenant authority.** Token requests go to `https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token`, not to one global issuer, so issuer discovery and token refresh must be keyed by tenant.
 - **Licence and admin-consent error handling.** A user without a Microsoft 365 Copilot licence, or in a tenant where the admin has not consented, fails after the browser step. The dashboard would need to explain that rather than show a generic OAuth error.
 - **A stable target.** Both server families are preview. Kiro Crew should not ship a registry entry against URLs and scope names Microsoft says may change.

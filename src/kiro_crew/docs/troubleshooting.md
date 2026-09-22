@@ -17,10 +17,12 @@ check fails it prints a specific fix command.
 
 ## Common Issues
 
-### kiro-cli is not on PATH
+### The default kiro-cli backend is not on PATH
 
-`kiro-cli` is the agent backend and is required: `agent.provider` is fixed to
-`acp`, and the gateway spawns `kiro-cli acp --agent <name>` for every session.
+`agent.provider` is fixed to ACP, while `agent.acp_backend` selects the ACP
+harness. With the default blank backend, `kiro-cli` is required and the gateway
+spawns `kiro-cli acp --agent <name>`. If you selected another ACP backend,
+`kirocrew doctor` reports that backend's executable and setup instead.
 
 ```bash
 which kiro-cli   # should print a path; empty means it is not on PATH
@@ -129,12 +131,15 @@ features do not depend on the pod service manager.
 
 ### MCP tools not working
 
-`kirocrew doctor` auto-appends missing `tools` / `allowedTools` entries for the
-managed servers and rewrites the file. It cannot auto-add a missing `mcpServers`
-entry, because the command path is install-specific. If tools still fail:
+`kirocrew doctor` auto-appends missing `tools` entries for managed servers and
+rewrites the file. It may also repair `allowedTools` for always-on servers, but
+it deliberately does not blanket-auto-approve `kirocrew-computer` or other
+opt-in servers. It cannot auto-add a missing `mcpServers` entry, because the
+command path is install-specific. If tools still fail:
 
-1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core`, `kirocrew-cron`,
-   and `kirocrew-computer` under `mcpServers`, and for the matching `@`-prefixed
+1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
+   `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
+   Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
 2. Check `~/.kiro/settings/mcp.json` for globally configured servers
 3. Re-run `kirocrew setup --agent-only`

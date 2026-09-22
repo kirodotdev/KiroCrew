@@ -1,11 +1,11 @@
 ---
 title: App Sandbox and Isolation Roadmap
-status: draft
+status: partial
 kind: framework
 author: Ray Xu (rayrayxu)
 created: 2026-04-23
-last-audited: 2026-09-05
-audited-at: 424efa423
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,6 +14,11 @@ superseded-by: []
 ---
 
 # App Sandbox & Isolation Roadmap
+
+Status: partial. App tokens are confined to their own namespace plus the
+manifest `permissions.api` allowlist, and slot and WebSocket visibility are
+app-scoped. Process isolation, broad resource ownership, and the quota phases
+remain incomplete.
 
 A roadmap rather than a single reviewable change: it inventories what an app token
 can reach today and stages the isolation work, so each stage is proposed and

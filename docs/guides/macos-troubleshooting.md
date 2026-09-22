@@ -35,8 +35,15 @@ To recover your real `PATH`, the app reads the **launchd user domain**
 (`launchctl getenv PATH`) just before it spawns the Gateway and appends the
 directories found there. That domain is empty until something writes it: an
 `export PATH=...` in `~/.zprofile` or `~/.zshrc` configures shells only and
-never reaches launchd. That is why the fix below is a `launchctl setenv`, not
-another rc-file edit.
+never reaches launchd. That is why the general fix below is a `launchctl
+setenv`, not another rc-file edit.
+
+If **only an MCP server launcher** is missing, prefer the narrower
+`mcp.extra_path_dirs` config list. It extends MCP resolution and the MCP gateway
+daemon without changing GUI applications' general `PATH`; entries must be
+absolute, and a gateway restart is required because the daemon inherits its
+`PATH` at spawn. It does not affect ordinary agent shell commands, so use the
+launchd fix below when those are missing too.
 
 ### The fix
 

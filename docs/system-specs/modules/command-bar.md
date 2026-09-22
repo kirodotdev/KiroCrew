@@ -26,8 +26,9 @@ write that flips `enabled`), is what delivers the launcher to them; see app-kit-
 What makes the app worth existing is a single invariant: **the first page issues no network
 request.** The palette it replaces ran an unindexed scan over the sessions corpus on every
 keystroke, so fast typing could stall unrelated streaming. Command Bar's root carries only
-locally-known rows — commands, app destinations, system settings — and every corpus search is a
-view the reader ENTERS, so the expensive work is explicit and chosen.
+locally-known rows — sessions awaiting a user decision, commands, app destinations, and system
+settings — and every corpus search is a view the reader ENTERS, so the expensive work is explicit
+and chosen.
 
 Three such views exist: session search, artifact search, and folder search. The artifacts view
 asks `GET /api/artifacts?q=<query>` and nothing else — no `content=1`, no `snippet=1` — so the
@@ -57,14 +58,15 @@ row shape would fork the Enter matrix with it.
 
 1. **Claim the slot** — declare `ui.overlays` in the manifest and take over the `quick-search`
    host slot while enabled, without the shell ever naming an app
-2. **Root index** — build the command / app / settings rows from local data only, rank them,
-   and cap each group
+2. **Root index** — build the attention / command / app / settings rows from local data only,
+   rank them, and cap each group
 3. **Ranking** — fuzzy match against the live query plus a frecency boost, so habit surfaces
    without out-ranking a clearly better string match
 4. **Scopes** — enter a sub-surface (today: session search, artifact name search, and folder
    search) as a navigation state, with its own engine loaded on entry
-5. **Fallback** — when the root cannot answer, offer the rows that carry the query into the
-   sessions view and the artifacts view rather than reporting "no results"
+5. **Fallback** — for any non-empty root query, offer Ask plus rows that carry the query into
+   the sessions, artifacts, and folders views; when no root row matches, also offer the app page
+   that can disable Command Bar
 
 ## The overlay seam
 
@@ -102,22 +104,25 @@ that.
 
 `website/src/apps/command-bar/rootIndex.ts` owns the row model.
 
-- `ROOT_GROUPS = ['commands', 'apps', 'settings']`, rendered in that order. `rankRootRows`
-  ends with a sort on `groupOrder`, so groups are always contiguous blocks under their own
-  header — they never interleave by score.
+- `ROOT_GROUPS = ['attention', 'commands', 'apps', 'settings']`, rendered in that order.
+  `attention` is normally absent and contains only live sessions whose status is a pill — an
+  approval or answer the user owes, not merely running or unread work. `rankRootRows` ends with
+  a sort on `groupOrder`, so groups are always contiguous blocks under their own header — they
+  never interleave by score.
 - A row's `kind` is `view` (enter a surface inside the bar), `navigate` (leave and route),
   `invoke` (run and close), or `prompt` (a contributed command -- collect one argument if it
   declares one, then seed a session).
 - App rows are derived from the installed-app list, so a newly installed app appears as a
   destination with no per-app work.
-- Each row renders its kind as a right-aligned word — Command, App, Setting or View — because
-  the only other per-row signal is the group icon, which reads only to someone who has already
-  learned it. `view` is named separately from its group because it opens a surface instead of
-  acting and closing.
-- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page.
-  **Known gap:** rows past the cap are dropped silently. The artifacts view does not share that
-  gap — it renders a `+N more` line under its list, outside the listbox so it cannot become an
-  option that Enter does nothing with — and that line is the shape to copy when this one is closed.
+- Ordinary rows render a right-aligned kind — Command, App, Setting or View. A contributed
+  command prefixes that kind with its app label. An `attention` row renders its live status pill
+  instead, because the decision it needs is more useful than a static "Session" label. `view` is
+  named separately from its group because it opens a surface instead of acting and closing.
+- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page;
+  settings use the tighter `SETTINGS_IDLE_LIMIT = 2` while the query is empty. **Known gap:**
+  rows past a root cap are dropped silently. The artifacts view does not share that gap — it
+  renders a `+N more` line under its list, outside the listbox so it cannot become an option that
+  Enter does nothing with — and that line is the shape to copy when this one is closed.
 - `idleDemote` sorts a row to the end of its group while the query is EMPTY, at a cost sized
   to lose to a single real use. The empty-query order is frecency, so on a cold install every
   score is zero and the alphabet alone decides what the launcher opens on. It is DERIVED, not
@@ -369,5 +374,6 @@ being installed, not on this app's name, and it lists the other default-off buil
   guarantee and somewhere to put "more results" — a contract to design against a response shape
   that does not exist yet, not a parameter to add.
 - **Quicklinks.** A group with no writer was removed rather than shipped empty.
-- **A default-on launcher.** Flipping the default and deleting the legacy palette is a separate
-  change, after the remaining corpora become apps with their own scopes.
+- **Removing the legacy palette.** Command Bar is default-on, but disabling it deliberately
+  restores the legacy palette and a rejected lazy chunk falls back there. Deleting that fallback
+  is a separate change, after the remaining corpora become launcher scopes.

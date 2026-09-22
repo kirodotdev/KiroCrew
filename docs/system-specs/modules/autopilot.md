@@ -34,7 +34,7 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 | `dashboard/chat_runner.py` | `_run_chat` (one LLM turn) plus the end-of-turn plan detector that arms the gate |
 | `dashboard/chat_title.py` | `_reset_auto_run_for_new_plan`, `_extract_and_redact_plan_metadata`, `_rephrase_plan_lite` |
 | `dashboard/chat_handlers.py` | `api_chat` typed-`go` / typed-stop detection, post-escalation guidance reset |
-| `dashboard/chat_folders.py` | `api_chat_slot_mode`, whose `_VALID_MODES` also admits `"crew"` — see Slot modes below |
+| `dashboard/chat_folders.py` | `api_chat_slot_mode` and its `_VALID_MODES` allowlist — see Slot modes below |
 | `dashboard/state.py` | `_ChatSlot` plan state and the `mode` / `surface` wire fields |
 | `config/prompt-orchestrator.md` | System prompt: plan format, stage execution, delegation, escalation |
 | `slack/gateway.py` | `_subagent_done` orchestration guard: per-task failures, per-stage rounds, escalation text |
@@ -44,7 +44,7 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 
 ## Slot modes
 
-`api_chat_slot_mode`'s `_VALID_MODES` admits three values, and Autopilot owns
+`api_chat_slot_mode`'s `_VALID_MODES` admits two values, and Autopilot owns
 exactly one of them:
 
 | `mode` | Meaning |
@@ -52,14 +52,16 @@ exactly one of them:
 | `""` | Ordinary chat. No plan machinery. |
 | `"orchestrator"` | Autopilot — everything in this spec. |
 
-A third value, `"crew"` (Crew Mode), existed until it retired in favour of the
-Crew Members page; a slot persisted under it is restored as `""`. Its record is
-in [crew-mode.md](crew-mode.md) § "Retired: Crew Mode".
+The former `"crew"` value (Crew Mode) retired in favour of the Crew Members
+page and is no longer accepted by `_VALID_MODES`; a slot persisted under it is
+restored as `""`. Its record is in [crew-mode.md](crew-mode.md) § "Retired: Crew
+Mode".
 
 ## Slot State
 
-All of these live on `_ChatSlot` (`dashboard/state.py`) and are **in-memory
-only**; none is serialized by `to_dict()` or written to the history meta line.
+All of these live on `_ChatSlot` (`dashboard/state.py`). `mode` is serialized
+and written to the history meta line; the remaining plan-execution fields are
+in-memory only.
 
 | Attribute | Type | Purpose |
 |-----------|------|---------|
