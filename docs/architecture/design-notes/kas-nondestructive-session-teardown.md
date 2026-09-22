@@ -170,8 +170,8 @@ not evidence, for the create-or-load reason above — the transcript content is.
    `sessionId`.
 2. `session/list` for the workspace: the session is present.
 3. Send the new release verb. It answers success.
-4. The released id is gone from memory: an operation that requires residency no
-   longer serves it.
+4. The released id is absent from memory: an operation that requires residency
+   refuses it.
 5. `session/list` again: **the session is still present.** The store on disk still
    holds its directory.
 6. `session/load` on the released id. It replays the conversation, and the replay
@@ -235,14 +235,49 @@ method string `METHOD_KAS_SESSION_DELETE` in `src/kiro_crew/acp/types.py`. The
 user-visible consequence is `spawn_continue` answering `conversation_gone`
 (`src/kiro_crew/subagent_manager/continuation.py`).
 
-One Crew-side follow-up belongs to us, not to KAS, and is recorded here so nobody
-expects the new verb to work on its own: KAS is currently absent from
-`ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, so Crew's resume path in
-`src/kiro_crew/acp/client.py` gates a `session/load` on a **kiro-cli**
-transcript file existing under `kiro_sessions_dir()` and sends a
-`_kiro.dev/session_file` pointing at it. For a host that keeps its own store that
-pre-check is wrong. Adding KAS to that set is Crew work, in Crew's tree, once the
-verb exists.
+### What Crew changes once the verb exists
+
+All of this is Crew work in Crew's tree, listed so nobody expects the new verb to
+take effect on its own. Five edits, and one thing that deliberately is not an
+edit:
+
+| # | Change | Where |
+|---|---|---|
+| 1 | Add KAS to `ACP_BACKENDS_SESSION_SHARING` | `agent_sdk/backends.py` |
+| 2 | Point `KasHarness.teardown` at the new verb | `acp/harness/kas.py` |
+| 3 | Add the method constant beside `METHOD_KAS_SESSION_DELETE` | `acp/types.py` |
+| 4 | Add KAS to `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | `agent_sdk/backends.py` |
+| 5 | Teach the fake backend to answer the new verb | `testing/fake_acp_backend.py` |
+| — | The card's "sub-agent continuation" cell | nothing to edit |
+
+Change 1 is the switch, and it is what the request is for. It opens the
+eligibility chain that decides whether a sub-agent gets a shared session:
+`AcpProvider.is_session_sharing_eligible` reads the set, `session_allocation`
+reads the provider, and `subagent_manager/run.py` reads that.
+
+Change 4 is a second, independent membership, and the request does not work
+without it. KAS sits outside `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, which puts it
+on the kiro-family arm of Crew's resume path in `acp/client.py`: that arm gates a
+`session/load` on a **kiro-cli** transcript file under `kiro_sessions_dir()` and
+sends a `_kiro.dev/session_file` naming it. For a host that keeps its own store,
+that file is not there and the load is skipped in favour of a fresh session. So
+change 1 alone would mark KAS as shareable while its resumes silently started
+over.
+
+The card cell needs nothing because `backend_cards.py` already decides
+`LINE_SUBAGENT_CONTINUATION` from `ACP_BACKENDS_SESSION_SHARING` as its only
+input. Adding KAS to the set flips the cell. That is the intended shape — the
+card reads memberships rather than keeping its own copy of them — and it is worth
+stating so the change list does not grow an edit that would be a second source of
+truth.
+
+Change 2 replaces the delete in the teardown policy. `_kiro/session/delete` stays
+the verb for genuinely disposing of a conversation; what changes is which of the
+two a normal teardown sends.
+
+The harness-parity suite pins these memberships — `test_session_sharing_is_opt_in`
+asserts eligibility is read from the set rather than derived from a negation — so
+changes 1 and 4 are assertions in that suite, not silent edits.
 
 ## Verified, and not
 
