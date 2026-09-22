@@ -456,17 +456,53 @@ class TestA6NoLostOrOutOfOrderTurn:
 
 
 class TestOneRedactionRule:
-    """§3.6 — one transcript cannot have two redaction policies."""
+    """§3.6 — one BOUNDARY rule, and the deliberate exception that sits above it.
+
+    A DELIBERATELY NARROWED decision, and the narrowing is the point. The write boundary
+    rewrites model-authored rows and leaves ``user`` rows alone, so the boundary in isolation
+    stores a user row verbatim. Every CHANNEL arrival path, and the shared
+    ``save_conversation_turn``, scrubs the user text before calling in -- so a user row
+    arriving that way IS rewritten at rest.
+
+    Why narrowed: a credential in a transcript outlives the conversation that typed it, and
+    the transcript is itself an egress -- read back into model context, indexed by session
+    search, carried by whatever backs the directory up. So "the user's words are not
+    rewritten" holds for the DASHBOARD write-back alone, the one path with no persister above
+    it. The rewrite is irreversible; ``modules/history.md`` carries the serve-time evaluation
+    and the notice wording that tells the user to retype in full.
+    """
 
     def test_model_authored_content_is_scrubbed_on_the_channel_path(self, log):
         log.append(SLACK_KEY, "assistant", "token is AKIAIOSFODNN7EXAMPLE ok")
         stored = log.read_messages(SLACK_KEY)[0]["content"]
         assert "AKIAIOSFODNN7EXAMPLE" not in stored
 
-    def test_user_typed_content_is_stored_verbatim(self, log):
-        """Matches the dashboard's own gate; the user's words are not rewritten."""
+    def test_the_write_boundary_alone_leaves_a_user_row_verbatim(self, log):
+        """Scoped to the BOUNDARY, which is the dashboard write-back's arrival path.
+
+        Named for what it actually pins. A bare ``append`` is not the channel path: the
+        assertion below would be false of one, which the sibling test pins.
+        """
         log.append(SLACK_KEY, "user", "my key is AKIAIOSFODNN7EXAMPLE")
         assert "AKIAIOSFODNN7EXAMPLE" in log.read_messages(SLACK_KEY)[0]["content"]
+
+    def test_a_user_row_arriving_through_the_shared_helper_is_scrubbed(self, log):
+        """The narrowed decision, pinned rather than merely described.
+
+        ``save_conversation_turn`` is the one place the channel callers persist a user row,
+        so this is the product-level invariant for every arrival path except the dashboard
+        write-back: the stored copy carries no credential, and the prompt is untouched.
+        """
+        from kiro_crew.llm_helpers import save_conversation_turn
+
+        save_conversation_turn(log, SLACK_KEY, "my key is AKIAIOSFODNN7EXAMPLE", "ack")
+
+        rows = log.read_messages(SLACK_KEY)
+        assert [r["role"] for r in rows] == ["user", "assistant"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in str(rows[0]["content"]), (
+            "a channel-persisted user row kept its credential, so the narrowed decision "
+            "this class pins is not the behaviour"
+        )
 
     def test_append_if_absent_stays_idempotent_under_redaction(self, log):
         """Dedup compares the stored form, so a scrubbed message is recognised."""

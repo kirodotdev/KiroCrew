@@ -10252,6 +10252,7 @@
         "cancel_esc": "Cancelar (Esc)",
         "copy": "Copiar",
         "copy_link_to_message": "Copiar enlace al mensaje",
+        "row_redacted": "[REDACTED...] no se conservó el original",
         "edit_message": "Editar el mensaje",
         "edit_resend": "Editar y reenviar",
         "send": "Enviar",

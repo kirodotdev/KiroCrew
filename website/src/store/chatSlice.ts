@@ -1313,9 +1313,9 @@ function loadSlotActivity(state: ChatState, key: string): void {
  */
 function applyNonActiveFrame(
   state: ChatState,
-  p: { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] },
+  p: { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[]; redacted?: boolean },
 ) {
-  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = p
+  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts, redacted } = p
   let content = p.content
   if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
   const msgs = (state.slotMessages[safeKey(slot)] ??= [])
@@ -1478,7 +1478,7 @@ function applyNonActiveFrame(
       }
     }
   }
-  msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
+  msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind, ...(redacted ? { redacted: true } : {}) }))
 }
 
 /** Path B selectors: read a slot's messages / stream-state, falling back to the
@@ -5850,8 +5850,8 @@ const chatSlice = createSlice({
       if (open?.role === 'thinking') { open.content += content; return }
       state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
-    sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }>) {
-      const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = action.payload
+    sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[]; redacted?: boolean }>) {
+      const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts, redacted } = action.payload
       let content = action.payload.content
       if (slot !== state.activeSlot) { applyNonActiveFrame(state, action.payload); return }
       // stop_event — replace in place by id, or insert new
@@ -6045,7 +6045,7 @@ const chatSlice = createSlice({
           }
         }
       }
-      state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
+      state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind, ...(redacted ? { redacted: true } : {}) }))
     },
     /** Patch an existing message, identified by `mid` when the server sends one and
      * by `ts` otherwise. Used by the `chat_message_update` server event to flip an
