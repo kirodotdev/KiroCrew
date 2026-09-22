@@ -1053,6 +1053,7 @@ const autoResearch = createAutoResearchEndpoints(transport)
 export const api = {
   ...system.statusAndStorage,
   ...telemetry.usageReadouts,
+  ...sessions.crewBoard,
   // Defined here rather than in ./client/telemetry: it reads
   // `api.wakatimeExportUrl` at call time, so replacing that member reroutes the
   // download.

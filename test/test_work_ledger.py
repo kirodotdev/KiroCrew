@@ -1938,6 +1938,25 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # The Crew page's masked, cookie-authenticated projection and its action
+        # route. A third seam, and the argument is about WHICH PRINCIPAL rather
+        # than about convenience.
+        #
+        # The rule above exists so that one AGENT session cannot name another's
+        # ledger: that is a privilege claim, and deriving identity from
+        # X-Session-Key is what refuses it. This module's caller is the dashboard
+        # OWNER, who already reads every session on this gateway and can stop any
+        # of them from the Stop button, and a browser carries a cookie rather than
+        # a session key -- so it cannot name a conductor through the agent route at
+        # all. An operator naming their own conductor is not the thing the rule
+        # forbids.
+        #
+        # What the rule does still buy here is kept: no payload this module emits
+        # carries ``worker_session_key`` (the field is masked and the key-bearing
+        # ``bind`` event text is blanked), liveness is joined server-side so the
+        # page never needs the key, and its action route resolves the key from the
+        # store rather than accepting one from the body.
+        "dashboard/handlers/work_ledger_board.py",
     }
 )
 

@@ -401,12 +401,23 @@ async def _worker_binding(
 
 
 async def _own_ledger(
-    key: str, operation: str
+    key: str, operation: str, caller: str | None = None
 ) -> tuple[work_ledger.ConductorRecord, None] | tuple[None, web.Response]:
-    """Resolve the caller's own conductor record, or refuse with ``no_ledger``."""
+    """Resolve the caller's own conductor record, or refuse with ``no_ledger``.
+
+    *caller* is who the denial is audited against; it defaults to *key* for the
+    MCP routes, where the session key IS the actor. A dashboard route that owns
+    the request as an authenticated human passes that human as *caller* so the
+    SEL row names the operator, not the conductor key being read.
+    """
     record = await asyncio.to_thread(work_ledger.read_conductor, key)
     if record is None:
-        _audit(key, operation, "denied", error=work_ledger.CODE_NO_LEDGER)
+        _audit(
+            caller if caller is not None else key,
+            operation,
+            "denied",
+            error=work_ledger.CODE_NO_LEDGER,
+        )
         return None, _refuse_404(
             work_ledger.CODE_NO_LEDGER,
             "This session owns no work ledger. Start one with "
