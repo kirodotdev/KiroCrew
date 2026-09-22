@@ -174,14 +174,15 @@ class TestIgnorePatternsAreHostIndependent:
 
     ``fnmatch.fnmatch`` runs both operands through ``os.path.normcase``, which
     folds case on Windows and is the identity on POSIX. A source's patterns are
-    *configuration* that outlives the machine which wrote it, so one stored
-    property meant two different things: root-anchored ``SECURITY.md`` also
-    swallowed a root ``security.md``, but only on a Windows scan -- silently
-    dropping a Library document, or billing an extraction for an extra file.
+    *configuration* that outlives the machine which wrote it, so a
+    case-folding match makes one stored property mean two different things:
+    root-anchored ``SECURITY.md`` would also swallow a root ``security.md``, but
+    only on a Windows scan -- silently dropping a Library document, or billing
+    an extraction for an extra file.
 
     These tests substitute Windows' ``normcase`` on any host, so the trap is
     reproducible on the POSIX shards too; a ``skipif(os.name != "nt")`` guard
-    would hide the regression from every reviewer not on Windows.
+    would hide it from every reviewer not on Windows.
     """
 
     @staticmethod
@@ -195,7 +196,7 @@ class TestIgnorePatternsAreHostIndependent:
 
     @pytest.fixture()
     def tree(self, tmp_path):
-        """``security.md`` and ``docs/design.md``, both ordinary documents.
+        """Two ordinary documents: one at the root, one a directory down.
 
         Only ONE casing of the name is created: a same-directory ``security.md``
         AND ``SECURITY.md`` cannot coexist on a case-insensitive filesystem, so a
@@ -234,7 +235,7 @@ class TestIgnorePatternsAreHostIndependent:
         self, windows_host, tree
     ) -> None:
         # The `os.sep` normalisation above the match is what carries separator
-        # patterns now that `normcase` no longer folds "/" on both sides.
+        # patterns, since `fnmatchcase` folds neither operand.
         assert self._walked(tree, ["docs/*"]) == {"security.md"}
 
 

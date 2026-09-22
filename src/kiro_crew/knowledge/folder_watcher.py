@@ -721,12 +721,12 @@ class FolderWatcher:
                 # `fnmatchcase`, NOT `fnmatch`: `fnmatch` runs both operands
                 # through `os.path.normcase`, which folds case on Windows and is
                 # the identity on POSIX. These patterns are persisted source
-                # configuration, so that made one stored property select
-                # different files depending on which supported host ran the scan
-                # -- `SECURITY.md` also swallowed `security.md`, but only on
-                # Windows. The pattern is authoritative on every host instead.
-                # (The line above is what keeps separators working: `normcase`
-                # used to fold "/" to a backslash on both sides, and no longer does.)
+                # configuration, so a case-folding match makes one stored
+                # property select different files depending on which supported
+                # host runs the scan -- on Windows `SECURITY.md` would also
+                # swallow `security.md`. The pattern is authoritative on every
+                # host. The "/" normalization above is what carries separator
+                # patterns, since `fnmatchcase` folds neither operand.
                 if any(fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
                     continue
                 if kiroignore is not None and kiroignore.is_ignored(
