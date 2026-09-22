@@ -465,8 +465,9 @@ Both import it before an update can retire the running package tree and call it
 off-loop before saving or draining sessions. The provider must load its own
 dependencies at composition and return cheaply without deferred imports. A
 provider error or an explicit empty, relative, missing, non-file or non-executable
-target refuses restart; only `None` takes the existing `respawn_executable()` →
-`reexec_python_module()` path, including core-managed virtual environments.
+target refuses restart; only `None` reaches the interpreter, which normally takes
+the existing `respawn_executable()` → `reexec_python_module()` path, including
+core-managed virtual environments.
 
 The core executes `[launcher, *sys.argv[1:]]` directly, without a shell or Python
 `-m` prefix, and never resolves the launcher's symlinks: dispatch may depend on
@@ -481,7 +482,65 @@ their callers. CLI service-manager restarts are independent and unchanged.
 
 Validation establishes availability at selection time, not future execution:
 an updater must keep the stable launcher usable through handoff. The core does
-not retry a failed explicit launcher with the old Python bundle.
+not retry a failed explicit launcher with the old Python bundle. When it is the
+*interpreter* an update retires, the guard below is what keeps the gateway
+serving.
+
+### The pruned-interpreter guard
+
+`resolve_restart_launcher()` returning `None` and the interpreter no longer
+existing is a real state: an `apply_command` that installs into a new versioned
+tree and prunes the old one deletes the interpreter the running gateway was
+launched from.
+
+What made that state costly was the ORDERING, not the missing file. The
+orchestrator saved, fenced, closed every session and only then raised `ENOENT`
+from `os.execv`. Admission itself does come back —
+`_finish_auto_update_apply` calls `resume_turn_admission_after_update()` — but the
+sessions `close_all()` tore down do not, and `_pending_update_respawn` is cleared
+immediately before the exec, so `_retry_pending_update_restart` can never fire.
+What survived was a gateway with no sessions, running a different version from the
+install on disk. The dashboard's own path is worse by one step: its `close_all()`
+sets the closing flag without owning the update pause, so `resume_...` returns
+early and admission stays shut as well.
+
+Both consumers therefore ask before the point of no return. The dashboard's
+`_restart_gateway` refuses with `Cannot restart: invalid Python executable path`
+while every session is still answerable. The orchestrator defers, retaining
+`_pending_update_respawn` so `_retry_pending_update_restart` completes the update
+once the install is repaired. Neither drains on the chance that a restart might
+still work.
+
+Asking early narrows that failure; it cannot remove it. The target can be
+replaced between the check and the call, and a file that is present and carries
+the exec bit can still be an image this kernel refuses — a wrong architecture, a
+truncated binary, a script whose interpreter is gone. The kernel is the authority
+on all of those and reports them as `OSError` from `execv` itself, so the exec
+site is the only place they can be answered. Both consumers answer by exiting:
+`platform_compat.exit_after_failed_restart_exec()` logs CRITICAL naming the
+target and calls `os._exit(1)`. Returning instead is what produced the original
+defect — the orchestrator's caller catches `Exception`, logs and sleeps, and the
+dashboard's path would fall through to `return True` and report a restart that
+did not happen. Exiting makes the failure visible to whatever started the
+gateway, frees the port so the operator's own relaunch can bind, and refuses to
+serve the version skew. Reopening admission is not an alternative: the closed
+sessions do not come back, and the skew would then be served. Because `os._exit`
+runs no `atexit` handler, that function repeats the two bounded best-effort
+flushes the force-exit signal handler performs — the CRITICAL line is the whole
+diagnosis and is queued, not yet on disk. Only the event log's flush is bounded there:
+the `gateway.log` tail goes through `cli.drain_log_queue_before_hard_exit()`, the shared
+async hard-exit drain for that queue, so every hard-exit path keeps one spelling and one
+ceiling for it. The event log's own ceiling is derived the way that function derives
+its own — the inner bound plus one second — rather than chosen independently.
+
+There is deliberately NO second pathname for an operator to declare as a fallback
+exec target. Validating one is not reachable. A pathname's bytes do not decide
+what the kernel execs: a `#!` line delegates to an interpreter the check never
+sees, and a header that parses can still belong to a truncated binary. The only
+way to learn the answer for certain is to exec the candidate, which means either
+running an arbitrary operator-supplied binary or booting a second gateway. So the
+recovery is repair-then-relaunch, which an operator can actually perform and the
+core can describe honestly.
 
 ## Consumption-site wiring
 

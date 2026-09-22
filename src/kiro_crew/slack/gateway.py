@@ -12010,11 +12010,47 @@ class GatewayOrchestrator:
         ``respawn`` is loaded before apply can replace the environment. If the
         pre-fence drain cannot finish, retain it and retry the restart in five
         minutes with admission reopened; never force through accepted work.
+
+        The interpreter is established BEFORE any of that. When it is missing, this
+        returns without saving, fencing or draining, because an exec that cannot
+        succeed must not be reached after every session has been closed.
         """
         logger.info("Update applied, preparing a callback-safe gateway restart")
         self._pending_update_respawn = respawn
         launcher = await asyncio.to_thread(resolve_restart_launcher)
         exe = await asyncio.to_thread(respawn) if launcher is None else None
+        # Off-loop for the same reason as the two resolvers above: both predicates
+        # are metadata syscalls against a pathname this process does not control,
+        # and an interpreter on a stalled network mount would freeze every gateway
+        # task -- including the heartbeat -- rather than one restart.
+        usable = launcher is not None
+        if not usable and exe:
+            usable = await asyncio.to_thread(platform_compat.execv_target_available, exe)
+        if not usable:
+            # No usable interpreter: the apply pruned the tree this process was
+            # running from. RETURN BEFORE saving, fencing or draining. Reaching
+            # the exec with no interpreter closes every session first and then
+            # raises ENOENT. Admission itself does come back --
+            # ``_finish_auto_update_apply`` resumes it -- but the sessions
+            # ``close_all()`` tore down do not, and ``_pending_update_respawn``
+            # is cleared just before the exec, so nothing retries: what survives
+            # is a gateway with no sessions, running a different version from the
+            # install on disk. Deferring here keeps the sessions instead, and
+            # ``_pending_update_respawn`` stays set so
+            # ``_retry_pending_update_restart`` finishes the update once an
+            # operator repairs the install.
+            self._update_apply_deferred = True
+            logger.error(
+                "Update applied but restart deferred: no usable interpreter. "
+                "Restore the interpreter and this retries itself -- the retry "
+                "re-resolves it, so no configuration change is needed."
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "restarting",
+                    "Update applied — restart needs a usable interpreter",
+                )
+            return
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("restarting", "Preparing safe restart…")
             from kiro_crew.dashboard.chat import save_all_slots_to_history
@@ -12069,10 +12105,19 @@ class GatewayOrchestrator:
         await self._drain_update_callback_work(timeout=None)
         logger.info("Update callback drain complete, restarting gateway")
         self._pending_update_respawn = None
-        if launcher is not None:
-            platform_compat.reexec_launcher(launcher, sys.argv[1:])
-        else:
-            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # The exec is past the point of no return: the guard above removed the
+        # reachable failures, but only the kernel can refuse the image itself
+        # (wrong architecture, truncated, replaced since the check). Returning
+        # from here is what strands the gateway, so hand that outcome to the
+        # exec seam's own fatal partner instead of unwinding into the update
+        # coordinator, which logs and loops with every session already closed.
+        try:
+            if launcher is not None:
+                platform_compat.reexec_launcher(launcher, sys.argv[1:])
+            else:
+                platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        except OSError:
+            await platform_compat.exit_after_failed_restart_exec(launcher or exe)
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""

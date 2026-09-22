@@ -930,6 +930,32 @@ routes the dashboard's update check, badge, and Update button through the
 declared commands, and the gateway then reports no release channel at all.
 The `check_command` runs on every check — the 12-hourly background poll AND
 the manual Check button — so it must be side-effect-free and idempotent.
+If the `apply_command` installs into a new versioned tree and prunes the old one,
+it deletes the interpreter the running gateway was launched from. The gateway then
+has nothing to re-enter, and it says so rather than trying: the restart is refused
+while every session is still answerable, and on the orchestrator path it is
+deferred. Restore the interpreter and the deferred update finishes on its own.
+
+What it will not do is drain first and find out afterwards. That was the old
+failure. It saved, fenced, closed every session and only then found the
+interpreter gone, leaving a gateway alive and serving nobody with no way back
+except a manual relaunch.
+
+Checking early cannot cover every case, though: the target can be replaced
+between the check and the restart, and a present, executable file can still be an
+image this kernel refuses. When that happens the gateway EXITS rather than
+survive. Look for a CRITICAL line naming the target, followed by the process
+ending with status 1. That is deliberate — the sessions are already closed, so a
+surviving process would serve nothing while still holding the port your relaunch
+needs. Repair the install and start the gateway again.
+
+There is no policy key naming a fallback executable to re-enter instead, because
+such a key cannot be validated. A pathname's bytes do not decide what the kernel
+execs: a `#!` wrapper delegates to an interpreter the check never sees, and a
+header that parses can still belong to a truncated binary. Learning the answer
+for certain means exec'ing the candidate, which is either running an arbitrary
+binary or booting a second gateway. The supported recovery is to repair the
+install and let the retry finish, or to relaunch by hand.
 
 ## Remote tunnel mode
 

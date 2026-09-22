@@ -112,6 +112,130 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     os.execv(resolved, argv)
 
 
+def execv_target_available(path: str) -> bool:
+    """Whether ``execv`` has a file here it may attempt. Two metadata syscalls.
+
+    Distinct from ``is_executable_file`` further down, which answers a different
+    question: that one decides whether to treat a file as a runnable HOOK, and on
+    Windows it accepts a regular file by extension because there is no execute bit
+    to read. A restart target is not a hook -- the process image itself depends on
+    the answer, and an extension decides nothing -- so this asks only the two things
+    the kernel will also ask, and reports on Windows whatever ``os.access`` does
+    there.
+
+    Kept beside the exec family because callers on the event loop must hand BOTH
+    syscalls to a worker thread in ONE hop: a pathname on a stalled network mount
+    blocks each of them, so offloading one and leaving the other inline still
+    freezes the loop.
+    """
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+#: Exit status for a process replacement that failed after the final drain. The
+#: generic failure code, matching the gateway's other unrecoverable exits; the
+#: distinguishing signal is the CRITICAL log line, not a private number a
+#: supervisor would have to be taught.
+_POST_DRAIN_EXEC_FAILURE_EXIT = 1
+
+# Ceiling on the event log's exit flush, covering the wait for a worker as well as the
+# work. ``eventlog_hooks.drain_for_shutdown`` bounds the work itself at
+# SHUTDOWN_DRAIN_SECONDS (5.0s); what no inner ceiling can bound is the queue wait for
+# a thread to run on. Derived as that inner bound plus one second, the same rule
+# ``cli.drain_log_queue_before_hard_exit`` applies to its own flush, so the two exit
+# drains do not drift apart on a number nobody chose.
+_EXIT_FLUSH_DEADLINE_SECS = 6.0
+
+
+async def exit_after_failed_restart_exec(target: str | None) -> None:
+    """Exit this process after a restart exec failed past the point of no return.
+
+    Lives beside the two ``reexec_*`` functions because it is their partner: it
+    answers the one outcome neither of them can, and a future reader editing
+    either exec sees it here.
+
+    Both update-restart paths reach their exec only after ``close_all()``, which
+    makes the exec the last reversible instruction they have. Every session is
+    already torn down, the final history save already ran, and the tree on disk
+    is already the NEW version while this process image is still the old one.
+
+    Callers validate the target BEFORE the drain, and that is what keeps the
+    ordinary failures out of here -- but validating cannot make an exec
+    infallible. The target can be replaced between the check and the call, and a
+    file that is present and carries the exec bit can still be the wrong
+    architecture, a truncated image, or a script whose interpreter is missing.
+    The kernel is the authority on every one of those and reports them as
+    ``OSError`` from ``execv`` itself, so the exec site is the only place they
+    can be answered -- and answering them by returning is what left a gateway
+    alive with nothing to serve.
+
+    Answer by exiting. A surviving process here serves nothing it can serve
+    honestly: its sessions are gone, and its code and the install on disk are
+    different versions.
+    It also holds the port, so the operator's own relaunch would fail to bind on
+    top of it. Exiting makes the failure visible to whatever started this
+    gateway, frees the port for that relaunch, and cannot serve the version skew.
+    Reopening admission instead would not substitute: the sessions closed by
+    ``close_all()`` do not come back, and the skew would then be served.
+
+    Exits through ``os._exit``, which runs no ``atexit`` handler -- so the two
+    bounded flushes the force-exit signal handler performs are repeated here for
+    the same reason: the CRITICAL line is the whole diagnosis, and it is queued,
+    not yet on disk. Both are best-effort; a wedged disk must delay this exit,
+    never hold it. Unlike that signal handler, which cannot await, both run on a
+    worker thread: waiting for a wedged log write on the event loop would hold every
+    remaining task -- and the port this exit exists to release -- for the length of
+    their own timeouts.
+
+    Off-loop alone does not make the wait bounded, so the event log's flush also
+    carries a deadline and runs on the dedicated subprocess pool rather than the
+    default executor. ``asyncio.to_thread`` queues against a pool every other
+    ``to_thread`` in the process shares: saturated, the await never resumes and the
+    exit this function exists to perform simply never happens -- the loop is free,
+    which is what the inner ceiling guarantees, but the process still serves nothing
+    on a port it never releases. A deadline around the flush, plus a pool kept
+    separate for calls that can block on a wedged kernel resource, is what makes "a
+    wedged disk must delay this exit, never hold it" true of the wait and not only of
+    the work.
+
+    The ``gateway.log`` tail is not spelled out again here.
+    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` is the shared async
+    hard-exit drain for that queue -- same pool, its own outer deadline, and it never
+    raises -- so every hard-exit path keeps one spelling and one ceiling for it.
+    """
+    logger.critical(
+        "Gateway restart could not replace this process (target %r); exiting instead of "
+        "serving with every session closed and an install this image does not match. "
+        "Repair the install and start the gateway again.",
+        target or sys.executable,
+        exc_info=True,
+    )
+    from kiro_crew.cli import drain_log_queue_before_hard_exit
+
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _drain_event_log_for_exit
+            ),
+            timeout=_EXIT_FLUSH_DEADLINE_SECS,
+        )
+    except Exception:
+        # Also the deadline: TimeoutError is an Exception, and a fatal exit must never
+        # be blocked by bookkeeping or logging.
+        pass
+    # The gateway.log tail has its own async hard-exit drain, which already offloads to
+    # this pool under its own deadline and already never raises. Calling it keeps one
+    # spelling and one ceiling for that queue across every hard-exit path.
+    await drain_log_queue_before_hard_exit()
+    os._exit(_POST_DRAIN_EXEC_FAILURE_EXIT)
+
+
+def _drain_event_log_for_exit() -> None:
+    """Flush the member event log's queue. Off-loop; bounded inside the module."""
+    from kiro_crew import eventlog_hooks
+
+    eventlog_hooks.drain_for_shutdown()
+
+
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
 # publication sometimes needs the stronger create-if-absent contract, which the
 # kernel exposes but the stdlib does not: renameat2(RENAME_NOREPLACE) on Linux

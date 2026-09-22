@@ -19,7 +19,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import dep_sync, shutdown_event
+from kiro_crew import dep_sync, platform_compat, shutdown_event
 from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
@@ -71,7 +71,11 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
-from kiro_crew.platform_compat import reexec_launcher, reexec_python_module
+from kiro_crew.platform_compat import (
+    exit_after_failed_restart_exec,
+    reexec_launcher,
+    reexec_python_module,
+)
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1472,7 +1476,9 @@ async def _restart_gateway(
     Restart is a process-wide transition.  Two callers must never both drain
     sessions and race separate successors for the same listener/lock, so the
     claim is made synchronously before the first await.  A successful exec does
-    not return; a refused, failed, or test-double exec releases the claim.
+    not return; a refused or test-double exec releases the claim.  An exec the
+    kernel refuses does not: by then the sessions are closed, so it exits the
+    process rather than release a claim nothing can use.
     """
     if state._gateway_restart_in_progress:
         logger.info("Gateway restart already in progress; coalescing duplicate request")
@@ -1497,7 +1503,19 @@ async def _restart_gateway(
 
                 resolver = respawn_executable
             exe = await asyncio.to_thread(resolver)
-            if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+            # ONE hop for both syscalls, the contract this helper's docstring
+            # states: the pathname can be a stalled mount, and this function is
+            # on the event loop -- the await above proves it -- so a bare stat
+            # here would hold every session while the restart decides.
+            if not await asyncio.to_thread(platform_compat.execv_target_available, exe):
+                # The interpreter this process ran under is gone, which is what an
+                # apply that prunes the previous versioned tree leaves behind.
+                # REFUSE HERE, while this process is still serving: the drain
+                # below is the point of no return, and main reached its exec only
+                # after ``close_all()``, where the failure left the gateway alive
+                # with admission shut and nothing able to reopen it. Refusing
+                # before the drain keeps every session answerable and leaves the
+                # operator a repair-then-relaunch they can actually perform.
                 state.push_update_progress(
                     "error", "Cannot restart: invalid Python executable path"
                 )
@@ -1539,10 +1557,18 @@ async def _restart_gateway(
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        if launcher is not None:
-            reexec_launcher(launcher, sys.argv[1:])
-        else:
-            reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # Same point of no return as the orchestrator path: the refusal above
+        # removed the reachable failures, but only the kernel can refuse the
+        # image itself, and the sessions closed above do not come back. Exit on
+        # that rather than fall through to ``return True``, which reports a
+        # restart that did not happen from a process that cannot serve.
+        try:
+            if launcher is not None:
+                reexec_launcher(launcher, sys.argv[1:])
+            else:
+                reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        except OSError:
+            await exit_after_failed_restart_exec(launcher or exe)
         return True
     finally:
         state._gateway_restart_in_progress = False

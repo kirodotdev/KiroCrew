@@ -4381,7 +4381,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch("shutil.which", return_value=None):
                                         await orch._auto_apply_update()
 
@@ -4451,7 +4451,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ) as mock_build:
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     # Resolves: the optional kiro-cli step runs.
                                     with patch(
                                         "kiro_crew.kiro_cli.resolve_kiro_cli",
@@ -4515,7 +4515,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
                                         "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
@@ -4563,7 +4563,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
                                         "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
@@ -4609,7 +4609,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ) as mock_build:
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
                                         "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value=None,
@@ -5313,7 +5313,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ) as mock_build:
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5378,7 +5378,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5444,7 +5444,7 @@ class TestAutoApplyUpdateResetPath:
                             "kiro_crew.slack.gateway.build_frontend_async",
                             new_callable=AsyncMock,
                         ):
-                            with patch("os.execv", side_effect=OSError("test")):
+                            with patch("os.execv"):
                                 with patch("shutil.which", return_value=None):
                                     await orch._auto_apply_update()
 
@@ -5647,7 +5647,7 @@ class TestAutoApplyUpdateResetPath:
                             "kiro_crew.slack.gateway.build_frontend_async",
                             new_callable=AsyncMock,
                         ):
-                            with patch("os.execv", side_effect=OSError("test")):
+                            with patch("os.execv"):
                                 with patch("shutil.which", return_value=None):
                                     await orch._auto_apply_update()
 
@@ -5715,7 +5715,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5832,7 +5832,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5868,7 +5868,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -8582,7 +8582,7 @@ class TestCountInFlightWork:
 
 class TestCallbackSafeUpdateRestart:
     @pytest.mark.asyncio
-    async def test_pre_fence_timeout_defers_without_closing_sessions(self, monkeypatch):
+    async def test_pre_fence_timeout_defers_without_closing_sessions(self, monkeypatch, tmp_path):
         orch = _make_orchestrator()
         orch.dashboard_state = None
         sessions = SimpleNamespace(
@@ -8595,10 +8595,20 @@ class TestCallbackSafeUpdateRestart:
         monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
         reexec = MagicMock()
         monkeypatch.setattr(gw.platform_compat, "reexec_python_module", reexec)
-        respawn = MagicMock(return_value="/python")
+        # A real file: the restart establishes that the interpreter exists before it
+        # tears anything down, so a synthetic path would defer for the WRONG reason
+        # and this test would pass without ever reaching the drain it is about.
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+        respawn = MagicMock(return_value=str(interpreter))
 
         await orch._restart_after_update(respawn)
 
+        # The deferral under test is the one the pre-fence drain causes, so assert it
+        # was actually reached; without this the early no-target deferral satisfies
+        # every assertion below and the test measures nothing.
+        orch._drain_update_callback_work.assert_awaited()
         assert orch._update_apply_deferred is True
         assert orch._pending_update_respawn is respawn
         sessions.fence_update_restart.assert_not_called()
@@ -8606,7 +8616,7 @@ class TestCallbackSafeUpdateRestart:
         reexec.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch):
+    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch, tmp_path):
         order: list[str] = []
         orch = _make_orchestrator()
         orch.dashboard_state = None
@@ -8626,8 +8636,14 @@ class TestCallbackSafeUpdateRestart:
             "reexec_python_module",
             lambda *_args, **_kwargs: order.append("exec"),
         )
+        # A real file, for the same reason as the test above: with a synthetic path
+        # the restart establishes no target and returns before the first drain, so
+        # ``order`` stays empty and this ordering is never exercised.
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
 
-        await orch._restart_after_update(lambda: "/python")
+        await orch._restart_after_update(lambda: str(interpreter))
 
         assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
         assert orch._pending_update_respawn is None
