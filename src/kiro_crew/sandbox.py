@@ -258,6 +258,15 @@ _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
 
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
+    # Gateway diagnostics: recorded host and gateway state, plus loop-stall dumps.
+    # The gateway process writes these; an agent reads them through the owner-gated
+    # /api/debug routes and the kirocrew-debug MCP tools, which redact on the way
+    # out. The raw rows do not: they carry frame labels, folded stacks and process
+    # detail that the read path scrubs, so a sandboxed session reading the files
+    # directly would collect exactly what the routes exist to filter. Whole
+    # DIRECTORY rather than a leaf file, because the day files rotate by name and
+    # the append pins the directory itself.
+    "diag",
     # Channel credentials. Already file-masked in cc/strict via ``_CC_FILES``; listing
     # it here extends the same treatment to standard, where a spawned command could
     # otherwise read every Slack/Discord token off disk.

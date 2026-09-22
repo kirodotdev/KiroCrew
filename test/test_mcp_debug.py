@@ -717,11 +717,18 @@ class TestTheRouteAuthorizationMatrix:
         )
         assert mod._daemon_block()["running"] is False
 
-    def test_the_recorder_absence_is_a_fact_not_an_error(self) -> None:
+    def test_the_recorder_absence_is_a_fact_not_an_error(self, monkeypatch) -> None:
         """``debug_gateway`` is the tool that must work when nothing else does, so a
-        missing diag package is reported rather than raised."""
+        missing diag package is reported rather than raised.
+
+        Absence is simulated, because the package ships now. A ``None`` entry in
+        ``sys.modules`` makes this probe's own import raise, which is the condition a
+        build without diag presents. The route-level tests cannot stand in for this:
+        they patch ``_diag_module``, and this probe imports the recorder directly.
+        """
         from kiro_crew.dashboard.handlers import debug as mod
 
+        monkeypatch.setitem(__import__("sys").modules, "kiro_crew.diag.recorder", None)
         got = mod._recorder_health()
         assert got["available"] is False
         assert got["reason"] == mod.DIAG_UNAVAILABLE
@@ -1116,6 +1123,112 @@ class TestTheRouteAuthorizationMatrix:
         assert got.status == 200, got.body
         assert b"diag_unavailable" not in got.body
         assert json.loads(got.body)["format"] == "tree"
+
+    def test_a_dump_that_vanished_between_two_reads_is_a_404(self, monkeypatch) -> None:
+        """A listing and a read are two moments, and retention runs between them.
+
+        Answering 500 would report a gateway fault for an ordinary race, and an
+        agent retrying on 500 would retry something that cannot succeed.
+        """
+        from kiro_crew.dashboard.handlers import debug as mod
+        from kiro_crew.diag import threads as dt
+
+        def gone(_name: str) -> object:
+            raise FileNotFoundError("stall-20231114-221320.txt")
+
+        monkeypatch.setattr(dt, "read_dump", gone)
+        got = self._run(
+            mod.api_debug_threads,
+            self._request(
+                "/api/debug/threads?mode=dumps&read=stall-20231114-221320.txt",
+                self._state(self._slot()),
+            ),
+        )
+        assert got.status == 404, got.body
+        assert b"dump_missing" in got.body
+
+    def test_the_threads_route_answers_from_the_landed_ledger(self) -> None:
+        """The real module, not a stub: the route returns the ledger's own fields.
+
+        The test above drives a present module through the route with a stand-in, so
+        it pins the relay decision. This one pins the SHAPE the live surface returns,
+        which is what a reader of these routes actually consumes.
+        """
+        from kiro_crew.dashboard.handlers import debug as mod
+
+        got = self._run(
+            mod.api_debug_threads, self._request("/api/debug/threads", self._state(self._slot()))
+        )
+        assert got.status == 200, got.body
+        body = json.loads(got.body)
+        assert body["mode"] == "now"
+        for field in ("gil_wait", "interpretation", "thread_count", "probe_running"):
+            assert field in body, field
+
+    def test_the_snapshots_route_answers_from_the_landed_recorder(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Recorded rows reach the route, with the query answer's own shape."""
+        from kiro_crew.dashboard.handlers import debug as mod
+        from kiro_crew.diag import recorder as rec
+
+        (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+        recorder = rec.Recorder(config_dir=tmp_path / "home", env={}, clock=lambda: 1_700_000_000.0)
+        # Stamped BACKWARDS from the fixed clock. A row at ``clock + i`` is in the
+        # future relative to the window's default ``until``, and the route is right
+        # to drop it.
+        for i in range(2):
+            recorder._append({"ts": 1_700_000_000.0 - i, "load1": float(i)})
+        monkeypatch.setattr(rec, "get_recorder", lambda: recorder)
+
+        got = self._run(
+            mod.api_debug_snapshots,
+            self._request("/api/debug/snapshots?since=1600000000", self._state(self._slot())),
+        )
+        assert got.status == 200, got.body
+        body = json.loads(got.body)
+        for field in ("series", "events", "stats", "window", "rows_in_window"):
+            assert field in body, field
+        assert len(body["series"]) == 2
+
+    def test_a_malformed_window_value_is_the_callers_error_not_a_crash(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``radius=5x`` answers 400 naming the field; the documented ``5m`` answers 200.
+
+        The tool schema documents ``radius`` as a duration and ``around`` as ISO
+        8601, so those shapes must work, and a value that fits neither must read
+        as a bad request rather than as a recorder crash.
+        """
+        from kiro_crew.dashboard.handlers import debug as mod
+        from kiro_crew.diag import recorder as rec
+
+        (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+        recorder = rec.Recorder(config_dir=tmp_path / "home", env={}, clock=lambda: 1_700_000_000.0)
+        recorder._append({"ts": 1_700_000_000.0, "load1": 0.0})
+        monkeypatch.setattr(rec, "get_recorder", lambda: recorder)
+
+        bad = self._run(
+            mod.api_debug_snapshots,
+            self._request(
+                "/api/debug/snapshots?around=2023-11-14T22:13:20Z&radius=5x",
+                self._state(self._slot()),
+            ),
+        )
+        assert bad.status == 400, bad.body
+        body = json.loads(bad.body)
+        assert body["code"] == "bad_range"
+        assert "radius" in body["error"]
+
+        good = self._run(
+            mod.api_debug_snapshots,
+            self._request(
+                "/api/debug/snapshots?around=2023-11-14T22:13:20Z&radius=5m",
+                self._state(self._slot()),
+            ),
+        )
+        assert good.status == 200, good.body
+        assert len(json.loads(good.body)["series"]) == 1
 
 
 class TestTheRouteAuthorizationShape:

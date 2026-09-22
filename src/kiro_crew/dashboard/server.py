@@ -5001,6 +5001,34 @@ async def start_dashboard(
 
     app.on_cleanup.append(_watchdog_shutdown)
 
+    # ── Diagnostic recorder shutdown ─────────────────────────────────────────
+    # Registered HERE for the same reason as the watchdog hook above: appending
+    # to ``on_cleanup`` after ``runner.setup()`` raises "Cannot modify frozen
+    # list". The recorder is created after setup and reached through its module
+    # singleton, so this resolves whatever instance boot published (and nothing,
+    # harmlessly, in a test that never started one). Stopping it cancels its two
+    # tasks, stops the GIL probe thread and removes the gc callback that probe
+    # installed -- a dashboard spun up repeatedly in tests would otherwise
+    # accumulate both.
+    async def _diag_recorder_shutdown(app_: web.Application) -> None:
+        from kiro_crew.diag.recorder import get_recorder
+
+        recorder = get_recorder()
+        if recorder is not None:
+            try:
+                # Awaited, not fired and forgotten: stop() hands back the task
+                # doing the off-loop finish, and cleanup returning before it runs
+                # lets loop teardown drop the closing event and leave the probe
+                # thread joined by nobody. Awaiting a thread yields, so this does
+                # not put the join back on the loop.
+                pending = recorder.stop()
+                if pending is not None:
+                    await pending
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.debug("diag recorder stop failed", exc_info=True)
+
+    app.on_cleanup.append(_diag_recorder_shutdown)
+
     # ── Prevent-sleep inhibitor shutdown ─────────────────────────────────────
     # Registered HERE (before runner.setup freezes the signal lists) for the
     # same reason as the watchdog hook above. The inhibitor + poll task are
@@ -5211,6 +5239,105 @@ async def start_dashboard(
         _loop_watchdog.start()
     # Stopped on shutdown via the ``_watchdog_shutdown`` on_cleanup hook,
     # which is registered before ``runner.setup()`` freezes the signal lists.
+
+    # ── Diagnostic recorder ──────────────────────────────────────────────────
+    # Sits beside the watchdog because it answers the question the watchdog
+    # cannot: the watchdog captures the moment the loop wedges, and the adaptive
+    # controller samples the host every 5s into a 60-entry in-memory ring that
+    # dies with the process — so "what was this host doing at 21:50:44?" had no
+    # answer at all. The recorder writes one row every 30s to
+    # ``<config_dir>/diag/snapshots-<day>.jsonl`` and keeps a week.
+    #
+    # On by default, per the design: the recorder starts no process-killing timer,
+    # and a test that spins the dashboard up directly gets a task it cancels on
+    # cleanup rather than a leaked thread. The switch is read HERE, before the
+    # import, so an operator who turned it off pays neither the import nor the
+    # construction on the boot path. The off values are spelled out rather than
+    # imported from the module, because importing it is the cost being avoided.
+    _diag_off = os.environ.get("KIROCREW_DIAG_RECORDER", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    _diag_recorder = None
+    if not _diag_off:
+        from kiro_crew.diag.recorder import Recorder as _DiagRecorder
+
+        _diag_recorder = _DiagRecorder()
+
+    def _diag_gateway_source() -> dict:
+        """Gateway-owned counters for one recorder row.
+
+        Registered here rather than read inside the recorder so that module
+        keeps no dashboard import — it starts on this boot path, where an import
+        cycle is fatal. Every read is an EXISTING canonical accessor
+        (``state.sessions.count``, ``state.subagents.count``,
+        ``inventory_gauges.read_active_monitor_loops``,
+        ``resource_status.adaptive_state``), so the recorder's numbers are the
+        same ones the dashboard and ``resource_status`` report rather than a
+        second opinion. Each field degrades to ``None`` on its own, because a
+        gauge that cannot be read must not cost the whole row.
+        """
+        from kiro_crew import resource_status as _rs
+        from kiro_crew.metrics import inventory_gauges as _gauges
+
+        out: dict = {}
+        try:
+            out["sessions"] = state.sessions.count
+        except Exception:  # noqa: BLE001 - a gauge failure is a null field
+            out["sessions"] = None
+        try:
+            out["subagents"] = state.subagents.count if state.subagents else 0
+        except Exception:  # noqa: BLE001
+            out["subagents"] = None
+        try:
+            out["live_loops"] = _gauges.read_active_monitor_loops()
+        except Exception:  # noqa: BLE001
+            out["live_loops"] = None
+        try:
+            adaptive = _rs.adaptive_state() or {}
+        except Exception:  # noqa: BLE001
+            adaptive = {}
+        last = adaptive.get("last_sample") or {}
+        decision = adaptive.get("last") or {}
+        try:
+            # The same choice ``resource_status`` makes between the effective cap
+            # and the ceiling, rather than a second reading of it. It answers 0
+            # for "unknown", which must not reach the drop detector as a cap that
+            # fell to zero — so it becomes None.
+            cap = _rs.adaptive_exec_cap() or None
+        except Exception:  # noqa: BLE001
+            cap = None
+        out.update(
+            {
+                # ``adaptive_cap`` is the key ``_detect_adaptive_drop`` watches,
+                # so a cap that falls becomes an event rather than a number a
+                # reader has to diff by hand.
+                "adaptive_cap": cap,
+                "adaptive_action": decision.get("action"),
+                "adaptive_reason": decision.get("reason"),
+                "adaptive_signals": decision.get("signals"),
+                "adaptive_paused": decision.get("paused"),
+                "adaptive_enabled": adaptive.get("enabled"),
+                "subagents_running": last.get("running"),
+                "subagents_queued": last.get("queued"),
+                "controller_loop_lag_ms": last.get("loop_lag_ms"),
+            }
+        )
+        return out
+
+    if _diag_recorder is not None:
+        _diag_recorder.register_source("gateway", _diag_gateway_source)
+        try:
+            _diag_recorder.start(asyncio.get_running_loop())
+        except Exception:  # noqa: BLE001 - a diagnostic must never block the boot
+            logger.warning("diag recorder failed to start", exc_info=True)
+    # Deliberately NOT stashed on ``state``: ``Recorder.start`` publishes the
+    # instance through ``diag.recorder.get_recorder()``, the single publication
+    # point a future reader resolves. A second reference here would be a second
+    # source of truth for the same object -- and an attribute this class does not
+    # declare, which mypy rejects.
     state._loop_watchdog = _loop_watchdog  # prevent GC; stop on cleanup
 
     # Surface any prior crash dump from a previous gateway session.

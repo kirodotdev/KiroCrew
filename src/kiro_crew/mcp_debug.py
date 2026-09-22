@@ -69,10 +69,10 @@ the parent slot, filing a subagent's read under a session that read nothing — 
 for a server this wide, the operator's record of WHICH session read host state is
 the point of auditing it at all.
 
-Three of the five tools depend on ``kiro_crew.diag``, which lands in two sibling
-changes. Until those merge the routes answer HTTP 501 and these tools relay that
-refusal VERBATIM rather than dressing it up: an agent must be able to tell "this
-build cannot answer yet" from "the answer is nothing", and a synthesized empty
+Three of the five tools read ``kiro_crew.diag`` through their routes. Where a
+build does not carry that module the routes answer HTTP 501 and these tools relay
+that refusal VERBATIM rather than dressing it up: an agent must be able to tell
+"this build cannot answer" from "the answer is nothing", and a synthesized empty
 result would read as the second.
 """
 

@@ -3,11 +3,11 @@
 ``mcp_debug.py`` shapes output. THIS module decides who may see it, which is why a
 reviewer looking for the security argument should read here.
 
-Two of the five are real today. ``gateway`` and ``refusals`` need nothing that is
-not already on main, so they answer for real. ``threads``, ``processes`` and
-``snapshots`` need :mod:`kiro_crew.diag`, which lands in two sibling changes; until
-then they answer HTTP 501 with exactly ``{"error": "diag not available in this
-build"}`` and the tools relay that verbatim. The import is LAZY for a reason a test
+``gateway`` and ``refusals`` need nothing outside this module, so they always
+answer. ``threads``, ``processes`` and ``snapshots`` read :mod:`kiro_crew.diag`:
+they answer whenever that module resolves, and when a build does not carry it they
+answer HTTP 501 with exactly ``{"error": "diag not available in this build"}``,
+which the tools relay verbatim. The import is LAZY for a reason a test
 pins: this module is on the gateway's boot path, and a gateway must not pay to load
 a diagnostics package on a build where it does not exist at all.
 
@@ -1059,7 +1059,7 @@ def _diag_module(name: str) -> Any:
 
 
 async def api_debug_threads(request: web.Request) -> web.Response:
-    """GET /api/debug/threads — GIL and thread state. 501 until worker A lands."""
+    """GET /api/debug/threads — GIL and thread state, or 501 without diag."""
     denied = await _authorize_debug_read(request, "threads", "debug.threads")
     if denied is not None:
         return denied
@@ -1092,6 +1092,13 @@ async def api_debug_threads(request: web.Request) -> web.Response:
             payload = {"mode": "now", **(await asyncio.to_thread(threads.ledger_now))}
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "bad_range"}, status=400)
+    except FileNotFoundError as exc:
+        # A dump named by an earlier listing can be pruned, or rotated away, before
+        # this read reaches it. That is an ordinary race between two reads, not a
+        # fault in the gateway, so it answers 404 rather than 500.
+        return web.json_response({"error": str(exc), "code": "dump_missing"}, status=404)
+    except OSError as exc:
+        return web.json_response({"error": str(exc), "code": "dump_unreadable"}, status=503)
     stale = _stale_grant_refusal(request, "threads", "debug.threads")
     if stale is not None:
         return stale
@@ -1099,7 +1106,7 @@ async def api_debug_threads(request: web.Request) -> web.Response:
 
 
 async def api_debug_processes(request: web.Request) -> web.Response:
-    """GET /api/debug/processes — the process family. 501 until worker B lands."""
+    """GET /api/debug/processes — the process family, or 501 without diag."""
     denied = await _authorize_debug_read(request, "processes", "debug.processes")
     if denied is not None:
         return denied
@@ -1130,7 +1137,7 @@ async def api_debug_processes(request: web.Request) -> web.Response:
 
 
 async def api_debug_snapshots(request: web.Request) -> web.Response:
-    """GET /api/debug/snapshots — the recorded series. 501 until worker A lands."""
+    """GET /api/debug/snapshots — the recorded series, or 501 without diag."""
     denied = await _authorize_debug_read(request, "snapshots", "debug.snapshots")
     if denied is not None:
         return denied
@@ -1147,16 +1154,21 @@ async def api_debug_snapshots(request: web.Request) -> web.Response:
             {"error": "the diagnostic recorder is not running", "code": "recorder_off"}, status=422
         )
     fields = request.query.getall("fields", []) or None
-    payload = await asyncio.to_thread(
-        recorder.query,
-        request.query.get("since") or None,
-        request.query.get("until") or None,
-        request.query.get("around") or None,
-        request.query.get("radius") or None,
-        fields,
-        request.query.get("events_only") in ("1", "true", "True"),
-        request.query.get("cursor") or None,
-    )
+    try:
+        payload = await asyncio.to_thread(
+            recorder.query,
+            request.query.get("since") or None,
+            request.query.get("until") or None,
+            request.query.get("around") or None,
+            request.query.get("radius") or None,
+            fields,
+            request.query.get("events_only") in ("1", "true", "True"),
+            request.query.get("cursor") or None,
+        )
+    except ValueError as exc:
+        # A malformed window value (``radius=5x``, an unparsable ``around``) is
+        # the caller's error and names its field; it must not read as a crash.
+        return web.json_response({"error": str(exc), "code": "bad_range"}, status=400)
     stale = _stale_grant_refusal(request, "snapshots", "debug.snapshots")
     if stale is not None:
         return stale

@@ -105,6 +105,22 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Thread, GIL and loop-stall diagnostics",
+        "diag/threads.py",
+        "Python frames, folded stacks and loop-stall dump text, on their way to an "
+        "operator through the debug read routes. Three things make this an egress "
+        "path rather than an internal read. A frame label carries the absolute "
+        "path of the file it came from, so it carries the operator's home "
+        "directory and therefore their username; the loop-stall dumps are written "
+        "by `faulthandler` from C, which cannot redact as it writes, so read time "
+        "is the ONLY point at which they can be scrubbed at all; and a sampled "
+        "frame can name a literal. Each string passes the shared path-shortening "
+        "then the exfiltration-URL and credential chain, and the shortening runs "
+        "FIRST because it is what removes the home prefix that the credential "
+        "scanners do not look for. A scanner that raises drops the field rather "
+        "than emitting it unredacted.",
+    ),
+    (
         "Tool-call risk questions sent to the decision judge",
         "decisions/points/tool_risk.py",
         "The tool name, its arguments and the message excerpt that one `tool.risk` "
