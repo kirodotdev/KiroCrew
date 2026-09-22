@@ -55,8 +55,8 @@ def installed_unit_path() -> "Path | None":
     and inherits the invoking shell instead.
     """
     plat = current_platform()
-    if plat == Platform.SYSTEMD and linux.UNIT_PATH.is_file():
-        return linux.UNIT_PATH
+    if plat == Platform.SYSTEMD:
+        return linux.installed_unit_path()
     if plat == Platform.LAUNCHD and macos.PLIST_PATH.is_file():
         return macos.PLIST_PATH
     return None
@@ -106,13 +106,9 @@ def _unsupported_message() -> None:
 def install_service() -> int:
     """Install and start the platform service.
 
-    Returns 0 on success, non-zero otherwise. On Linux the install
-    prompts for sudo on first use to write
-    ``/etc/systemd/system/kirocrew.service`` and to run
-    ``systemctl daemon-reload / enable / restart``. The gateway itself
-    runs as ``User=$USER`` once started — kirocrew code is never
-    invoked under sudo. On macOS no sudo is required. The CLI is
-    expected to surface the sudo prompt to a real terminal.
+    Returns 0 on success, non-zero otherwise. Linux prefers the invoking
+    account's per-user systemd manager and falls back to the existing
+    sudo-backed system install when that manager is unavailable.
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
@@ -122,7 +118,7 @@ def install_service() -> int:
             print(f"❌ {exc}", file=sys.stderr)
             return 1
         print("✅ kirocrew service installed and started.")
-        print(f"   unit: {linux.UNIT_PATH}")
+        print(f"   unit: {linux.installed_unit_path() or linux.UNIT_PATH}")
         # Reported here, but performed inside linux.install() before the unit is
         # started — the directive only applies at service start. Deliberately
         # non-fatal: a failure warns and leaves the service running.
@@ -291,17 +287,14 @@ def restart_service() -> bool:
 def manual_restart_hint() -> str:
     """Command an operator can run BY HAND to restart the installed service.
 
-    Printed when :func:`restart_service` was refused by the service manager —
-    a system-scope unit needs root/polkit privileges the calling process may
-    not have. Unlike :func:`kiro_crew.service.common.restart_command_hint`,
-    this must never answer ``kirocrew restart``: that is the command that just
-    failed, so a circular hint would send the operator straight back into the
-    same refusal.
+    Printed when :func:`restart_service` was refused by the service manager.
+    Unlike :func:`kiro_crew.service.common.restart_command_hint`, this must
+    never answer ``kirocrew restart``: that is the command that just failed, so
+    a circular hint would send the operator straight back into the same refusal.
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
-        # "sudo systemctl restart kirocrew" — shared with the update path and
-        # the Slack restart-failure hint so the string cannot drift.
+        # Shared with the update path and Slack so the scope cannot drift.
         return restart_command_hint()
     if plat == Platform.LAUNCHD:
         # NOT `launchctl kickstart` — that is the exact call macos.restart()
