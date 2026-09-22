@@ -318,7 +318,7 @@ class CronRunRecord:
     started_at: float = 0.0
     finished_at: float = 0.0
     duration_ms: int = 0
-    status: str = "success"  # "success" | "failure" | "timeout" | "cancelled"
+    status: str = "success"  # "success" | "failure" | "timeout" | "cancelled" | "interrupted"
     summary: str = ""
     trace: str = ""
     error: str = ""

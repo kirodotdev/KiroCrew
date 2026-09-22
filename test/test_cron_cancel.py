@@ -7,6 +7,7 @@ run_command_sandboxed, and the POST /api/crons/{id}/cancel handler.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -160,6 +161,82 @@ class TestCronServiceCancel:
         _, total = await svc._history.get_job_history("run3")
         assert total == 0
         assert "run3" not in svc._cancelled_jobs  # flag consumed
+
+    @pytest.mark.asyncio
+    async def test_gateway_stop_cancellation_records_interrupted_not_stale(
+        self, tmp_path: object
+    ) -> None:
+        """A run cancelled by stop() -- NOT svc.cancel() -- never enters
+        _cancelled_jobs (stop() cancels self._running_tasks directly), so
+        _run_job_isolated's ``not cancelled`` guard is True and it DOES write
+        history for this run, same as an ordinary completion. The row must be
+        tagged "interrupted", carry this run's own (empty) error rather than
+        a prior run's, and last_run_ts must move.
+        """
+        svc = CronService(base_dir=None, on_job=AsyncMock(side_effect=asyncio.CancelledError))
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        job = _make_job(
+            "run4",
+            last_status="error",
+            last_error="Reaped after 3808s (exceeded 1800s deadline)",
+            last_run_ts=time.time() - 3600,
+        )
+        svc._jobs = [job]
+        prior_last_run_ts = job.last_run_ts
+
+        with patch.object(svc, "_merge_job_result"), pytest.raises(asyncio.CancelledError):
+            await svc._run_job_isolated(job)
+
+        assert job.last_status is None
+        assert job.last_error is None
+        runs, total = await svc._history.get_job_history("run4")
+        assert total == 1
+        assert runs[0]["status"] == "interrupted"
+        assert runs[0]["error"] == ""
+        assert runs[0]["summary"] == ""
+        assert job.last_run_ts > prior_last_run_ts
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_jitter_records_interrupted_not_a_stale_success(
+        self, tmp_path: object
+    ) -> None:
+        """A run cancelled while it waits out its jitter never enters _execute,
+        so the per-run reset has to happen on the near side of that sleep. With
+        the reset inside _execute, ``last_status`` still holds the PREVIOUS
+        run's "ok" when the finally records history: a run that never dispatched
+        is written as a success, with the earlier run's error text as its
+        summary and cause.
+        """
+        on_job = AsyncMock()
+        svc = CronService(base_dir=None, on_job=on_job)
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        job = _make_job(
+            "run5",
+            last_status="ok",
+            last_error="agent session closed before the first turn",
+            last_run_ts=time.time() - 3600,
+        )
+        svc._jobs = [job]
+
+        async def _cancelled_sleep(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(svc, "_merge_job_result"),
+            patch.object(svc, "_compute_jitter", return_value=42.0),
+            patch("asyncio.sleep", _cancelled_sleep),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await svc._run_job_isolated(job)
+
+        on_job.assert_not_awaited()
+        assert job.last_status is None
+        assert job.last_error is None
+        runs, total = await svc._history.get_job_history("run5")
+        assert total == 1
+        assert runs[0]["status"] == "interrupted"
+        assert runs[0]["error"] == ""
+        assert runs[0]["summary"] == ""
 
 
 class TestSubprocessRegistry:
