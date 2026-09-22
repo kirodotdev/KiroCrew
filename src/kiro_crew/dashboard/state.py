@@ -2284,7 +2284,7 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_project",
         "created_at",
         "messages",
         "total_messages",
@@ -2565,7 +2565,7 @@ class _ChatSlot:
         # assignment. Only a protected binding or an explicit owner pick clears
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
-        self.project: str = ""
+        self._project: str = ""
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -3489,6 +3489,39 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    @property
+    def project(self) -> str:
+        """The slot's project directory."""
+        return self._project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        """Set the project directory, dropping any push verdict earned in the old one.
+
+        The invalidation lives HERE, on the one write every caller goes through, rather than at
+        each caller. It was wired to ``SessionMap.set_project_override`` and that setter has no
+        callers at all, so the control was inert: the live mutation is this attribute, assigned
+        from the HTTP project route, the session directive, the fork path, the member and channel
+        binders and the spec-builder backend. A verdict describes one repository, and a session
+        repointed at another while keeping its key would otherwise carry the old repository's pass
+        into a publish from the new one.
+
+        Both shapes are dropped because a caller here holds a slot rather than the key the floor
+        will read: this slot's own key, and every verdict recorded for the tree being left. Over-
+        invalidation costs one guard re-run.
+        """
+        previous = getattr(self, "_project", "")
+        self._project = value
+        if value == previous:
+            return
+        # Imported at call time: ``security`` is a heavy import and this module is on the
+        # gateway's boot path, while a project change is rare.
+        from kiro_crew.security import push_verdict as _push_verdict
+
+        _push_verdict.invalidate(self.key)
+        if previous:
+            _push_verdict.invalidate_for_worktree(previous)
 
     def bump_tags_revision(self) -> str:
         """Rotate and return the revision for the current tag list.

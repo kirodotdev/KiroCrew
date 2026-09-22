@@ -52,6 +52,30 @@ REPLAY_HISTORY_WINDOW = 500
 _GIT_CMD: list[str] | None = None
 
 
+#: Overridden by ``--base-ref`` / ``--candidate-ref``. Empty means the in-place spellings:
+#: the base is ``origin/<base>`` and the candidate is ``HEAD``. The gateway names them instead,
+#: because it fetches both into a repository it owns and judges them there, leaving the
+#: worktree read-only -- a fetch into the worktree would both write to the tree being judged and
+#: fail outright when that tree is mounted read-only.
+_BASE_REF = ""
+_CAND_REF = ""
+
+
+def base_ref(base):
+    """The ref holding the base to judge against.
+
+    Spelled by concatenation rather than ``.format`` so this fallback is not itself matched by
+    the sweep that routed every call site through here -- which would have rewritten this line
+    into a call to itself.
+    """
+    return _BASE_REF or "origin/" + base
+
+
+def cand_ref():
+    """The ref holding the commit being judged."""
+    return _CAND_REF or "HEAD"
+
+
 def run(args):
     """Run a command; return (returncode, stdout, stderr) as stripped text.
 
@@ -175,7 +199,7 @@ def _check_single_on_base(base):
 
     Returns: 0 safe, 40 refused.
     """
-    rc, head_parent, _ = run(["git", "rev-parse", "HEAD~1"])
+    rc, head_parent, _ = run(["git", "rev-parse", cand_ref() + "~1"])
     if rc != 0:
         err(
             "REFUSED: cannot resolve HEAD~1. The branch may have no parent "
@@ -183,16 +207,16 @@ def _check_single_on_base(base):
         )
         return 40
 
-    rc, origin_base_sha, _ = run(["git", "rev-parse", "origin/{}".format(base)])
+    rc, origin_base_sha, _ = run(["git", "rev-parse", base_ref(base)])
     if rc != 0:
         err("REFUSED: cannot resolve origin/{}.".format(base))
         return 40
 
-    head_sha = run(["git", "rev-parse", "HEAD"])[1][:12]
+    head_sha = run(["git", "rev-parse", cand_ref()])[1][:12]
 
-    print("HEAD~1:          " + head_parent[:12])
-    print("origin/{}:     {}".format(base, origin_base_sha[:12]))
-    print("HEAD:            " + head_sha)
+    print(cand_ref() + "~1:          " + head_parent[:12])
+    print("{}:     {}".format(base_ref(base), origin_base_sha[:12]))
+    print(cand_ref() + ":            " + head_sha)
 
     if head_parent != origin_base_sha:
         err(
@@ -224,7 +248,7 @@ def _check_pre_squash(base, max_ahead):
     commits, or an empty diff for a single commit which is skipped).
     """
     # Compute merge-base of HEAD and freshly-fetched origin/<base>.
-    rc, merge_base, _ = run(["git", "merge-base", "HEAD", "origin/{}".format(base)])
+    rc, merge_base, _ = run(["git", "merge-base", cand_ref(), base_ref(base)])
     if rc != 0 or not merge_base:
         err(
             "REFUSED: cannot compute merge-base between HEAD and origin/{}. "
@@ -236,7 +260,7 @@ def _check_pre_squash(base, max_ahead):
     # freshly fetched base tip.  After a correct rebase (Phase 1 step 2),
     # this is always true.  If it fails, the branch forks from a stale base
     # and the squash would bake in reversions of newer base changes.
-    rc, _, _ = run(["git", "merge-base", "--is-ancestor", "origin/{}".format(base), "HEAD"])
+    rc, _, _ = run(["git", "merge-base", "--is-ancestor", base_ref(base), cand_ref()])
     if rc != 0:
         err(
             "REFUSED: HEAD is not based on the fresh origin/{} tip — the "
@@ -247,7 +271,9 @@ def _check_pre_squash(base, max_ahead):
         return 40
 
     # Count commits HEAD is ahead of origin/<base>.
-    rc, count_str, _ = run(["git", "rev-list", "--count", "origin/{}..HEAD".format(base)])
+    rc, count_str, _ = run(
+        ["git", "rev-list", "--count", "{}..{}".format(base_ref(base), cand_ref())]
+    )
     if rc != 0:
         err("REFUSED: cannot count commits ahead of origin/{}.".format(base))
         return 40
@@ -258,12 +284,12 @@ def _check_pre_squash(base, max_ahead):
         err("REFUSED: unexpected rev-list output: {}".format(count_str))
         return 40
 
-    origin_base_sha = run(["git", "rev-parse", "origin/{}".format(base)])[1][:12]
-    head_sha = run(["git", "rev-parse", "HEAD"])[1][:12]
+    origin_base_sha = run(["git", "rev-parse", base_ref(base)])[1][:12]
+    head_sha = run(["git", "rev-parse", cand_ref()])[1][:12]
 
     print("merge-base:      " + merge_base[:12])
-    print("origin/{}:     {}".format(base, origin_base_sha))
-    print("HEAD:            " + head_sha)
+    print("{}:     {}".format(base_ref(base), origin_base_sha))
+    print(cand_ref() + ":            " + head_sha)
     print("commits ahead:   {}".format(ahead))
     print("max allowed:     {}".format(max_ahead))
 
@@ -294,7 +320,7 @@ def _check_pre_squash(base, max_ahead):
     # replayed commits from a recent stale fork are by construction recent.
     #
     # Step 1: get patch-ids for ahead-commits (origin/<base>..HEAD).
-    rc, ahead_revs, _ = run(["git", "rev-list", "origin/{}..HEAD".format(base)])
+    rc, ahead_revs, _ = run(["git", "rev-list", "{}..{}".format(base_ref(base), cand_ref())])
     if rc != 0:
         err(
             "REFUSED: git rev-list origin/{}..HEAD failed (exit {})."
@@ -357,7 +383,7 @@ def _check_pre_squash(base, max_ahead):
             "git",
             "rev-list",
             "--max-count={}".format(REPLAY_HISTORY_WINDOW),
-            "origin/{}".format(base),
+            base_ref(base),
         ]
     )
     if rc != 0:
@@ -457,19 +483,52 @@ def main():
         help="Post-squash mode: assert HEAD~1 == origin/<base> after a fresh "
         "fetch (the single squashed commit sits directly on the remote base).",
     )
+    parser.add_argument(
+        "--base-ref",
+        default="",
+        help="Ref holding the base, instead of origin/<base>. For a caller that fetched "
+        "the base into a repository it owns.",
+    )
+    parser.add_argument(
+        "--candidate-ref",
+        default="",
+        help="Ref holding the commit to judge, instead of HEAD.",
+    )
+    parser.add_argument(
+        "--no-fetch",
+        action="store_true",
+        default=False,
+        help="Skip the fetch: the caller has already put both refs in this repository.",
+    )
     args = parser.parse_args()
 
-    # Must be in a git repo.
-    if run(["git", "rev-parse", "--is-inside-work-tree"])[0] != 0:
+    global _BASE_REF, _CAND_REF
+    _BASE_REF = args.base_ref
+    _CAND_REF = args.candidate_ref
+    # OUT-OF-PLACE: the caller fetched both refs into a repository it owns and points us at
+    # them, so the tree being judged is only ever read. Any one of the three flags means it.
+    out_of_place = bool(args.base_ref or args.candidate_ref or args.no_fetch)
+
+    # Must be in a git repo. A BARE repository is not "inside a work tree", and a bare
+    # repository is exactly what an out-of-place caller hands us, so that mode asserts a git
+    # DIRECTORY instead. Asserting the work tree there would refuse the only shape that can
+    # judge a read-only tree.
+    if out_of_place:
+        if run(["git", "rev-parse", "--git-dir"])[0] != 0:
+            err("ERROR: no git directory; out-of-place mode expects GIT_DIR to name one.")
+            return 2
+    elif run(["git", "rev-parse", "--is-inside-work-tree"])[0] != 0:
         err("ERROR: not inside a git repository.")
         return 2
 
     base = _resolve_base(args.base)
 
-    # Fetch origin/<base> — MUST succeed (fail closed) for both modes.
-    fetch_result = _fetch_base(base)
-    if fetch_result != 0:
-        return fetch_result
+    # Fetch origin/<base> — MUST succeed (fail closed) — unless the caller already fetched
+    # both refs itself, which is the out-of-place contract.
+    if not args.no_fetch:
+        fetch_result = _fetch_base(base)
+        if fetch_result != 0:
+            return fetch_result
 
     if args.require_single_on_base:
         return _check_single_on_base(base)

@@ -993,6 +993,16 @@ class HookManager:
                 reason = sensitive_path_refusal(real_path)
                 if reason:
                     return ToolHookResult.deny(reason)
+            # A write INSIDE a git directory moves a ref with no git verb for the command
+            # matcher below to see: ``.git/refs/heads/<branch>`` rewritten by a file tool
+            # leaves the push-verdict store describing a commit the branch does not point
+            # at, and the publish floor cannot notice because it reads no filesystem. The
+            # write itself may be legitimate, so the VERDICT is dropped rather than the write
+            # refused -- the cost is one guard re-run.
+            if session_key:
+                from kiro_crew.security import push_verdict as _push_verdict
+
+                _push_verdict.invalidate_on_write(session_key, list(real_paths))
         # Config files are WRITE-protected (reads stay allowed): block the agent's
         # file-EDIT tool from modifying config.json / config.local.json so a
         # prompt-injected agent cannot rewrite its own resource ceilings
@@ -1142,12 +1152,29 @@ class HookManager:
         governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
         if command:
             deny_targets.append(command)
+        # Observed-mutation invalidation for the push-verdict gate. The gateway is asked to
+        # authorize every command, so it learns the tree moved WITHOUT reading the tree: a
+        # command that can move ``HEAD`` or the recorded base drops this session's verdict
+        # here, and the next publish needs a fresh one.
+        #
+        # Placed BEFORE the deny tiers deliberately. Observing is a strict superset of
+        # authorizing, so no mutation can slip past a deny tier added later, and the only
+        # cost is that a mutation which is then REFUSED also drops the verdict -- one guard
+        # re-run, in the direction that refuses rather than the one that publishes.
+        #
+        # Imported here rather than at module scope: this module is imported very early and
+        # the security package reaches back into it.
+        if command and session_key:
+            from kiro_crew.security import push_verdict as _push_verdict
+
+            _push_verdict.invalidate_on(session_key, command)
         for target in deny_targets:
             reason = authority.is_denied(
                 target,
                 self._config.auto_deny_tools,
                 denied_regexes=denied_regexes,
                 reason_notes=denied_notes,
+                session_key=session_key,
             )
             if reason:
                 return ToolHookResult.deny(reason)

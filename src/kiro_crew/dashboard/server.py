@@ -405,6 +405,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ever posts to it. The handler re-asserts loopback itself because a
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
+        # Push verdict: the prepare-pr guard's gateway-side entry point. The MCP tool
+        # presents a REQUEST here and the gateway runs the stale-base check itself, so
+        # this route is the only writer of the verdict state the publish floor reads.
+        # STRICT (not mixed): no browser calls it, and a cookie fall-through would let a
+        # page's request stand in for the agent's session -- which is the one thing the
+        # session keying exists to prevent. The handler re-asserts loopback itself
+        # because a ``local_only=False`` deployment reclassifies strict paths as mixed.
+        "/api/push-verdict/run",
         "/api/session-keepalive",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the
@@ -1722,6 +1730,26 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _deferred_push_verdict(handler_name: str) -> Callable:
+    """Bind the push-verdict route without importing the subsystem at boot.
+
+    Same shape and same reason as :func:`_deferred_work_ledger`. This subsystem is an
+    operator opt-in that is OFF unless someone activated it on the keystone, and the module
+    reaches the sandbox and hashing machinery it needs to judge a push, so a module-level
+    import would make every default install pay for a feature it never uses. Route
+    registration at boot is allowed; only the import moves to the first request.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard.handlers import push_verdict
+
+        handler = getattr(push_verdict, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -1744,6 +1772,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
+    # The push gate's only writer. Registered HERE, in the shared registrar both
+    # servers call, for the reason the strict frozenset states: a route present on
+    # one server and absent on the other is exactly the drift that becomes an auth
+    # bypass.
+    app.router.add_post("/api/push-verdict/run", _deferred_push_verdict("api_push_verdict_run"))
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))

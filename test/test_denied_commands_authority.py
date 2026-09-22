@@ -94,7 +94,12 @@ class TestIsDeniedForwarding:
         calls: list[dict] = []
 
         def _fake_is_denied(
-            tool_name, extra_patterns=None, *, denied_regexes=None, reason_notes=None
+            tool_name,
+            extra_patterns=None,
+            *,
+            denied_regexes=None,
+            reason_notes=None,
+            session_key="",
         ):
             calls.append(
                 {
@@ -129,7 +134,12 @@ class TestIsDeniedForwarding:
         calls: list[dict] = []
 
         def _fake_is_denied(
-            tool_name, extra_patterns=None, *, denied_regexes=None, reason_notes=None
+            tool_name,
+            extra_patterns=None,
+            *,
+            denied_regexes=None,
+            reason_notes=None,
+            session_key="",
         ):
             calls.append({"reason_notes": reason_notes})
             return None

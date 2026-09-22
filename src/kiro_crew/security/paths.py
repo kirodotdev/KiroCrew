@@ -556,6 +556,23 @@ _CREW_SECRET_LEAVES: list[str] = [
     # shell. The dashboard PUT handler is the only writer and it opens the path
     # directly, not through this gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # The push-verdict gate's operator enable. Same class of control as
+    # ``computer_use.json`` directly above: while it is on, a publish needs a verdict the
+    # GATEWAY recorded, so an agent that could write this file would simply switch the gate
+    # off and publish unjudged -- the gated party holding its own off switch, which is the
+    # defect the whole push-verdict design exists to remove. Absent or unreadable means the
+    # gate is off, so the file's PRESENCE is the authorization and a bare write of
+    # ``{"enabled": true}`` would be a self-grant in the other direction. Read+write
+    # protected here and mounted read-only for the shell by the sandbox dispositions.
+    "push-verdict-activation.json",
+    # The push-verdict gate's gateway-owned mirrors: one bare repository per repository
+    # identity, holding the commits the gateway fetched to judge. Protected for a sharper
+    # reason than the enable above it: a mirror the agent can write is a mirror in which the
+    # agent plants its own base commit, and the ancestry check then passes against a base the
+    # agent chose. The mirror exists precisely so the worktree is never written, so letting the
+    # agent write the mirror instead would move the problem rather than solve it. The gateway
+    # writes it directly, not through this gate.
+    "push-verdict-mirrors",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,

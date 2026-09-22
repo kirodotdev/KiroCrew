@@ -468,6 +468,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # turn computer use on for itself.
     "denied_commands.json",
     "computer_use.json",
+    # A writable push-verdict enable lets an auto-approved agent switch its own publish
+    # gate off, which is the same shape as the two leaves above it. A writable mirror lets it
+    # plant the base its own push is then judged against, which is the same shape again.
+    "push-verdict-activation.json",
+    "push-verdict-mirrors",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     # Recorded consent to send conversation state to the external decision
@@ -745,6 +750,8 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "profiles",
     "denied_commands.json",
     "computer_use.json",
+    "push-verdict-activation.json",
+    "push-verdict-mirrors",
     "oauth_endpoints.json",
     "decisions_consent.json",
     "file_delivery_consent.json",
@@ -1313,6 +1320,14 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
     # including the first pi spawn on a fresh install.
     "pi-gate",
+    # The push-verdict mirrors, the bare repositories the gateway judges a branch in.
+    # Same mechanism as ``panel-templates`` and ``decisions``: the read-only listing
+    # seals an EXISTING path only, and on a fresh activated install no verdict has been
+    # requested yet, so the directory is absent, the mount is skipped, and the agent can
+    # create it and plant the base commit its own push is then measured against. That is
+    # the write the read-only listing exists to deny, so without this entry the listing
+    # protects only hosts that have already run a judgement.
+    "push-verdict-mirrors",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -1326,6 +1341,11 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "member-memory-bindings",
     "decisions",
     "pi-gate",
+    # The mirrors, for the same reason as ``decisions``: a resolving symlink leaves the
+    # lexical name replaceable, and the party that would replace it is the one whose push
+    # the mirror's contents decide. A planted link would let the agent choose the
+    # repository the ancestry check runs in.
+    "push-verdict-mirrors",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -1382,6 +1402,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed pi gate runtime",
         "the agent could plant the launcher a later pi session execs out of",
     ),
+    "push-verdict-mirrors": (
+        "sealed push verdict mirrors",
+        "the agent could plant the base commit its own push is then measured against",
+    ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
     _CREW_NOFOLLOW_READONLY_DIR_LEAVES
@@ -1397,6 +1421,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # previous launch found" rather than acting on one, which is narrower than the truth.
     "cloud_launch_state.json",
     "computer_use.json",
+    "push-verdict-activation.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     "decisions_consent.json",

@@ -101,6 +101,7 @@ class PolicyAuthority:
         *,
         denied_regexes: "list[str] | None" = None,
         reason_notes: "dict[str, str] | None" = None,
+        session_key: str = "",
     ) -> "str | None":
         """Evaluate a command/tool against the effective deny set.
 
@@ -127,6 +128,7 @@ class PolicyAuthority:
             extra_patterns=combined or None,
             denied_regexes=denied_regexes,
             reason_notes=reason_notes,
+            session_key=session_key,
         )
 
     @final
