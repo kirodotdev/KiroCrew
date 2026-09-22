@@ -19,6 +19,8 @@ from kiro_crew.members import (
     MEMBER_NAME_MAX_CHARS,
     MemberNameError,
     MemberSlugError,
+    is_dispatchable_member_name,
+    is_readable_member_name,
     member_dir,
     member_pin_matches,
     members_root,
@@ -28,7 +30,12 @@ from kiro_crew.members import (
     validate_member_name,
     validate_slug,
 )
-from kiro_crew.validation import _AGENT_NAME_RE, TEMPLATE_NAME_RE, WORKSPACE_NAME_RE
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    TEMPLATE_NAME_RE,
+    WORKSPACE_NAME_RE,
+    normalize_unicode,
+)
 
 
 def _log_path(slug: str):
@@ -125,6 +132,85 @@ class TestMemberPinMatches:
     )
     def test_accepts_only_the_exact_existing_member_pin(self, mode, current, requested, expected):
         assert member_pin_matches(mode, current, requested) is expected
+
+    def test_nfd_pin_matches_only_the_exact_nfd_spelling(self):
+        nfd = "Cafe\u0301"
+        nfc = normalize_unicode(nfd)
+        assert nfd != nfc
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfd) is True
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfc) is False
+
+
+class TestDispatchableLegacyNfcName:
+    NFD = "Cafe\u0301"
+
+    def test_nfd_is_rejected_by_validation_but_dispatchable(self):
+        with pytest.raises(MemberNameError):
+            validate_member_name(self.NFD)
+        assert is_dispatchable_member_name(self.NFD) is True
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Caf\u200be\u0301",
+            "Cafe\u0301\tQA",
+            "Cafe\u0301\nQA",
+            "e\u0301" * 251,
+        ],
+    )
+    def test_nfd_with_an_unsafe_addition_stays_non_dispatchable(self, unsafe):
+        assert is_dispatchable_member_name(unsafe) is False
+
+    def test_raw_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == self.NFD,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+    def test_nfc_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        nfc = normalize_unicode(self.NFD)
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == nfc,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+
+class TestReadableMemberName:
+    NFD = "Cafe\u0301"
+    CREDENTIAL_SHAPED = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+
+    def test_readable_member_accepts_a_safe_nfd_name(self):
+        assert is_readable_member_name(self.NFD) is True
+
+    def test_readable_member_accepts_a_credential_shaped_name_not_dispatchable(self):
+        assert is_dispatchable_member_name(self.CREDENTIAL_SHAPED) is False
+        assert is_readable_member_name(self.CREDENTIAL_SHAPED) is True
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Cafe\u0301\nQA",
+            "Cafe\u0301\tQA",
+            "Caf\u200be\u0301",
+            "e\u0301" * 251,
+            "bad\ud800surrogate",
+            b"bytes",
+            None,
+        ],
+    )
+    def test_readable_member_rejects_malformed_names(self, malformed):
+        assert is_readable_member_name(malformed) is False
+
+    @pytest.mark.parametrize("name", ["QA", "Cafe\u0301", "code-review"])
+    def test_every_dispatchable_name_is_a_readable_member_name(self, name):
+        assert is_dispatchable_member_name(name) is True
+        assert is_readable_member_name(name) is True
 
 
 class TestStrictIdentifierPatterns:

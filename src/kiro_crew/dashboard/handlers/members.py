@@ -1309,7 +1309,7 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not members_mod.is_valid_member_name(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -1605,7 +1605,7 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not members_mod.is_valid_member_name(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -1699,7 +1699,7 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             {"error": "rules field required", "code": "missing_rules"}, status=400
         )
     rules = body.get("rules", "")
-    if not members_mod.is_valid_member_name(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member field required", "code": "missing_member"}, status=400
         )
