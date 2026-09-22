@@ -163,10 +163,17 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   // mid-edit. Later edits live in `latestContentsRef`, which the next
   // recovery snapshot reads, so nothing typed after a remount is lost.
   const editorContents = remountDraftRef.current ?? file.contents
+  // The seam owns Pierre's cacheKey contract so no caller has to. Pierre's
+  // `isLineCacheForFile` trusts `cacheKey` alone and never re-reads contents, so
+  // a caller that hands a stable session key (to hold the caret across keystrokes)
+  // would leave a grown buffer reusing a stale N-row highlight array — Return then
+  // indexes past it and throws "Line doesnt exist". Deriving the key from the live
+  // contents here fixes that for every caller at once (CodeEditor, PapyrusEditor,
+  // and any future one). It also does NOT churn the remount: contentCacheKey is
+  // per-contents but the mounted editor generation keys off options identity, not
+  // this cacheKey, so the dirty render cache and caret survive typing.
   const editorFile = useMemo<FileContents>(
-    () => (file.contents === editorContents
-      ? file
-      : { ...file, contents: editorContents, cacheKey: contentCacheKey(file.name, editorContents) }),
+    () => ({ ...file, contents: editorContents, cacheKey: contentCacheKey(file.name, editorContents) }),
     [file, editorContents],
   )
   const baseFile = useMemo<FileContents | null>(
