@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1070,6 +1071,237 @@ def test_publish_workflow_uses_a_deterministic_manifest_publication_date() -> No
     assert 'date -u -d "@${SOURCE_DATE_EPOCH}"' in run
     assert '--pub-date "$PUB_DATE"' in run
     assert '--pub-date "$(date -u' not in run
+
+
+def _write_workflow_shims(tools: Path, key: SigningKey) -> None:
+    """Stand-ins for the two commands the signing step reaches outside the repo.
+
+    ``aws`` answers the two KMS calls the helper makes -- ``get-public-key`` with
+    the test key's DER, ``sign`` with a real PKCS#1 v1.5 signature over the digest
+    the helper hands it -- so the step's ``kms-sign`` produces a manifest OpenSSL
+    verifies for real. ``date`` is shimmed ONLY where the host lacks GNU
+    ``-d`` (macOS), because the step is written for the ubuntu runner and this
+    test judges the step, not the host's coreutils.
+    """
+    tools.mkdir(parents=True, exist_ok=True)
+    aws = tools / "aws"
+    aws.write_text(
+        f"""#!/bin/sh
+set -eu
+sub="$1 $2"
+message=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --message) message="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$sub" in
+  "kms get-public-key")
+    der=$(openssl pkey -pubin -in "{key.public}" -outform DER | openssl base64 -A)
+    printf '{{"KeyUsage":"SIGN_VERIFY","KeySpec":"RSA_3072",'
+    printf '"SigningAlgorithms":["RSASSA_PKCS1_V1_5_SHA_256"],"PublicKey":"%s"}}\\n' "$der"
+    ;;
+  "kms sign")
+    digest="$FAKE_AWS_SCRATCH/digest.bin"
+    printf '%s' "$message" | openssl base64 -d -A > "$digest"
+    sig=$(openssl pkeyutl -sign -inkey "{key.private}" -in "$digest" \\
+      -pkeyopt digest:sha256 | openssl base64 -A)
+    printf '{{"Signature":"%s"}}\\n' "$sig"
+    ;;
+  *) echo "unexpected aws invocation: $*" >&2; exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    aws.chmod(0o755)
+
+    gnu_date = subprocess.run(
+        ["date", "-u", "-d", "@0", "+%Y"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if gnu_date.returncode != 0:
+        date = tools / "date"
+        date.write_text(
+            f"""#!/bin/sh
+# GNU `date -u -d @EPOCH +FORMAT` for a host whose date(1) lacks -d.
+when=""; fmt=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -u) shift ;;
+    -d) when="$2"; shift 2 ;;
+    +*) fmt="${{1#+}}"; shift ;;
+    *) echo "date shim: unsupported argument $1" >&2; exit 2 ;;
+  esac
+done
+exec {sys.executable} -c 'import sys, datetime
+epoch = int(sys.argv[1].lstrip("@"))
+print(datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(sys.argv[2]))' "$when" "$fmt"
+""",
+            encoding="utf-8",
+        )
+        date.chmod(0o755)
+
+
+def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """Run the workflow's OWN signing script, unedited, against the real helper.
+
+    Every other test here calls ``cli-manifest.py`` with arguments the test
+    chooses; none proves the arguments ``publish-cli.yml`` chooses still fit.
+    The workflow passes the public key as a RELATIVE path, resolves the wheel's
+    ``Requires-Python`` with ``unzip`` and ``awk``, derives ``--pub-date`` from
+    the commit, and reads ``packaging/MIN_VERSION`` -- none of which a test that
+    hand-builds the argument list exercises, so a helper change can be green
+    under every unit test and refuse the workflow's first real invocation. This
+    test takes the ``run:`` block of "Build and sign CLI artifact manifest"
+    straight out of the YAML and executes it with bash in a fake checkout shaped
+    like the runner's -- the committed helper, the key at
+    ``packaging/signing/cli-manifest-public.pem``, a wheel artifact,
+    ``packaging/MIN_VERSION``, a git commit for ``$GITHUB_SHA`` -- with only
+    ``aws`` standing in. A drift between the workflow's invocation and the
+    helper's contract (a path, a flag, a new required argument) fails here, on
+    the PR, instead of at the next publish.
+    """
+    if os.name == "nt":
+        pytest.skip("the publish step runs on the ubuntu runner")
+    if shutil.which("bash") is None or shutil.which("unzip") is None:
+        pytest.skip("bash and unzip are required to run the workflow step")
+
+    checkout = tmp_path / "checkout"
+    (checkout / "packaging" / "signing").mkdir(parents=True)
+    shutil.copy(HELPER, checkout / "packaging" / "signing" / "cli-manifest.py")
+    shutil.copy(test_key.public, checkout / "packaging" / "signing" / "cli-manifest-public.pem")
+    (checkout / "packaging" / "MIN_VERSION").write_text("# no floor\n", encoding="utf-8")
+
+    dist = checkout / "cli-dist"
+    dist.mkdir()
+    wheel = dist / WHEEL_NAME
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            f"kirocrew-{VERSION}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: kirocrew\nVersion: {VERSION}\nRequires-Python: >=3.12\n",
+        )
+
+    # Git confined to the fixture. Git reads its whole configuration surface
+    # from GIT_* variables -- where the repository is (GIT_DIR, GIT_WORK_TREE,
+    # GIT_COMMON_DIR, ...), where templates and hooks come from
+    # (GIT_TEMPLATE_DIR), and command-scope config that survives a /dev/null
+    # global config (GIT_CONFIG_COUNT / _KEY_n / _VALUE_n, GIT_CONFIG_PARAMETERS,
+    # which git itself exports into hooks, so a hook-driven test run carries
+    # them). Any one of those inherited would let the fixture's `git init` /
+    # `git commit` touch the REAL repository or run host hooks. Rather than name
+    # the dangerous ones, drop the entire GIT_* namespace and set only what the
+    # fixture needs; the same env drives the step's own `git show`.
+    hermetic = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    hermetic.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+    )
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(argv, check=True, cwd=checkout, env=hermetic, stdout=subprocess.DEVNULL)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        cwd=checkout,
+        env=hermetic,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    assert (checkout / ".git").is_dir(), "the fixture repository must live inside the fixture"
+
+    tools = tmp_path / "tools"
+    _write_workflow_shims(tools, test_key)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    outputs = tmp_path / "github-output"
+    outputs.write_text("", encoding="utf-8")
+
+    step = _workflow_step("Build and sign CLI artifact manifest")
+    # The step's own env block names the wheel outputs and the two vars; the
+    # values are the fixture's. CHANNEL comes from the job env in the YAML.
+    assert set(step["env"]) == {
+        "CDN_BASE",
+        "KEY_ARN",
+        "WHEEL_PATH",
+        "WHEEL_NAME",
+        "WHEEL_VERSION",
+        "SHA256",
+    }, "the step's env block changed: teach this test the new inputs"
+    env = {
+        **hermetic,
+        "PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}",
+        "FAKE_AWS_SCRATCH": str(runner_temp),
+        "CHANNEL": CHANNEL,
+        "CDN_BASE": CDN_BASE,
+        "KEY_ARN": "arn:aws:kms:us-west-2:000000000000:key/test",
+        "WHEEL_PATH": "cli-dist/" + WHEEL_NAME,
+        "WHEEL_NAME": WHEEL_NAME,
+        "WHEEL_VERSION": VERSION,
+        "SHA256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "GITHUB_SHA": sha,
+        "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_OUTPUT": str(outputs),
+    }
+    result = run_bounded(["bash", "-e", "-c", step["run"]], env, cwd=str(checkout))
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    written = dict(
+        line.split("=", 1) for line in outputs.read_text(encoding="utf-8").splitlines() if line
+    )
+    # The step records the manifest path relative to the checkout, exactly as
+    # the downstream publish step consumes it.
+    manifest_path = checkout / written["path"]
+    assert manifest_path == dist / "cli-manifest.json"
+    assert written["key_id"] == test_key.key_id
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["channel"] == CHANNEL
+    assert manifest["version"] == VERSION
+    assert manifest["python_requires"] == ">=3.12"
+    assert "min_version" not in manifest
+    # The signature the shimmed KMS produced must verify like a real one: the
+    # helper's `verify` is the same gate publish-installer.yml applies to a
+    # live feed.
+    _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        cwd=tmp_path,
+    )
+    # And the step left nothing behind in the checkout but what it declared.
+    stray = sorted(
+        p.relative_to(checkout).as_posix()
+        for p in checkout.rglob("*")
+        if p.is_file() and ".git" not in p.parts
+    )
+    assert stray == [
+        "cli-dist/cli-manifest.json",
+        f"cli-dist/{WHEEL_NAME}",
+        "packaging/MIN_VERSION",
+        "packaging/signing/cli-manifest-public.pem",
+        "packaging/signing/cli-manifest.py",
+    ]
 
 
 def _verify_manifest(
