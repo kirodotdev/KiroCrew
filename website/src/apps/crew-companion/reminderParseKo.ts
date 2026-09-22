@@ -161,8 +161,11 @@ function scaledMinutes(count: number, unitMins: number): number | null {
  * Default hour for a named part of the day, and which meridiem it states.
  *
  * Korean states the meridiem as its own word, so 오후 3시 is unambiguous in a way a
- * bare 3시 is not — the hour is shifted rather than guessed. `noon` is neither: 점심
- * 12시 and 정오 are already 12, and shifting them either way would be wrong.
+ * bare 3시 is not — the hour is shifted rather than guessed. 점심 ("lunchtime") is
+ * an afternoon word: 점심 1시 is 13:00, so it takes the `pm` rule (which leaves a
+ * stated 12 alone). 정오 is `noon` — STRICTLY 12:00. A clock other than 12 beside
+ * it (정오 1시) contradicts the word, so it is refused, not silently kept: shifting
+ * or keeping the hour would both be wrong.
  *
  * INVARIANT: every entry is a complete word a user would write as a time. A bare
  * syllable here would be blanked out of the middle of the user's own words: 밤 is
@@ -174,7 +177,7 @@ const DAY_PARTS: ReadonlyArray<[string, number, Meridiem]> = [
   ['새벽', 5, 'am'],
   ['아침', 9, 'am'],
   ['오전', 9, 'am'],
-  ['점심', 12, 'noon'],
+  ['점심', 12, 'pm'],
   ['정오', 12, 'noon'],
   ['낮', 13, 'pm'],
   ['오후', 15, 'pm'],
@@ -186,7 +189,9 @@ const DAY_PARTS: ReadonlyArray<[string, number, Meridiem]> = [
 /**
  * Apply a day part's meridiem to a 1–12 clock reading.
  *
- * 오후 3시 → 15:00, 오후 12시 stays 12, 오전 12시 is midnight, and 점심 12시 stays 12.
+ * 오후 3시 → 15:00, 오후 12시 stays 12, 오전 12시 is midnight, and 점심 1시 → 13:00.
+ * `noon` (정오) is not shifted here — a clock other than 12 beside it is a
+ * contradiction the caller refuses via `noonMismatch`, not a shift.
  */
 type Meridiem = 'am' | 'pm' | 'noon' | 'night'
 
@@ -205,6 +210,16 @@ function shiftMeridiem(hour: number, meridiem: Meridiem): number {
   if (meridiem === 'pm' && hour < 12) return hour + 12
   if (meridiem === 'am' && hour === 12) return 0
   return hour
+}
+
+/**
+ * 정오 (`noon`) is STRICTLY 12:00. A stated clock other than 12 beside it — 정오 1시 —
+ * contradicts the word; `shiftMeridiem` has no meaning for it and would silently
+ * keep the raw hour (정오 1시 → 01:00). The caller treats this as a broken clock and
+ * asks, rather than persisting a time the phrase does not name.
+ */
+function noonMismatch(hour: number, meridiem: Meridiem): boolean {
+  return meridiem === 'noon' && hour !== 12
 }
 
 const DAY_PART_ALT = DAY_PARTS.map(([w]) => w).join('|')
@@ -235,6 +250,32 @@ const KO_TIME_TAIL = new RegExp(`^${KO_APPROX}?(?:${KO_PARTICLE})?`)
 
 /** A REQUIRED particle (optionally approximated), not welded into a longer word. */
 const KO_PARTICLE_AFTER = new RegExp(`^${KO_APPROX}?${KO_PARTICLE}(?![가-힣])`)
+
+/**
+ * The right-hand mirror of `WORD_START`: a schedule token that ENDS in Hangul must
+ * also end at a word boundary, or it reads a repeat/delay out of the head of an
+ * ordinary noun. 매일 sits at the front of 매일경제 (a newspaper) and 후 (the "after"
+ * delay marker) at the front of 후원하기 ("to sponsor") — 매일경제 구독하기 became a
+ * daily reminder and 한 시간 후원하기 a one-hour delay, each blanking the word the
+ * user typed. Four blocking findings across three review rounds were all this one
+ * missing invariant on a token whose last character is Hangul.
+ *
+ * A token is complete when it is followed by end-of-input, a non-Hangul character,
+ * or one of the time particles a time phrase legitimately takes (에/엔/부터/까지,
+ * which `withTail` then absorbs into the span). This is exactly the template the
+ * 주말|평일|주중 refusal already uses; the approximator 경 is deliberately NOT in the
+ * allowlist because it is itself Hangul and opens ordinary words (경제, 경기), which
+ * is the very ambiguity this bound exists to reject.
+ */
+const WORD_END = '(?=$|[^가-힣]|에|엔|부터|까지)'
+
+/**
+ * `WORD_END` as a standalone test against the text that FOLLOWS a token: true when
+ * that text begins at a word/schedule boundary. `inSchedulePosition` uses it so the
+ * day-marker branch requires the day part to END at a boundary, exactly as the
+ * clock path does — 오늘 낮잠 자기 must not read 낮 out of the head of 낮잠 (a nap).
+ */
+const KO_WORD_END_AT = new RegExp(`^${WORD_END}`)
 
 /**
  * Whether a schedule token starting at `idx` sits INSIDE an ordinary Hangul word.
@@ -270,10 +311,15 @@ function startsMidWord(s: string, idx: number): boolean {
  * Silently dropping a word the user typed is the worse failure.
  */
 function inSchedulePosition(s: string, start: number, word: string): boolean {
-  if (KO_DAY_MARKER.test(s.slice(0, start))) return true
+  const after = s.slice(start + word.length)
+  // A day/frequency marker before the word marks it as a time — but ONLY when the
+  // word also ENDS at a word boundary. Without the end check the marker branch read
+  // 낮 out of the head of 낮잠 (a nap): 오늘 낮잠 자기 became 13:00 with the text
+  // "잠 자기". This is the same missing-suffix invariant WORD_END exists for; 밤나무
+  // (chestnut tree) and 아침밥 (breakfast) failed it too.
+  if (KO_DAY_MARKER.test(s.slice(0, start))) return KO_WORD_END_AT.test(after)
   if (startsMidWord(s, start)) return false
 
-  const after = s.slice(start + word.length)
   if (after === '') return true
   return KO_PARTICLE_AFTER.test(after)
 }
@@ -315,7 +361,14 @@ function namesAWeekday(s: string, afterIndex: number): boolean {
 
 /** 하루에 세 번 / 한 시간에 두 번 — a rate rather than an interval, so it divides. */
 function findRate(s: string): IntervalHit | null {
-  const m = s.match(new RegExp(`${WORD_START}(하루|일주일|한\\s*주|1\\s*주|한\\s*시간|1\\s*시간)\\s*에?\\s*${COUNT_NUM}\\s*번`))
+  // The optional trailing 씩 ("each") is inside the span, Hangul-bounded so it never
+  // bites a following word — 하루에 세 번씩 약 먹기 stranded 씩 at the head of the
+  // saved text without it.
+  const m = s.match(
+    new RegExp(
+      `${WORD_START}(하루|일주일|한\\s*주|1\\s*주|한\\s*시간|1\\s*시간)\\s*에?\\s*${COUNT_NUM}\\s*번(?:\\s*씩(?![가-힣]))?`,
+    ),
+  )
   if (!m) return null
   const per = /주/.test(m[1]) ? WEEK : /시간/.test(m[1]) ? HOUR : DAY
   const times = koNumber(m[2])
@@ -342,8 +395,14 @@ function findInterval(s: string): IntervalHit | null {
   // meridiem from it, rather than swallowing 아침 and seeing an ambiguous bare 9시.
   // The span absorbs an optional repeat suffix exactly like the prefixed form —
   // 매일 아침마다 matched only 매일 아침, stranding 마다 at the front of the saved text.
+  // The day-part must END at a word boundary (WORD_END) or a repeat suffix, or 낮
+  // reads out of the head of 낮잠 (a nap): 매일 낮잠 자기 became a 13:00 daily repeat
+  // named "잠 자기". Same missing-suffix invariant as inSchedulePosition and the
+  // prefixed 매 branch below.
   const dayPart = s.match(
-    new RegExp(`${WORD_START}매\\s*일?\\s*(${DAY_PART_ALT})(?:\\s*(?:마다|씩)(?![가-힣]))?`),
+    new RegExp(
+      `${WORD_START}매\\s*일?\\s*(${DAY_PART_ALT})(?:\\s*(?:마다|씩)(?![가-힣])|${WORD_END})`,
+    ),
   )
   if (dayPart) {
     const rest = s.slice(dayPart.index! + dayPart[0].length)
@@ -359,9 +418,13 @@ function findInterval(s: string): IntervalHit | null {
   // 매 30분 / 매일 / 매시간 / 매주. The span takes an optional repeat suffix —
   // 매 30분마다 matched only 매 30분, stranding 마다 at the front of the saved text.
   // The suffix is Hangul-bounded so it never bites the first syllable of a
-  // following word (매 30분 씩씩하게 걷기 keeps 씩씩하게 whole).
+  // following word (매 30분 씩씩하게 걷기 keeps 씩씩하게 whole). Absent a suffix the
+  // UNIT must END at a word boundary (WORD_END), or the 일 of 매일 reads the head of
+  // 매일경제 ("Maeil Business") and persists a daily repeat named 경제.
   const prefixed = s.match(
-    new RegExp(`${WORD_START}매\\s*${COUNT_NUM}?\\s*${UNIT}(?:\\s*(?:마다|씩|간격으로|간격)(?![가-힣]))?`),
+    new RegExp(
+      `${WORD_START}매\\s*${COUNT_NUM}?\\s*${UNIT}(?:\\s*(?:마다|씩|간격으로|간격)(?![가-힣])|${WORD_END})`,
+    ),
   )
   if (prefixed) {
     const mins = unitMinutes(prefixed[2])
@@ -369,18 +432,27 @@ function findInterval(s: string): IntervalHit | null {
     const weekday = /^주/.test(prefixed[2]) && namesAWeekday(s, prefixed.index! + prefixed[0].length)
     const every = mins != null && count != null ? scaledMinutes(count, mins) : null
     if (every != null && !weekday) {
-      return { everyMinutes: every, span: spanOf(prefixed) }
+      // withTail absorbs a trailing time particle: 약을 매 시간에 먹기 left 에 at the
+      // head of the saved text ("약을 에 먹기") because WORD_END matches the 에 with a
+      // zero-width lookahead rather than consuming it into the span.
+      return { everyMinutes: every, span: withTail(s, spanOf(prefixed)) }
     }
   }
 
   // 30분마다 / 2시간 간격으로 / 이틀마다. An optional leading 매 joins the span —
-  // 매 이틀마다 matched from 이틀, stranding 매 at the front of the saved text.
-  const fused = s.match(new RegExp(`${WORD_START}(?:매\\s*)?(${FUSED_DAY_ALT})\\s*(?:마다|간격으로|간격)`))
+  // 매 이틀마다 matched from 이틀, stranding 매 at the front of the saved text. The
+  // suffix is Hangul-bounded like the prefixed form so it never welds onto a
+  // following word.
+  const fused = s.match(
+    new RegExp(`${WORD_START}(?:매\\s*)?(${FUSED_DAY_ALT})\\s*(?:마다|간격으로|간격)(?![가-힣])`),
+  )
   if (fused) {
     return { everyMinutes: FUSED_DAYS[fused[1]] * DAY, span: spanOf(fused) }
   }
 
-  const suffixed = s.match(new RegExp(`${WORD_START}${COUNT_NUM}?\\s*${UNIT}\\s*(?:마다|간격으로|간격)`))
+  const suffixed = s.match(
+    new RegExp(`${WORD_START}${COUNT_NUM}?\\s*${UNIT}\\s*(?:마다|간격으로|간격)(?![가-힣])`),
+  )
   if (suffixed) {
     const mins = unitMinutes(suffixed[2])
     const count = suffixed[1] ? koNumber(suffixed[1]) : 1
@@ -408,7 +480,11 @@ const FUSED_DAY_ALT = Object.keys(FUSED_DAYS).join('|')
 
 /** 20분 뒤에 / 한 시간 후 / 30분 있다가 / 이틀 뒤. */
 function findDelay(s: string): DelayHit | null {
-  const AFTER = '(?:뒤|후|이따가?|있다가|지나(?:서|면))'
+  // Each marker must END at a word boundary (WORD_END), or 후 reads the head of
+  // 후원하기 and 뒤 the head of 뒤풀이 — 한 시간 후원하기 became a one-hour delay
+  // named 원하기. The particle a delay takes (뒤에, 후에) is inside WORD_END's
+  // allowlist, so 20분 뒤에 and 한 시간 후에 still read.
+  const AFTER = `(?:뒤|후|이따가?|있다가|지나(?:서|면))${WORD_END}`
 
   const fused = s.match(new RegExp(`${WORD_START}(${FUSED_DAY_ALT})\\s*${AFTER}`))
   if (fused) {
@@ -453,6 +529,46 @@ function scanClocks(s: string): { hit: ClockHit | null; broken: boolean; mention
   const tokenStart = (c: RegExpMatchArray): number =>
     c.index! + (c[0].length - c[0].trimStart().length)
 
+  // Where the CLOCK itself (the hour digits/counter) begins, past an optional
+  // day-part prefix and its whitespace. c[1] is the day-part group in both the
+  // colon and the 시 pattern; the hour that follows is what the reader actually
+  // consumes, so its boundary — not the prefix's — decides whether the clock reads.
+  const hourStart = (c: RegExpMatchArray, prefix: string | undefined): number => {
+    const start = tokenStart(c)
+    if (!prefix) return start
+    const rel = c[0].trimStart().slice(prefix.length)
+    return start + prefix.length + (rel.length - rel.trimStart().length)
+  }
+
+  // Decide how a candidate's day-part prefix is used. When the prefix itself sits
+  // INSIDE an ordinary word (the 밤 of 군밤), it is not a meridiem — but the clock
+  // after it (10시) is still the user's stated time, so the prefix is DROPPED and
+  // the reading keeps the clock alone. When the hour token itself is mid-word
+  // (제한시) AND no valid day-part prefix precedes it, the whole candidate is
+  // skipped — but a valid day-part prefix (저녁8시) already establishes the word
+  // boundary, so a clock fused directly onto it still reads. Returns null to skip,
+  // or the entry to apply (undefined = read the bare clock) plus the span start.
+  const prefixUse = (
+    c: RegExpMatchArray,
+    prefix: string | undefined,
+  ): { entry: (typeof DAY_PARTS)[number] | undefined; spanStart: number } | null => {
+    // A day part is only a meridiem when it is itself a whole word: 저녁8시 anchors,
+    // but the 밤 of 군밤 does not, so it is not a "valid prefix" for this purpose.
+    const validPrefix =
+      prefix != null && !startsMidWord(s, tokenStart(c)) && DAY_PARTS.some(([w]) => w === prefix)
+    // The hour token gluing onto an ordinary word (제한시) skips the candidate — but
+    // only when no valid day part already bounded it. A valid prefix has established
+    // the boundary, so a fused clock (저녁8시) is a real reading, not mid-word noise.
+    if (!validPrefix && startsMidWord(s, hourStart(c, prefix))) return null
+    if (prefix && !validPrefix) {
+      // Prefix is mid-word (군밤): drop it, read the clock, and start the span at the
+      // clock so the noun the prefix ends (군밤) is not blanked from the saved text.
+      return { entry: undefined, spanStart: hourStart(c, prefix) }
+    }
+    const entry = validPrefix ? DAY_PARTS.find(([w]) => w === prefix) : undefined
+    return { entry, spanStart: tokenStart(c) }
+  }
+
   // Every digit-colon run is either a well-formed, digit-bounded time or poison:
   // 012:30 and 25:00 must ASK rather than quietly become a nearby time or fall
   // through to a named day's 09:00 default.
@@ -471,24 +587,35 @@ function scanClocks(s: string): { hit: ClockHit | null; broken: boolean; mention
   const colonRe = new RegExp(`(${DAY_PART_ALT})?\\s*(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)`, 'g')
   let clockMentions = 0
   for (const c of s.matchAll(colonRe)) {
-    if (startsMidWord(s, tokenStart(c))) continue
+    const use = prefixUse(c, c[1])
+    if (!use) continue
     let hour = parseInt(c[2], 10)
     const minute = parseInt(c[3], 10)
     if (hour > 23 || minute > 59) continue
     clockMentions++
     if (hit) continue
-    const entry = c[1] ? DAY_PARTS.find(([w]) => w === c[1]) : undefined
+    const entry = use.entry
+    if (entry && noonMismatch(hour, entry[2])) {
+      // 정오 3:00 contradicts 정오 (strictly noon) — a broken clock, not one to keep.
+      broken = true
+      continue
+    }
     let explicit = false
+    let nightRollover = false
     if (entry) {
       hour = shiftMeridiem(hour, entry[2])
       explicit = true
+      nightRollover = entry[2] === 'night' && hour <= 5
     } else if (hour >= 13 || hour === 0) {
       // 15:51 states the meridiem by being 24-hour; 3:51 does not. A bare 1–12
       // colon time must stay AMBIGUOUS so the next-occurrence rule can pick this
       // afternoon rather than rolling an explicit 03:51 to tomorrow.
       explicit = true
     }
-    hit = { hour, minute, explicit, span: withTail(s, spanOf(c)) }
+    hit = {
+      hour, minute, explicit, nightRollover,
+      span: withTail(s, { start: use.spanStart, end: c.index! + c[0].length }),
+    }
   }
 
   // 오후 세 시 반 / 9시 30분 / 아침 7시 / 9시 30.
@@ -500,7 +627,7 @@ function scanClocks(s: string): { hit: ClockHit | null; broken: boolean; mention
   // whether a malformed candidate poisons — 9시 90분이라고 states a broken clock
   // no matter what follows the 분.
   const clockRe = new RegExp(
-    `(${DAY_PART_ALT})?\\s*${HOUR_NUM}\\s*시(?!간)(?:\\s*(반|${NUM}(?!\\d)\\s*분?))?`,
+    `(${DAY_PART_ALT})?\\s*${HOUR_NUM}\\s*시(?!간)(?:\\s*(반|${NUM}(?!\\d)(?:\\s*분)?))?`,
     'g',
   )
   // A reading must END at a token boundary — whitespace, punctuation, a digit, end
@@ -524,25 +651,43 @@ function scanClocks(s: string): { hit: ClockHit | null; broken: boolean; mention
       broken = true
       continue
     }
-    if (startsMidWord(s, tokenStart(c))) continue
+    const use = prefixUse(c, c[1])
+    if (!use) continue
     // A well-formed candidate is a clock MENTION whether or not its tail lets it
     // be read: 내일 3시와 5시에 회의 skipped 3시와 on its tail and read 5시에 alone,
     // persisting 05:00 with the corrupted text 3시와 회의.
     clockMentions++
     if (hit) continue
-    if (!clockTail.test(s.slice(c.index! + c[0].length))) continue
-    const entry = c[1] ? DAY_PARTS.find(([w]) => w === c[1]) : undefined
+    if (!clockTail.test(s.slice(c.index! + c[0].length))) {
+      // A well-formed clock whose tail is not a boundary is a BROKEN clock, not an
+      // absent one: 내일 9시 30초 알림 states 9시 30 but 초 makes it unreadable, so
+      // the parse must ASK rather than fall through to the named day's 09:00
+      // default and persist the corrupt text "9시 30초 알림".
+      broken = true
+      continue
+    }
+    const entry = use.entry
     let shifted = hour!
+    if (entry && noonMismatch(shifted, entry[2])) {
+      // 정오 1시 contradicts 정오 (strictly noon) — a broken clock, not one to keep.
+      broken = true
+      continue
+    }
     let explicit = false
+    let nightRollover = false
     if (entry) {
       shifted = shiftMeridiem(shifted, entry[2])
       explicit = true
+      nightRollover = entry[2] === 'night' && shifted <= 5
     } else if (shifted >= 13 || shifted === 0) {
       // 14시 and 0시 state their meridiem by being 24-hour, exactly like the colon
       // forms — 0시 left ambiguous resolved as NOON after midnight.
       explicit = true
     }
-    hit = { hour: shifted, minute, explicit, span: withTail(s, spanOf(c)) }
+    hit = {
+      hour: shifted, minute, explicit, nightRollover,
+      span: withTail(s, { start: use.spanStart, end: c.index! + c[0].length }),
+    }
   }
 
   // Two stated clocks cannot be one reminder. Reading the first (or the readable
@@ -769,8 +914,12 @@ export const KO_LEAD_FILLER = /^(?:제발\s+|좀\s+|리마인더\s*[:：]\s*)+/
  * Standing alone it is part of the task — 내일 저에게 온 메일 확인하기 ("check the
  * mail that came TO ME") lost its recipient once the day word was removed and the
  * old unconditional lead filler saw 저에게 at the front.
+ *
+ * Both 나 and 저 REQUIRE their dative particle (에게/한테): a bare 나 also opens
+ * ordinary words and clauses — 나 대신 회의 참석하라고 알려줘 ("remind me to attend
+ * the meeting IN MY PLACE") had its 나 stripped, saving "대신 회의 참석".
  */
-export const KO_LEAD_RECIPIENT = /^(?:나(?:에게|한테)?\s+|저(?:에게|한테)\s+)+/
+export const KO_LEAD_RECIPIENT = /^(?:나(?:에게|한테)\s+|저(?:에게|한테)\s+)+/
 
 /**
  * The Korean analogue of the English lead filler, at the other end of the sentence.

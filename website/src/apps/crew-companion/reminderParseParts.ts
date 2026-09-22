@@ -21,7 +21,19 @@ export interface IntervalHit { everyMinutes: number; span: Span; hour?: number }
 export interface DelayHit { minutes: number; span: Span }
 
 /** A recognised clock reading, already meridiem-resolved. */
-export interface ClockHit { hour: number; minute: number; explicit: boolean; span: Span }
+export interface ClockHit {
+  hour: number
+  minute: number
+  explicit: boolean
+  span: Span
+  /**
+   * True when a night word (밤) mapped this to the small hours 00:00–05:59, which
+   * belong to the day AFTER the evening the user named: 내일 밤 12시 is the midnight
+   * that ENDS tomorrow, not the one that starts it. The caller adds a day when the
+   * reading is pinned to a named day (밤 alone still resolves by next-occurrence).
+   */
+  nightRollover?: boolean
+}
 
 /** A recognised day marker: 0 = today, 1 = tomorrow, and so on. */
 export interface DayOffsetHit { offset: number; span: Span }
@@ -32,7 +44,7 @@ export interface ScheduleParts {
   /** Relative delay in minutes. */
   delayMinutes: number | null
   /** Clock time, already meridiem-resolved. */
-  clock: { hour: number; minute: number; explicit: boolean } | null
+  clock: { hour: number; minute: number; explicit: boolean; nightRollover?: boolean } | null
   /** 0 = today, 1 = tomorrow, and so on. */
   dayOffset: number
   /**
@@ -83,7 +95,16 @@ export function assembleParts(
   return {
     everyMinutes: interval?.everyMinutes ?? null,
     delayMinutes: delay?.minutes ?? null,
-    clock: clock ? { hour: clock.hour, minute: clock.minute, explicit: clock.explicit } : null,
+    clock: clock
+      ? {
+          hour: clock.hour,
+          minute: clock.minute,
+          explicit: clock.explicit,
+          // Only carried when set, so callers comparing the plain {hour,minute,explicit}
+          // shape are unaffected (toEqual ignores an absent/undefined key).
+          ...(clock.nightRollover ? { nightRollover: true } : {}),
+        }
+      : null,
     dayOffset: dayOff?.offset ?? 0,
     dayExplicit: !!dayOff,
     spans,

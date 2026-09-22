@@ -652,6 +652,48 @@ describe('interval readings never start inside ordinary words', () => {
   })
 })
 
+describe('a schedule token never reads out of the HEAD of an ordinary word', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  // The right-boundary mirror of "interval readings never start inside ordinary
+  // words". A token that ENDS in Hangul (매일, the delay markers 뒤/후, the repeat
+  // suffixes) must match as a complete word: 매일 opens 매일경제 (a newspaper) and 후
+  // opens 후원하기 ("to sponsor"). Four blocking review findings across three rounds
+  // were all this one missing invariant, so this corpus stands guard over the whole
+  // class rather than the reported words one at a time.
+  it.each([
+    '매일경제 구독하기', // 매일 (every day) heads 매일경제
+    '매일신문 읽기', // same, other paper
+    '한 시간 후원하기', // 후 (after) heads 후원하기
+    '후원금 정리', // 후 heads 후원금
+    '뒤풀이 준비하기', // 뒤 (after) heads 뒤풀이
+    '뒤편 정리하기', // 뒤 heads 뒤편
+    '두 시간 후배 만나기', // 후 heads 후배
+  ])('%s is not a schedule', (input) => {
+    const r = parseReminder(input as string, now)
+    expect(r.recurrence).toBeNull()
+    expect(r.needsSchedule).toBe(true)
+    expect(r.text).toBe(input)
+  })
+
+  // The neighbours the bound must NOT break: the same tokens ARE a schedule when
+  // they end at a real word boundary — a space, or the time particle the phrase
+  // takes (뒤에, 후에).
+  it('still reads 매일 as a daily repeat before a space', () => {
+    expect(parseKoParts('매일 물 마시기').everyMinutes).toBe(1440)
+  })
+
+  it.each([
+    ['한 시간 후 물 마시기', 60],
+    ['한 시간 후에 물 마시기', 60],
+    ['20분 뒤에 물 마시기', 20],
+    ['이틀 뒤 청소', 2 * 1440],
+    ['한 시간 지나서 알림', 60],
+  ])('still reads the delay in %s', (input, minutes) => {
+    expect(parseKoParts(input as string).delayMinutes).toBe(minutes)
+  })
+})
+
 describe('unsupported relative-day names are refused, not half-scheduled', () => {
   it.each(['주말 아침에 청소', '다음 주에 보고서 제출', '이번 주 회의 준비', '주말에 등산'])(
     'refuses %s wholesale',
@@ -926,4 +968,323 @@ describe('request verbs are filler only with an explicit request ending', () => 
     (input) => expect((input as string).replace(KO_TRAIL_FILLER, '').length)
       .toBeLessThan((input as string).length),
   )
+})
+
+describe('a night reading in the small hours rolls to the next day', () => {
+  // now = Wed 2026-08-12 07:00Z. 밤 12시 / 밤 1시–5시 map to 00:00–05:59, which
+  // belong to the day AFTER the evening named — 내일 밤 12시 is the midnight that
+  // ENDS tomorrow, not the one that starts it (which was one day early).
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('reads 내일 밤 12시 as the midnight ending tomorrow', () => {
+    const r = parseReminder('내일 밤 12시에 서버 점검', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-14T00:00:00.000Z')
+    expect(r.text).toBe('서버 점검')
+  })
+
+  it('reads 내일 밤 2시 as the small hours after tomorrow night', () => {
+    expect(parseReminder('내일 밤 2시 알람', now).fireAt).toBe('2026-08-14T02:00:00.000Z')
+  })
+
+  it('reads 오늘 밤 12시 as the coming midnight, not the passed one', () => {
+    expect(parseReminder('오늘 밤 12시 점검', now).fireAt).toBe('2026-08-13T00:00:00.000Z')
+  })
+
+  it('does NOT roll an evening night hour', () => {
+    // 밤 8시 = 20:00 is the evening of the named day, not the small hours.
+    expect(parseReminder('내일 밤 8시 회의', now).fireAt).toBe('2026-08-13T20:00:00.000Z')
+  })
+
+  it('does NOT double-roll a bare 밤 12시', () => {
+    // No day named: the next-occurrence rule already picks the coming midnight.
+    expect(parseReminder('밤 12시 점검', now).fireAt).toBe('2026-08-13T00:00:00.000Z')
+  })
+})
+
+describe('a repeat span absorbs its trailing particle and 씩', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('does not strand 씩 from a rate', () => {
+    // 하루에 세 번씩 약 먹기 -> "씩 약 먹기" before the fix.
+    const r = parseReminder('하루에 세 번씩 약 먹기', now)
+    expect(r.recurrence?.everyMinutes).toBe(480) // 1440 / 3
+    expect(r.text).toBe('약 먹기')
+  })
+
+  it('does not strand 씩 from a per-hour rate', () => {
+    const r = parseReminder('한 시간에 두 번씩 스트레칭', now)
+    expect(r.recurrence?.everyMinutes).toBe(30)
+    expect(r.text).toBe('스트레칭')
+  })
+
+  it('does not strand the 에 particle from a prefixed interval', () => {
+    // 약을 매 시간에 먹기 -> "약을 에 먹기" before the fix.
+    const r = parseReminder('약을 매 시간에 먹기', now)
+    expect(r.recurrence?.everyMinutes).toBe(60)
+    expect(r.text).toBe('약을 먹기')
+  })
+
+  it('still reads a plain rate with no 씩', () => {
+    expect(parseReminder('하루에 세 번 약 먹기', now).recurrence?.everyMinutes).toBe(480)
+  })
+})
+
+describe('a clock survives a noun-final day-part prefix', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('reads 밤 10시 out of 내일 군밤 10시에 사기, keeping 군밤', () => {
+    // The 밤 of 군밤 is mid-word so it is not a meridiem, but 10시 is still the
+    // user's stated clock — before the fix scanClocks skipped 밤 10시 entirely and
+    // only 내일 survived, persisting the 09:00 day default.
+    const r = parseReminder('내일 군밤 10시에 사기', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T10:00:00.000Z')
+    expect(r.text).toBe('군밤 사기')
+  })
+
+  it('reads 10시 out of a bare 군밤 10시에 사기', () => {
+    const r = parseReminder('군밤 10시에 사기', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.text).toBe('군밤 사기')
+  })
+
+  it('still skips a clock whose hour itself is mid-word', () => {
+    // 제한시 — the hour is glued to Hangul, so there is no clock to rescue.
+    const r = parseReminder('제한시에 알림 끄기', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.text).toBe('제한시에 알림 끄기')
+  })
+
+  it('still reads a fused day-marker prefix (오늘밤 9시)', () => {
+    expect(parseReminder('오늘밤 9시에 회의', now).fireAt).toBe('2026-08-12T21:00:00.000Z')
+  })
+})
+
+describe('a valid day-part prefix anchors a fused clock', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('reads 저녁8시 fused directly onto the day part', () => {
+    // 저녁 is a whole word here, so it establishes the boundary and the 8 gluing
+    // onto it is a real clock — before the fix the hour mid-word check saw 8 after
+    // Hangul 녁 and dropped the whole candidate, falling back to the 19:00 default
+    // and stranding "8시 회의".
+    const r = parseReminder('내일 저녁8시 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T20:00:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('still reads the spaced form 저녁 8시', () => {
+    const r = parseReminder('내일 저녁 8시 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T20:00:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('does not treat the 밤 of 군밤 as a boundary-establishing prefix', () => {
+    // 군밤 10시 must still drop the mid-word 밤 and read 10시 alone, keeping 군밤.
+    const r = parseReminder('내일 군밤 10시에 사기', now)
+    expect(r.fireAt).toBe('2026-08-13T10:00:00.000Z')
+    expect(r.text).toBe('군밤 사기')
+  })
+})
+
+describe('an optional minute does not eat the trailing space', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('reads 9시 30 as 09:30 when 분 is absent', () => {
+    // Before the fix the \s* before the optional 분 ate the trailing space, so the
+    // match was "9시 30 "; clockTail then saw 회 and rejected the whole clock,
+    // persisting the 09:00 day default with the corrupt text "9시 30 회의".
+    const r = parseReminder('내일 9시 30 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T09:30:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('still reads the explicit 9시 30분', () => {
+    const r = parseReminder('내일 9시 30분 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T09:30:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('refuses 9시 30초 rather than reading a bogus minute', () => {
+    // 초 (seconds) is not a minute suffix; the clock must ASK, not become 09:30.
+    const r = parseReminder('9시 30초 알림', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.text).toBe('9시 30초 알림')
+  })
+})
+
+describe('a broken clock refuses even when a day is named', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('refuses 내일 9시 30초 알림 instead of falling back to the day default', () => {
+    // 9시 30 is a well-formed clock MENTION, but the 초 tail makes it unreadable.
+    // Before the fix scanClocks dropped it without marking it broken, so with a
+    // named day (내일) the parse fell through to the 09:00 default and persisted the
+    // corrupt text "9시 30초 알림". A counted mention that fails its tail is broken,
+    // so the whole parse must ASK.
+    const r = parseReminder('내일 9시 30초 알림', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+    expect(r.text).toBe('내일 9시 30초 알림')
+  })
+
+  it('still reads 내일 9시 30 회의 as 09:30', () => {
+    const r = parseReminder('내일 9시 30 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T09:30:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('still reads 내일 9시 30분 회의 as 09:30', () => {
+    const r = parseReminder('내일 9시 30분 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T09:30:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+})
+
+describe('점심 is an afternoon word and 정오 is strictly noon', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('reads 점심 1시 as 13:00, not 01:00', () => {
+    // 점심 ("lunchtime") is pm: a 1–11 clock beside it is afternoon. Before the fix
+    // 점심 carried the `noon` meridiem, which shiftMeridiem never shifted, so
+    // 점심 1시 persisted 01:00 — a wrong time the phrase does not name.
+    const r = parseReminder('점심 1시에 밥 먹기', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T13:00:00.000Z')
+    expect(r.text).toBe('밥 먹기')
+  })
+
+  it('reads 점심 3시 as 15:00', () => {
+    const r = parseReminder('점심 3시에 회의', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T15:00:00.000Z')
+    expect(r.text).toBe('회의')
+  })
+
+  it('leaves a stated 점심 12시 at 12:00', () => {
+    const r = parseReminder('점심 12시에 밥 먹기', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T12:00:00.000Z')
+    expect(r.text).toBe('밥 먹기')
+  })
+
+  it('refuses 정오 1시 — a clock other than 12 contradicts strict noon', () => {
+    // 정오 is exactly 12:00; 정오 1시 is a contradiction. Before the fix the raw
+    // hour was silently kept (01:00). It must ASK instead of persisting a wrong time.
+    const r = parseReminder('정오 1시에 밥 먹기', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+    expect(r.text).toBe('정오 1시에 밥 먹기')
+  })
+
+  it('still reads a bare 정오 as 12:00', () => {
+    const r = parseReminder('정오에 밥 먹기', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T12:00:00.000Z')
+    expect(r.text).toBe('밥 먹기')
+  })
+
+  it('refuses 정오 3:00 in the colon form too', () => {
+    const r = parseReminder('정오 3:00에 회의', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+  })
+})
+
+describe('a leading 나 is stripped only with its dative particle', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('still strips 나에게 when the input frames a request', () => {
+    const r = parseReminder('나에게 물 마시라고 알려줘', now)
+    expect(r.text).toBe('물 마시라고')
+  })
+
+  it('keeps a bare 나 that opens the task', () => {
+    // 나 대신 ("in my place") is part of the task, not a recipient. Before the fix
+    // KO_LEAD_RECIPIENT stripped a bare 나, saving the corrupt text "대신 회의 참석".
+    const r = parseReminder('나 대신 내일 회의 참석하라고 알려줘', now)
+    expect(r.text).toBe('나 대신 회의 참석')
+  })
+})
+
+describe('a day marker does not read a day part out of the head of a noun', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('refuses 오늘 낮잠 자기 — 낮 is the head of 낮잠 (a nap), not a time', () => {
+    // Before the fix inSchedulePosition accepted 낮 whenever a day marker preceded
+    // it, without requiring the day part to END at a boundary: 오늘 낮잠 자기 read 낮
+    // as 13:00 and saved the corrupt text "잠 자기".
+    const r = parseReminder('오늘 낮잠 자기', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+    expect(r.text).toBe('낮잠 자기')
+  })
+
+  it('refuses 오늘 아침밥 먹기 — 아침 is the head of 아침밥 (breakfast)', () => {
+    const r = parseReminder('오늘 아침밥 먹기', now)
+    expect(r.needsSchedule).toBe(true)
+    expect(r.text).toBe('아침밥 먹기')
+  })
+
+  it('keeps 밤나무 whole under 내일 (no time, saved intact)', () => {
+    // 밤 is the head of 밤나무 (a chestnut tree). The day part must not be read,
+    // but 내일 still gives the named day's default with the full text preserved.
+    const r = parseReminder('내일 밤나무 심기', now)
+    expect(r.text).toBe('밤나무 심기')
+    expect(r.fireAt).toBe('2026-08-13T09:00:00.000Z')
+  })
+
+  it('still reads 오늘 낮 산책 as 13:00', () => {
+    const r = parseReminder('오늘 낮 산책', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T13:00:00.000Z')
+    expect(r.text).toBe('산책')
+  })
+
+  it('still reads 오늘 낮에 산책 (particle) as 13:00', () => {
+    const r = parseReminder('오늘 낮에 산책', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T13:00:00.000Z')
+    expect(r.text).toBe('산책')
+  })
+
+  it('still reads 내일 밤 운동 as 20:00', () => {
+    const r = parseReminder('내일 밤 운동', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-13T20:00:00.000Z')
+    expect(r.text).toBe('운동')
+  })
+})
+
+describe('a daily repeat does not read a day part out of the head of a noun', () => {
+  const now = new Date('2026-08-12T07:00:00Z')
+
+  it('keeps 매일 낮잠 자기 whole — 낮 is the head of 낮잠', () => {
+    // The 매일+day-part interval branch matched 매일 낮 without a WORD_END boundary,
+    // so 매일 낮잠 자기 became a 13:00 daily repeat named "잠 자기". The day part now
+    // must end at a boundary or a repeat suffix.
+    const r = parseReminder('매일 낮잠 자기', now)
+    expect(r.text).toBe('낮잠 자기')
+  })
+
+  it('still reads 매일 낮 산책 as a 13:00 daily repeat', () => {
+    const r = parseReminder('매일 낮 산책', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T13:00:00.000Z')
+    expect(r.text).toBe('산책')
+  })
+
+  it('still reads 매일 저녁에 산책 (particle) as a 19:00 daily repeat', () => {
+    const r = parseReminder('매일 저녁에 산책', now)
+    expect(r.needsSchedule).toBe(false)
+    expect(r.fireAt).toBe('2026-08-12T19:00:00.000Z')
+    expect(r.text).toBe('산책')
+  })
 })

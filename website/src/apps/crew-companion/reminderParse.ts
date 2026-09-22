@@ -455,6 +455,9 @@ function resolveParts(parts: ScheduleParts, text: string, now: Date, askText = t
     if (parts.dayOffset > 0) {
       fireAt = atClock(now, parts.clock.hour, parts.clock.minute)
       fireAt.setDate(fireAt.getDate() + parts.dayOffset)
+      // A night small-hours reading (밤 12시 / 밤 2시 -> 00:00–05:59) belongs to the
+      // day AFTER the evening named: 내일 밤 12시 is the midnight that ends tomorrow.
+      if (parts.clock.nightRollover) fireAt.setDate(fireAt.getDate() + 1)
     } else if (parts.dayExplicit) {
       /*
         오늘 / 今天 names TODAY. resolveClock's day-rollover would move a clock with
@@ -464,6 +467,9 @@ function resolveParts(parts: ScheduleParts, text: string, now: Date, askText = t
         15:00 today, so that reading is tried before giving up.
       */
       let candidate = atClock(now, parts.clock.hour, parts.clock.minute)
+      // 오늘 밤 12시 is the coming midnight (the start of tomorrow), not the one that
+      // already passed today — the night small-hours belong to the next day.
+      if (parts.clock.nightRollover) candidate.setDate(candidate.getDate() + 1)
       if (candidate <= now && !parts.clock.explicit && parts.clock.hour < 12) {
         candidate = atClock(now, parts.clock.hour + 12, parts.clock.minute)
       }
