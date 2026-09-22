@@ -4345,13 +4345,14 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 
 ### CLI
 
-No new command. Users interact via the existing skill management surface:
+`kirocrew skills` is the read-only terminal surface for the pending queue and live catalog:
 
-- Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
-- Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
-- List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
-- Remove unwanted auto skill: `rm -rf ~/.kiro/crew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
-- Audit trail: `kirocrew security events -n 20 | grep auto_skill`
+- Off by default (opt-in). Enable generation with `kirocrew config set skills.auto_create_from_sessions true`; auto-approve prose-only candidates with `kirocrew config set skills.approval_required false`.
+- `skills list` defaults to pending candidates; `--live` selects the live catalog, `--all` selects both sets, and `--json` preserves sanitized loader metadata.
+- `skills show <slug>` prints bounded previews of the pending `SKILL.md` and helper scripts, redacted `.meta.json`, and the loader's original-byte script-validation verdict. Each omitted tail ends with `[truncated N bytes]`.
+- Both commands remove terminal controls before applying URL and credential redaction, then bound each skill-derived line with `safe_terminal_line`. A malformed helper is omitted from the preview and named by the fail-closed validation report, so readable sections still print. A malformed `SKILL.md` or filesystem read failure becomes a coded, non-traceback error. An unavailable loader verdict is reported as `status: unavailable`, never `ok: true`.
+- Approval and dismissal remain dashboard-only through Skills → Pending review, where owner authentication and SEL auditing already protect the mutation paths.
+- Audit trail: `kirocrew security events -n 20 | grep auto_skill`.
 
 ## Hooks (`hooks.py`)
 
