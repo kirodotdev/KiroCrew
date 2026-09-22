@@ -66,8 +66,10 @@ from kiro_crew.autonudge import (
 from kiro_crew.autonudge import enabled as autonudge_enabled
 from kiro_crew.autonudge import (
     is_channel_key,
+    is_scheduled_message,
     is_structured_monitor_loop,
     runtime_budget_exceeded,
+    scheduled_message_trust_id,
     terminal_notification_delivery_matches,
 )
 from kiro_crew.beacon import distribution
@@ -111,11 +113,16 @@ from kiro_crew.cron import (
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
-from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.dashboard.chat_persistence import (
+    rehydrate_slot_from_history_async,
+    save_slot_off_loop,
+    slot_history_key,
+)
 from kiro_crew.dashboard.chat_runner import (
     _arm_queued_delivery_settlement,
     _resolve_channel_target,
     _run_chat,
+    _start_next_queued_turn,
 )
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
@@ -151,6 +158,7 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
     resolve_dashboard_host,
 )
+from kiro_crew.dashboard.remote_relay import peer_is_connected, relay_remote_turn
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
     shutdown_exit_code,
@@ -159,6 +167,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    row_mid,
     stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
@@ -194,7 +203,7 @@ from kiro_crew.heartbeat import (
     is_keep_response,
     strip_keep_sentinel,
 )
-from kiro_crew.history import ConversationLog, HistoryConsolidator
+from kiro_crew.history import ConversationLog, HistoryConsolidator, mint_row_mid
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.learn import LessonStore
@@ -590,6 +599,73 @@ class _DmDispatchAdapter:
     authorize: Callable[[Any, Any, str], bool]
     resolve_conversation: Callable[[Any, Any, str, str], Awaitable[str]]
     build_inbound: Callable[[str, str, str], Any]
+
+
+async def _drain_task_through_cancellation(
+    task: asyncio.Task[Any],
+) -> tuple[Any, bool]:
+    """Await owned work to completion and report caller cancellation."""
+    cancelled = False
+    while not task.done():
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            continue
+        else:
+            return result, cancelled
+    return task.result(), cancelled
+
+
+async def _delete_transcript_row_by_mid(
+    slot: Any,
+    conversation_log: ConversationLog,
+    history_key: str,
+    mid: str,
+) -> tuple[bool, bool, bool]:
+    """Return ``(authoritative, cancelled, removed)`` for one stable row."""
+    if not mid:
+        raise ValueError("scheduled transcript rollback requires a stable message id")
+
+    def _delete() -> tuple[bool, bool]:
+        with slot._history_persist_lock, conversation_log._locked(history_key):
+            messages = conversation_log._read_messages(history_key)
+            retained = [message for message in messages if row_mid(message) != mid]
+            if len(retained) == len(messages):
+                return True, False
+            conversation_log._rewrite_session_locked(history_key, retained)
+            authoritative = all(
+                row_mid(message) != mid for message in conversation_log._read_messages(history_key)
+            )
+            return authoritative, True
+
+    delete_task = asyncio.create_task(asyncio.to_thread(_delete))
+    result, cancelled = await _drain_task_through_cancellation(delete_task)
+    authoritative, removed = result
+    return authoritative, cancelled, removed
+
+
+async def _rollback_staged_transcript_row(
+    slot: Any,
+    conversation_log: ConversationLog,
+    history_key: str,
+    mid: str,
+) -> bool:
+    """Delete a staged row, settle slot witnesses, and report cancellation."""
+    rolled_back, cancelled, removed = await _delete_transcript_row_by_mid(
+        slot,
+        conversation_log,
+        history_key,
+        mid,
+    )
+    if not rolled_back:
+        raise OSError("scheduled transcript row rollback was refused")
+    if removed:
+        disk_window_len = getattr(slot, "_disk_window_len", 0)
+        if isinstance(disk_window_len, int) and disk_window_len > 0:
+            slot._disk_window_len = disk_window_len - 1
+        slot._frozen_prefix_cache = None
+    return cancelled
 
 
 # Budget for awaiting the in-flight run-marker write during shutdown. Bounded
@@ -7302,13 +7378,65 @@ class GatewayOrchestrator:
                     loop.id,
                 )
                 if wake_message is None:
-                    await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
+                    assert self.autonudge_svc is not None
+                    if is_scheduled_message(loop):
+                        await self.autonudge_svc.discard_scheduled_message(loop.id)
+                    else:
+                        await self.autonudge_svc.remove(loop.id)
                 return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
             logger.info(
                 "AutoNudge: rehydrated session %s from history for loop %s",
                 loop.slot_key,
                 loop.id,
             )
+        scheduled = wake_message is None and is_scheduled_message(loop)
+        scheduled_provenance = None
+        if scheduled:
+            scheduled_provenance = await self._scheduled_message_provenance(loop)
+            if scheduled_provenance is None:
+                # The loop store is agent-writable. Kind and timing fields are
+                # only claims until the gateway-owned provenance record agrees.
+                await self._audit_scheduled_message_refused(
+                    loop, "trusted composer provenance missing"
+                )
+                if not await self._notify_scheduled_message_dropped(slot, loop):
+                    return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+                if self.autonudge_svc is not None:
+                    removal = asyncio.create_task(
+                        self.autonudge_svc.discard_scheduled_message(loop.id)
+                    )
+                    self._background_tasks.add(removal)
+                    removal.add_done_callback(self._background_tasks.discard)
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+            if time.time() < scheduled_provenance.scheduled_at:
+                # An agent can move the mutable timer earlier, but it cannot move
+                # the authoritative instant. Retry without minting a user row.
+                await self._audit_scheduled_message_refused(
+                    loop, "trusted scheduled instant has not arrived"
+                )
+                return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+            containment_changed, _mirror_unverified, containment_description = (
+                self._scheduled_message_containment_change(
+                    self.dashboard_state,
+                    slot,
+                    scheduled_provenance,
+                )
+            )
+            if containment_changed:
+                await self._audit_scheduled_message_refused(
+                    loop,
+                    "scheduled-message containment changed before dispatch: "
+                    + containment_description,
+                )
+                if not await self._notify_scheduled_message_dropped(slot, loop):
+                    return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+                if self.autonudge_svc is not None:
+                    removal = asyncio.create_task(
+                        self.autonudge_svc.discard_scheduled_message(loop.id)
+                    )
+                    self._background_tasks.add(removal)
+                    removal.add_done_callback(self._background_tasks.discard)
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
         # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
         # delivered turn ended on a malformed-request rejection, the backend
         # refused the payload's SHAPE, deterministically -- re-injecting the same
@@ -7332,6 +7460,7 @@ class GatewayOrchestrator:
         # trip it; getattr keeps minimal slot doubles safe.
         if (
             wake_message is None
+            and not scheduled
             and getattr(slot, "_last_turn_structural_terminal", False) is True
             and getattr(slot, "_last_turn_structural_terminal_loop_id", "") == loop.id
             and self.autonudge_svc is not None
@@ -7371,7 +7500,10 @@ class GatewayOrchestrator:
                 "advanced under the fired turn, so the verdict is stale",
                 loop.id,
             )
-        if wake_message is None:
+        if scheduled:
+            assert scheduled_provenance is not None
+            tagged = scheduled_provenance.message
+        elif wake_message is None:
             # Snapshot message, sentinel AND config generation TOGETHER, before
             # the compose_nudge_body() await: a concurrent PATCH during that
             # suspension could otherwise pair the OLD message with the NEW
@@ -7411,7 +7543,7 @@ class GatewayOrchestrator:
         # is truthy too and its blank row is worse than the verbose one, so both
         # fall through to ``tagged``.
         banner = loop.banner.strip() if isinstance(loop.banner, str) else ""
-        if banner and wake_message is None:
+        if banner and wake_message is None and not scheduled:
             # Credential redaction lives at the banner's single owner — the
             # authorized write paths (incl. /goal via ``normalize_banner``) and
             # ``_load`` for a hand-edited store — so ``loop.banner`` is already
@@ -7451,24 +7583,28 @@ class GatewayOrchestrator:
         if not await self._dashboard_mode_admits(loop, slot):
             await self._audit_fire_refused(loop, slot)
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
-        # Show nudge as a distinct "nudge" role message in the slot history.
-        # The structured meta lets the dashboard render a compact cycle chip
-        # instead of echoing the whole instruction payload as a chat bubble.
-        # The tag stays in ``content`` because that is what the model reads,
-        # and the body is deliberately NOT duplicated into meta — the client
-        # derives it from content, so a multi-KB payload is stored and
-        # broadcast once rather than twice. ``visible`` rather than ``tagged``
-        # in the appended row: identical unless the loop opted into a ``banner``,
-        # in which case this transcript row is the only thing shortened while the
-        # full ``tagged`` prompt still reaches ``_run_chat``.
-        nudge_meta: dict[str, Any] = {
-            "nudge": {
-                "cycle": loop.cycle_count + 1,
-                "loop_id": loop.id,
+        # Show the delivered input in the slot history. Goal loops keep their
+        # distinct nudge role and compact cycle metadata; a scheduled composer
+        # message uses the ordinary user role plus scheduled-message metadata so
+        # the transcript reflects what the user deferred rather than inventing an
+        # auto-nudge cycle. The body is deliberately not duplicated into meta.
+        if scheduled:
+            assert scheduled_provenance is not None
+            delivery_meta: dict[str, Any] = {
+                "scheduled_message": {
+                    "at": scheduled_provenance.scheduled_at,
+                    "loop_id": loop.id,
+                }
             }
-        }
+        else:
+            delivery_meta = {
+                "nudge": {
+                    "cycle": loop.cycle_count + 1,
+                    "loop_id": loop.id,
+                }
+            }
         if wake_message is not None and loop.monitor is not None:
-            nudge_meta["monitor"] = {
+            delivery_meta["monitor"] = {
                 "id": loop.id,
                 "fingerprint": loop.monitor.last_wake_fingerprint,
                 "classification": (
@@ -7483,17 +7619,319 @@ class GatewayOrchestrator:
         dashboard_state = self.dashboard_state
         turn_slot = slot
         assert dashboard_state is not None and turn_slot is not None
+        remote_scheduled = bool(scheduled and getattr(turn_slot, "executor", "") == "remote")
+        if remote_scheduled:
+            # A half-bound or disconnected peer is a retryable delivery state,
+            # never permission to execute the user's deferred turn locally.
+            if not turn_slot.is_remote or not peer_is_connected(
+                getattr(dashboard_state, "instances_manager", None), turn_slot.instance_id
+            ):
+                return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
 
-        def _append_nudge() -> None:
-            turn_slot.append(
-                "nudge",
-                visible,
-                "msg msg-nudge",
-                meta=nudge_meta,
+        scheduled_dispatch_ready: asyncio.Event | None = None
+        scheduled_dispatch_commit = False
+        scheduled_dispatch_task: asyncio.Task[Any] | None = None
+        if scheduled and completion_hook is None:
+            scheduled_dispatch_ready = asyncio.Event()
+            queue = getattr(turn_slot, "_queue", ())
+            pre_persist_queue_ids = (
+                {entry.get("id") for entry in queue if isinstance(entry, dict)}
+                if isinstance(queue, list)
+                else set()
             )
 
+            async def _reserved_scheduled_turn() -> None:
+                assert scheduled_dispatch_ready is not None
+                await scheduled_dispatch_ready.wait()
+                if scheduled_dispatch_commit:
+                    await dashboard_state.run_background_turn(
+                        turn_slot,
+                        _run_dashboard_turn(),
+                    )
+                    return
+                if self._session_tasks.get(turn_slot.key) is scheduled_dispatch_task:
+                    self._session_tasks.pop(turn_slot.key, None)
+                current_queue = getattr(turn_slot, "_queue", ())
+                diverted = isinstance(current_queue, list) and any(
+                    isinstance(entry, dict) and entry.get("id") not in pre_persist_queue_ids
+                    for entry in current_queue
+                )
+                if turn_slot.task is scheduled_dispatch_task and diverted:
+                    if await _start_next_queued_turn(dashboard_state, turn_slot):
+                        return
+                dashboard_state.push_slots_update()
+
+            scheduled_dispatch_task = spawn_guarded_turn(
+                dashboard_state,
+                turn_slot,
+                _reserved_scheduled_turn(),
+            )
+            turn_slot.task = scheduled_dispatch_task
+            self._session_tasks[turn_slot.key] = scheduled_dispatch_task
+            dashboard_state.push_slots_update()
+
+        def _append_nudge() -> dict[str, Any]:
+            if scheduled:
+                # A deferred composer send has no optimistic client bubble.
+                # ``append`` also queues an SSE row even when broadcast=False,
+                # so detach that row synchronously before the first await. The
+                # event loop cannot publish it until after this function yields.
+                row = turn_slot.append(
+                    "user",
+                    visible,
+                    "msg msg-u",
+                    broadcast=False,
+                    meta=delivery_meta,
+                )
+                pending = getattr(turn_slot, "_pending", None)
+                if isinstance(pending, list):
+                    try:
+                        pending.remove(row)
+                    except ValueError:
+                        pass
+                    if not pending:
+                        event = getattr(turn_slot, "event", None)
+                        if event is not None and callable(getattr(event, "clear", None)):
+                            event.clear()
+                return row
+            return turn_slot.append("nudge", visible, "msg msg-nudge", meta=delivery_meta)
+
+        def _rollback_staged_scheduled_row(row: dict[str, Any]) -> None:
+            try:
+                turn_slot.messages.remove(row)
+            except ValueError:
+                return
+            total = getattr(turn_slot, "total_messages", None)
+            if isinstance(total, int):
+                turn_slot.total_messages = max(0, total - 1)
+
+        def _restore_staged_scheduled_row(row: dict[str, Any]) -> None:
+            rows = getattr(turn_slot, "messages", None)
+            if not isinstance(rows, list) or row in rows:
+                return
+            rows.append(row)
+            total = getattr(turn_slot, "total_messages", None)
+            if isinstance(total, int):
+                turn_slot.total_messages = total + 1
+
+        async def _authoritative_staged_row_rollback(
+            row: dict[str, Any],
+            history_key: str,
+            mid: str,
+        ) -> bool:
+            """Remove memory, durably delete its row, or restore memory on failure."""
+            _rollback_staged_scheduled_row(row)
+            conversation_log = dashboard_state.conversation_log
+            try:
+                if conversation_log is None:
+                    raise OSError("scheduled transcript rollback has no conversation log")
+                return await _rollback_staged_transcript_row(
+                    turn_slot,
+                    conversation_log,
+                    history_key,
+                    mid,
+                )
+            except BaseException:
+                _restore_staged_scheduled_row(row)
+                assert scheduled_dispatch_ready is not None
+                scheduled_dispatch_ready.set()
+                raise
+
+        async def _authoritative_reconciled_row_rollback(
+            row: dict[str, Any],
+            history_key: str,
+            previous_content: Any,
+            previous_meta: Any,
+            reconciled_content: Any,
+            reconciled_meta: Any,
+        ) -> None:
+            """Durably restore a reused row, or keep memory at known durable state.
+
+            The first save made the reconciled row authoritative. Cancellation
+            therefore mirrors initial-row rollback: restore the prior row and
+            persist that restoration before reporting cancellation. If the
+            restoration cannot be committed, memory returns to the reconciled
+            state known to have landed, and dispatch stays refused.
+            """
+            row["content"] = previous_content
+            row["meta"] = previous_meta
+            rollback_task = asyncio.create_task(
+                save_slot_off_loop(
+                    dashboard_state,
+                    turn_slot,
+                    best_effort=False,
+                    expected_history_key=history_key,
+                )
+            )
+            try:
+                rollback_persisted, _ = await _drain_task_through_cancellation(rollback_task)
+            except BaseException:
+                row["content"] = reconciled_content
+                row["meta"] = reconciled_meta
+                raise
+            if not rollback_persisted:
+                row["content"] = reconciled_content
+                row["meta"] = reconciled_meta
+                raise OSError("scheduled transcript reconciliation rollback was refused")
+
+        def _surface_scheduled_row(row: dict[str, Any]) -> None:
+            """Publish a row that is already durably saved with its stable identity."""
+            dashboard_state.broadcast_ws(
+                "chat_message",
+                {
+                    "slot": turn_slot.key,
+                    "role": row.get("role", "user"),
+                    "content": row.get("content", visible),
+                    "cls": row.get("cls", "msg msg-u"),
+                    "ts": row.get("ts", ""),
+                    "meta": row.get("meta", {}),
+                },
+            )
+
+        def _scheduled_row() -> dict[str, Any] | None:
+            """Return this one-shot's stable durable user row when present."""
+            rows = getattr(turn_slot, "messages", ())
+            if not isinstance(rows, list):
+                return None
+            for row in reversed(rows):
+                meta = row.get("meta") if isinstance(row, dict) else None
+                scheduled_meta = meta.get("scheduled_message") if isinstance(meta, dict) else None
+                if isinstance(scheduled_meta, dict) and scheduled_meta.get("loop_id") == loop.id:
+                    return row
+            return None
+
         if completion_hook is None:
-            _append_nudge()
+            if scheduled:
+                # The durable transcript row is the delivery marker. Reserve the
+                # slot before creating it so a user send during persistence queues
+                # behind this turn instead of taking ``slot.task``.
+                assert scheduled_dispatch_ready is not None
+                assert scheduled_dispatch_task is not None
+                durable_row = _scheduled_row()
+                staged_row: dict[str, Any] | None = None
+                staged_mid = ""
+                staged_history_key = ""
+                if durable_row is None:
+                    staged_row = _append_nudge()
+                    staged_mid = row_mid(staged_row) or ""
+                    if not staged_mid:
+                        staged_meta = staged_row.get("meta")
+                        if not isinstance(staged_meta, dict):
+                            staged_meta = {}
+                            staged_row["meta"] = staged_meta
+                        staged_mid = mint_row_mid()
+                        staged_meta["mid"] = staged_mid
+                    staged_history_key = slot_history_key(turn_slot)
+                    save_task = asyncio.create_task(
+                        save_slot_off_loop(
+                            dashboard_state,
+                            turn_slot,
+                            best_effort=False,
+                            expected_history_key=staged_history_key,
+                        )
+                    )
+                    try:
+                        persisted, save_cancelled = await _drain_task_through_cancellation(
+                            save_task
+                        )
+                    except BaseException:
+                        await _authoritative_staged_row_rollback(
+                            staged_row,
+                            staged_history_key,
+                            staged_mid,
+                        )
+                        scheduled_dispatch_ready.set()
+                        raise
+                    if not persisted:
+                        _rollback_staged_scheduled_row(staged_row)
+                        scheduled_dispatch_ready.set()
+                        if save_cancelled:
+                            raise asyncio.CancelledError
+                        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+                    if save_cancelled:
+                        await _authoritative_staged_row_rollback(
+                            staged_row,
+                            staged_history_key,
+                            staged_mid,
+                        )
+                        scheduled_dispatch_ready.set()
+                        raise asyncio.CancelledError
+                    durable_row = staged_row
+                else:
+                    # A prior failed dispatch leaves one durable user row as the
+                    # retry marker. The protected record may have been edited
+                    # since then, so reconcile that SAME row before it is surfaced
+                    # or dispatched. Preserve its stable ``mid`` and any unrelated
+                    # metadata; only trusted composer content and time advance.
+                    previous_content = durable_row.get("content")
+                    previous_meta = durable_row.get("meta")
+                    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+                    next_meta["scheduled_message"] = dict(delivery_meta["scheduled_message"])
+                    if previous_content != visible or previous_meta != next_meta:
+                        durable_row["content"] = visible
+                        durable_row["meta"] = next_meta
+                        replay_history_key = slot_history_key(turn_slot)
+                        save_task = asyncio.create_task(
+                            save_slot_off_loop(
+                                dashboard_state,
+                                turn_slot,
+                                best_effort=False,
+                                expected_history_key=replay_history_key,
+                            )
+                        )
+                        try:
+                            persisted, save_cancelled = await _drain_task_through_cancellation(
+                                save_task
+                            )
+                        except BaseException:
+                            durable_row["content"] = previous_content
+                            durable_row["meta"] = previous_meta
+                            scheduled_dispatch_ready.set()
+                            raise
+                        if not persisted:
+                            durable_row["content"] = previous_content
+                            durable_row["meta"] = previous_meta
+                            scheduled_dispatch_ready.set()
+                            if save_cancelled:
+                                raise asyncio.CancelledError
+                            return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+                        if save_cancelled:
+                            try:
+                                await _authoritative_reconciled_row_rollback(
+                                    durable_row,
+                                    replay_history_key,
+                                    previous_content,
+                                    previous_meta,
+                                    visible,
+                                    next_meta,
+                                )
+                            finally:
+                                scheduled_dispatch_ready.set()
+                            raise asyncio.CancelledError
+                reservation_lost = (
+                    turn_slot.task is not scheduled_dispatch_task
+                    or scheduled_dispatch_task.done()
+                    or turn_slot._in_stage_execution
+                )
+                if reservation_lost:
+                    if staged_row is not None:
+                        rollback_cancelled = await _authoritative_staged_row_rollback(
+                            staged_row,
+                            staged_history_key,
+                            staged_mid,
+                        )
+                        if rollback_cancelled:
+                            scheduled_dispatch_ready.set()
+                            raise asyncio.CancelledError
+                    scheduled_dispatch_ready.set()
+                    return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+                # A user row retires stateless question cards only once it is
+                # durable and its reserved turn is committed. Publication happens
+                # after the last await, so no BUSY branch can expose false history.
+                dashboard_state.clear_question_pending(turn_slot.key, blocking=False)
+                _surface_scheduled_row(durable_row)
+            else:
+                _append_nudge()
         # FIX 2: an unattended app-owned nudge turn runs under the background
         # concurrency cap. This is the fleet's hot path — N armed loops fire
         # independently and would otherwise put N turns on the runtime at once.
@@ -7563,19 +8001,48 @@ class GatewayOrchestrator:
         # carries this mark. On a crew/member slot the wake only exists because
         # ``_dashboard_mode_admits`` already proved the loop self-armed.
         run_kwargs["_directive_self_wake"] = True
-        # Scope the structural-terminal verdict this turn may record to THIS loop
-        # and the CONFIG GENERATION it fires under (the snapshot captured with the
-        # message above, before compose_nudge_body's await), so the stop is
-        # applied via an atomic (id, generation) fence and a stale completion
-        # cannot deactivate a loop whose config advanced under the turn.
-        run_kwargs["_directive_loop_id"] = loop.id
-        run_kwargs["_directive_loop_gen"] = _fired_generation if wake_message is None else 0
+        if scheduled:
+            assert scheduled_provenance is not None
+            run_kwargs["_audience_containment_admission"] = scheduled_provenance.containment_meta
+        # Ordinary message loops scope the structural-terminal verdict this turn
+        # may record to THIS loop and the CONFIG GENERATION it fires under (the
+        # snapshot captured with the message above, before compose_nudge_body's
+        # await), so the stop is applied via an atomic (id, generation) fence and
+        # a stale completion cannot deactivate a loop whose config advanced under
+        # the turn. Scheduled composer sends and structured monitor wakes use
+        # their own completion state machines and must not acquire this verdict.
+        if wake_message is None and not scheduled:
+            run_kwargs["_directive_loop_id"] = loop.id
+            run_kwargs["_directive_loop_gen"] = _fired_generation
         if completion_hook is not None:
             run_kwargs["monitor_completion"] = completion_hook
             # Structured monitor turns own a single durable budgeted turn.
             # Nested depth disables dashboard recovery paths that would enqueue
             # an additional provider turn outside that accounting boundary.
             run_kwargs["_prompt_depth"] = 1
+
+        async def _run_remote_scheduled_turn() -> bool:
+            assert scheduled_provenance is not None
+            return await relay_remote_turn(
+                dashboard_state,
+                turn_slot,
+                tagged,
+                # The owner slot and peer slot are different containment
+                # domains. Never let an owner-side mirror/link identity admit a
+                # peer-side audience; the impossible workspace baseline keeps
+                # every remote scheduled turn's channel egress withheld while
+                # preserving execution and relay back to its owner.
+                containment_admission={
+                    "queued_containment": {
+                        "linked": False,
+                        "mirrored": False,
+                        "ephemeral": False,
+                        "app": False,
+                        "unattended": False,
+                        "workspace": "",
+                    }
+                },
+            )
 
         async def _run_dashboard_turn() -> None:
             # Unattended slots can wait behind the background-turn semaphore.
@@ -7586,13 +8053,71 @@ class GatewayOrchestrator:
             # provider entry to cover revocation during that setup.
             if completion_hook is not None and not await completion_hook.authorize():
                 return
-            await _run_chat(
-                dashboard_state,
-                turn_slot,
-                tagged,
-                _directive_user_origin=False,
-                **run_kwargs,
-            )
+            if scheduled:
+                assert scheduled_provenance is not None
+                containment_changed, _mirror_unverified, containment_description = (
+                    self._scheduled_message_containment_change(
+                        dashboard_state,
+                        turn_slot,
+                        scheduled_provenance,
+                    )
+                )
+                if containment_changed:
+                    await self._audit_scheduled_message_refused(
+                        loop,
+                        "scheduled-message containment changed before dispatch: "
+                        + containment_description,
+                    )
+                    notice_persisted = await self._notify_scheduled_message_dropped(
+                        turn_slot,
+                        loop,
+                    )
+                    if self.autonudge_svc is not None:
+                        if notice_persisted:
+                            await self.autonudge_svc.settle_unclaimed_scheduled_delivery(loop.id)
+                        else:
+                            self.autonudge_svc.notify_turn_complete(
+                                loop.slot_key,
+                                turn_completed=False,
+                            )
+                    return
+            remote_turn_completed = False
+            turn_returned = False
+            try:
+                if remote_scheduled:
+                    remote_turn_completed = await _run_remote_scheduled_turn()
+                else:
+                    await _run_chat(
+                        dashboard_state,
+                        turn_slot,
+                        tagged,
+                        # The row is user-authored, but this is still an unattended
+                        # wake. Human-only directives must not inherit authority to
+                        # retarget or reset the slot from deferred prompt content.
+                        _directive_user_origin=False,
+                        **run_kwargs,
+                    )
+                turn_returned = True
+            finally:
+                if scheduled and self.autonudge_svc is not None:
+                    # A local slash command settles only after its handler returns.
+                    # Local exceptions and every remote outcome without a positive
+                    # completion terminator rearm the one-shot on its stable row.
+                    if remote_scheduled:
+                        if remote_turn_completed:
+                            await self.autonudge_svc.settle_unclaimed_scheduled_delivery(loop.id)
+                        else:
+                            self.autonudge_svc.notify_turn_complete(
+                                loop.slot_key,
+                                turn_completed=False,
+                            )
+                    elif turn_returned:
+                        await self.autonudge_svc.settle_unclaimed_scheduled_delivery(loop.id)
+                    else:
+                        self.autonudge_svc.notify_turn_complete(
+                            loop.slot_key,
+                            turn_completed=False,
+                        )
 
         async def _run_background_turn() -> None:
             try:
@@ -7606,6 +8131,17 @@ class GatewayOrchestrator:
                 _settle_admission(MonitorDispatchResult.UNAVAILABLE)
                 raise
 
+        if scheduled_dispatch_task is not None:
+            assert scheduled_dispatch_ready is not None
+            assert self.autonudge_svc is not None
+            # Arm the local-command backstop before releasing the reserved task.
+            # No await separates the durable publication from this commit.
+            self.autonudge_svc.note_scheduled_delivery_dispatched(loop.id)
+            self.autonudge_svc.bind_scheduled_delivery_task(loop.id, scheduled_dispatch_task)
+            scheduled_dispatch_commit = True
+            scheduled_dispatch_ready.set()
+            return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+
         if admission is not None:
             turn_coro = _run_background_turn()
         else:
@@ -7613,7 +8149,19 @@ class GatewayOrchestrator:
                 turn_slot,
                 _run_dashboard_turn(),
             )
+        if scheduled and self.autonudge_svc is not None:
+            # Arm the local slash-command backstop before the turn can run. The
+            # settlement in ``_run_dashboard_turn`` consumes this if the runner
+            # returns without signalling completion.
+            self.autonudge_svc.note_scheduled_delivery_dispatched(loop.id)
         task = spawn_guarded_turn(dashboard_state, turn_slot, turn_coro)
+        if scheduled and self.autonudge_svc is not None:
+            # ``create_task`` cannot run the coroutine until this task yields;
+            # bind the exact task before any completion callback can execute.
+            self.autonudge_svc.bind_scheduled_delivery_task(loop.id, task)
+        # The chat runner reports whether the turn actually landed. Task exit is
+        # not completion: timeout, shutdown, and Stop all retire the task too, and
+        # those attempts must remain replayable.
         # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
         # shows the "turn active" three-dots indicator immediately.
         slot.task = task
@@ -7627,6 +8175,114 @@ class GatewayOrchestrator:
             task.add_done_callback(_settle_unstarted_admission)
             return _delivery_result(wake_message, await admission)
         return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+
+    @staticmethod
+    async def _scheduled_message_provenance(
+        loop: NudgeLoop,
+    ) -> autonudge_selfarm.ScheduledMessageProvenance | None:
+        """Read immutable composer content before minting a user turn."""
+        if not is_scheduled_message(loop):
+            return None
+        return autonudge_selfarm.read_scheduled_message(
+            scheduled_message_trust_id(loop.id),
+            loop.slot_key,
+        )
+
+    @staticmethod
+    def _scheduled_message_containment_change(
+        state: Any,
+        slot: Any,
+        provenance: autonudge_selfarm.ScheduledMessageProvenance,
+    ) -> tuple[list[str], bool, str]:
+        """Revalidate scheduled user speech against its admission audience."""
+        from kiro_crew.dashboard import session_control
+
+        now = session_control.containment_snapshot(state, slot, on_probe_failure=True)
+        changed = session_control.newly_held_constraints(
+            now,
+            provenance.containment_meta,
+            # A deferred message is unattended at fire time. It must not inherit
+            # the linked-session exemption reserved for live human directives.
+            directive_user_origin=False,
+        )
+        mirror_unverified = bool(now.get("mirror_unverified"))
+        description = session_control.describe_containment_change(
+            changed,
+            mirror_unverified=mirror_unverified,
+        )
+        return changed, mirror_unverified, description
+
+    async def _notify_scheduled_message_dropped(self, slot: Any, loop: NudgeLoop) -> bool:
+        """Persist then surface one localized loss notice before removing the loop."""
+        state = self.dashboard_state
+        if state is None:
+            return False
+        rows = getattr(slot, "messages", ())
+        if isinstance(rows, list):
+            for existing in reversed(rows):
+                meta = existing.get("meta") if isinstance(existing, dict) else None
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("kind") == "scheduled_message_dropped"
+                    and meta.get("loop_id") == loop.id
+                ):
+                    return True
+        meta = {"kind": "scheduled_message_dropped", "loop_id": loop.id}
+        row = slot.append(
+            "assistant",
+            "",
+            "msg msg-info",
+            broadcast=False,
+            meta=meta,
+        )
+        pending = getattr(slot, "_pending", None)
+        if isinstance(pending, list):
+            try:
+                pending.remove(row)
+            except ValueError:
+                pass
+            if not pending:
+                event = getattr(slot, "event", None)
+                if event is not None and callable(getattr(event, "clear", None)):
+                    event.clear()
+        if not await save_slot_off_loop(state, slot, best_effort=False):
+            try:
+                slot.messages.remove(row)
+            except ValueError:
+                pass
+            total = getattr(slot, "total_messages", None)
+            if isinstance(total, int):
+                slot.total_messages = max(0, total - 1)
+            logger.warning("could not persist scheduled-message loss notice for %s", loop.id)
+            return False
+        state.broadcast_ws(
+            "chat_message",
+            {
+                "slot": slot.key,
+                "role": "assistant",
+                "content": "",
+                "cls": "msg msg-info",
+                "ts": row.get("ts", ""),
+                "meta": row.get("meta", {}),
+            },
+        )
+        return True
+
+    @staticmethod
+    async def _audit_scheduled_message_refused(loop: NudgeLoop, error: str) -> None:
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=loop.slot_key,
+                    source="dashboard",
+                    tool_name="scheduled_message_fire",
+                    outcome="denied",
+                    error=error,
+                    metadata={"loop_id": loop.id},
+                )
+            )
+        except Exception:
+            logger.warning("could not audit scheduled-message provenance refusal", exc_info=True)
 
     @staticmethod
     async def _dashboard_mode_admits(loop: NudgeLoop, slot: Any) -> bool:
@@ -7724,7 +8380,7 @@ class GatewayOrchestrator:
             )
 
     async def _init_autonudge(self) -> None:
-        """Initialize and start the auto-nudge service (feature-flagged)."""
+        """Start AutoNudge."""
         if not autonudge_enabled():
             logger.info("AutoNudge disabled via feature flag")
             return
@@ -7792,6 +8448,8 @@ class GatewayOrchestrator:
 
         controller: MonitorController | None = None
         notified_monitor_terminals: set[tuple[str, MonitorOutcome, float]] = set()
+        scheduled_observer_generation: dict[str, int] = {}
+        scheduled_observer_generation_seq = 0
 
         async def _record_terminal_notification_delivery(
             monitor_id: str,
@@ -7862,6 +8520,7 @@ class GatewayOrchestrator:
                 await controller.tick(loop, now=time.time())
 
         def _observer(event: str, loop: NudgeLoop | None) -> None:
+            nonlocal scheduled_observer_generation_seq
             if event == "expired" and loop is not None:
                 self._notify_nudge_expired(loop)
             elif (
@@ -7882,10 +8541,21 @@ class GatewayOrchestrator:
                         notified_monitor_terminals.add(terminal_key)
                         _schedule_terminal_notification(loop, terminal_key)
             if self.dashboard_state and loop is not None:
+                scheduled = is_scheduled_message(loop)
+                loop_id = loop.id
+                slot_key = loop.slot_key
+                event_snapshot = event
+                scheduled_generation = 0
+                if scheduled:
+                    scheduled_observer_generation_seq += 1
+                    scheduled_generation = scheduled_observer_generation_seq
+                    if event_snapshot == "removed":
+                        scheduled_observer_generation.pop(loop_id, None)
+                    else:
+                        scheduled_observer_generation[loop_id] = scheduled_generation
                 loop_payload: dict[str, Any] = {
-                    "id": loop.id,
-                    "slot_key": loop.slot_key,
-                    "message": loop.message,
+                    "id": loop_id,
+                    "slot_key": slot_key,
                     "idle_secs": loop.idle_secs,
                     "max_cycles": loop.max_cycles,
                     "max_runtime_secs": loop.max_runtime_secs,
@@ -7893,6 +8563,10 @@ class GatewayOrchestrator:
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
                 }
+                if not scheduled:
+                    loop_payload["message"] = loop.message
+                else:
+                    loop_payload["scheduled_message"] = True
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
                     loop_payload["monitor"] = _redact_monitor_value(
@@ -7902,7 +8576,7 @@ class GatewayOrchestrator:
                     loop_payload["stopped_reason"] = loop.stopped_reason
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
-                    if is_structured_monitor_loop(loop)
+                    if is_structured_monitor_loop(loop) or scheduled
                     else self.dashboard_state.broadcast_ws
                 )
                 _frame = {
@@ -7912,7 +8586,32 @@ class GatewayOrchestrator:
                 }
 
                 def _publish(frame: dict = _frame) -> None:
+                    if scheduled and event_snapshot != "removed" and "message" not in frame["loop"]:
+                        provenance = autonudge_selfarm.read_scheduled_message(
+                            scheduled_message_trust_id(loop_id),
+                            slot_key,
+                        )
+                        if scheduled_observer_generation.get(loop_id) != scheduled_generation:
+                            return
+                        if provenance is None:
+                            return
+                        exact_payload = dict(loop_payload)
+                        exact_payload["message"] = provenance.message
+                        exact_payload["scheduled_at"] = provenance.scheduled_at
+                        exact_payload["next_due_ts"] = provenance.scheduled_at
+                        publish_frame(
+                            {
+                                "event": event_snapshot,
+                                "slot": slot_key,
+                                "loop": exact_payload,
+                            }
+                        )
+                        return
                     broadcast("autonudge_state", frame)
+
+                # Process-memory provenance returns through this same publisher,
+                # preserving the one-site persist-before-publish contract.
+                publish_frame = _publish
 
                 # Per-member event log: a member's DM-slot patrol started or
                 # stopped. The log -- not the loop -- is what the Crew Members

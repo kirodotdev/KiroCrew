@@ -188,7 +188,6 @@ src/kiro_crew/dashboard/stale_asset_watchdog.py
 src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
-src/kiro_crew/dashboard/token_secret.py
 src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
@@ -869,7 +868,6 @@ test/test_slack_home_tab.py
 test/test_slack_inline_stop.py
 test/test_slack_interactions_coverage.py
 test/test_slack_linked_approval.py
-test/test_slack_mirror_unlink.py
 test/test_slack_options_lifecycle.py
 test/test_slack_pins_reactions.py
 test/test_slack_render_pipeline.py

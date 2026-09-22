@@ -31,9 +31,13 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew import autonudge
+from kiro_crew import autonudge, autonudge_selfarm
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime
-from kiro_crew.autonudge import AutoNudgeService, NudgeAdmissionRefused
+from kiro_crew.autonudge import (
+    AutoNudgeService,
+    NudgeAdmissionRefused,
+    scheduled_message_trust_id,
+)
 from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome
 
@@ -87,6 +91,282 @@ async def _service(tmp_path, monkeypatch, on_fire=None) -> AutoNudgeService:
     svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     monkeypatch.setattr(autonudge, "_INSTANCE", svc)
     return svc
+
+
+def _enable_scheduled_provenance(tmp_path, monkeypatch) -> None:
+    """Start each scheduled close case with isolated process-memory provenance."""
+    monkeypatch.setattr(autonudge_selfarm, "data_home", lambda: tmp_path)
+    autonudge_selfarm._reset_scheduled_messages_for_tests()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_path", ("history_persist", "app_hook"))
+@pytest.mark.parametrize("correlation", ("pending_task", "recorded_outcome"))
+async def test_inflight_scheduled_close_preserves_exact_settlement(
+    tmp_path, monkeypatch, close_path, correlation
+) -> None:
+    """An accepted turn settles before its tab can retire its authority."""
+    _enable_scheduled_provenance(tmp_path, monkeypatch)
+    state = _state_with_slot(tmp_path)
+    slot = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    scheduled_at = time.time() + 600
+    loop = await svc.add(
+        NAME,
+        "deliver exactly once",
+        scheduled_at=scheduled_at,
+        loop_id=f"scheduled-{close_path}-{correlation}",
+    )
+    trust_id = scheduled_message_trust_id(loop.id)
+    autonudge_selfarm.record_scheduled_message(
+        trust_id,
+        NAME,
+        "deliver exactly once",
+        scheduled_at,
+    )
+    loop.cycle_count = 1
+    loop.last_fire_ts = time.time()
+    loop.next_due_ts = 0.0
+    await svc._persist_locked()
+
+    release_turn = asyncio.Event()
+
+    async def _park_turn() -> None:
+        await release_turn.wait()
+        svc.notify_turn_complete(NAME, turn_completed=False)
+
+    if correlation == "pending_task":
+        turn_task = asyncio.create_task(_park_turn())
+        svc._scheduled_delivery_pending[loop.id] = turn_task
+    else:
+        turn_task = asyncio.create_task(asyncio.sleep(0))
+        await turn_task
+        svc._scheduled_turn_outcomes[loop.id] = (turn_task, True)
+
+    persist = AsyncMock(side_effect=OSError("history persist failed"))
+    app_hook = AsyncMock(return_value=False)
+    if close_path == "history_persist":
+        monkeypatch.setattr(handlers, "save_slot_off_loop", persist)
+    else:
+        slot._app = "issue-radar"
+        monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", app_hook)
+
+    try:
+        response = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+        assert response.status == 500
+        assert json.loads(response.body)["code"] == "scheduled_message_in_flight"
+        persist.assert_not_awaited()
+        app_hook.assert_not_awaited()
+        assert state.get_slot(NAME) is slot
+        assert svc.get_by_slot(NAME) is loop
+        assert loop.cycle_count == 1
+        assert loop.scheduled_completed is False
+        assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) == (
+            autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key=NAME,
+                message="deliver exactly once",
+                scheduled_at=scheduled_at,
+            )
+        )
+        if correlation == "pending_task":
+            assert svc._scheduled_delivery_pending[loop.id] is turn_task
+            assert loop.id not in svc._scheduled_turn_outcomes
+        else:
+            assert loop.id not in svc._scheduled_delivery_pending
+            assert svc._scheduled_turn_outcomes[loop.id] == (turn_task, True)
+        stored = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"]
+        assert [row["id"] for row in stored] == [loop.id]
+        assert stored[0]["cycle_count"] == 1
+
+        if correlation == "pending_task":
+            release_turn.set()
+            await turn_task
+            await asyncio.gather(*tuple(svc._inflight_adds))
+            assert svc.get_by_slot(NAME) is loop
+            assert loop.cycle_count == 0
+            assert loop.next_due_ts == scheduled_at
+            assert loop.id not in svc._scheduled_delivery_pending
+            assert loop.id not in svc._scheduled_turn_outcomes
+        else:
+            await svc._settle_scheduled_turn(loop.id, turn_task, completed=True)
+            assert svc.get_by_slot(NAME) is None
+            for _ in range(50):
+                if autonudge_selfarm.read_scheduled_message(trust_id, NAME) is None:
+                    break
+                await asyncio.sleep(0.01)
+            assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) is None
+            assert loop.id not in svc._scheduled_delivery_pending
+            assert loop.id not in svc._scheduled_turn_outcomes
+    finally:
+        release_turn.set()
+        if not turn_task.done():
+            turn_task.cancel()
+            await asyncio.gather(turn_task, return_exceptions=True)
+        svc.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ("history_persist", "app_hook"))
+async def test_failed_close_restores_exact_authenticated_schedule(
+    tmp_path, monkeypatch, failure_point
+) -> None:
+    """A refused close restores authority, timing, and one metadata row."""
+    _enable_scheduled_provenance(tmp_path, monkeypatch)
+    state = _state_with_slot(tmp_path)
+    slot = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    exact_message = "send the exact authenticated message"
+    scheduled_at = time.time() + 600
+    loop = await svc.add(
+        NAME,
+        exact_message,
+        scheduled_at=scheduled_at,
+        loop_id="scheduled-close-rollback",
+    )
+    trust_id = scheduled_message_trust_id(loop.id)
+    autonudge_selfarm.record_scheduled_message(
+        trust_id,
+        NAME,
+        exact_message,
+        scheduled_at,
+    )
+
+    if failure_point == "history_persist":
+
+        async def _persist(*_args, **_kwargs) -> None:
+            raise OSError("history persist failed")
+
+        monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    else:
+        slot._app = "issue-radar"
+        monkeypatch.setattr(
+            "kiro_crew.apps.teardown.notify_slot_closed",
+            AsyncMock(return_value=False),
+        )
+
+    response = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert response.status == 500
+    assert state.get_slot(NAME) is slot
+    restored = svc.get_by_slot(NAME)
+    assert restored is not None
+    assert restored.id == loop.id
+    assert restored.created_ts == loop.created_ts
+    assert restored.max_cycles == loop.max_cycles == 1
+    assert restored.cycle_count == loop.cycle_count == 0
+    assert restored.message == "", "the mutable mirror became user input"
+    assert restored.scheduled_message is True
+    assert restored.scheduled_at == scheduled_at
+    assert restored.next_due_ts == scheduled_at
+    assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) == (
+        autonudge_selfarm.ScheduledMessageProvenance(
+            slot_key=NAME,
+            message=exact_message,
+            scheduled_at=scheduled_at,
+        )
+    )
+    stored = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"]
+    assert [row["id"] for row in stored] == [loop.id]
+    assert stored[0]["message"] == ""
+    assert stored[0]["scheduled_at"] == scheduled_at
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_close_never_restores_schedule_into_replacement_slot(
+    tmp_path, monkeypatch
+) -> None:
+    """A same-key replacement landing during rollback inherits no authority."""
+    _enable_scheduled_provenance(tmp_path, monkeypatch)
+    state = _state_with_slot(tmp_path)
+    original_slot = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    scheduled_at = time.time() + 600
+    loop = await svc.add(
+        NAME,
+        "only the original tab may send this",
+        scheduled_at=scheduled_at,
+        loop_id="scheduled-close-generation",
+    )
+    trust_id = scheduled_message_trust_id(loop.id)
+    autonudge_selfarm.record_scheduled_message(
+        trust_id,
+        NAME,
+        "only the original tab may send this",
+        scheduled_at,
+    )
+
+    async def _persist(*_args, **_kwargs) -> None:
+        raise OSError("history persist failed")
+
+    original_write = svc._write_state
+    restore_write_entered = threading.Event()
+    release_restore_write = threading.Event()
+    writes = 0
+
+    def _stall_restore_write(payload) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            restore_write_entered.set()
+            assert release_restore_write.wait(timeout=5)
+        original_write(payload)
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    monkeypatch.setattr(svc, "_write_state", _stall_restore_write)
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    try:
+        assert await asyncio.to_thread(restore_write_entered.wait, 5)
+        state._slots.pop(NAME, None)
+        replacement_slot = state.get_or_create_slot(NAME)
+        assert replacement_slot is not original_slot
+        release_restore_write.set()
+        response = await close
+    finally:
+        release_restore_write.set()
+        if not close.done():
+            close.cancel()
+            await asyncio.gather(close, return_exceptions=True)
+
+    assert response.status == 500
+    assert state.get_slot(NAME) is replacement_slot
+    assert svc.get_by_slot(NAME) is None
+    assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) is None
+    assert json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"] == []
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_successful_close_retires_schedule_row_and_provenance(tmp_path, monkeypatch) -> None:
+    """A committed close leaves neither replay authority nor mutable metadata."""
+    _enable_scheduled_provenance(tmp_path, monkeypatch)
+    state = _state_with_slot(tmp_path)
+    svc = await _service(tmp_path, monkeypatch)
+    scheduled_at = time.time() + 600
+    loop = await svc.add(
+        NAME,
+        "send after close",
+        scheduled_at=scheduled_at,
+        loop_id="scheduled-close-success",
+    )
+    trust_id = scheduled_message_trust_id(loop.id)
+    autonudge_selfarm.record_scheduled_message(
+        trust_id,
+        NAME,
+        "send after close",
+        scheduled_at,
+    )
+
+    response = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert response.status == 200
+    assert svc.get_by_slot(NAME) is None
+    assert loop.id not in svc._scheduled_delivery_pending
+    assert loop.id not in svc._scheduled_turn_outcomes
+    assert json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"] == []
+    assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) is None
+    svc.stop()
 
 
 @pytest.mark.asyncio
@@ -172,6 +452,82 @@ async def test_loop_is_retired_before_the_persist_begins(tmp_path, monkeypatch) 
         "persist",
         "session_teardown",
     ], "the loop must be gone before the closure is persisted, not after"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_restores_real_scheduled_retirement(tmp_path, monkeypatch) -> None:
+    """Cancellation after removal commit restores one exact authorized schedule."""
+    _enable_scheduled_provenance(tmp_path, monkeypatch)
+    state = _state_with_slot(tmp_path)
+    slot = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    scheduled_at = time.time() + 600
+    loop = await svc.add(
+        NAME,
+        "keep this exact deferred message",
+        scheduled_at=scheduled_at,
+        loop_id="scheduled-cancelled-close",
+    )
+    trust_id = scheduled_message_trust_id(loop.id)
+    expected = autonudge_selfarm.ScheduledMessageProvenance(
+        slot_key=NAME,
+        message="keep this exact deferred message",
+        scheduled_at=scheduled_at,
+    )
+    autonudge_selfarm.record_scheduled_message(
+        trust_id,
+        expected.slot_key,
+        expected.message,
+        expected.scheduled_at,
+    )
+
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    original_write = svc._write_state
+    writes = 0
+
+    def _stall_first_write(payload) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            write_entered.set()
+            assert release_write.wait(timeout=5)
+        original_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", _stall_first_write)
+    close = asyncio.create_task(handlers.close_slot(state, slot, NAME))
+    try:
+        assert await asyncio.to_thread(write_entered.wait, 5)
+        assert svc.get_by_slot(NAME) is None
+        assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) is None
+        close.cancel()
+        release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await close
+    finally:
+        release_write.set()
+        if not close.done():
+            close.cancel()
+            await asyncio.gather(close, return_exceptions=True)
+
+    restored = svc.get_by_slot(NAME)
+    assert state.get_slot(NAME) is slot
+    assert slot.is_closing is False
+    assert restored is loop
+    assert restored.id == "scheduled-cancelled-close"
+    assert restored.message == ""
+    assert restored.scheduled_at == scheduled_at
+    assert restored.next_due_ts == scheduled_at
+    assert autonudge_selfarm.read_scheduled_message(trust_id, NAME) == expected
+    stored = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"]
+    assert [row["id"] for row in stored] == [loop.id]
+    assert stored[0]["message"] == ""
+    assert stored[0]["scheduled_at"] == scheduled_at
+    timer = svc._timers.get(loop.id)
+    assert timer is not None and not timer.done()
+    assert loop.id not in svc._scheduled_delivery_pending
+    assert loop.id not in svc._scheduled_turn_outcomes
     svc.stop()
 
 

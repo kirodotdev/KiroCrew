@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from dataclasses import asdict, fields
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import (
+    MAX_SCHEDULE_AHEAD_SECS,
+    binding_key_for,
+)
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop
+from kiro_crew.autonudge import (
+    is_scheduled_message,
+    is_structured_monitor_loop,
+    scheduled_message_trust_id,
+)
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -24,12 +33,14 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_update_nudge,
     resolve_stop_sentinel,
 )
+from kiro_crew.autonudge_selfarm import ScheduledMessageProvenance, read_scheduled_message
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
     stale_owner_session_response,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.goal_command import goal_command_mutates_automation
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_AGENT_TURNS,
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -64,6 +75,8 @@ logger = logging.getLogger(__name__)
 
 _CODE_DASHBOARD_OWNER_REQUIRED = "dashboard_owner_required"
 _CODE_INTERNAL_SECRET_REQUIRED = "internal_secret_required"
+_CODE_SCHEDULED_MESSAGE_USER_REQUIRED = "scheduled_message_user_required"
+_CODE_SCHEDULED_MESSAGE_CANNOT_FIRE = "scheduled_message_cannot_fire"
 
 
 async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
@@ -118,14 +131,9 @@ def _redact_monitor_value(value: Any) -> Any:
 
 def _serialize(loop: Any) -> dict[str, Any]:
     payload = asdict(loop)
-    # Read positions, dropped on EVERY projection rather than only the structured
-    # one. A cursor is bookkeeping with no surface: it says nothing a reader could
-    # act on, and it names each watched target, so publishing it discloses the
-    # subject list without any reader being better off. ``asdict`` copies whatever
-    # the dataclass holds, so a judge field joins these reads by existing -- which
-    # is how this one did -- and the drop has to be here rather than in the
-    # structured-monitor filter, which a plain loop never reaches.
+    # Internal bookkeeping and completion mirrors have no public surface.
     payload.pop("judge_cursors", None)
+    payload.pop("scheduled_completed", None)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -164,6 +172,8 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
 #:   has no banner to describe.
 #: * ``stop_sentinel_path`` -- a filesystem path, and the structured branch of
 #:   ``_timer`` returns before the sentinel is ever tested.
+#: * ``scheduled_at`` -- a structured monitor is recurring/controller-owned,
+#:   never a composer-authored one-shot, so zero would be a fabricated schedule.
 #:
 #: UNMAINTAINED on the structured path -- but two of these three have a TRUTHFUL
 #: equivalent in the monitor's own state, so they are MAPPED (below) rather than
@@ -195,6 +205,9 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         "stop_sentinel_path",
         "config_generation",
         "goal_token",
+        "scheduled_message",
+        "scheduled_at",
+        "scheduled_completed",
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
@@ -271,7 +284,10 @@ _MONITOR_MAPPED_LEGACY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: rendering change should add.
 
 
-def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
+def _serialize_for_legacy_reader(
+    loop: Any,
+    scheduled_provenance: ScheduledMessageProvenance | None = None,
+) -> dict[str, Any]:
     """Project ANY loop, structured monitor included, into the legacy shape.
 
     A structured monitor belongs on these reads: the goal popover is the only
@@ -286,10 +302,22 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
     withheld fields rather than by assembling them and deleting them -- no
     intermediate payload holds the monitor for a later edit to leak.
 
-    A plain or gated loop is untouched and still goes through ``_serialize``.
+    Plain and gated loops still go through ``_serialize``. Scheduled-message
+    records then withhold ``message`` unless protected provenance was supplied
+    by an authenticated per-slot reader.
     """
     if not is_structured_monitor_loop(loop):
-        return _serialize(loop)
+        payload = _serialize(loop)
+        if is_scheduled_message(loop):
+            # The generic registry is a presence feed, not an entitlement to
+            # exact deferred composer text. Only the authenticated per-slot read
+            # supplies protected provenance here.
+            payload.pop("message", None)
+            if scheduled_provenance is not None:
+                payload["message"] = scheduled_provenance.message
+                payload["scheduled_at"] = scheduled_provenance.scheduled_at
+                payload["next_due_ts"] = scheduled_provenance.scheduled_at
+        return payload
     # Every field that survives the filter is a scalar, which is what keeps this
     # projection JSON-safe without ``asdict``'s recursive copy -- the only nested
     # field on the dataclass is ``monitor``, and it is withheld. A test pins the
@@ -411,6 +439,35 @@ async def _require_monitor_internal(request: web.Request) -> web.Response | None
     return _monitor_error(
         "internal secret required",
         _CODE_INTERNAL_SECRET_REQUIRED,
+        status=403,
+    )
+
+
+async def _require_scheduled_message_user(request: web.Request) -> web.Response | None:
+    """Require and audit positive browser-user provenance for scheduling.
+
+    Internal-secret callers and app tokens can author automations, but they are
+    not human composer submissions and must never mint a later ``user`` row.
+    """
+    operation = f"scheduled_message_{request.method.lower()}"
+    if (
+        request.get("is_dashboard_user") is True
+        and request.get("internal_auth") is not True
+        and request.get("app", "") == ""
+    ):
+        await _audit_monitor_access(request, operation, "allowed")
+        return None
+    await _audit_monitor_access(
+        request,
+        operation,
+        "denied",
+        error="authenticated dashboard user required",
+    )
+    return web.json_response(
+        {
+            "error": "scheduled messages require an authenticated dashboard user",
+            "code": _CODE_SCHEDULED_MESSAGE_USER_REQUIRED,
+        },
         status=403,
     )
 
@@ -545,10 +602,41 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
     if svc is None:
         return web.json_response({"enabled": False, "loop": None})
     loop = svc.get_by_slot(slot_key)
+    scheduled_provenance = None
+    if loop is not None and is_scheduled_message(loop):
+        denied = await _require_scheduled_message_user(request)
+        if denied is not None:
+            return denied
+        try:
+            scheduled_provenance = await asyncio.to_thread(
+                read_scheduled_message,
+                scheduled_message_trust_id(loop.id),
+                loop.slot_key,
+            )
+        except OSError:
+            return web.json_response(
+                {
+                    "error": "scheduled message provenance is temporarily unavailable",
+                    "code": "scheduled_message_provenance_unavailable",
+                },
+                status=503,
+            )
+        if scheduled_provenance is None:
+            return web.json_response(
+                {
+                    "error": "scheduled message provenance is unavailable",
+                    "code": "scheduled_message_provenance_unavailable",
+                },
+                status=409,
+            )
     return web.json_response(
         {
             "enabled": True,
-            "loop": _serialize_for_legacy_reader(loop) if loop is not None else None,
+            "loop": (
+                _serialize_for_legacy_reader(loop, scheduled_provenance)
+                if loop is not None
+                else None
+            ),
         }
     )
 
@@ -870,11 +958,63 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "monitor": _serialize_monitor(restarted)})
 
 
+def _scheduled_message_at(body: dict[str, Any]) -> tuple[float | None, web.Response | None]:
+    """Parse an optional whole-second future ``at`` within the 30-day horizon."""
+    if "at" not in body:
+        return None, None
+    raw_at = body.get("at")
+    if raw_at is None or isinstance(raw_at, bool):
+        return None, web.json_response(
+            {"error": "at must be epoch seconds", "code": "invalid_scheduled_at"}, status=400
+        )
+    try:
+        scheduled_at = float(raw_at)
+    except (TypeError, ValueError, OverflowError):
+        return None, web.json_response(
+            {"error": "at must be epoch seconds", "code": "invalid_scheduled_at"}, status=400
+        )
+    if not math.isfinite(scheduled_at):
+        return None, web.json_response(
+            {"error": "at must be finite epoch seconds", "code": "invalid_scheduled_at"},
+            status=400,
+        )
+    if not scheduled_at.is_integer():
+        return None, web.json_response(
+            {
+                "error": "at must identify a whole second",
+                "code": "scheduled_at_not_whole_second",
+            },
+            status=400,
+        )
+    now = time.time()
+    if scheduled_at <= now:
+        return None, web.json_response(
+            {
+                "error": "scheduled time must be in the future",
+                "code": "scheduled_at_not_future",
+            },
+            status=400,
+        )
+    if scheduled_at > now + MAX_SCHEDULE_AHEAD_SECS:
+        return None, web.json_response(
+            {
+                "error": "scheduled time must be within 30 days",
+                "code": "scheduled_at_too_far",
+            },
+            status=400,
+        )
+    return scheduled_at, None
+
+
 async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
-            stop_sentinel_path?, gate?, banner? }
+            stop_sentinel_path?, gate?, banner?, at? }
+
+    ``at`` switches this create into a dashboard-only one-shot scheduled
+    message: an integer epoch-seconds instant within 30 days. It uses the same
+    session automation record and create-only conflict as Set a Goal.
 
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
@@ -898,6 +1038,27 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    scheduled_at, scheduled_at_error = _scheduled_message_at(body)
+    if scheduled_at_error is not None:
+        return scheduled_at_error
+    scheduled_at = scheduled_at or 0.0
+    if scheduled_at > 0:
+        denied = await _require_scheduled_message_user(request)
+        if denied is not None:
+            return denied
+        if not isinstance(body.get("message"), str) or not body["message"].strip():
+            return web.json_response(
+                {"error": "message is required", "code": "scheduled_message_empty"},
+                status=400,
+            )
+        if goal_command_mutates_automation(body["message"]):
+            return web.json_response(
+                {
+                    "error": "scheduled messages cannot change session goals",
+                    "code": "scheduled_message_goal_command_mutates",
+                },
+                status=400,
+            )
     # idle_secs/max_cycles/max_runtime_secs come straight from the request
     # body: int() raises ValueError on "abc", TypeError on null/list, and
     # OverflowError on float("inf") (1e309 is legal JSON in aiohttp's parser),
@@ -939,22 +1100,19 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
             {"error": "gate must be a boolean", "code": "not_a_boolean"}, status=400
         )
     gate = False if raw_gate is None else raw_gate
-    # Validated HERE, not at the chokepoint. `authorize_and_add_nudge` takes the
-    # brief through unchanged and says so: it owns the banner cap and the redaction
-    # passes but deliberately not this, because a refusal has to name the field the
-    # owner can fix and only the surface they typed it at can do that. This route is
-    # such a surface, so it runs the same `validate_judge_spec` the monitor_start
-    # tool runs rather than forwarding an unchecked object -- an unvalidated brief
-    # reaching the loop record would be the way around that bound.
-    #
-    # And it is ACCEPTED rather than refused, because silently dropping it is the one
-    # outcome that leaves a caller believing a judge is armed when none is.
+    # Validate an optional wake-judge brief on the surface where the owner typed
+    # it, so malformed criteria produce a field-specific refusal.
     try:
         judge_spec = validate_judge_spec(body.get("judge"))
     except ValidationError as exc:
         return web.json_response(
             {"error": f"{exc.field}: {exc.message}", "code": "invalid_judge_spec"}, status=400
         )
+    if scheduled_at > 0:
+        # Scheduling is a one-shot delivery mode, never a prompt-derived monitor.
+        # The service enforces the same invariant for direct callers.
+        max_cycles = 1
+        gate = False
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -973,6 +1131,8 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         caller=request.remote or "",
         gate=gate,
         replace_existing=False,
+        scheduled_at=scheduled_at,
+        composer_user_origin=scheduled_at > 0,
     )
     if error is not None:
         return web.json_response({"error": error, "code": "autonudge_not_armed"}, status=status)
@@ -1013,6 +1173,46 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    scheduled_at = None
+    if existing is not None and is_scheduled_message(existing):
+        denied = await _require_scheduled_message_user(request)
+        if denied is not None:
+            return denied
+        if existing.cycle_count > 0 or not existing.active:
+            return web.json_response(
+                {
+                    "error": "scheduled message is already firing or completed",
+                    "code": "scheduled_message_in_flight",
+                },
+                status=409,
+            )
+        unsupported = sorted(set(body) - {"message", "at"})
+        if unsupported:
+            return web.json_response(
+                {
+                    "error": "scheduled messages can update only message and at",
+                    "code": "scheduled_message_fields_invalid",
+                },
+                status=400,
+            )
+        if "message" in body and (
+            not isinstance(body["message"], str) or not body["message"].strip()
+        ):
+            return web.json_response(
+                {"error": "message is required", "code": "scheduled_message_empty"},
+                status=400,
+            )
+        if "message" in body and goal_command_mutates_automation(body["message"]):
+            return web.json_response(
+                {
+                    "error": "scheduled messages cannot change session goals",
+                    "code": "scheduled_message_goal_command_mutates",
+                },
+                status=400,
+            )
+        scheduled_at, scheduled_at_error = _scheduled_message_at(body)
+        if scheduled_at_error is not None:
+            return scheduled_at_error
     loop, error, status = await authorize_and_update_nudge(
         svc=svc,
         loop_id=loop_id,
@@ -1022,6 +1222,8 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         active=body.get("active"),
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
+        scheduled_at=scheduled_at,
+        scheduled_user_origin=existing is not None and is_scheduled_message(existing),
         source="dashboard",
         caller=request.remote or "",
     )
@@ -1110,7 +1312,38 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
         return web.json_response({"ok": True})
-    await svc.remove(loop_id)
+    cancelled_provenance: ScheduledMessageProvenance | None = None
+    removed_without_provenance = False
+    if existing is not None and is_scheduled_message(existing):
+        denied = await _require_scheduled_message_user(request)
+        if denied is not None:
+            return denied
+        try:
+            cancelled_provenance = await svc.remove_pending_scheduled_message(loop_id)
+        except ValueError:
+            # Provenance gates HONORING and cancel-and-preserve, not the
+            # authenticated owner's exit. There is no trusted text to return,
+            # but the invalid row must never trap its owner.
+            await svc.remove(loop_id)
+            removed_without_provenance = True
+        except OSError:
+            return web.json_response(
+                {
+                    "error": "scheduled message provenance is unavailable",
+                    "code": "scheduled_message_provenance_unavailable",
+                },
+                status=409,
+            )
+        if cancelled_provenance is None and not removed_without_provenance:
+            return web.json_response(
+                {
+                    "error": "scheduled message delivery has already started",
+                    "code": "scheduled_message_in_flight",
+                },
+                status=409,
+            )
+    else:
+        await svc.remove(loop_id)
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
         source="dashboard",
@@ -1118,6 +1351,8 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         outcome="success" if existing else "noop",
         metadata={"loop_id": loop_id, "caller": request.remote or ""},
     )
+    if cancelled_provenance is not None:
+        return web.json_response({"ok": True, "message": cancelled_provenance.message})
     return web.json_response({"ok": True})
 
 
@@ -1132,7 +1367,7 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
 
     Thin HTTP mapping, as everywhere else in this file: ``svc.fire_now`` owns the
     schedule semantics and the not-registered / not-active / mid-fire refusals,
-    and documents why each is load-bearing. Two refusals belong here instead,
+    and documents why each is load-bearing. Three refusals belong here instead,
     because they are about the transport's own subject rather than the loop:
 
     * A **structured monitor** is refused with the same 409 code ``PATCH`` uses.
@@ -1141,6 +1376,13 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
       never takes that path. The goal popover DOES see one -- the read routes
       above return it -- which is why this refusal has to be stated rather than
       left to the reader being unable to reach it.
+    * A **scheduled message** is refused with 409 ``scheduled_message_cannot_fire``.
+      The composer's Send later record is a one-shot bound to the instant its
+      author named, and the product offers no control that sends it early: the
+      only path that delivers it is the countdown reaching ``scheduled_at``.
+      ``svc.fire_now`` refuses it too; this route states the refusal in its own
+      vocabulary so the popover can show it, and stops before the audit-or-deny
+      write so no ``invoked`` record is minted for a press that arms nothing.
     * A **busy session** is refused rather than queued, and that is not a fresh
       product decision — the fire path this route arms already made it, with its
       reason written down at the site: queueing "would stack identical 3KB+
@@ -1274,6 +1516,15 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
         return _monitor_error(
             "structured monitors must use the monitor update API",
             "structured_monitor_requires_monitor_api",
+            status=409,
+        )
+    if is_scheduled_message(existing):
+        await _audit("denied", existing.slot_key, _CODE_SCHEDULED_MESSAGE_CANNOT_FIRE)
+        return web.json_response(
+            {
+                "error": "scheduled messages send only at their scheduled time",
+                "code": _CODE_SCHEDULED_MESSAGE_CANNOT_FIRE,
+            },
             status=409,
         )
     state: DashboardState = request.app["state"]

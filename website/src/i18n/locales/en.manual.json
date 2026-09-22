@@ -1914,7 +1914,22 @@
       "optimize_failed_elsewhere": "Couldn't optimize the prompt you started in another session. Its original text was restored there.",
       "session_control_needs_attention": "Needs attention",
       "session_control_ready": "Ready",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "send_later": "Send later…",
+      "send_later_subtitle": "Delivers this draft at a time you pick",
+      "send_at": "Send at",
+      "scheduled_message": "Scheduled message",
+      "message_already_scheduled": "A message is already scheduled for this session.",
+      "unschedule": "Unschedule",
+      "edit_scheduled_message": "Edit",
+      "schedule_message_confirm": "Schedule message",
+      "schedule_message_failed": "Couldn't schedule the message. Your draft was kept — try again.",
+      "schedule_message_conflict": "A message is already scheduled. Unschedule it or edit it before scheduling another.",
+      "schedule_message_sending": "This message is already sending. Wait for delivery to finish.",
+      "stop_monitor_to_schedule": "Stop the monitor to schedule a message.",
+      "schedule_not_ready": "Couldn't load this session's state yet, so a message can't be scheduled. Try again in a moment.",
+      "schedule_restart_clears_note": "If the gateway restarts before then, this message is cleared and won't be sent.",
+      "type_a_message_first": "Type a message first."
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
@@ -5769,6 +5784,7 @@
       }
     },
     "schedulePage": {
+      "scheduled_chat_messages_original_chat_note": "Scheduled chat messages stay in their original chat and are managed there.",
       "batch_delete_failed": "Batch delete failed",
       "changes_only_how_the_calendar_grid_is_displayed": "Changes only how the calendar grid is displayed — does not change when any job actually fires.",
       "click_again_to_confirm": "Click again to confirm",

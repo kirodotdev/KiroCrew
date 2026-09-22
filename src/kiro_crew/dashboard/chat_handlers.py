@@ -210,7 +210,7 @@ from kiro_crew.validation import (
 )
 
 if TYPE_CHECKING:  # circular at runtime: autonudge -> dashboard.chat -> chat_handlers
-    from kiro_crew.autonudge import NudgeLoop
+    from kiro_crew.autonudge import NudgeLoop, SlotNudgeRetirement
     from kiro_crew.config.sections import ResolvedBindings
 
 logger = logging.getLogger(__name__)
@@ -392,6 +392,30 @@ async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict 
         return False, None
 
 
+def _validate_relay_containment_admission(raw: Any) -> dict[str, Any]:
+    """Validate the trusted peer-relay form of ``containment_meta``."""
+    from kiro_crew.dashboard import session_control
+
+    if not isinstance(raw, dict) or set(raw) != {session_control.QUEUED_CONTAINMENT_META_KEY}:
+        raise ValueError("invalid relay containment admission")
+    snapshot = raw.get(session_control.QUEUED_CONTAINMENT_META_KEY)
+    if not isinstance(snapshot, dict):
+        raise ValueError("invalid relay containment admission")
+    required_bools = {"linked", "mirrored", "ephemeral", "app", "unattended"}
+    if not required_bools.issubset(snapshot) or any(
+        not isinstance(snapshot.get(name), bool) for name in required_bools
+    ):
+        raise ValueError("invalid relay containment admission")
+    if not isinstance(snapshot.get("workspace"), str):
+        raise ValueError("invalid relay containment admission")
+    allowed = required_bools | {"workspace", "mirror_identity"}
+    if set(snapshot) - allowed:
+        raise ValueError("invalid relay containment admission")
+    if "mirror_identity" in snapshot and not isinstance(snapshot["mirror_identity"], str):
+        raise ValueError("invalid relay containment admission")
+    return raw
+
+
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
     state: DashboardState = request.app["state"]
@@ -399,7 +423,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    message = body.get("message", "").strip()
+    raw_message = body.get("message", "")
+    message = raw_message.strip()
     agent = body.get("agent", "")
     slot_name = body.get("slot")
     color_theme = body.get("color_theme", "")
@@ -635,12 +660,36 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
-    if not request_app:
-        # A dashboard user (no app token) typed into this slot, so a human
-        # demonstrably has it open. That restores the full 2h approval
-        # window even on an app-owned tab — the deny-fast window is for slots
-        # nobody is watching. Only a caller with an EMPTY request_app reaches
-        # here, so an app cannot forge attendance for its own worker.
+    # Classify relay provenance before any branch can treat an authenticated
+    # request as a live user's act. A scheduled relay is identified only by a
+    # containment admission whose complete shape this gateway validated; an
+    # ordinary live relay carries no admission and retains its historical user
+    # authority. Do this after the ownership/member gates, so malformed relay
+    # metadata cannot become an existence oracle, but before attendance, steer,
+    # queue, and direct-dispatch authority are derived.
+    ws_mode = request.query.get("ws") == "1"
+    relay_mode = not ws_mode and relay_requested
+    relay_containment_admission: dict[str, Any] | None = None
+    if relay_mode and "containment_admission" in body:
+        try:
+            relay_containment_admission = _validate_relay_containment_admission(
+                body["containment_admission"]
+            )
+        except ValueError:
+            return web.json_response(
+                {
+                    "error": "containment_admission has an invalid shape",
+                    "code": "relay_containment_invalid",
+                },
+                status=400,
+            )
+    directive_user_origin = not bool(request_app) and relay_containment_admission is None
+
+    if directive_user_origin:
+        # A live dashboard user (including one relayed from the owner gateway)
+        # typed into this slot, so a human demonstrably has it open. A validated
+        # scheduled relay is authenticated but unattended and must not refresh
+        # this approval window.
         slot._human_seen = True
 
     if slot.agent not in (None, ""):
@@ -781,6 +830,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
+    if relay_containment_admission is not None:
+        # Only a fully validated scheduled containment snapshot switches relay
+        # delivery from the historical trim to the exact composer text.
+        message = raw_message
+
     _pending_control_text = message.strip().lower()
     _pending_control_words = _pending_control_text.split()
     _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
@@ -789,7 +843,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     _is_go = _pending_control_text in ("go", "go all")
     _is_go_all = _pending_control_text == "go all"
     tracker = slot._orch_tracker
-    _pending_escalated_stop = bool(
+    _pending_escalated_stop = directive_user_origin and bool(
         tracker is not None
         and tracker.has_escalated
         and not tracker.stopped
@@ -797,7 +851,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and _pending_control_words[0] in _stop_words
     )
     _pending_stage_control = _orchestrator_mode and (
-        (_is_go and not _widget_origin) or _pending_escalated_stop
+        (directive_user_origin and _is_go and not _widget_origin) or _pending_escalated_stop
     )
     _pending_stage_boundary = (
         stage_boundary_for(slot).stage is not None and not _pending_stage_control
@@ -806,8 +860,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
-        # sends cannot steer because doing so would inherit the live turn's human
-        # provenance; they fall through to the fail-closed queue below.
+        # and unattended scheduled-relay sends cannot steer because doing so
+        # would inherit the live turn's human provenance; they fall through to
+        # the fail-closed queue below.
         # Fire-and-forget —
         # the inline steer card materializes when kiro-cli echoes steering_consumed
         # (EVENT_STEER_CONSUMED). If steer is requested but unavailable (no live
@@ -831,7 +886,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(body.get("steer")) and not request_app:
+        if steer_is_auto(body.get("steer")) and directive_user_origin:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -847,7 +902,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if body.get("steer") and not request_app and not _auto_queues:
+        if body.get("steer") and directive_user_origin and not _auto_queues:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -867,7 +922,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # session's own surface by its authenticated human, which is what
                 # earns a requeued entry the exemption from the drain's LINKED drop.
                 # Stated rather than defaulted, because the default fails closed.
-                user_origin=not bool(request_app),
+                user_origin=directive_user_origin,
                 # Captured HERE, before the RPC suspends, for the same reason the peer
                 # path captures it: the requeue runs in the turn's teardown and a slot
                 # read there folds a mirror linked during the suspension into the
@@ -911,8 +966,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # ``relay=1`` mirror, so its answer never reaches the owner — the
         # silent-loss path. Refusing a relayed send while busy makes the owner's
         # ``_peer_turn_chunks`` raise on the 409 and surface a reconnect prompt
-        # instead. Read raw off the query because ``relay_mode`` is computed later
-        # in this handler, after this busy branch.
+        # instead. ``relay_requested`` was derived from the query above and is
+        # independent of the request body.
         if slot.is_remote or request.query.get("relay") == "1":
             return web.json_response(
                 {
@@ -943,7 +998,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             state,
             slot,
             message,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=directive_user_origin,
             # A queued turn reaches the runner through the DRAIN, so the dispatch
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
@@ -976,6 +1031,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(f"dashboard:{slot.key}")
     ):
+        # A relay needs this request's mirrored SSE stream to deliver its
+        # answer. Holding it behind background sub-agents would return a JSON
+        # queue receipt without ``[DONE]``; the owner would rearm while this
+        # first copy later drains without relay mirroring. Local user sends
+        # retain the ordinary hold behavior below.
+        if relay_requested:
+            return web.json_response(
+                {
+                    "error": "this crew is still running the previous message; send again when it finishes",
+                    "code": "remote_turn_busy",
+                },
+                status=409,
+            )
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -995,7 +1063,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
-            directive_user_origin=not bool(request_app),
+            directive_user_origin=directive_user_origin,
         )
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
@@ -1026,17 +1094,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # the receipt: the on-screen marker belongs with its consumer.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
-    # WS mode: return JSON immediately, chunks delivered via WebSocket
-    ws_mode = request.query.get("ws") == "1"
-
-    # Relay mode: an SSE reader on ANOTHER gateway is running this turn on behalf
-    # of a session in its own local list, and needs the frames a WebSocket client
-    # would get — tool calls, segment boundaries, turn end — which the SSE
-    # transport does not otherwise carry. For the life of this request those
-    # frames are also queued onto the slot's pending rows. Meaningless in WS mode
-    # (a WebSocket client already receives them) and ignored there, so the flag
-    # can never double-deliver to a local client.
-    relay_mode = not ws_mode and request.query.get("relay") == "1"
     slot._has_reader = not ws_mode  # Only block SSE broadcast if HTTP SSE reader
     slot._file_changes = []  # Reset file-change accumulator for the new turn
     # ── Sweep orphaned permissions from prior turns ──
@@ -1227,7 +1284,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
             slot.key,
         )
-    elif _orchestrator_mode and _is_go:
+    elif _orchestrator_mode and _is_go and directive_user_origin:
         _is_auto = _is_go_all
         if _is_auto:
             slot._auto_run = True
@@ -1263,7 +1320,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _queue_consumed_stage_resume(
                 state,
                 slot,
-                directive_user_origin=not bool(request.get("app", "")),
+                directive_user_origin=directive_user_origin,
             )
             slot._last_turn_auth_required = False
         task = asyncio.create_task(
@@ -1387,7 +1444,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # an app-authored send out of the ledger's ``user`` bucket: the actor
     # resolver's fallback is ``user``, so a site that observes an app and stays
     # silent records a person who never typed anything.
-    _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
+    _turn_kwargs: dict = {"_directive_user_origin": directive_user_origin}
+    if relay_containment_admission is not None:
+        _turn_kwargs["_audience_containment_admission"] = relay_containment_admission
     if request_app:
         _turn_kwargs["_turn_actor"] = "app"
     if _accepted_attachments:
@@ -5613,8 +5672,8 @@ class _NudgeRetireFailed(Exception):
         self.loop = loop
 
 
-async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
-    """Retire *name*'s auto-nudge loop and return it (None if it had none).
+async def _retire_slot_nudge_loop(name: str) -> "SlotNudgeRetirement | None":
+    """Retire *name*'s auto-nudge loop and return its rollback token.
 
     Retire this slot's loop at the moment the user dismissed the tab.
     "Respect the close" cannot rest on the fire path's rehydrate miss, because
@@ -5644,7 +5703,7 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     Legacy loops are removed. Structured monitors instead retain their durable
     outcome and clear their timer, so terminal history remains inspectable.
 
-    The returned loop lets the persist-failure path put the clock back (see
+    The returned token lets the persist-failure path put the clock back (see
     :func:`_restore_slot_nudge_loop`).
 
     A removal that FAILS raises :exc:`_NudgeRetireFailed` rather than logging and
@@ -5659,6 +5718,9 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     """
     try:
         from kiro_crew.autonudge import (
+            ScheduledMessageInFlight,  # circular: autonudge -> dashboard.chat -> chat_handlers
+        )
+        from kiro_crew.autonudge import (
             get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
         )
 
@@ -5672,6 +5734,8 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
         return None
     try:
         return await svc.remove_by_slot(name)
+    except ScheduledMessageInFlight:
+        raise
     except Exception as exc:
         logger.warning("autonudge loop removal on slot close failed", exc_info=True)
         loop = svc.get_by_slot(name)
@@ -5679,7 +5743,8 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
 
 
 async def _restore_slot_nudge_loop(
-    loop: "NudgeLoop | None", admission_check: Callable[[], bool]
+    retirement: "NudgeLoop | SlotNudgeRetirement | None",
+    admission_check: Callable[[], bool],
 ) -> None:
     """Give a session its clock back after a close that failed to persist.
 
@@ -5687,15 +5752,18 @@ async def _restore_slot_nudge_loop(
     otherwise leave the restored session live with nothing driving it — an
     unattended babysit abandoned by a disk error, with no trace but a log line.
 
-    The replacement carries the REMAINING budget, never a fresh one. ``add()``
-    mints a new id and a new ``created_ts``, so the spent allowance is subtracted
-    here instead: a failed close must not buy unattended cycles the user never
-    granted. A loop whose cycle cap or wall-clock budget is already spent is not
-    restored at all (it was one tick from terminal), and neither is a paused one
-    — reviving that would override an explicit stop.
+    Scheduled messages restore through their process-local retirement token.
+    Their exact text and deadline come from authenticated provenance, never the
+    redacted mutable loop. Legacy loops carry the REMAINING budget, never a fresh
+    one. A loop whose cycle cap or wall-clock budget is already spent is not
+    restored at all, and neither is a paused one.
     """
-    if loop is None:
+    if retirement is None:
         return
+    from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
+    from kiro_crew.autonudge import SlotNudgeRetirement, is_scheduled_message
+
+    loop = retirement.loop if isinstance(retirement, SlotNudgeRetirement) else retirement
     monitor = getattr(loop, "monitor", None)
     if monitor is not None:
         if (
@@ -5704,11 +5772,7 @@ async def _restore_slot_nudge_loop(
             and monitor.outcome.value == "session_close"
         ):
             try:
-                from kiro_crew.autonudge import (
-                    get_instance as _autonudge_get,  # circular: autonudge -> dashboard
-                )
-
-                svc = _autonudge_get()
+                svc = autonudge.get_instance()
                 if svc is not None:
                     await svc.restore_monitor_after_failed_session_close(
                         loop.id,
@@ -5720,11 +5784,28 @@ async def _restore_slot_nudge_loop(
                     exc_info=True,
                 )
         return
+    if is_scheduled_message(loop):
+        # A plain loop reaches this branch only when retirement itself failed;
+        # that transaction already restored its row and provenance. A committed
+        # retirement carries the authenticated snapshot required for an exact
+        # rollback. Missing/invalid authority never becomes a legacy prompt.
+        if isinstance(retirement, SlotNudgeRetirement):
+            try:
+                svc = autonudge.get_instance()
+                if svc is not None:
+                    await svc.restore_scheduled_message_after_failed_session_close(
+                        retirement,
+                        admission_check=admission_check,
+                    )
+            except Exception:
+                logger.warning(
+                    "scheduled message restore after failed slot close failed",
+                    exc_info=True,
+                )
+        return
     if not loop.active:
         return
     try:
-        from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
-
         svc = autonudge.get_instance()
         if svc is None:
             return
@@ -5930,7 +6011,7 @@ class SlotCloseError(Exception):
     would have rendered.
 
     Extracted alongside :func:`close_slot` so the DELETE endpoint and
-    session-control's ``close_target`` map the SAME four failures the same way.
+    session-control's ``close_target`` map the SAME failures the same way.
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
     ``status`` is 500 for every close failure (each leaves the tab open and
     every partial step rolled back — a state the user can see and retry).
@@ -6180,11 +6261,25 @@ async def _close_slot(
             discard_failure_scopes(closing_failure_scopes)
 
     closing_execution = read_live_session_execution(closing_key)
+    from kiro_crew.autonudge import (
+        ScheduledMessageInFlight,  # circular: autonudge -> dashboard.chat -> chat_handlers
+    )
+
     # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
     # into the session being closed and resurrect it. See
     # _retire_slot_nudge_loop for why disarming alone does not hold.
     try:
         retired_loop = await _retire_slot_nudge_loop(name)
+    except ScheduledMessageInFlight:
+        # The scheduled turn may already have reached the model. Keep the tab,
+        # row, protected provenance, and exact task correlation together until
+        # its normal completion path can decide cleanup versus replay.
+        _sync_dashboard_slots(state)
+        state.push_slots_update()
+        raise SlotCloseError(
+            "scheduled message turn is still settling",
+            code="scheduled_message_in_flight",
+        )
     except _NudgeRetireFailed as exc:
         # The loop could not be retired, so the close CANNOT proceed: persisting
         # the slot as closed while the registry still lists the loop is what lets
@@ -6248,6 +6343,24 @@ async def _close_slot(
         # so a later queued arm revalidates against the now-missing slot.
         try:
             late_retired_loop = await _retire_slot_nudge_loop(name)
+        except ScheduledMessageInFlight:
+            from kiro_crew.apps.teardown import (
+                notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+            )
+
+            if not await notify_slot_close_undone(slot._app, name):
+                logger.error(
+                    "Could not take back the dismissal for app %r on %r while "
+                    "a scheduled message turn was settling",
+                    slot._app,
+                    name,
+                )
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            raise SlotCloseError(
+                "scheduled message turn is still settling",
+                code="scheduled_message_in_flight",
+            )
         except _NudgeRetireFailed as exc:
             await _restore_slot_nudge_loop(exc.loop, lambda: state.get_slot(name) is slot)
             from kiro_crew.apps.teardown import (
@@ -6557,11 +6670,11 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
         # Every failure `close_slot` raises is a server-side 500 (history write
-        # running / nudge retire / app hook / history save); a literal status keeps
-        # the error-code contract gate able to verify the `code` statically (a
-        # `status=<expr>` would read as an un-verifiable dynamic-status response).
-        # The pre-pop re-check that raises other statuses is session-control's
-        # path, not this handler's.
+        # running / scheduled turn / nudge retire / app hook / history save); a
+        # literal status keeps the error-code contract gate able to verify the
+        # `code` statically (a `status=<expr>` would read as an un-verifiable
+        # dynamic-status response). The pre-pop re-check that raises other
+        # statuses is session-control's path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"ok": True})
 

@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import SessionAutomationPopover from '../components/SessionAutomationPopover'
+import SessionAutomationPopover, {
+  scheduledMessageRequestError,
+} from '../components/SessionAutomationPopover'
 import {
   normalizeAutomationRecord,
   type AutomationRecord,
@@ -9,6 +11,8 @@ import {
   type StructuredMonitor,
 } from '../monitoring/automation'
 import { api, ApiError } from '../api/client'
+import { fmtDateTime, fmtDateTimeNumeric } from '../i18n/format'
+import { fireTimeLocal } from '../components/ScheduleLaterPopover'
 import { structuredMonitorLoop } from './monitorFixtures'
 
 const framerMocks = vi.hoisted(() => ({ reducedMotion: false }))
@@ -46,6 +50,17 @@ const activeLegacyLoop: LegacyGoalLoop = {
   nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, stoppedReason: '',
 }
 
+const scheduledLoop: LegacyGoalLoop = {
+  ...activeLegacyLoop,
+  id: 'scheduled-1',
+  message: 'Original scheduled message',
+  maxCycles: 1,
+  cycleCount: 0,
+  scheduledMessage: true,
+  scheduledAt: 1_900_000_000,
+  nextDueAt: 1_900_000_000,
+}
+
 /* The popover opens on the goal loop, so a test about the BOUNDED form has to
    walk to it exactly as a reader does. Pressed only when the offer is on
    screen: a slot that already holds a monitor opens on the bounded view, and a
@@ -62,7 +77,13 @@ function renderPopover(
   creationReady = true,
   onOpenChange = vi.fn(),
   sessionMode = '',
-  { enterBounded = true }: { enterBounded?: boolean } = {},
+  {
+    enterBounded = true,
+    onRestoreScheduledMessage,
+  }: {
+    enterBounded?: boolean
+    onRestoreScheduledMessage?: (message: string) => void
+  } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const props = (next: AutomationRecord | null, slotKey = 'chat-1', open = true) => (
@@ -73,6 +94,7 @@ function renderPopover(
         open={open}
         onOpenChange={onOpenChange}
         onChange={onChange}
+        onRestoreScheduledMessage={onRestoreScheduledMessage}
         creationReady={creationReady}
         sessionMode={sessionMode}
       />
@@ -1146,4 +1168,168 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('textbox', { name: 'Goal description' })).toBeInTheDocument()
     expect(screen.queryByTestId('judge-line')).not.toBeInTheDocument()
   })
+})
+
+
+describe('SessionAutomationPopover scheduled messages', () => {
+  beforeEach(() => vi.clearAllMocks())
+  afterEach(() => vi.unstubAllGlobals())
+
+it('states the send time once, in the Send at field', () => {
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+  const at = scheduledLoop.scheduledAt as number
+
+  expect(screen.getByRole('heading', { name: 'Scheduled message' })).toBeInTheDocument()
+  expect(screen.getByLabelText('Send at')).toHaveValue(fireTimeLocal(at))
+  // The header shows no fire-time prose; only the editable Send at field carries it.
+  expect(screen.queryByText(fmtDateTimeNumeric(at))).not.toBeInTheDocument()
+  expect(screen.queryByText(fmtDateTime(at))).not.toBeInTheDocument()
+})
+
+it('names the trigger with the send time at minute precision', () => {
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+  const at = scheduledLoop.scheduledAt as number
+
+  /* The picker offers minutes, so a `:00` second in the trigger's name would
+     be a value the reader never set -- and the same string the composer
+     banner renders, so the two never disagree about one instant. */
+  const trigger = screen.getByRole('button', { name: `Scheduled message · ${fmtDateTime(at)}` })
+  expect(trigger).toBeInTheDocument()
+  expect(trigger.getAttribute('aria-label')).not.toContain(fmtDateTimeNumeric(at))
+  expect(trigger.getAttribute('aria-label')).not.toMatch(/\d:\d\d:\d\d/)
+})
+
+it('preserves unsaved scheduled drafts when the same loop is replaced from the network', () => {
+  const { rerenderAutomation } = renderPopover(
+    scheduledLoop,
+    vi.fn(),
+    true,
+    vi.fn(),
+    '',
+    { enterBounded: false },
+  )
+  const message = screen.getByRole('textbox', { name: 'Message' })
+  const sendAt = screen.getByLabelText('Send at')
+
+  fireEvent.change(message, { target: { value: 'Unsaved exact draft' } })
+  fireEvent.change(sendAt, { target: { value: '2030-04-01T12:00' } })
+  rerenderAutomation({
+    ...scheduledLoop,
+    message: 'Replacement projection',
+    scheduledAt: scheduledLoop.scheduledAt! + 300,
+    nextDueAt: scheduledLoop.nextDueAt! + 300,
+  })
+
+  expect(message).toHaveValue('Unsaved exact draft')
+  expect(sendAt).toHaveValue('2030-04-01T12:00')
+})
+
+it('omits unchanged scheduled text from a time-only PATCH', async () => {
+  const updatedAt = 1_901_000_000
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    loop: {
+      id: scheduledLoop.id,
+      slot_key: scheduledLoop.slotKey,
+      message: scheduledLoop.message,
+      idle_secs: scheduledLoop.idleSecs,
+      max_cycles: 1,
+      cycle_count: 0,
+      active: true,
+      last_fire_ts: 0,
+      next_due_ts: updatedAt,
+      max_runtime_secs: scheduledLoop.maxRuntimeSecs,
+      stopped_reason: '',
+      scheduled_message: true,
+      scheduled_at: updatedAt,
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchMock)
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+  fireEvent.change(screen.getByLabelText('Send at'), {
+    target: { value: '2030-04-01T12:00' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+  const init = fetchMock.mock.calls[0][1] as RequestInit
+  expect(JSON.parse(String(init.body))).toEqual({ at: expect.any(Number) })
+})
+
+it('restores authoritative backend text when unscheduling an edited draft', async () => {
+  const restore = vi.fn()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    ok: true,
+    message: 'Exact protected composer text',
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  renderPopover(
+    scheduledLoop,
+    vi.fn(),
+    true,
+    vi.fn(),
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Unsaved local replacement' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+
+  await waitFor(() => expect(restore).toHaveBeenCalledWith('Exact protected composer text'))
+})
+
+it('shows the conflict copy when Unschedule is refused with a 409 autonudge_not_armed', async () => {
+  /* The backend never emits `session_automation_exists`; a slot conflict is the
+     409 shape of `autonudge_not_armed`. The refusal must land in the popover's
+     own notice, and the unsaved draft stays put (no restore, no close). */
+  const restore = vi.fn()
+  const onOpenChange = vi.fn()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    error: 'session already has an automation',
+    code: 'autonudge_not_armed',
+  }), { status: 409, headers: { 'Content-Type': 'application/json' } })))
+  renderPopover(
+    scheduledLoop,
+    vi.fn(),
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+
+  expect(await screen.findByText(
+    'A message is already scheduled. Unschedule it or edit it before scheduling another.',
+  )).toBeInTheDocument()
+  expect(restore).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+})
+
+describe('scheduledMessageRequestError', () => {
+  const CONFLICT = 'A message is already scheduled. Unschedule it or edit it before scheduling another.'
+  const GENERIC = "Couldn't schedule the message. Your draft was kept — try again."
+  const SENDING = 'This message is already sending. Wait for delivery to finish.'
+
+  it('reads a 409 autonudge_not_armed as the slot conflict', () => {
+    expect(scheduledMessageRequestError(409, { code: 'autonudge_not_armed' })).toBe(CONFLICT)
+  })
+
+  it.each([400, 403, 404, 503])('keeps the generic copy for autonudge_not_armed at %i', status => {
+    expect(scheduledMessageRequestError(status, { code: 'autonudge_not_armed' })).toBe(GENERIC)
+  })
+
+  it('never matches the code the backend does not emit', () => {
+    expect(scheduledMessageRequestError(409, { code: 'session_automation_exists' })).toBe(GENERIC)
+  })
+
+  it('keeps the in-flight copy regardless of status', () => {
+    expect(scheduledMessageRequestError(409, { code: 'scheduled_message_in_flight' })).toBe(SENDING)
+  })
+
+  it('falls back to the generic copy for an empty body', () => {
+    expect(scheduledMessageRequestError(409, {})).toBe(GENERIC)
+  })
+})
 })

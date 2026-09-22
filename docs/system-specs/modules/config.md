@@ -1733,9 +1733,13 @@ Where appliers live: an applier owned by a long-lived object registers in that
 object's constructor (session manager, subagent manager, each channel
 dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
-`agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
-ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
-live in `server.py::_register_config_watch` — `agent.provider`,
+`agent.max_channel_agents` to its cap setters, both with `live.bind`). The session manager applies sandbox configuration through the ordinary factory
+refresh path. Scheduled composer provenance is process-memory state and is not
+invalidated, purged, or used to force retirement when sandbox settings change.
+All config writers still converge on `ConfigWatch`, so dashboard saves,
+`kirocrew config set`, and direct editor writes retain the same refresh ordering.
+Only the ones whose holder is `DashboardState`, or that must rebuild agent
+artifacts, live in `server.py::_register_config_watch` — `agent.provider`,
 `agent.role_models.background`, and `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`).
 The provider applier only schedules the switch: `reload_provider_factory` clears

@@ -494,7 +494,8 @@ class TestRelayReplay:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
-        await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+        completed = await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+        assert completed is True
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
     @pytest.mark.parametrize(
@@ -556,7 +557,8 @@ class TestRelayReplay:
             yield _sse({"type": "chunk", "content": "par", "cls": "chunk"})
             raise ConnectionResetError("tunnel died")
 
-        await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        completed = await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
@@ -574,13 +576,14 @@ class TestRelayReplay:
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
 
-        await relay_remote_turn(
+        completed = await relay_remote_turn(
             state,
             slot,
             "hi",
             chunks=_stream(_sse({"type": "chunk", "content": "half an ans", "cls": "chunk"})),
         )
 
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert "incomplete" in slot.messages[-1]["content"]
         # Still unblocked: a truncation is reported, not left hanging.
@@ -1883,8 +1886,42 @@ class TestPeerTurnRequest:
         args, kwargs = mgr.proxy_request.call_args
         assert args[2] == "api/chat"
         assert kwargs["params"] == {"relay": "1"}
-        # The PEER's slot key, and only the message — see the known gap in the PR.
+        # An ordinary turn keeps its exact historical two-field body.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_turn_carries_containment_to_the_peer(self, tmp_path):
+        state = _make_state(tmp_path)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                yield b"data: [DONE]\n\n"
+
+        mgr.proxy_request = MagicMock(return_value=_Streaming())
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        admission = TestRelayedContainmentAdmission._admission()
+        exact = "  indented scheduled text\n\n"
+
+        await relay_remote_turn(
+            state,
+            _remote_slot(),
+            exact,
+            containment_admission=admission,
+        )
+
+        payload = json.loads(mgr.proxy_request.call_args.kwargs["data"])
+        assert payload == {
+            "message": exact,
+            "slot": "peer-chat-9",
+            "containment_admission": admission,
+        }
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):
@@ -2573,6 +2610,107 @@ def _send_app(state, *, app_name: str = "", user: str = "local-app"):
     app["state"] = state
     app.router.add_post("/api/chat/send", handler)
     return app
+
+
+class TestRelayedContainmentAdmission:
+    @staticmethod
+    def _admission() -> dict:
+        return {
+            "queued_containment": {
+                "linked": False,
+                "mirrored": False,
+                "ephemeral": False,
+                "app": False,
+                "unattended": False,
+                "workspace": "default",
+                "mirror_identity": "",
+            }
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_admission", [False, True])
+    async def test_relay_passes_only_valid_present_admission_to_runner(
+        self, tmp_path, monkeypatch, with_admission
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        captured: dict[str, object] = {}
+        exact = "  indented scheduled text\n\n"
+
+        async def run(_state, target, message, **kwargs):
+            captured["message"] = message
+            captured.update(kwargs)
+            target.append("done", "", "done")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run)
+        body: dict[str, object] = {"slot": slot.key, "message": exact}
+        if with_admission:
+            body["containment_admission"] = self._admission()
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post("/api/chat/send?relay=1", json=body)
+            assert resp.status == 200
+            await resp.read()
+
+        if with_admission:
+            assert captured["_audience_containment_admission"] == self._admission()
+            assert captured["_directive_user_origin"] is False
+            assert captured["message"] == exact
+            assert slot._human_seen is False
+        else:
+            assert "_audience_containment_admission" not in captured
+            assert captured["_directive_user_origin"] is True
+            assert captured["message"] == exact.strip()
+            assert slot._human_seen is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            None,
+            [],
+            {},
+            {"queued_containment": []},
+            {"queued_containment": {"linked": False}},
+            {
+                "queued_containment": {
+                    "linked": False,
+                    "mirrored": False,
+                    "ephemeral": False,
+                    "app": False,
+                    "unattended": False,
+                    "workspace": "default",
+                    "extra": True,
+                }
+            },
+        ],
+    )
+    async def test_relay_rejects_malformed_admission_before_dispatch(
+        self, tmp_path, monkeypatch, malformed
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        run = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run)
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?relay=1",
+                json={
+                    "slot": slot.key,
+                    "message": "relayed",
+                    "containment_admission": malformed,
+                },
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "relay_containment_invalid"
+
+        run.assert_not_awaited()
+        assert slot.messages == []
 
 
 class TestBusyRemoteSlotRefusesInsteadOfQueueing:
@@ -3479,6 +3617,51 @@ class TestRelayedSendToBusyPeerSlotIsRefused:
             assert slot._queue == []
         finally:
             slot.task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scheduled", [False, True])
+    async def test_a_relayed_send_is_refused_before_the_background_subagent_hold(
+        self, tmp_path, scheduled
+    ):
+        """An idle peer with children cannot acknowledge a relay as queued."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for.return_value = ["child-1"]
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        body = {"slot": slot.key, "message": "relayed"}
+        if scheduled:
+            body["containment_admission"] = TestRelayedContainmentAdmission._admission()
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post("/api/chat/send?relay=1", json=body)
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "remote_turn_busy"
+
+        assert slot._queue == []
+
+    @pytest.mark.asyncio
+    async def test_a_local_send_still_uses_the_background_subagent_hold(self, tmp_path):
+        """The relay refusal must not narrow ordinary local-user queueing."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for.return_value = ["child-1"]
+        slot = _ChatSlot("chat-local-1")
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send", json={"slot": slot.key, "message": "hold locally"}
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("queued") is True
+
+        assert [entry["content"] for entry in slot._queue] == ["hold locally"]
 
 
 class TestRemoteSessionIsPlainChatOnly:

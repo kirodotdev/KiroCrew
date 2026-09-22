@@ -2680,6 +2680,31 @@ them, and strips retired `deniedCommands` / `autoAllowReadonly` fields left by a
 older installation. Session startup and periodic cleanup do not rewrite agent
 configs.
 
+## Scheduled-message process-memory provenance
+
+Scheduled composer text, slot identity, authoritative deadline, and completion
+state live only in the gateway process's `_SCHEDULED_MESSAGES` map. A
+`threading.RLock` serializes record, read, compare-and-swap update, completion,
+delete, and rollback across worker threads. `autonudge.json` persists only the
+text-free scheduling shell: kind, slot, deadline, counters, and status.
+
+| Transition | Process-memory and durable metadata invariant |
+|---|---|
+| Authenticated create | Reserve a collision-free loop id, record exact memory state, then persist the empty-message metadata row; add failure deletes the memory record. |
+| Read/delivery | Require exact record id and slot match; deliver memory text and deadline, never mutable-row text or time. |
+| Early mutable timer | Compare wall clock with the memory deadline and return busy without creating a user row. |
+| Authenticated update | Hold the service mutation lock, persist candidate metadata, then CAS the exact memory record; CAS failure restores and persists prior metadata. |
+| Cancel-and-preserve | Capture exact pending memory state, delete it, persist row removal, and return captured text; persistence failure restores memory before rearming. |
+| Gateway discard/session close | Kind-gated removal may delete unusable memory state; a failed close restores the immutable retirement snapshot only if the original slot generation still owns it. |
+| Turn completion | CAS pending memory state to completed before persisting completion metadata; cleanup requires that completed state and remains retryable. |
+| Gateway restart/new process | The map starts empty; load drops every persisted scheduled metadata row lacking memory state and records the restart-cancellation warning. |
+| Generic reads | Persisted and registry rows keep `message` empty; only authenticated owner/slot projections overlay exact memory text. |
+
+There is no scheduled-message filesystem directory, HMAC key, confinement epoch,
+process generation, process census, sandbox leaf, or startup cleanup. Send later
+therefore has the same support behavior on Linux, macOS, and Windows. Ordinary
+session PID cleanup remains independent and grants no scheduled-message authority.
+
 ## Orphaned MCP Server Cleanup
 
 `_cleanup_orphaned_mcp_servers()` kills MCP server processes that survived
