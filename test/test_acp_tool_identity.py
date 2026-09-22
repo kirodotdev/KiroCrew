@@ -89,6 +89,7 @@ class TestBuildToolCallEventIdentity:
         assert event.kind == EVENT_TOOL_CALL
         assert event.tool_name == "monitor_start"
         assert event.mcp_server_name == "kirocrew-core"
+        assert event.tool_identity_trusted is True
         # This builder populates the identity pair exclusively from _meta.kiro
         # (non-model-authored), so it earns the explicit provenance flag.
         assert event.mcp_identity_trusted is True
@@ -115,6 +116,7 @@ class TestBuildToolCallEventIdentity:
         event = _build_tool_call_event(shell_update, None)
         assert event.tool_name == ""
         assert event.mcp_server_name == ""
+        assert event.tool_identity_trusted is False
         # No _meta.kiro → nothing was populated, so no provenance is asserted.
         assert event.mcp_identity_trusted is False
         # is_shell must still be derived from the kind (unrelated to identity).
@@ -162,6 +164,7 @@ class TestClientToolCallEventIdentityProvenance:
         assert event is not None
         assert event.tool_name == "monitor_start"
         assert event.mcp_server_name == "kirocrew-core"
+        assert event.tool_identity_trusted is True
         assert event.mcp_identity_trusted is True
         # Counterfactual: a frame with no _meta.kiro populates nothing, so the
         # builder asserts no provenance.
@@ -181,6 +184,7 @@ class TestClientToolCallEventIdentityProvenance:
         assert event_no_meta is not None
         assert event_no_meta.tool_name == ""
         assert event_no_meta.mcp_server_name == ""
+        assert event_no_meta.tool_identity_trusted is False
         assert event_no_meta.mcp_identity_trusted is False
 
 
@@ -296,9 +300,7 @@ class TestProviderConversionPreservesIdentity:
         )
         out = AcpProvider._to_llm_event(src)
         dropped = [
-            f.name
-            for f in dataclasses.fields(src)
-            if getattr(src, f.name) != getattr(out, f.name)
+            f.name for f in dataclasses.fields(src) if getattr(src, f.name) != getattr(out, f.name)
         ]
         assert not dropped, f"_to_llm_event dropped fields: {dropped}"
 
@@ -343,9 +345,7 @@ class TestChatRunnerDirectiveSeam:
         assert call.kwargs["producer_is_user_facing"] is True
 
     @pytest.mark.asyncio
-    async def test_successful_question_card_ends_turn_without_recovery(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_successful_question_card_ends_turn_without_recovery(self, tmp_path, monkeypatch):
         """A delivered non-blocking question card is the turn's terminal output.
 
         The tool explicitly tells the model to end with no assistant text. Treating
@@ -391,9 +391,7 @@ class TestChatRunnerDirectiveSeam:
             return queue_insert(self_slot, *args, **kwargs)
 
         monkeypatch.setattr(type(slot), "queue_insert", _record_queue)
-        monkeypatch.setattr(
-            chat_runner, "_start_next_queued_turn", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", AsyncMock(return_value=False))
 
         try:
             await _drive(state, slot, events, monkeypatch, applied_result=None)
@@ -411,9 +409,7 @@ class TestChatRunnerDirectiveSeam:
         assert not any("continu" in m.get("content", "").lower() for m in notices)
 
     @pytest.mark.asyncio
-    async def test_automation_provenance_reaches_directive_applier(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_automation_provenance_reaches_directive_applier(self, tmp_path, monkeypatch):
         """The turn producer survives destination-key normalization, so a cron
         turn targeting a user slot remains structurally distinguishable."""
         state = _stub_state(tmp_path)
@@ -450,9 +446,7 @@ class TestChatRunnerDirectiveSeam:
         assert spy.call_args.kwargs["producer_is_user_facing"] is False
 
     @pytest.mark.asyncio
-    async def test_queued_automation_provenance_reaches_next_turn(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_queued_automation_provenance_reaches_next_turn(self, tmp_path, monkeypatch):
         """A busy app-owned request cannot become user-origin when its queue
         entry is drained after the destination slot becomes idle."""
         from kiro_crew.dashboard import chat_runner
@@ -524,9 +518,7 @@ class TestChatRunnerDirectiveSeam:
                 mcp_server_name="kirocrew-core",
             ),
             # Same tool_call_id delivered twice — the duplicate frame.
-            AcpEvent(
-                kind=EVENT_TOOL_RESULT, tool_call_id="tc-dup", tool_output=marker
-            ),
+            AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-dup", tool_output=marker),
             AcpEvent(
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="tc-dup",

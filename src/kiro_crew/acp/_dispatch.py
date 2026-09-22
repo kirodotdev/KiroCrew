@@ -942,6 +942,16 @@ class ToolCallIdentity:
     tool_name: str
     identity_trusted: bool
 
+    @property
+    def tool_identity_trusted(self) -> bool:
+        """Whether ``tool_name`` came from an adapter-authored identity channel.
+
+        ``classify_tool_call`` never populates ``tool_name`` from display titles
+        or inline permission payloads, so non-emptiness is provenance at this
+        classifier boundary. MCP pair provenance remains ``identity_trusted``.
+        """
+        return bool(self.tool_name)
+
 
 def _str_field(mapping: object, key: str) -> str:
     if not isinstance(mapping, dict):
@@ -1656,6 +1666,7 @@ def _build_tool_call_event(
         # Earned only when an identity pair was actually extracted from such a
         # source: a frame with no marker populates nothing and asserts no
         # provenance.
+        tool_identity_trusted=identity.tool_identity_trusted,
         mcp_identity_trusted=identity.identity_trusted,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,

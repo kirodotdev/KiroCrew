@@ -2412,6 +2412,7 @@ class _ChatSlot:
         "_promise_only_retries",
         "_promise_only_stop_gen",
         "_promise_only_session_stop_gen",
+        "_promise_only_session_key",
         "_compaction_continue_retries",
         "_batch_rejected",
         "_batch_rejected_cause",
@@ -3120,6 +3121,11 @@ class _ChatSlot:
         # slot's session key at enqueue, so the same purge also sees a stop
         # issued on a linked channel surface while the continuation waited.
         self._promise_only_session_stop_gen: int = 0
+        # The effective session binding at enqueue. A cron injection can rebind
+        # an idle slot while the queued continuation waits; the dispatch-point
+        # purge compares against this snapshot and drops the replay rather than
+        # draining it into the new session's context. Empty = never enqueued.
+        self._promise_only_session_key: str = ""
         # One bounded synthetic continuation when the BACKEND compacted the
         # conversation mid-turn and then ended the turn without finishing the
         # work (see COMPACTION_RECOVERY_PREFIX). Bounded separately from the

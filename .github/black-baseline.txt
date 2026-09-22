@@ -308,7 +308,6 @@ test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
 test/test_acp_stale_recovery.py
-test/test_acp_tool_identity.py
 test/test_acp_tool_search.py
 test/test_acp_true_provider_error.py
 test/test_acp_turn_lock.py

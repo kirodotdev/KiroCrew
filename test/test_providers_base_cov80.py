@@ -68,6 +68,7 @@ def test_unknown_context_readings_are_conservative(provider: _MinimalProvider) -
 
 def test_identity_defaults_are_empty_not_wildcards(provider: _MinimalProvider) -> None:
     assert provider.defer_replay_sid_promotion is False
+    assert provider.is_kiro_backend is False
     assert provider.session_id == ""
     assert provider.cwd == ""
     assert provider.served_model == ""

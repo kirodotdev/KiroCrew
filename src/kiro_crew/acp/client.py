@@ -12275,8 +12275,9 @@ class AcpClient:
                 kind, _ = redact_exfiltration_urls(kind)
                 kind, _ = redact_credentials(kind)
             self.last_prompt_stats.tool_calls.append((kind, title))
-            # Trusted identity from _meta.kiro (NOT the LLM-authored title) —
-            # shared with the _dispatch builder so both event paths carry it.
+            # Trusted identity from adapter-authored markers (NOT the
+            # LLM-authored title), shared with the dispatch builder so both
+            # event paths carry the same classifier verdict.
             return AcpEvent(
                 kind=EVENT_TOOL_CALL,
                 title=title,
@@ -12297,6 +12298,7 @@ class AcpClient:
                 # populates nothing and asserts no provenance.
                 tool_name=identity.tool_name,
                 mcp_server_name=identity.mcp_server_name,
+                tool_identity_trusted=identity.tool_identity_trusted,
                 mcp_identity_trusted=identity.identity_trusted,
             )
         return None
