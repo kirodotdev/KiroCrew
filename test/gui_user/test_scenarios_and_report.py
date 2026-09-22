@@ -42,11 +42,13 @@ SHIPPED_SMOKE = {
     "settings-chat-toggle-show-timestamps",
     "settings-developer-panel-dev-mode-toggle",
     "settings-search-jump-to-theme",
+    "settings-security-docs-section",
     "settings-shortcuts",
     "settings-tab-rail-navigation",
     "settings-theme-toggle",
     "sidebar-folders-and-older-sessions",
     "sidebar-rail-collapse-expand",
+    "taskrunner-projects-page-compose",
 }
 SHIPPED = SHIPPED_SMOKE | {
     "knowledge-add-folder-source-and-scan",
@@ -74,8 +76,8 @@ class TestShippedScenarios:
             assert s.max_steps <= 14, s.name
         smoke_steps = sum(s.max_steps for s in smoke)
         smoke_seconds = sum(s.max_seconds for s in smoke)
-        assert smoke_steps == 242, f"smoke max_steps total is {smoke_steps}; re-pin"
-        assert smoke_seconds == 6480, f"smoke max_seconds total is {smoke_seconds}; re-pin"
+        assert smoke_steps == 255, f"smoke max_steps total is {smoke_steps}; re-pin"
+        assert smoke_seconds == 6870, f"smoke max_seconds total is {smoke_seconds}; re-pin"
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
@@ -184,6 +186,7 @@ class TestShippedScenarios:
             "knowledge": ["knowledge-add-folder-source-and-scan"],
             "artifacts": ["artifacts-library-table-and-kind-filter"],
             "apps": ["apps-discover-enable-research-lab"],
+            "task-runner": ["taskrunner-projects-page-compose"],
             "schedule": ["schedule-list-calendar-executions-views"],
             "notifications": ["notifications-center-empty-state"],
             "auth": ["auth-sign-in-card-signed-out"],
@@ -195,6 +198,7 @@ class TestShippedScenarios:
                 "settings-tab-rail-navigation",
                 "settings-theme-toggle",
             ],
+            "security": ["settings-security-docs-section"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
         assert list(groups) == [
@@ -209,10 +213,12 @@ class TestShippedScenarios:
             "knowledge",
             "artifacts",
             "apps",
+            "task-runner",
             "schedule",
             "notifications",
             "auth",
             "settings",
+            "security",
         ]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
@@ -559,7 +565,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_15 of {len(scenarios.FEATURES)} features covered · 27 scenarios (24 smoke / 3 nightly)._"
+            f"_17 of {len(scenarios.FEATURES)} features covered · 29 scenarios (26 smoke / 3 nightly)._"
             in md
         )
         assert (

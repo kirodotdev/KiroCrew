@@ -1,0 +1,34 @@
+# Smoke: the Security settings tab is a list-detail inspector, and each of its
+# sections is a path -- /settings/security/<section> -- so the harness can open
+# the Documentation section directly at /settings/security/docs. That section is
+# the one pane in the tab that renders from static copy alone: a "Documentation"
+# heading over a card with two outbound links, "Security Deep Dive" and
+# "Security Module Spec", so it carries no network-dependent notice and reads
+# the same on every run. The section list on the left of the pane groups its
+# entries under "Status", "Your settings", "Enforced" and "Reference";
+# "Documentation" is the only entry under "Reference". Read-only: the tester
+# clicks nothing (the links open a new tab to the public repo, which the harness
+# does not follow) and scrolls once so the two surviving screenshots are the
+# landing and the scrolled pane.
+name: settings-security-docs-section
+tier: smoke
+feature: security
+user_story: >-
+  As a user, I want the Security settings tab to link its reference docs,
+  so that I can read how the security layers work before changing them.
+docs_url: docs/feature-map/README.md
+summary: Land on the Security tab's Documentation section and read its heading and two reference links
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/security/docs
+steps:
+  - You are on the Settings page, opened directly at its Security tab's Documentation section; the address bar ends in "/settings/security/docs" and "Security" is the highlighted tab in the settings navigation on the left. Inside the Security pane find the section list; under its "Reference" header the entry "Documentation" is highlighted. Read the detail area to its right without clicking.
+  - Scroll the page down once (one mouse-wheel or Page Down) and read the pane again; then stop. Do not click any link -- they open a new browser tab.
+expectations:
+  - The detail area's heading reads "Documentation" and beneath it a card lists exactly two links, "Security Deep Dive" and "Security Module Spec", each with a small external-link icon.
+  - In the Security pane's section list, "Documentation" is the highlighted entry under the "Reference" group header, and "Security" is the highlighted tab in the settings navigation.
+  - The browser's address bar ends in "/settings/security/docs".
+  - No red error banner is visible on the page in either screenshot.
+max_steps: 5
+max_seconds: 150
