@@ -29,12 +29,14 @@ SHIPPED_SMOKE = {
     "capabilities-agents-list-and-open-editor",
     "capabilities-skills-filter-and-open-builtin",
     "chat-activity-side-panel-toggle",
+    "chat-files-side-panel-browse",
     "chat-session-title",
     "chat-sessions-page",
     "chat-switch-seeded-sessions",
     "chat-turn-stats-footer",
     "connections-services-search-and-mcp-list",
     "memory-open-browser-from-overview",
+    "notifications-bell-sheet-open-close",
     "notifications-center-empty-state",
     "schedule-list-calendar-executions-views",
     "search-everywhere-jump-to-setting",
@@ -76,8 +78,8 @@ class TestShippedScenarios:
             assert s.max_steps <= 14, s.name
         smoke_steps = sum(s.max_steps for s in smoke)
         smoke_seconds = sum(s.max_seconds for s in smoke)
-        assert smoke_steps == 255, f"smoke max_steps total is {smoke_steps}; re-pin"
-        assert smoke_seconds == 6870, f"smoke max_seconds total is {smoke_seconds}; re-pin"
+        assert smoke_steps == 271, f"smoke max_steps total is {smoke_steps}; re-pin"
+        assert smoke_seconds == 7320, f"smoke max_seconds total is {smoke_seconds}; re-pin"
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
@@ -185,10 +187,14 @@ class TestShippedScenarios:
             "memory": ["memory-open-browser-from-overview"],
             "knowledge": ["knowledge-add-folder-source-and-scan"],
             "artifacts": ["artifacts-library-table-and-kind-filter"],
+            "files": ["chat-files-side-panel-browse"],
             "apps": ["apps-discover-enable-research-lab"],
             "task-runner": ["taskrunner-projects-page-compose"],
             "schedule": ["schedule-list-calendar-executions-views"],
-            "notifications": ["notifications-center-empty-state"],
+            "notifications": [
+                "notifications-bell-sheet-open-close",
+                "notifications-center-empty-state",
+            ],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": [
                 "settings-chat-toggle-show-timestamps",
@@ -212,6 +218,7 @@ class TestShippedScenarios:
             "memory",
             "knowledge",
             "artifacts",
+            "files",
             "apps",
             "task-runner",
             "schedule",
@@ -565,7 +572,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_17 of {len(scenarios.FEATURES)} features covered · 29 scenarios (26 smoke / 3 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 31 scenarios (28 smoke / 3 nightly)._"
             in md
         )
         assert (
@@ -587,8 +594,9 @@ class TestReport:
         )
         # Uncovered features are the backlog.
         assert "## Not yet covered" in md
-        assert "- `files` File viewer & project files" in md
+        assert "- `terminal` Terminal panel" in md
         assert "- `chat` Chat sessions" not in md
+        assert "- `files` File viewer & project files" not in md
 
     def test_features_catalog_without_a_run(self) -> None:
         md = report.render_features(scenarios.load_all(SCENARIOS_DIR))
