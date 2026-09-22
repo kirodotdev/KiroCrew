@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.dashboard.handlers.files as files_mod
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import api_project_git
 from kiro_crew.dashboard.handlers.files import (
     _GIT_ROOT_WALK_LIMIT,
@@ -34,6 +35,25 @@ from kiro_crew.dashboard.handlers.files import (
     _slot_project_snapshot,
 )
 from kiro_crew.security import _looks_like_secret_key, redact
+from kiro_crew.security.redaction import _SECRET_MAX_SLASHES
+
+
+@pytest.fixture
+def as_darwin(monkeypatch):
+    """Run a Darwin-only branch on every platform.
+
+    ``_redact_project_path``'s temp-root exemption is gated on
+    ``platform_compat.IS_MACOS``, so the tests that exercise the exemption must
+    say which platform they are describing. Flipping the module flag keeps that
+    explicit instead of leaving the assertions silently dead on Linux CI.
+    """
+    monkeypatch.setattr(platform_compat, "IS_MACOS", True)
+
+
+@pytest.fixture
+def as_not_darwin(monkeypatch):
+    """The complement: no exemption exists off Darwin."""
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
 
 
 class _Slot:
@@ -398,11 +418,42 @@ class TestBranchRedaction:
         info = _project_git_branch(os.path.realpath(str(repo)))
         assert info["branch"] == "trunk"
 
-    def test_macos_temp_root_is_not_mistaken_for_a_bare_secret(self):
+    def test_macos_temp_root_is_not_mistaken_for_a_bare_secret(self, as_darwin):
         path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/project"
         assert files_mod._redact_project_path(path) == path
 
-    def test_macos_temp_root_still_redacts_a_secret_in_the_suffix(self):
+    def test_the_exemption_does_not_apply_off_darwin(self, as_not_darwin):
+        """Off Darwin the helper IS the canonical redactor, byte for byte.
+
+        The withheld region is only safe to withhold because the OS generates
+        it. Elsewhere that path is a directory name a caller can choose, so the
+        same bytes would be an attacker-chosen hole in the scan. Asserted as an
+        identity against ``redact`` so no future exemption can slip in under a
+        different shape either.
+        """
+        exempt = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/project"
+        for path in (exempt, "/srv/project", "/private/var/folders/6r/T"):
+            assert files_mod._redact_project_path(path) == redact(path)
+        # And the self-flagged id is redacted here rather than preserved: this is
+        # the behaviour difference the platform gate creates.
+        flagged = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
+        assert files_mod._redact_project_path(flagged) != flagged
+
+    def test_a_credential_in_the_withheld_id_region_is_redacted_off_darwin(
+        self, as_not_darwin
+    ):
+        """The leak the gate closes.
+
+        A caller who chooses the whole path can put a credential-shaped run in
+        the two components the Darwin exemption never scans. On Darwin those
+        bytes are OS-generated; off Darwin they are not, so nothing may be
+        withheld.
+        """
+        path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
+        assert redact(path) != path
+        assert files_mod._redact_project_path(path) == redact(path)
+
+    def test_macos_temp_root_still_redacts_a_secret_in_the_suffix(self, as_darwin):
         key = "AKIAIOSFODNN7EXAMPLE"
         path = (
             "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/"
@@ -419,8 +470,22 @@ class TestBranchRedaction:
             assert files_mod._redact_project_path("/srv/project") == "masked"
         red.assert_called_once_with("/srv/project")
 
-    def test_similar_macos_path_with_the_wrong_id_width_is_not_exempt(self):
-        path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaenx/T/project"
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # id one character too wide
+            "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaenx/T/project",
+            # ``T`` is only the temp root when the segment ENDS there: a segment
+            # merely STARTING with ``T`` is a caller-chosen directory name, and
+            # exempting it would hand the scan's blind spot to that caller. This
+            # is what the prefix regex's ``(?=/|\Z)`` lookahead excludes.
+            "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/Tevil/project",
+            "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/Tevil",
+        ],
+    )
+    def test_a_similar_path_that_is_not_the_temp_root_is_not_exempt(
+        self, as_darwin, path
+    ):
         with patch(
             "kiro_crew.dashboard.handlers.files.redact", return_value="masked"
         ) as red:
@@ -514,7 +579,15 @@ class TestMacosPrefixBoundary:
     a well-formed 40-byte key rather than a window that merely borrows OS bytes.
     These pin the resulting property -- the canonical output policy is preserved
     over the whole egress string, while the id itself is never scanned.
+
+    Every case here describes the Darwin arm, so the class flips
+    ``platform_compat.IS_MACOS`` rather than asserting a branch that only runs on
+    one runner.
     """
+
+    @pytest.fixture(autouse=True)
+    def _on_darwin(self, as_darwin):
+        """The exemption exists only on Darwin; these cases are about it."""
 
     # An ordinary Darwin temp id, which carries an underscore. The underscore is
     # outside the bare-secret character class, so this prefix is NOT itself
@@ -702,6 +775,44 @@ class TestMacosPrefixBoundary:
                 assert files_mod._redact_project_path(path) == head + redact(
                     boundary + tail
                 )
+
+    # A real 40-char key that carries MORE separators than the detector's
+    # ceiling. Drawn by sampling the classifier itself rather than hand-written,
+    # so the shape is the detector's own notion of a key.
+    SLASH_DENSE_KEY = "cr/3YYUFFyoVEK2O/pmcPr4rjgfo//FDAHqlB572"
+
+    def test_a_slash_dense_key_is_treated_as_on_any_other_path(self):
+        """The one residual of the "helper weaker than canonical" class.
+
+        A 40-char key with more than ``_SECRET_MAX_SLASHES`` separators is masked
+        standing alone -- a 40-char run is the token somebody wrote, so the
+        ceiling is deliberately not applied to it. Inside this helper the scanned
+        text is ``/T`` + suffix, which is longer than one whole key, and that
+        length is exactly what switches the ceiling on, so every window is
+        declined.
+
+        Canonical on the full path does mask it, but not by recognising the key:
+        the OS id supplies a slash-free stretch that lets an id-straddling window
+        clear the ceiling -- it masks it via the false positive this exemption
+        exists to remove. The property worth pinning is therefore PARITY, not
+        preservation: whatever the product does with this key on an ordinary deep
+        path, this helper does on the temp root. Asserted as an equivalence so
+        the test fails if either side moves, rather than blessing an outcome.
+        """
+        key = self.SLASH_DENSE_KEY
+        assert _looks_like_secret_key(key), "fixture must be a key by the classifier"
+        assert key.count("/") > _SECRET_MAX_SLASHES, "fixture must exceed the ceiling"
+        # Standalone, the ceiling does not apply and the key is masked.
+        assert redact(key) != key
+        # On an ordinary deep path the ceiling declines it -- no exemption in play.
+        ordinary = f"/srv/{key}"
+        ordinary_untouched = redact(ordinary) == ordinary
+        assert ordinary_untouched, "control: the product already loses this shape"
+        # Parity: the exemption concedes nothing the product does not concede.
+        for prefix in (self.CLEAN, self.SELF_FLAGGED):
+            path = f"{prefix}/{key}"
+            helper_untouched = files_mod._redact_project_path(path) == path
+            assert helper_untouched == ordinary_untouched
 
 
 class TestSlotSnapshotOffLoop:

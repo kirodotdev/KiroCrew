@@ -6027,6 +6027,23 @@ def _redact_project_path(path: str) -> str:
     returned ``path`` unchanged -- the helper weakening the canonical output
     policy rather than narrowing a false positive.
 
+    THE RESIDUAL OF THAT CLASS, MEASURED.  One such class survives this split, and
+    it is not a weakening: a 40-char key carrying MORE than
+    ``_SECRET_MAX_SLASHES`` separators.  Standalone, such a key is masked -- a
+    40-char run is the token somebody wrote, so the separator ceiling is
+    deliberately not applied to it.  Prepending ``/T`` makes the scanned run
+    longer than one whole key, which is exactly the condition that switches the
+    ceiling on, and every window is then declined.  Canonical on the whole path
+    still masks it, but NOT by recognising the key: the id supplies a slash-free
+    stretch that lets an id-straddling window clear the ceiling, i.e. it masks it
+    by the very false positive this exemption exists to remove.  The control is
+    that the same key also survives canonical on an ordinary deep path with no
+    exemption anywhere near it (``/srv/<key>``, ``/tmp/<key>``, ``/<key>``), so
+    the separator ceiling loses slash-dense keys everywhere in the product and
+    this helper is no weaker than the treatment the same key already gets
+    elsewhere.  Pinned by
+    ``test_a_slash_dense_key_is_treated_as_on_any_other_path``.
+
     The split therefore sits at the END of the variable region, not one byte
     inside it.  The prefix regex ends in the literal ``/T``, and everything to
     the left of that literal is the OS-generated ``[a-z0-9]{2}/[a-z0-9_]{30}``
@@ -6046,8 +6063,17 @@ def _redact_project_path(path: str) -> str:
     newly redacts are uniformly-random base64 runs of 37-38 characters, which the
     canonical redactor already redacts on this path, so the boundary stays
     strictly narrower than canonical rather than becoming a second policy.
+    DARWIN ONLY.  The withheld region is safe to withhold only because the OS
+    generates it: off Darwin ``/private/var/folders/<id>/T`` names nothing the OS
+    owns, so a caller who can choose a project directory can choose those bytes
+    outright and place a credential inside the one region this helper never
+    scans.  Everywhere but macOS the canonical redactor therefore decides alone,
+    which also keeps the exemption exactly as wide as the false positive it was
+    measured against.
     Regression-guarded by ``TestMacosPrefixBoundary``.
     """
+    if not platform_compat.IS_MACOS:
+        return redact(path)
     match = _MACOS_TEMP_PROJECT_PREFIX_RE.match(path)
     if match is None:
         return redact(path)
