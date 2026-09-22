@@ -3488,6 +3488,106 @@ MCP_CREW_LOG_SCHEMAS: dict[str, ToolSchema] = {
 }
 
 
+# ── Tool Schemas (MCP Debug — server ``kirocrew-debug``) ──
+#
+# Its own registry for the same reason the crew-log one is separate: the five
+# debug tools ship on an opt-in server, and a session that is not debugging a
+# gateway must not pay for their schemas.
+#
+# What is NOT here is the load-bearing part. No schema carries a path, a pid to
+# signal, a file to write, or a flag to set: every field is a QUESTION narrowing
+# (a window, a filter, a format) so the surface cannot express an action. That is
+# a stronger guarantee than an allowlist someone has to keep correct as fields
+# are added. ``session`` is the one field naming another party, and it is a scope
+# REQUEST that the route re-decides on the caller's own forwarded identity — a
+# caller naming a session it may not read is refused there, not trusted here.
+#
+# The caps restate the server's own (``mcp_debug.MAX_SAMPLE_SECONDS``) rather than
+# importing them, because ``validation`` is imported by the gateway on every
+# request path and an MCP stdio server module is not; ``test_mcp_debug.py`` pins
+# the two together so they cannot drift.
+_DEBUG_THREAD_MODES = frozenset({"now", "sample", "dumps"})
+_DEBUG_PROCESS_FORMATS = frozenset({"tree", "flat"})
+
+#: Seconds of on-demand sampling one call may ask for. Mirrors
+#: ``mcp_debug.MAX_SAMPLE_SECONDS``; the route clamps independently.
+_DEBUG_MAX_SAMPLE_SECONDS = 60
+
+#: Characters of a free-text window or filter argument. Generous for an ISO
+#: timestamp or a '30m' window and far short of anything that could carry a
+#: payload into a route's query string.
+_DEBUG_MAX_ARG_CHARS = 128
+
+DEBUG_GATEWAY_SCHEMA = ToolSchema(tool_name="debug_gateway")
+
+DEBUG_REFUSALS_SCHEMA = ToolSchema(
+    tool_name="debug_refusals",
+    fields=[
+        FieldSpec("session", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("since", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("last", int, min_val=1, max_val=1000),
+    ],
+)
+
+DEBUG_THREADS_SCHEMA = ToolSchema(
+    tool_name="debug_threads",
+    fields=[
+        FieldSpec("mode", str, allowed=_DEBUG_THREAD_MODES),
+        FieldSpec("seconds", (int, float), min_val=0, max_val=_DEBUG_MAX_SAMPLE_SECONDS),
+        FieldSpec("hz", int, min_val=1, max_val=1000),
+        FieldSpec("deep", bool),
+        # A dump NAME, never a path: the route resolves it inside the crash-dump
+        # store's own directory, so a separator or a parent reference here cannot
+        # address a file outside it. Bounded and pattern-checked so a traversal
+        # attempt is refused at the schema rather than relied upon to fail later.
+        FieldSpec(
+            "read",
+            str,
+            max_len=_DEBUG_MAX_ARG_CHARS,
+            pattern=re.compile(r"^[A-Za-z0-9._-]+$"),
+        ),
+    ],
+)
+
+DEBUG_PROCESSES_SCHEMA = ToolSchema(
+    tool_name="debug_processes",
+    fields=[
+        FieldSpec("format", str, allowed=_DEBUG_PROCESS_FORMATS),
+        FieldSpec("kind", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("owner", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("orphan_only", bool),
+        FieldSpec("include_env", bool),
+    ],
+)
+
+DEBUG_SNAPSHOTS_SCHEMA = ToolSchema(
+    tool_name="debug_snapshots",
+    fields=[
+        FieldSpec("around", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("radius", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("since", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec("until", str, max_len=_DEBUG_MAX_ARG_CHARS),
+        FieldSpec(
+            "fields",
+            list,
+            item_type=str,
+            item_max_len=64,
+            max_items=64,
+        ),
+        FieldSpec("events_only", bool),
+        FieldSpec("cursor", str, max_len=_DEBUG_MAX_ARG_CHARS),
+    ],
+)
+
+MCP_DEBUG_SCHEMAS: dict[str, ToolSchema] = {
+    "debug_gateway": DEBUG_GATEWAY_SCHEMA,
+    "debug_refusals": DEBUG_REFUSALS_SCHEMA,
+    "debug_threads": DEBUG_THREADS_SCHEMA,
+    "debug_processes": DEBUG_PROCESSES_SCHEMA,
+    "debug_snapshots": DEBUG_SNAPSHOTS_SCHEMA,
+}
+
+
 # ── Tool Schemas (MCP Work ledger — server ``kirocrew-work``) ──
 #
 # Its own registry for the same reason the dashboard one is separate: the four

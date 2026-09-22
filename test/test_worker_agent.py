@@ -920,9 +920,14 @@ def test_the_unassignable_set_is_derived_from_the_registry(monkeypatch):
     ``kirocrew-crew-log`` is the case that exercised it: a read-only opt-in server
     added later, withheld from the mirror with no edit here beyond widening this
     assertion. A worker has no use for another session's crew log -- its own channel
-    to its conductor is the work ledger."""
+    to its conductor is the work ledger.
+
+    ``kirocrew-debug`` is withheld on the same derivation. Its host-wide views are
+    gated in the route to the owner's own dashboard tab, so a worker would reach
+    only refusals; granting it would spend the worker's context on tools that
+    cannot answer it."""
     assert agent._worker_unassignable_servers() == frozenset(
-        {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-panel"}
+        {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-panel"}
     )
     monkeypatch.setitem(
         agent._MANAGED_MCP_SERVERS,

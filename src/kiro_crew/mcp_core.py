@@ -961,6 +961,7 @@ REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
         "mcp_crew_log.py",
         "mcp_cron.py",
         "mcp_dashboard.py",
+        "mcp_debug.py",
         "mcp_work.py",
         "mcp_panel.py",
         "mcp_tools/apps.py",

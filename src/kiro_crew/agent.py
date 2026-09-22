@@ -1279,6 +1279,20 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-crew-log"),
         "opt_in": True,
     },
+    # Debug reads (five questions about a running gateway: which code it is, why a
+    # call was refused, the interpreter's threads, the process family, the recorded
+    # host series). ``opt_in`` for the same reason as the sets around it — a session
+    # that is not debugging a gateway should spend no context on these schemas.
+    #
+    # No ``autoApprove`` key, and the reason is sharper here than anywhere else on
+    # this list: these tools read HOST and CROSS-SESSION state, and an autoApproved
+    # MCP tool never reaches ``hooks.on_tool_call``. The wide views are additionally
+    # gated in the ROUTE to the owner's own dashboard tab, so the set is safe to
+    # grant broadly while remaining narrow in what it will actually answer.
+    "kirocrew-debug": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-debug"),
+        "opt_in": True,
+    },
     # Agent panels (an agent publishes DATA describing its own state; the
     # dashboard renders it with a human-authored template in a sandboxed frame).
     # ``opt_in`` for the same reason the dashboard set is: this is an assignable

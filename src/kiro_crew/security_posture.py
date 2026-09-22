@@ -1793,6 +1793,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/artifacts.py",
         "dashboard/handlers/core.py",
         "dashboard/handlers/cron.py",
+        # Same class as the dashboard handlers around it: the five debug reads
+        # redact every string they return -- a gateway description, a classified
+        # refusal, a process roster -- but the egress boundary is the loopback
+        # transport the result crosses to the kirocrew-debug proxy, not this module.
+        "dashboard/handlers/debug.py",
         "dashboard/handlers/discover.py",
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/knowledge.py",
@@ -1816,6 +1821,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # result -- a crew log page, a fold, a refusal -- before returning it, but
         # the egress boundary is the transport the result crosses, not this module.
         "mcp_crew_log.py",
+        # Same class as mcp_core.py: this stdio server redacts every rendered tool
+        # result -- a gateway description, a classified refusal, a folded series --
+        # before returning it, but the egress boundary is the transport the result
+        # crosses, not this module.
+        "mcp_debug.py",
         "mcp_cron.py",
         # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and
         # agent-authored names before they are persisted or returned, but the
@@ -2254,6 +2264,7 @@ _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_CRON_SCHEMAS",
     "MCP_COMPUTER_SCHEMAS",
     "MCP_DASHBOARD_SCHEMAS",
+    "MCP_DEBUG_SCHEMAS",
     "MCP_WORK_SCHEMAS",
     "MCP_PANEL_SCHEMAS",
 )

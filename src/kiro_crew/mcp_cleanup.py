@@ -59,6 +59,7 @@ OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-dashboard",
     "kirocrew-work",
     "kirocrew-crew-log",
+    "kirocrew-debug",
     "kirocrew-panel",
 )
 

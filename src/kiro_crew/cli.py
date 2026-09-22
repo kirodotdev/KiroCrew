@@ -2451,6 +2451,10 @@ Examples:
     # the two above: the crew log is an optional subsystem behind a flag, so a
     # session that never verifies or audits it spends nothing on the set.
     sub.add_parser("mcp-crew-log")
+    # mcp-debug (MCP server — the five read-only debug tools). Opt-in for the same
+    # reason: debugging a gateway is something a person asks for on purpose, so a
+    # session that never does it should not carry the schemas.
+    sub.add_parser("mcp-debug")
     # mcp-panel (MCP server -- an agent publishes its own dashboard panel).
     # Mounted only for an agent whose spec grants the opt-in set.
     sub.add_parser("mcp-panel")
@@ -3204,6 +3208,12 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # the module reads is itself flag-gated: `kirocrew gateway` boots through
         # this module and must not import the crew log to start.
         importlib.import_module("kiro_crew.mcp_crew_log").run_mcp_server()
+    elif args.command == "mcp-debug":
+        # Same importlib form and the same reason again. It matters more here than
+        # anywhere else on this list: this module's routes import kiro_crew.diag
+        # lazily and that package may not exist in the build at all, so importing
+        # this server eagerly would make a diagnostics gap break `kirocrew gateway`.
+        importlib.import_module("kiro_crew.mcp_debug").run_mcp_server()
     elif args.command == "mcp-panel":
         # Lazily imported like mcp-dashboard above: a default-off optional
         # subsystem must not be imported just to start the gateway.

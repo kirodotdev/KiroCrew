@@ -511,6 +511,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # it, and it runs once per process (lru_cache) to name the code revision the
         # MCP gateway daemon and its owner compare.
         "code_fingerprint.py::_git_fingerprint",
+        # Fixed `git log -1 --format=%ct` argv (shell=False), run against the same
+        # `code_fingerprint._PACKAGE_ROOT` the entry above uses, and derived from
+        # `__file__` rather than from any request. No agent-influenced input reaches
+        # the command, the args or the cwd: `debug_gateway` takes no parameters at
+        # all. It answers HEAD's commit time so the route can say whether the running
+        # gateway predates the caller's fix, and it is bounded by a 5s timeout with
+        # every failure answering None.
+        "dashboard/handlers/debug.py::_head_commit_time",
         # Fixed `git rev-parse --verify` argv (shell=False) against the OPERATOR-chosen
         # clone, asking whether the operator's `scopeDiffBase` resolves. The ref comes from
         # config (`_CONFIG_WRITABLE`), not from the agent, and it is passed as one argv

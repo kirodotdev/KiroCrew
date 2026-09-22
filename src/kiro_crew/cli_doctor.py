@@ -1927,6 +1927,7 @@ _STRICT_IDENTITY_SERVERS = (
     "kirocrew-dashboard",
     "kirocrew-work",
     "kirocrew-crew-log",
+    "kirocrew-debug",
 )
 
 

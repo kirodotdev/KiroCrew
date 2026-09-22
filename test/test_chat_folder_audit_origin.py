@@ -221,8 +221,16 @@ class TestKnownCallerRatchet:
         routes validate the header through the same ``request_origin`` and refuse a
         request naming anything else, and its own audit assertions live in
         ``test_crew_log_routes.py``.
+
+        ``kirocrew-debug`` joins it on the same terms. ``dashboard/handlers/debug.py``
+        validates the header through the same ``request_origin``, refuses a request
+        naming another component, and refuses a cookie-authed caller outright since
+        the dashboard has no debug panel to send one to. Its own assertions live in
+        ``test_mcp_debug.py``.
         """
-        assert _KNOWN_INTERNAL_CALLERS == frozenset({"kirocrew-dashboard", "kirocrew-crew-log"})
+        assert _KNOWN_INTERNAL_CALLERS == frozenset(
+            {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"}
+        )
 
     def test_crew_log_server_name_is_a_known_caller(self) -> None:
         """The same cross-module pin as the dashboard one below, for the crew-log

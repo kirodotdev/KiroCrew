@@ -101,6 +101,7 @@ _SOURCES = (
     _SRC / "mcp_dashboard.py",
     _SRC / "mcp_work.py",
     _SRC / "mcp_crew_log.py",
+    _SRC / "mcp_debug.py",
     _SRC / "mcp_panel.py",
     _SRC / "mcp_computer.py",
     _SRC / "mcp_cron.py",

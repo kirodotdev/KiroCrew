@@ -501,6 +501,18 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # browser reads its own log through the cookie-only
         # "/api/sessions/{id}/crew-log" pair this entry does not cover.
         "/api/crew-log",
+        # MCP-only (the five kirocrew-debug read tools); no browser caller at all.
+        # Prefix matching covers "/gateway", "/refusals", "/threads", "/processes"
+        # and "/snapshots". STRICT, not mixed, and the argument is stronger than the
+        # crew log's: four of the five reads are HOST-WIDE (the interpreter's
+        # threads, every process in the family, the recorded host series), so a
+        # forwarded browser must be hard-denied rather than fall through to a
+        # cookie. Strict membership is NOT the whole gate -- a loopback request with
+        # no secret header still reaches the handler through cookie auth -- so
+        # handlers/debug.py refuses a cookie-authed caller itself. Unlike the crew
+        # log there is no cookie-only door to send it to: the dashboard has no debug
+        # panel, so a browser has no door here.
+        "/api/debug",
         # MCP-only (panel_publish / panel_templates tools); no browser caller --
         # the drawer READS through "/api/members/{slug}/panel", which is
         # registered by the same module a few lines below and deliberately NOT

@@ -12,6 +12,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
+from kiro_crew.dashboard.handlers import debug as debug_handlers
 
 
 def register(app: web.Application) -> None:
@@ -47,6 +48,21 @@ def register(app: web.Application) -> None:
         "/api/crew-log/units/{unit}/projection/{name}", handlers.api_crew_log_unit_projection
     )
     app.router.add_get("/api/crew-log/units/{unit}/page", handlers.api_crew_log_unit_page)
+    # The five debug reads the ``kirocrew-debug`` MCP server proxies. Same door
+    # class as the crew-log block above -- an internal caller scoped on the session
+    # key it forwards, never a browser cookie -- which is why they register beside
+    # it rather than among the system routes. All five are literal paths under one
+    # prefix, which is also the single entry ``server._STRICT_INTERNAL_API_PATHS``
+    # needs, so a sixth route cannot land outside the strict transport by omission.
+    # Authorization is in each handler, and it is STRICTER than the crew log's: the
+    # four host-wide views (gateway, threads, processes, snapshots) are the owner's
+    # own dashboard tab alone, because a dispatch tree bounds whose conversation you
+    # may read and does not bound a view of the host.
+    app.router.add_get("/api/debug/gateway", debug_handlers.api_debug_gateway)
+    app.router.add_get("/api/debug/refusals", debug_handlers.api_debug_refusals)
+    app.router.add_get("/api/debug/threads", debug_handlers.api_debug_threads)
+    app.router.add_get("/api/debug/processes", debug_handlers.api_debug_processes)
+    app.router.add_get("/api/debug/snapshots", debug_handlers.api_debug_snapshots)
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)

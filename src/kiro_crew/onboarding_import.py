@@ -413,6 +413,7 @@ _CORE_MANAGED_MCP_NAMES = frozenset(
         # same gap open next to a test that closes it.
         "kirocrew-work",
         "kirocrew-crew-log",
+        "kirocrew-debug",
         "kirocrew-panel",
         "openclaw-core",
         "openclaw-cron",

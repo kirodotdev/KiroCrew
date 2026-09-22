@@ -135,6 +135,14 @@ def test_the_concrete_verdicts_are_spelled_out() -> None:
     assert managed_server_is_session_bound("kirocrew-computer") is True
     assert managed_server_is_session_bound("kirocrew-dashboard") is False
     assert managed_server_is_session_bound("kirocrew-work") is False
+    # ``kirocrew-debug`` consumes the block and is not session-bound, and here that
+    # is load-bearing rather than incidental: its four host-wide reads are gated in
+    # the route on the caller being the OWNER at a dashboard tab, and the route can
+    # only make that judgement about a session the gateway named. A session-bound
+    # classification would leave a pooled backend resolving an empty identity, which
+    # fails closed -- every wide read refused -- so the wiring and the security model
+    # have to agree on this value.
+    assert managed_server_is_session_bound("kirocrew-debug") is False
 
 
 def test_a_third_party_server_is_not_claimed_either_way() -> None:
