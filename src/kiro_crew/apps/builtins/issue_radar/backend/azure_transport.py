@@ -204,6 +204,17 @@ def _az_env(
     passthrough["AZURE_CORE_COLLECT_TELEMETRY"] = "0"
     passthrough["AZURE_CORE_NO_COLOR"] = "1"
     passthrough["NO_COLOR"] = "1"
+    # The other half of the caller's ``encoding="utf-8"``. Naming the codec on the
+    # parent side says how the bytes are READ; it cannot change what the child
+    # WRITES. ``az`` is a Python program, and a Python child writing to a PIPE
+    # encodes its stdout with ``locale.getpreferredencoding(False)`` -- the ANSI
+    # code page on Windows -- unless ``PYTHONIOENCODING`` says otherwise. That
+    # key is not on ``minimal_env``'s safe list, so the child would otherwise
+    # inherit nothing and fall back to the code page: a work-item title outside
+    # it comes back as a ``?`` az itself substituted, which no parent-side codec
+    # can recover. Pinning it here makes both ends agree by construction, and an
+    # operator's own hostile value cannot reach the child either.
+    passthrough["PYTHONIOENCODING"] = "utf-8"
     return minimal_env(**passthrough)
 
 

@@ -16,6 +16,13 @@ console code page. Two distinct failures follow, and both are asserted below:
 * a code page that decodes *most* bytes (cp1252) fails the other way, and does it
   inconsistently: five byte values are undefined there, so the same title may raise
   on one work item and come back mojibaked on the next.
+
+Decoding is only one end of the contract. ``encoding=`` says how the parent READS
+the pipe; it cannot change what the child WRITES, and ``az`` is a Python program
+whose stdout to a pipe uses ``locale.getpreferredencoding(False)`` unless
+``PYTHONIOENCODING`` says otherwise. A character the child's code page cannot
+encode leaves it as a ``?`` before the parent ever sees a byte, so the last tests
+below pin the child end in the spawn environment.
 """
 
 from __future__ import annotations
@@ -26,7 +33,12 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.apps.builtins.issue_radar.backend import azure_client
+from kiro_crew.apps.builtins.issue_radar.backend import azure_client, azure_transport
+
+# The autouse fixture below stubs ``azure_client._az_env`` to ``{}`` for the
+# decoding tests, which are not about the environment. Capture the real one at
+# import time so the env tests can put it back for their own spawn.
+_REAL_AZ_ENV = azure_client._az_env
 
 # A work item as Azure DevOps actually returns one, with prose in it.
 WORK_ITEM = {
@@ -110,3 +122,41 @@ def test_ascii_output_is_unaffected() -> None:
         proc = azure_client._az_run(["az", "devops", "invoke"], host="dev.azure.com", timeout=30)
 
     assert json.loads(proc.stdout)["fields"]["System.Title"] == "plain title"
+
+
+def test_the_spawn_environment_tells_az_to_write_utf8() -> None:
+    """The child end, through the real chokepoint: the env reaches ``subprocess.run``.
+
+    ``encoding="utf-8"`` on the parent is unfalsifiable on its own -- it is correct
+    only if the child actually emits UTF-8. This asserts the pairing where it ships,
+    on the env ``_az_run`` hands to the spawn.
+    """
+    seen: dict[str, str] = {}
+
+    def _capture(argv, **kwargs):
+        seen.update(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, RAW_JSON, "")
+
+    with patch.object(azure_client, "_az_env", _REAL_AZ_ENV):
+        with patch.object(subprocess, "run", side_effect=_capture):
+            azure_client._az_run(["az", "devops", "invoke"], host="dev.azure.com", timeout=30)
+
+    pinned = seen.get("PYTHONIOENCODING")
+    assert pinned == "utf-8", "the child was left to encode its stdout with the host code page"
+
+
+def test_a_hostile_inherited_encoding_does_not_reach_az() -> None:
+    """An operator's own ``PYTHONIOENCODING`` must not decide what az emits.
+
+    The assignment is unconditional rather than a default, so a shell that exports
+    a code page cannot put the child back on it. Driven at the transport helper so
+    the inherited value is a parameter instead of a property of the test runner.
+    """
+    env = azure_transport._az_env(
+        "dev.azure.com",
+        source_env={"PYTHONIOENCODING": "cp1252", "AZURE_DEVOPS_EXT_PAT": "pat"},
+        passthrough_keys=azure_client._AZ_ENV_PASSTHROUGH,
+        minimal_env=lambda **extra: dict(extra),
+    )
+
+    assert env["PYTHONIOENCODING"] == "utf-8"
