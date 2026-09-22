@@ -10,7 +10,10 @@
  *   1. `503` — the gateway is restarting or kiro-cli's cold start timed out.
  *      The ACP adapter swallows it, serves Auto alone and marks the provider
  *      degraded; the panel must say so above the one-entry list.
- *   2. a live array — the healthy path, where no notice may render.
+ *   2. a live array — the healthy path, where no notice may render. Reached
+ *      through the panel's own Retry button, because the app's QueryClient
+ *      keeps a cached answer fresh forever (`staleTime: Infinity`), so merely
+ *      reopening the panel would not fetch again.
  *
  * The sidebar is pinned to a narrow stored width (`mc-sidebar-width`), the
  * geometry the notice and its Retry button must share without collapsing.
@@ -121,10 +124,20 @@ await shoot('01-roster-down')
 await closePanel()
 
 // Scenario 2: live roster — the full list and no notice.
+//
+// Reopening the panel does NOT refetch: the app's QueryClient runs with
+// `staleTime: Infinity`, so the cached degraded answer stays fresh and the
+// only spontaneous refetch is the 8s degraded poll — which may or may not land
+// inside a bounded wait. Retry is the deterministic path (and the one a user
+// takes), so the frame is reached through it and the wait is for ITS fetch.
 scenario = 'live'
 await openPanel()
+await notice.waitFor({ state: 'visible', timeout: 5000 })
+const liveFetch = page.waitForResponse(r => r.url().endsWith('/api/models') && r.request().method() === 'GET')
+await panel().getByRole('button', { name: 'Retry' }).click()
+await liveFetch
 await panel().getByRole('option', { name: /sonnet-4\.7/ }).waitFor({ state: 'visible', timeout: 5000 })
-if (await notice.count()) throw new Error('notice rendered on a live roster')
+await notice.waitFor({ state: 'hidden', timeout: 5000 })
 await shoot('02-roster-live')
 
 await browser.close()

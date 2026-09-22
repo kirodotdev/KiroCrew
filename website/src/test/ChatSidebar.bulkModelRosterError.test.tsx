@@ -219,6 +219,38 @@ describe('ChatSidebar — Switch All Sessions roster failure', () => {
     expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7'])
   })
 
+  it('unpicks a cached model the refreshed roster no longer lists', async () => {
+    // The degraded list is the last-good cache, so a model can be picked from
+    // it that a successful Retry then drops. The backend accepts any
+    // non-registry id, so a Switch with the stale pick would reset every
+    // session onto a model kiro-cli refuses. The pick must not survive the
+    // roster that dropped it.
+    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify({
+      ts: Date.now(),
+      models: [{ name: 'auto', description: '' }, { name: 'opus-4.8', description: 'Opus' }, { name: 'retired-1', description: 'Gone' }],
+    }))
+    mocks.models.mockRejectedValueOnce(new Error('503')).mockResolvedValue(LIVE_ROSTER)
+    renderSidebar()
+    await openSwitchAllPanel()
+    await screen.findByTestId('bulk-model-roster-error')
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'retired-1']))
+    fireEvent.click(screen.getByRole('option', { name: /retired-1/ }))
+    const switchBtn = () => screen.getByRole('button', { name: /^Switch \d+ sessions?$/ })
+    expect(switchBtn()).not.toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    // No option is selected any more, and Switch is inert until a new pick.
+    expect(screen.queryByRole('option', { selected: true })).toBeNull()
+    expect(switchBtn()).toBeDisabled()
+    fireEvent.click(switchBtn())
+    expect(mocks.chatSlotsModel).not.toHaveBeenCalled()
+    // A pick that IS listed still arms Switch as before.
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    expect(switchBtn()).not.toBeDisabled()
+    fireEvent.click(switchBtn())
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('sonnet-4.7', true))
+  })
+
   it('keeps the notice out of the Cancel/Switch row and above the listbox', async () => {
     // The button row is at the two-button limit and an inline notice inside it
     // wraps one character per line at sidebar width (#10814's finding), so the
