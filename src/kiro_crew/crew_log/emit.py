@@ -97,6 +97,7 @@ import json
 import logging
 import threading
 import time
+import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -825,7 +826,17 @@ def session_id_of(client: Any) -> str:
 
 
 def _report(what: str, exc: BaseException) -> None:
-    """Report a crew log failure once at warning level, then stay quiet."""
+    """Report a crew log failure once at warning level, then stay quiet.
+
+    Both records carry the failure as TEXT -- the warning's ``%s`` argument, and on the
+    debug line the traceback RENDERED to a string while the exception is live, rather than
+    ``exc_info``. An exception object handed to a log call, or the ``exc_info`` triple,
+    rides on the record with its ``__traceback__`` and ``__context__``, and a handler
+    that keeps records (pytest's per-test capture, a ``MemoryHandler``) would keep the
+    job frames -- and the ``CrewLog`` handle in them -- for as long as it keeps the
+    record. A pre-rendered string holds no frames. See ``_run_job`` for why that handle
+    must not outlive the pass.
+    """
     global _warned
     with _lock:
         first = not _warned
@@ -835,11 +846,15 @@ def _report(what: str, exc: BaseException) -> None:
             "session log writes are failing (%s: %s%s); further failures "
             "are logged at debug only",
             what,
-            exc,
+            str(exc),
             f", code={getattr(exc, 'code', '')}" if getattr(exc, "code", "") else "",
         )
-    else:
-        logger.debug("session log %s failed", what, exc_info=True)
+    elif logger.isEnabledFor(logging.DEBUG):
+        # The traceback rendered to text while the exception is live: full
+        # diagnostics on the record, and a string holds no frames.
+        logger.debug(
+            "session log %s failed:\n%s", what, "".join(traceback.format_exception(exc)).rstrip()
+        )
 
 
 def add_growth_listener(listener: "Callable[[str], None]") -> None:
@@ -884,8 +899,8 @@ def _on_event_loop() -> bool:
     return True
 
 
-def _permanent(exc: BaseException) -> bool:
-    """Whether retrying *exc* is pointless because it will be refused again.
+def _permanent(failure: type[BaseException]) -> bool:
+    """Whether retrying a *failure* of this type is pointless: it will be refused again.
 
     A :class:`~kiro_crew.crew_log.CrewLogError` is a REFUSAL, not a failure: the
     storage layer declines the entry before any byte is written, so the file is
@@ -905,15 +920,28 @@ def _permanent(exc: BaseException) -> bool:
     intended trade: the entries this process cannot write are counted, while the
     log keeps ONE writer's account of the turn instead of two interleaved ones.
     """
-    return isinstance(exc, _crew_log().CrewLogError)
+    return issubclass(failure, _crew_log().CrewLogError)
 
 
-def _run_job(job: Callable[[], None], what: str) -> BaseException | None:
-    """Run one storage job. Never raises. Returns the failure, or None.
+def _run_job(job: Callable[[], None], what: str) -> type[BaseException] | None:
+    """Run one storage job. Never raises. Returns the failure's TYPE, or None.
 
-    The exception is returned rather than a bare False because the caller's next
+    The type is returned rather than a bare False because the caller's next
     decision depends on WHICH failure it was: a refusal is a loss now, and
     anything else is retried. It is already reported by the time it comes back.
+
+    The type and not the exception: the caller binds the return to a local while
+    it decides, and an exception object reaches frames three ways -- its own
+    ``__traceback__``, and the ``__context__`` / ``__cause__`` of whatever it was
+    raised while handling, each with a traceback of its own. Those frames include
+    this one (whose ``f_back`` is the caller's frame) and the job's, whose locals
+    hold the ``CrewLog`` handle it was appending through: a reference cycle through
+    the handle, and a handle's lease is released by a finalizer when the handle is
+    dropped, so the lease would stay held until the cyclic collector's next pass
+    rather than when the pass that failed returned. Stripping the tracebacks one by
+    one leaves the next link to find; a class object has no frames at all.
+    ``_permanent`` needs only the type, and the report above has already used the
+    exception.
     """
     global _inflight_since, _inflight_what, _stall_reported
     with _lock:
@@ -923,7 +951,7 @@ def _run_job(job: Callable[[], None], what: str) -> BaseException | None:
         job()
     except Exception as exc:
         _report(what, exc)
-        return exc
+        return type(exc)
     finally:
         with _lock:
             _inflight_since = 0.0

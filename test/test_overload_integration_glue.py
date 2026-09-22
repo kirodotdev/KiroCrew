@@ -1672,10 +1672,23 @@ class TestStoreOffLoop:
         task = getattr(mgr, "_drain_task", None)
         assert task is not None, "on a running loop with a store the pump is a coroutine"
         await task
-        for _ in range(20):  # let the started runs finish and settle
+
+        # Wait for the point, not toward it: the started runs settle through the
+        # writer thread, and how long that takes is the host's business -- two
+        # fixed 200 ms sleeps here read ``starting`` for both rows on a loaded
+        # Windows worker (one round of five in a full-suite sweep). The reads
+        # are taken OFF the loop because the strict guard is still armed.
+        async def _states() -> dict[str, str]:
+            return {rid: await asyncio.to_thread(store.state_of, rid) for rid in ("row0", "row1")}
+
+        deadline = asyncio.get_running_loop().time() + 10.0
+        states = await _states()
+        while not any(st in model.TERMINAL for st in states.values()):
+            assert asyncio.get_running_loop().time() < deadline, states
             await asyncio.sleep(0.01)
+            states = await _states()
         await mgr._drain_queue_async()
-        for _ in range(20):
+        for _ in range(20):  # a second pass finds nothing to pick
             await asyncio.sleep(0.01)
         assert store.loop_thread_calls == before
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)

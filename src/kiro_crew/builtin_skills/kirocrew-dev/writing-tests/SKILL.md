@@ -602,3 +602,14 @@ The consequence for how you write a test:
 - [ ] A handle the object under test opens for the process lifetime (a store's SQLite
       connection + writer thread, a lazily-opened index) is closed by the fixture that built
       it; when production has no close path, that gap is the finding
+- [ ] No exception INSTANCE in a `parametrize` list (`pytest.param(OSError(...))`): the
+      instance lives for the module, `raise err` hangs a `__traceback__` on it, and the
+      frames on that traceback keep every local alive — a handle, a lease, a socket — for
+      the rest of the worker. Parametrize the errno and build the exception inside the test
+- [ ] A test that asserts process-global "nothing retained" state (`lease._held`, a
+      registry, a pool) is only as good as the files that share the worker: the file that
+      exercises the failure path pins the same table empty in its own teardown, so the
+      retention is reported where it was created rather than forty files later
+- [ ] "Let it finish" is never a fixed `sleep`: wait on the state you are about to assert
+      (poll it off-loop under a bounded deadline, or await its event) — two 200 ms sleeps
+      that were enough at `-n0` read `starting` for every row on a loaded Windows worker

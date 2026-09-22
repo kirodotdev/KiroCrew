@@ -55,6 +55,7 @@ import logging
 import os
 import shutil
 import time
+import traceback
 import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
@@ -2115,7 +2116,9 @@ class CrewLog:
                         if hashed == records:
                             return (digest.hexdigest(), hashed)
         except Exception:
-            logger.debug("crew log raw prefix for %s could not be read", self._id, exc_info=True)
+            log_exception_text(
+                logger, logging.DEBUG, "crew log raw prefix for %s could not be read", self._id
+            )
         return (digest.hexdigest(), hashed)
 
     def raw_records_through(self, seq: int) -> int | None:
@@ -2170,8 +2173,8 @@ class CrewLog:
                             # is not in this log and no count describes it.
                             return None
         except Exception:
-            logger.debug(
-                "crew log prefix boundary for %s could not be read", self._id, exc_info=True
+            log_exception_text(
+                logger, logging.DEBUG, "crew log prefix boundary for %s could not be read", self._id
             )
             return None
         return None
@@ -2490,6 +2493,21 @@ class CrewLog:
 _restrict_failed: set[str] = set()
 
 
+def log_exception_text(log: logging.Logger, level: int, msg: str, *args: object) -> None:
+    """Log the active exception with its traceback RENDERED to text, never as ``exc_info``.
+
+    Every caller sits in a frame that holds a ``CrewLog`` handle (a method's ``self``, a
+    local ``handle``), and a handle's write lease is released by a finalizer when the
+    handle is dropped. An ``exc_info`` triple on the record keeps the traceback, the
+    traceback keeps that frame, and a handler that keeps records (a ``MemoryHandler``, a
+    test harness) then keeps the handle -- and its lease -- for as long as it keeps the
+    record. A string keeps nothing; the render is skipped when the level is off.
+    """
+    if not log.isEnabledFor(level):
+        return
+    log.log(level, msg + "\n%s", *args, traceback.format_exc().rstrip())
+
+
 def _mkdir_private(directory: Path) -> None:
     """Create *directory* and its parents owner-only.
 
@@ -2523,10 +2541,11 @@ def _mkdir_private(directory: Path) -> None:
         key = str(directory)
         if key not in _restrict_failed:
             _restrict_failed.add(key)
-            logger.warning(
+            log_exception_text(
+                logger,
+                logging.WARNING,
                 "Cannot restrict %s to owner-only; it may be readable by other users",
                 directory,
-                exc_info=True,
             )
 
 

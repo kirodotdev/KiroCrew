@@ -283,6 +283,32 @@ real a moment later -- the exact two-outcome record ownership exists to prevent.
 handle is dropped only when no turn of that session is live; one left behind belongs to
 a live turn and the capacity rule reclaims it once that turn is gone.
 
+Dropping the handle is what releases ownership, so nothing may keep a dropped handle
+alive. The one thing that did was the writer's own failure path: a job's exception came
+back to the pass with its traceback, the traceback's frames held the handle the job was
+appending through, and the pass's own frame -- reachable from that traceback through the
+callee's `f_back` -- held the exception while it decided. That is a reference cycle through
+the handle, and a handle in a cycle is released by the cyclic collector at some later pass
+rather than by the drop, so the lease outlived the drop by an unbounded interval and
+`test_eventlog_hooks.py`'s "this process retains no lease" pin read a lease from another
+test on the same worker. Stripping the outer `__traceback__` is not enough: an error
+raised inside an `except` block carries the first exception as `__context__` (or
+`__cause__`), whose own traceback holds the same job frames. So the job's failure comes
+back as its TYPE, which no frame can be reached from, and both lines the report leaves
+behind -- the once-per-process warning and the per-failure debug line -- carry the failure as
+text, never the exception object or an `exc_info` triple: the debug line renders the
+traceback to a string while the exception is live, so the diagnostics stay whole while a
+log handler that keeps records (a `MemoryHandler`, a test harness) keeps no frames. The
+store's own once-per-directory warning for a filesystem that refuses `chmod` -- raised
+inside `CrewLog.append`, so its frames hold the handle too -- carries its traceback the
+same way, as text, through `store.log_exception_text`; so do the store's prefix readers
+and the checkpoint module's savepoint paths, every `exc_info` site in the package whose
+frame holds a `CrewLog` handle. The `exc_info` sites that remain there hold no handle,
+and `test_crew_log_exc_info_sites.py` pins both halves by reading the package's source:
+no `exc_info` call inside a `CrewLog` method or in any function under `kiro_crew` that
+names a handle (a parameter, a local bound from an opener, an `isinstance`), and the
+sites remaining in this package exactly the vetted list.
+
 ### A dying turn still records what it produced
 
 Seven recovery handlers -- cancellation, a signed-out CLI, a dead backend process, an

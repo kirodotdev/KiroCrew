@@ -11,6 +11,7 @@ import asyncio
 import errno
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import emit
+from kiro_crew.crew_log import emit, lease
 
 SESSION = "acp-exhaust-0001"
 SESSION_B = "acp-exhaust-0002"
@@ -38,6 +39,32 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
     emit.drain_for_shutdown(timeout=2.0)
     emit.reset_caches()
+    # A write lease is released when the handle that adopted it is dropped, and
+    # nothing in this file may keep one alive past its own test: the holder table
+    # is process-global, so a handle this test retains is a lease the next test on
+    # this worker -- or the ``TestThisProcessDoesNotRetainAMemberLogsWriteLease``
+    # pin in ``test_eventlog_hooks.py`` -- observes as held. Read immediately after
+    # the drain: release rides the handle's refcount, so a lease still held here is
+    # a retention, not a frame that has not finished unwinding. The table is
+    # process-wide, so the key it names may belong to an EARLIER file on this
+    # worker (the macOS run of this PR caught ``test_crew_log_core.py``'s
+    # chmod-refusal test that way); the path in the message says whose it is.
+    assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
+
+
+#: The write errors the disk-failure tests inject, as errno values. Built into an
+#: ``OSError`` inside each test rather than parametrized as instances: an instance in
+#: a parametrize list lives for the module, ``raise err`` attaches a ``__traceback__``
+#: to it, and that traceback's frames hold the ``CrewLog`` handle whose lease release is
+#: a ``weakref.finalize`` -- so the lease stays held for the life of the worker.
+_WRITE_ERRNOS = [
+    pytest.param(errno.ENOSPC, id="ENOSPC"),
+    pytest.param(errno.EIO, id="EIO"),
+]
+
+
+def _write_error(code: int) -> OSError:
+    return OSError(code, os.strerror(code))
 
 
 def _log_path(session_id: str = SESSION) -> Path:
@@ -72,14 +99,8 @@ def _open_session(session_id: str = SESSION) -> None:
 # ===================================================================== #
 
 
-@pytest.mark.parametrize(
-    "err",
-    [
-        pytest.param(OSError(errno.ENOSPC, "No space left on device"), id="ENOSPC"),
-        pytest.param(OSError(errno.EIO, "Input/output error"), id="EIO"),
-    ],
-)
-def test_write_error_retains_then_drops_after_attempt_cap(err, monkeypatch, caplog):
+@pytest.mark.parametrize("code", _WRITE_ERRNOS)
+def test_write_error_retains_then_drops_after_attempt_cap(code, monkeypatch, caplog):
     """ENOSPC / EIO on the write (not fsync) is a transient failure: the entry
     is retained and retried, the attempt cap eventually gives up, dropped_writes
     counts it, and a log line names the failure exactly once.
@@ -88,7 +109,7 @@ def test_write_error_retains_then_drops_after_attempt_cap(err, monkeypatch, capl
     assert emit.flush()
 
     def _raise(self, *a, **kw):
-        raise err
+        raise _write_error(code)
 
     monkeypatch.setattr(lg.CrewLog, "append", _raise)
 
@@ -113,14 +134,52 @@ def test_write_error_retains_then_drops_after_attempt_cap(err, monkeypatch, capl
     assert len(gave_up) == 1, f"expected one loss report, got {len(gave_up)}"
 
 
-@pytest.mark.parametrize(
-    "err",
-    [
-        pytest.param(OSError(errno.ENOSPC, "No space left on device"), id="ENOSPC"),
-        pytest.param(OSError(errno.EIO, "Input/output error"), id="EIO"),
-    ],
-)
-def test_cleared_error_lands_entries_in_order_with_contiguous_seq(err, monkeypatch):
+@pytest.mark.parametrize("code", _WRITE_ERRNOS)
+def test_a_write_error_raised_while_handling_another_holds_no_lease(code, monkeypatch, caplog):
+    """The failure the writer keeps must not reach a frame through ANY chain.
+
+    Same shape as the test above, but the injected error is raised inside an
+    ``except`` block, so it carries the first exception as ``__context__`` -- and
+    that one's traceback holds the job frames just as the outer one's does. The
+    emit logger is captured at DEBUG for the whole test, so the records of every
+    failure after the first (the debug arm of ``_report``) are held by the harness
+    when the pin reads. The file's teardown pin (``lease._held`` empty) is the
+    assertion: a writer that stripped only the outer ``__traceback__``, or that
+    put the exception or its ``exc_info`` on a record, still keeps the handle --
+    and with it the lease -- alive until a collector pass.
+    """
+    _open_session()
+    assert emit.flush()
+
+    def _raise_while_handling(self, *a, **kw):
+        try:
+            raise RuntimeError("the state the write was attempted in")
+        except RuntimeError:
+            raise _write_error(code)
+
+    monkeypatch.setattr(lg.CrewLog, "append", _raise_while_handling)
+
+    async def _emit():
+        emit.on_turn_started(SESSION, 1, "user")
+        assert not emit.flush(timeout=0.5)
+
+    with caplog.at_level(logging.DEBUG, logger=emit.logger.name):
+        asyncio.run(_emit())
+        with emit._drained:
+            assert emit._drained.wait_for(
+                lambda: emit.dropped_writes() == 2 and emit.buffered_writes() == 0, timeout=20.0
+            ), "writer never finished counting the entry and failed marker"
+    rendered = [
+        r for r in caplog.records if r.levelno == logging.DEBUG and "failed:" in r.getMessage()
+    ]
+    assert rendered, "the debug arm never logged a later failure"
+    # Full diagnostics survive as TEXT: the rendered chain, not an exc_info triple.
+    assert "Traceback (most recent call last)" in rendered[0].getMessage()
+    assert all(r.exc_info is None for r in rendered), "a record carried the exception object"
+
+
+@pytest.mark.parametrize("code", _WRITE_ERRNOS)
+def test_cleared_error_lands_entries_in_order_with_contiguous_seq(code, monkeypatch):
     """After the disk error clears, retained entries land in order with
     contiguous seq.
     """
@@ -133,7 +192,7 @@ def test_cleared_error_lands_entries_in_order_with_contiguous_seq(err, monkeypat
     def _fail_first(self, *a, **kw):
         if failures["left"]:
             failures["left"] -= 1
-            raise err
+            raise _write_error(code)
         return real_append(self, *a, **kw)
 
     monkeypatch.setattr(lg.CrewLog, "append", _fail_first)

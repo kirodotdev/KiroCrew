@@ -2301,6 +2301,107 @@ five-descriptor pool, not a leak — and the rest ran 6 to 21. In the thread-lea
 during this one, so the counter crosses test boundaries and a delta is not that test's doing.
 The `spawn_no_cwd` class (531 tests) is real and advisory only.
 
+### What a ninth five-run pass found (Windows host, eight workers, 123,179 tests per run)
+
+Native Windows (Server 2025, 16 cores), five rounds of the backend suite under the sweep
+skill's per-test probe on a test-only worktree off one commit, `-n 8 --timeout 120`, the
+results directory outside the checkout: 117,529 to 117,532 passed, 2 to 5 failed, 0 errors and 5,479 skipped per round, 44 to 46 minutes each, minimum available memory 32.8 GiB. No worker was killed by
+`pytest-timeout` in any round -- the previous Windows pass lost one round of five to the
+probe's own `realpath` hot path, and the memoised probe is what made this one comparable
+end to end. Residue was 0 in every round. Two tests were red in all five rounds and both
+are the host, not the suite: `test_crew_image_publish_contract.py`'s shared-fixture shell
+test and `test_windows_fleet_setup.py`'s `[pwsh]` case fail BY DESIGN on a host with no
+Git Bash and no `pwsh`, which this one has not. Everything else that went red went red in
+SOME rounds, which is the class this pass is about: three flakes, each reproduced on a
+clean second worktree at the same sha before it was touched, each with a different
+mechanism, and one of them a production defect wearing a test's clothes.
+
+- **A caller-side write budget is a wall clock the test did not know it was on.**
+  `test_decisions_tool_risk_end_to_end.py` drives the real `tool.risk` point and asserts
+  the badge on the tool card. The point drops the badge ON PURPOSE when the outcome row's
+  `to_thread` append does not return inside `LOG_BUDGET_SECS` (50 ms) -- a badge whose
+  durable row was refused would carry a `turn_id` no verdict could be filed against. On
+  this host a cold thread pool plus a first file open crosses 50 ms often: alone at `-n0`
+  the file was red in three runs of four, and the point's own debug line named it (`outcome
+  row outlived its write budget`); with the budget lifted, 5 of 5 green. The fix landed
+  concurrently in [#12753](https://github.com/kirodotdev/KiroCrew/pull/12753), which lifts
+  all three budgets on that path in the file's autouse fixture and pins the budget's own
+  branch with the value set to 0 -- this pass only confirms it from a second host, and
+  carries no change to that file.
+- **A returned exception is a reference cycle through whatever its frames were holding.**
+  `test_eventlog_hooks.py` pins that this process retains no crew-log write lease after
+  `ensure`/`append`/`read`; in rounds 1, 3 and 4 it read a lease belonging to
+  `test_crew_log_edge_exhaustion.py`'s temp home, from a different worker's earlier test.
+  Two retention roots, both real. The test one: the disk-error tests parametrized OSError
+  INSTANCES (`pytest.param(OSError(errno.ENOSPC, ...))`), so `raise err` hung a
+  `__traceback__` on a module-lifetime object and every frame on it -- the writer's job,
+  with the `CrewLog` handle as a local -- lived until the module did. The production one:
+  `emit._run_job` returned the caught exception to `_write_batch`, which bound it to a
+  local while deciding whether to retry; the traceback's `_run_job` frame reaches
+  `_write_batch`'s frame through `f_back`, and that frame holds the exception -- a cycle
+  through the handle, so the lease (a `weakref.finalize` on the handle) was released by the
+  cyclic collector at some later pass instead of at the drop, in production as well as
+  here. Reproduced deterministically at `-n0` by running the two files in order; traced with
+  `gc.get_referrers` from the handle up to both roots. Fixes: the errno is parametrized and
+  the exception built inside the test; `_run_job` returns the failure's TYPE (`_permanent`
+  needs only that) and `_report` hands the record `str(exc)`; and the exhaustion file's
+  teardown pins `lease._held` empty, so the retention is reported where it is created. The
+  first cut stripped only `exc.__traceback__`, and the review lanes caught what that
+  leaves: an error raised inside an `except` carries the first exception as `__context__`,
+  whose traceback holds the same frames -- a chained-raise case now sits under the pin and
+  fails against that cut. Mutations: returning the exception with only its traceback
+  stripped trips the pin on the chained case; returning the type but logging the exception
+  object trips it on every case (pytest's per-test record capture keeps the object, and
+  with it the frames); both hunks together are green, and reverting the test hunk alone
+  stays green, so the production change is the load-bearing one and the test change is
+  hygiene plus the witness. The pin then paid for itself before the PR merged: on the macOS
+  shard it read a lease from `test_crew_log_core.py`'s chmod-refusal test, an earlier file
+  on the same worker -- `store._mkdir_private` warned with `exc_info=True` from inside
+  `CrewLog.append`, the same class at a second site, POSIX-only because Windows never
+  refuses the `chmod`. That warning carries its traceback as text now and the test pins
+  that dropping the handle releases the lease at once. The review lane then counted the
+  rest of the class in the package: it counted seven more `exc_info` sites whose frame
+  holds a `CrewLog` handle, and a source-reading pin written for the follow-up found five
+  the count had missed (a keyword-only `handle: CrewLog` parameter, a helper that takes
+  the handle to check the unit is still there), and widening the pin to locals found a
+  thirteenth (`read.recorded_class` binds `handle` from `open_session_log`). All of
+  them -- two in the store's prefix readers, ten on the checkpoint module's savepoint
+  paths, one in the reader -- route through one `store.log_exception_text` helper, which
+  renders the traceback to text and skips the render when the level is off. The pin,
+  `test_crew_log_exc_info_sites.py`, walks the source tree's AST: no `exc_info` call in
+  a `CrewLog` method or in any function under `kiro_crew` that names a handle anywhere
+  in its body (the invariant is process-wide, so the walk is too -- files naming no handle
+  are skipped before the parse, which keeps it under a second), and the sites left in the
+  package equal to a vetted list. A checklist item asks a reviewer to notice; the pin
+  fails the first run that adds one.
+- **"Let it finish" as two 200 ms sleeps.** `test_overload_integration_glue.py`'s
+  `test_drain_refill_reads_the_store_off_loop` waited `20 x sleep(0.01)` twice for started
+  runs to settle through the writer thread, then asserted a row reached a terminal state; in
+  round 3, on a loaded worker, both rows still read `starting`. The pin the test exists for
+  (`loop_thread_calls` unchanged under the strict guard) was never at risk -- the timing
+  assertion around it was. It now polls the two rows' states OFF the loop (the guard is
+  still armed) under a 10 s deadline and asserts on the state it waited for, which is the
+  "Interleavings: name the point" rule above applied to a settle rather than a registration.
+
+What was flagged and read before being left alone, so the next pass does not re-derive it.
+`env_leak` named `GIT_CEILING_DIRECTORIES` on 25 tests over the five rounds, and every
+one of them was the FIRST or the LAST test an xdist worker ran: the key is written by the
+session-scoped temp-root fixture during the first test's setup and removed during the last
+test's teardown, and the probe's census brackets each test from `logstart` to
+`logfinish` -- so it reads the floor's own arm and undo as that test's leak (measured
+directly: one file alone shows `added` on its first test and `removed` on its last).
+`host_write` was the bytecode mirror and the hypothesis database (about 1,400 events
+each), `test_computer_use_launch.py`'s deliberate real-install-directory probes, and the
+data-home floor's `kc-pytest-*-home-*` directory -- all documented in the pass before this
+one; nothing touched the live data home or the checkout in any round. `thread_leak` was
+the bounded named pools (`mc-embed_*`, `mc-recall_*`, `mc-subproc_*`, `mc-pathres_*`),
+with deltas that repeat exactly across rounds rather than grow. The one `timeout`-class
+row, `test_2000_submissions_all_complete_window_never_exceeds_64`, ran 85 to 110 s under
+its own `timeout(900)` marker. The two instrument corrections the earlier Windows pass
+had to make (a basetemp inside the worktree read as `checkout_write`; the `nul` device
+read as `host_write`) did not recur, because the results directory was placed outside
+the checkout and the probe knows the null device.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run before a commit is the change-related set on both surfaces,

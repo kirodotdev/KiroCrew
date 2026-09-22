@@ -23,7 +23,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew import sandbox
 from kiro_crew.config import paths
 from kiro_crew.config.paths import data_home, ensure_data_home
-from kiro_crew.crew_log import CrewLog, CrewLogError, Ref, store
+from kiro_crew.crew_log import CrewLog, CrewLogError, Ref, lease, store
 from kiro_crew.security.paths import is_sensitive_path
 from kiro_crew.session_ledger import _store_name
 
@@ -2120,6 +2120,16 @@ def test_a_chmod_refusing_filesystem_warns_once_not_once_per_append(monkeypatch,
     # The appends themselves still succeed: the restriction is best-effort.
     body = _log_bytes("session", "flood-check").decode("utf-8").splitlines()
     assert len([line for line in body if '"turn/started"' in line]) == 5
+    # The one warning carries the traceback as TEXT. It is raised inside
+    # ``CrewLog.append``, so an ``exc_info`` triple would hold the frame whose
+    # ``self`` is this handle -- and the captured record would then keep the
+    # handle, and its write lease, alive for the rest of the worker.
+    assert "Traceback (most recent call last)" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+    lease_path = str(log.path.parent / lease.LEASE_FILE)
+    assert lease_path in lease._held, "the open handle should hold its lease"
+    del log
+    assert lease_path not in lease._held, "dropping the handle must release the lease at once"
 
 
 def test_an_already_restricted_directory_is_not_chmodded_again():
