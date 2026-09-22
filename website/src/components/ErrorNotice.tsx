@@ -77,6 +77,7 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   askAgentLabel,
+  dismissLabel,
   footer,
   onHandoff,
   className = '',
@@ -124,6 +125,13 @@ export default function ErrorNotice({
    * `askAgent` is off.
    */
   askAgentLabel?: string
+  /**
+   * Scoped label for the dismiss (aria-label and tooltip) when closing has a
+   * consequence the plain "Dismiss" hides — a retry that is only offered by
+   * this notice, say. Named up front so the user does not have to close it
+   * to find out what closing costs. Ignored when `onDismiss` is off.
+   */
+  dismissLabel?: string
   /**
    * Rendered INSIDE the banner, under the message (block variant only) — for
    * a follow-on line that answers the message above it (a resolved outcome, a
@@ -191,7 +199,8 @@ export default function ErrorNotice({
           <button
             type="button"
             className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-            aria-label={i18nT('components.errorNotice.dismiss')}
+            aria-label={dismissLabel ?? i18nT('components.errorNotice.dismiss')}
+            title={dismissLabel}
             onClick={onDismiss}
           >
             <X size={13} aria-hidden="true" />
@@ -231,7 +240,8 @@ export default function ErrorNotice({
         <button
           type="button"
           className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-          aria-label={i18nT('components.errorNotice.dismiss')}
+          aria-label={dismissLabel ?? i18nT('components.errorNotice.dismiss')}
+          title={dismissLabel}
           onClick={onDismiss}
         >
           <X size={14} aria-hidden="true" />

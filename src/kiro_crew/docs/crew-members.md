@@ -99,12 +99,23 @@ render as floors (`12+ chats`) instead of asserting a total.
 
 ## Creating and editing
 
-The only crewmate *configuration* the Crew Members page writes is the star on a
+**New crewmate** — the hero button on an empty roster, or the **+** in the
+roster header once one exists — opens an in-page dialog on the Crew Members
+page. It asks for a **Name** and what the crewmate is **Built from** (the
+starting setup it copies), plus an optional line on **what it looks after**;
+**Advanced** unfolds the workspace, model, triggers and session color. Creating
+opens the new crewmate's chat with a first greeting seeded for you. The name is
+checked before the request leaves the browser: letters, numbers, hyphens and
+underscores only, and no name already on the roster. Two crewmates whose names
+share a short form (`on_call` and `on-call`, say) are allowed: the server gives
+the second its own identity, so each keeps its own chat and memory.
+
+Beyond that, the only crewmate *configuration* the page writes is the star on a
 row, a roster preference stored on the crewmate. (Opening a member writes too,
-but only its own thread binding.) Every configuration edit — **Add member** and
-both Edit affordances — navigates to the crew manager — **Agent Capabilities → Crews**
-(`/capabilities?tab=crews`) — which is the single editor for name, template,
-model, reasoning effort, workspace, triggers, avatar and session color.
+but only its own thread binding.) Both **Edit** affordances still navigate to
+the crew manager — **Agent Capabilities → Crews** (`/capabilities?tab=crews`) —
+which remains the editor for an existing crewmate's name, template, model,
+reasoning effort, workspace, triggers, avatar and session color.
 
 From the CLI:
 

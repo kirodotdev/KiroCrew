@@ -723,6 +723,25 @@ retains its localized error heading and structured diagnostic report. Details
 reveals the redacted reason on demand; Ask the agent receives the same report
 when navigation permits. The cached conversation and its drafts remain available.
 
+The Crewmates page (`/members`, titled "Crewmates") creates a crewmate in place.
+Its "New crewmate" dialog — name, Built from (the default agent or an installed
+custom agent), "What it looks after", and an Advanced fold with workspace, model,
+triggers and session colour — posts to the same `POST /api/agents` the crew
+manager's create form uses: one write path, two front doors. "What it looks
+after" is stored as the crew record's `description`. After the create the page
+re-reads the roster, opens the new crewmate's chat through the verified
+thread-opening endpoint, and seeds one first user turn into that chat over the
+composer's own send path, so the chat opens with the crewmate's greeting; the
+seed names the job when one was given. Landing rule: with no crewmates the page
+shows a single empty-state hero (ghost avatar, "No crewmates yet", one line,
+"New crewmate") in place of a roster call to action and a "pick a member" pane;
+with crewmates and no `?member=`, the remembered crewmate opens, else the most
+recently used one (greatest `last_active_ts`, ties keep roster order). Below md
+nothing auto-opens — the roster is the page. A `?member=` naming a crewmate that
+is gone falls back the same way, under the existing swap notice. The page's copy
+says crewmate / Crewmates and "Built from"; the crew record, its API and its
+identifiers are unchanged.
+
 Reopening a running Member DM, including a turn awaiting tool approval,
 reuses its captured execution record. The canonical session key, selected
 member, live slot store and execution record must agree. This read does

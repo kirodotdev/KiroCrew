@@ -58,14 +58,16 @@ interface DialogContentProps
   maxWidth?: number
   /** Hide the built-in close button when the caller renders its own. */
   hideClose?: boolean
+  /** Raise one dialog's overlay above a lower modal without changing every caller. */
+  overlayClassName?: string
 }
 
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, maxWidth = 640, hideClose = false, style, onKeyDown, ...props }, ref) => (
+>(({ className, children, maxWidth = 640, hideClose = false, overlayClassName, style, onKeyDown, ...props }, ref) => (
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
       ref={ref}
       // Radix warns when this points at an id that does not exist. Callers that
