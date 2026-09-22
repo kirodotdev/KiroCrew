@@ -9,7 +9,13 @@ bound therefore lives one process down: :func:`extract_pdf_segments` spawns
 under :data:`sandbox.RLIMIT_PROFILE_EXTRACTOR`, whose ``RLIMIT_AS`` makes the
 oversized allocation fail INSIDE the child (``MemoryError`` -> a reported
 ``memory`` failure) and whose ``RLIMIT_CPU`` ends a parse that never finishes.
-The gateway's own address space is never the thing that grows.
+The gateway's own address space is never the thing that grows. Windows has no
+rlimits, so there the child starts suspended and a Job object with the same
+memory number is attached before it runs an instruction -- or it is killed
+unrun (:func:`_windows_ceiling`). macOS accepts ``RLIMIT_AS`` and does not
+enforce it, so the child also polices its own peak RSS against the same number
+(``pdf_extract_child.start_rss_watchdog``) -- the ceiling there, a second layer
+everywhere else.
 
 This module sits beside ``doc_parser.py`` rather than under ``dashboard`` or
 ``knowledge`` so both callers import it without one package depending on the
@@ -33,7 +39,12 @@ from dataclasses import dataclass
 from typing import IO
 
 from kiro_crew import platform_compat
-from kiro_crew.sandbox import RLIMIT_PROFILE_EXTRACTOR, popen_limited, scrub_env
+from kiro_crew.sandbox import (
+    _EXTRACTOR_MAX_AS_BYTES,
+    RLIMIT_PROFILE_EXTRACTOR,
+    popen_limited,
+    scrub_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +61,10 @@ _STDERR_TAIL = 512
 #: Bytes of fixed frame per stdout line (``{"label": "page NNNNN", "text": ""}``
 #: plus the newline); the read ceiling is sized from it.
 _LINE_FRAME_BYTES = 64
-#: Worst-case JSON expansion of one character (``\\uXXXX``).
-_JSON_BYTES_PER_CHAR = 6
+#: Worst-case JSON expansion of one ``str`` character: a non-BMP code point is
+#: one character to ``len`` but a surrogate PAIR to ``json.dumps`` -- two
+#: ``\\uXXXX`` escapes, twelve bytes.
+_JSON_BYTES_PER_CHAR = 12
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,9 @@ class PdfExtraction:
     * ``parse`` -- the parser rejected the document,
     * ``unavailable`` -- ``pdfplumber`` is not installed,
     * ``spawn`` -- the child could not be started,
+    * ``unbounded`` -- Windows only: the Job object that stands in for
+      ``RLIMIT_AS`` could not be attached, so the child was killed unrun rather
+      than parse without a ceiling,
     * ``protocol`` / ``exit:N`` / ``signal:N`` -- the child ended without a
       terminal line, which a caller treats like any other resource failure.
 
@@ -100,13 +116,16 @@ def pdfplumber_available() -> bool:
 def _child_argv(max_chars: int, max_pages: int) -> list[str]:
     # ``-P`` keeps the spawn CWD off ``sys.path`` so a project directory cannot
     # shadow the child module; ``-m`` resolves it from the same install as the
-    # gateway. The two caps are policy numbers, fine on a world-readable argv.
+    # gateway. The caps are policy numbers, fine on a world-readable argv. The
+    # RSS number is the profile's own: the child polices its peak RSS against
+    # it where the kernel has no address-space ceiling (macOS).
     return platform_compat.isolated_python_argv(
         "-P",
         "-m",
         "kiro_crew.pdf_extract_child",
         f"--max-chars={max_chars}",
         f"--max-pages={max_pages}",
+        f"--max-rss={_EXTRACTOR_MAX_AS_BYTES}",
     )
 
 
@@ -165,16 +184,48 @@ def extract_pdf_segments(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=scrub_env(),
+            # Windows has no rlimit, so the ceiling is a Job object attached
+            # while the child has executed no instruction (0 on POSIX).
+            creationflags=platform_compat.CREATE_SUSPENDED,
         )
     except OSError as exc:
         logger.warning("pdf_extract: cannot start extractor child: %s", exc)
         return _failed("spawn")
+    if platform_compat.IS_WINDOWS:
+        ceiling = _windows_ceiling(proc)
+        if ceiling is not None:
+            return _failed(ceiling)
     try:
         out, err = proc.communicate(payload, timeout=remaining)
     except subprocess.TimeoutExpired:
         _kill(proc)
         return _failed("timeout")
     return _decode(out, err, proc.returncode, max_chars=max_chars, max_pages=max_pages)
+
+
+def _windows_ceiling(proc: subprocess.Popen[bytes]) -> str | None:
+    """Attach the Job-object memory ceiling to a suspended child, then resume it.
+
+    The Windows stand-in for the profile's ``RLIMIT_AS``: ``JobMemoryLimit`` at
+    the same byte count, ``ActiveProcessLimit`` of one (this child spawns
+    nothing). FAILS CLOSED, unlike the agent-host spawns, which log and run on:
+    an extractor with no ceiling is the exposure this module exists to remove,
+    and a document that cannot be bounded is a document that is not read. The
+    child is killed before it executes an instruction, so nothing was parsed.
+    Returns the failure kind, or ``None`` once the child is running under the
+    ceiling.
+    """
+    if not platform_compat.apply_job_limits(
+        proc.pid, max_procs=1, max_memory_bytes=_EXTRACTOR_MAX_AS_BYTES
+    ):
+        logger.warning("pdf_extract: no memory ceiling could be attached; document skipped")
+        _kill(proc)
+        return "unbounded"
+    if not platform_compat.resume_process_main_thread(proc.pid):
+        logger.warning("pdf_extract: extractor child could not be resumed")
+        _kill(proc)
+        return "spawn"
+    return None
 
 
 def _kill(proc: subprocess.Popen[bytes]) -> None:

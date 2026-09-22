@@ -147,6 +147,106 @@ class TestCallerBudgets:
             )
 
 
+class TestRssWatchdog:
+    """The child's own peak-RSS ceiling: the bound where the kernel has none (macOS)."""
+
+    def test_watchdog_reports_memory_and_ends_the_process(self, capsys):
+        samples = iter([100, 200, 2_000_000_001])
+        ended: list[int] = []
+        pdf_extract_child.watch_rss(
+            2_000_000_000, sample=lambda: next(samples), terminate=ended.append, interval=0
+        )
+        assert ended == [pdf_extract_child.EXIT_FAILED]
+        assert json.loads(capsys.readouterr().out) == {"error": "memory", "detail": "rss"}
+
+    def test_an_unreadable_sample_is_not_a_breach(self, capsys):
+        samples = iter([None, None, 5])
+        ended: list[int] = []
+        pdf_extract_child.watch_rss(
+            1, sample=lambda: next(samples), terminate=ended.append, interval=0
+        )
+        assert ended == [pdf_extract_child.EXIT_FAILED]  # the third sample, not the Nones
+
+    def test_peak_rss_is_bytes_on_every_platform(self):
+        peak = pdf_extract_child.peak_rss_bytes()
+        assert peak is not None
+        # This test process is at least a few MB resident; KiB misread as bytes would not be.
+        assert peak > 4 * 1024 * 1024
+
+    def test_the_child_polices_its_own_rss_where_the_kernel_has_no_ceiling(self, bomb):
+        """No rlimit at all (``none`` profile) and a 400 MB RSS ceiling: the inflate
+        of the bomb crosses it and the child ends itself with the ``memory`` report
+        -- the same outcome the kernel ceiling produces, from a different guard."""
+        argv = [
+            *pdf_extract._child_argv(400_001, 10)[:-1],
+            f"--max-rss={400 * 1024 * 1024}",
+        ]
+        proc = sandbox.popen_limited(
+            argv,
+            profile=sandbox.RLIMIT_PROFILE_NONE,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, _err = proc.communicate(bomb, timeout=_FAR)
+        assert proc.returncode == pdf_extract_child.EXIT_FAILED
+        lines = [json.loads(line) for line in out.decode().splitlines() if line]
+        assert lines == [{"error": "memory", "detail": "rss"}]
+
+
+class TestWindowsCeiling:
+    """Off POSIX the ceiling is a Job object on a suspended child, and it FAILS CLOSED.
+
+    Driven on any platform by flipping ``IS_WINDOWS`` and faking the two Win32
+    calls: ``CREATE_SUSPENDED`` is 0 here, so the real child simply runs.
+    """
+
+    @pytest.fixture
+    def windows(self, monkeypatch):
+        monkeypatch.setattr(pdf_extract.platform_compat, "IS_WINDOWS", True)
+        calls: dict[str, list] = {"apply": [], "resume": []}
+        monkeypatch.setattr(
+            pdf_extract.platform_compat,
+            "apply_job_limits",
+            lambda pid, **kw: calls["apply"].append((pid, kw)) or calls.get("apply_ok", True),
+        )
+        monkeypatch.setattr(
+            pdf_extract.platform_compat,
+            "resume_process_main_thread",
+            lambda pid: calls["resume"].append(pid) or calls.get("resume_ok", True),
+        )
+        return calls
+
+    def test_the_job_carries_the_profile_memory_number_and_the_child_runs(self, windows):
+        outcome = pdf_extract.extract_pdf_segments(
+            text_pdf("under a job"), max_chars=100, deadline=_soon()
+        )
+        assert outcome.segments == (("page 1", "under a job"),)
+        [(pid, kw)] = windows["apply"]
+        assert kw == {"max_procs": 1, "max_memory_bytes": sandbox._EXTRACTOR_MAX_AS_BYTES}
+        assert windows["resume"] == [pid]
+
+    def test_no_ceiling_means_no_parse(self, windows):
+        windows["apply_ok"] = False
+        outcome = pdf_extract.extract_pdf_segments(
+            text_pdf("never read"), max_chars=100, deadline=_soon()
+        )
+        assert outcome == pdf_extract.PdfExtraction((), True, "unbounded", 0)
+        assert outcome.resource_failure
+        assert windows["resume"] == []  # killed, never resumed
+
+    def test_an_unresumable_child_is_killed_and_reported(self, windows):
+        windows["resume_ok"] = False
+        outcome = pdf_extract.extract_pdf_segments(
+            text_pdf("frozen"), max_chars=100, deadline=_soon()
+        )
+        assert outcome == pdf_extract.PdfExtraction((), True, "spawn", 0)
+
+
+_ARGV_100_5 = ["--max-chars=100", "--max-pages=5", "--max-rss=1000000000"]
+_ARGV_1_1 = ["--max-chars=1", "--max-pages=1", "--max-rss=1000000000"]
+
+
 class TestChildCaps:
     """The child cuts at its caps and says so, with a fake parser (no child spawn)."""
 
@@ -265,14 +365,76 @@ class TestChildCaps:
             assert pdf_extract_child._is_memory_failure(wrapped)
         assert not pdf_extract_child._is_memory_failure(ValueError("bad xref"))
 
+    @staticmethod
+    def _main(
+        monkeypatch, capsys, argv: list[str], data: bytes, pdfplumber_module: object
+    ) -> tuple[int, list[dict]]:
+        """Run the child's ``main`` in-process: stdin and the parser both faked."""
+        monkeypatch.setattr(sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(data)})())
+        monkeypatch.setitem(sys.modules, "pdfplumber", pdfplumber_module)
+        rc = pdf_extract_child.main(argv)
+        out = capsys.readouterr().out
+        return rc, [json.loads(line) for line in out.splitlines() if line]
+
+    def test_main_streams_pages_and_exits_zero(self, monkeypatch, capsys):
+        class FakePage:
+            def __init__(self, text):
+                self.text = text
+
+            def extract_text(self):
+                return self.text
+
+            def close(self):
+                pass
+
+        class FakePdf:
+            def __init__(self, fh):
+                self.pages = [FakePage(fh.read().decode())]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        fake = type("FakePdfplumber", (), {"open": staticmethod(FakePdf)})
+        rc, records = self._main(monkeypatch, capsys, _ARGV_100_5, b"stdin bytes", fake)
+        assert rc == 0
+        assert records == [
+            {"label": "page 1", "text": "stdin bytes"},
+            {"end": True, "truncated": False, "pages": 1},
+        ]
+
+    def test_main_reports_a_wrapped_memory_error_and_exits_failed(self, monkeypatch, capsys):
+        def boom(_fh):
+            try:
+                raise MemoryError("Unable to allocate output buffer.")
+            except MemoryError as inner:
+                raise RuntimeError(inner)
+
+        fake = type("FakePdfplumber", (), {"open": staticmethod(boom)})
+        rc, records = self._main(monkeypatch, capsys, _ARGV_1_1, b"x", fake)
+        assert rc == pdf_extract_child.EXIT_FAILED
+        assert records == [{"error": "memory", "detail": "RuntimeError"}]
+
+    def test_main_reports_a_parser_error_as_parse(self, monkeypatch, capsys):
+        def refuse(_fh):
+            raise ValueError("No /Root object")
+
+        fake = type("FakePdfplumber", (), {"open": staticmethod(refuse)})
+        rc, records = self._main(monkeypatch, capsys, _ARGV_1_1, b"x", fake)
+        assert rc == pdf_extract_child.EXIT_FAILED
+        assert records == [{"error": "parse", "detail": "ValueError"}]
+
     @pytest.mark.parametrize(
         "argv",
         [
             [],
-            ["--max-chars=10"],
-            ["--max-chars=0", "--max-pages=1"],
-            ["--max-chars=x", "--max-pages=1"],
-            ["--other=1"],
+            ["--max-chars=10", "--max-pages=1"],
+            ["--max-chars=0", "--max-pages=1", "--max-rss=1"],
+            ["--max-chars=x", "--max-pages=1", "--max-rss=1"],
+            ["--max-chars=1", "--max-pages=1", "--max-rss=1", "--other=1"],
+            ["--max-chars"],
         ],
     )
     def test_malformed_arguments_are_refused(self, argv):
@@ -310,8 +472,20 @@ class TestParentReadsNothingOnFaith:
         assert pdf_extract._decode(out, b"", 0, max_chars=10, max_pages=1).failure == "protocol"
 
     def test_a_stream_past_the_byte_ceiling_is_refused_unparsed(self):
-        out = b"x" * (10 * 6 + 6 * 64 + 1)
+        out = b"x" * (10 * pdf_extract._JSON_BYTES_PER_CHAR + 6 * 64 + 1)
         assert pdf_extract._decode(out, b"", 0, max_chars=10, max_pages=5).failure == "protocol"
+
+    def test_a_page_of_non_bmp_text_at_the_cap_is_inside_the_ceiling(self):
+        # One emoji is ONE character to ``len`` (what the cap counts) but a
+        # surrogate pair to ``json.dumps``: two escapes, twelve bytes. A valid
+        # page of them must decode, not trip the byte ceiling as a protocol failure.
+        text = "\U0001f600" * 10
+        assert len(json.dumps(text)) - 2 == 10 * pdf_extract._JSON_BYTES_PER_CHAR
+        out = self._lines(
+            {"label": "page 1", "text": text}, {"end": True, "truncated": False, "pages": 1}
+        )
+        outcome = pdf_extract._decode(out, b"", 0, max_chars=10, max_pages=1)
+        assert outcome == pdf_extract.PdfExtraction((("page 1", text),), False, None, 1)
 
     def test_no_terminal_line_is_a_protocol_failure(self):
         out = self._lines({"label": "page 1", "text": "hi"})

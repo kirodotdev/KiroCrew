@@ -556,7 +556,10 @@ class TestDocumentPass:
         assert "WIDGET" in hit["preview"]
 
     @pytest.mark.asyncio
-    async def test_a_pdf_reports_the_page_it_matched(self, tmp_path):
+    async def test_a_pdf_reports_the_page_it_matched(self, tmp_path, monkeypatch):
+        # The extractor child costs an interpreter start; the budget under test
+        # is the ceiling, not a CI runner's spawn latency.
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)
         root = tmp_path / "papers"
         root.mkdir()
         (root / "paper.pdf").write_bytes(text_pdf("the WIDGET plan on page one"))
@@ -568,7 +571,9 @@ class TestDocumentPass:
         assert payload["skipped_docs"] == 0
 
     @pytest.mark.asyncio
-    async def test_a_flate_bomb_pdf_is_skipped_and_the_search_still_answers(self, tmp_path, caplog):
+    async def test_a_flate_bomb_pdf_is_skipped_and_the_search_still_answers(
+        self, tmp_path, caplog, monkeypatch
+    ):
         """The bound this pass depends on: one page past the ceiling is a SKIP.
 
         The extractor runs in a child under ``RLIMIT_AS``, so the inflate that
@@ -580,6 +585,7 @@ class TestDocumentPass:
         ceiling firing apart from the deadline giving up on a child still
         inflating.
         """
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)  # the kind, not the clock
         root = tmp_path / "mixed"
         root.mkdir()
         (root / "bomb.pdf").write_bytes(flate_bomb_pdf())

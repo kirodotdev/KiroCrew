@@ -238,7 +238,9 @@ is the parsed character list itself, so any check runs after the memory is alrea
 committed — a 25 MB input can decompress to orders of magnitude more text. The
 pass therefore hands the bytes to `kiro_crew.pdf_extract.extract_pdf_segments`,
 which spawns `python -m kiro_crew.pdf_extract_child` under the `extractor` rlimit
-profile (`RLIMIT_AS` 1 GiB, `RLIMIT_CPU` 60 s; see
+profile (`RLIMIT_AS` 1 GiB, `RLIMIT_CPU` 60 s; a Job object with the same memory
+number on Windows, failing closed when it cannot attach; the child's own peak-RSS
+watchdog at the same number on macOS, where `RLIMIT_AS` is not enforced; see
 `docs/architecture/resource-protection.md`) with the request deadline as its
 timeout. The child caps characters and pages itself and labels a hit `page N`. A
 child stopped by a ceiling — memory, CPU, deadline — is a document SKIPPED
