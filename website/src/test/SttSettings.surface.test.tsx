@@ -13,13 +13,15 @@
  * diff review waves through.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 
 import { store } from '../store'
 import { initI18n } from '../i18n'
+import { MemoryRouter } from 'react-router-dom'
 import { SettingsSection } from '../components/settings'
+import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
 
@@ -85,6 +87,121 @@ function mountPanel(over: Record<string, unknown> = {}) {
 
 describe('SettingsSection disclosure', () => {
   afterEach(() => cleanup())
+
+  /* A collapsed group is not merely hidden -- it is ABSENT from the document that
+   * a settings deep link searches. `useSettingHighlight` resolves
+   * `/settings/<tab>?highlight=<id>` by querying the DOM for the row's
+   * `data-setting-label` / `data-setting-key`, so a group that renders no rows
+   * makes its settings unreachable from the command palette and from every
+   * `SettingRef` chip. Six of the Voice tab's twenty-six registry entries sit
+   * inside one. */
+  function Probe({ children }: { children: React.ReactNode }) {
+    useSettingHighlight()
+    return <>{children}</>
+  }
+
+  it('reveals its rows while a settings deep link is still looking for one', () => {
+    render(
+      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+        <Probe>
+          <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('inside')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Group' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('stops revealing groups once the link has finished looking', () => {
+    vi.useFakeTimers()
+    try {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+          <Probe>
+            <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+      expect(screen.getByText('inside')).toBeTruthy()
+
+      // The probe strips its own parameter once it has finished looking, and the
+      // signal has to go with it -- otherwise the first deep link of a session
+      // leaves every collapsible group in the app open for the rest of it. The
+      // first tree stays MOUNTED here on purpose, so its unmount cleanup cannot be
+      // what clears the signal: only the withdrawal can.
+      act(() => { vi.advanceTimersByTime(200) })
+      render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+
+      expect(screen.queryByText('later')).toBeNull()
+      // And the group that was opened for the link stays open: it is latched, so
+      // the ringed row does not vanish the instant the link resolves.
+      expect(screen.getByText('inside')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('withdraws for an id the registry does not know', () => {
+    // The unknown-id branch strips the parameter and returns WITHOUT a cleanup, so
+    // it is the one path where the withdrawal cannot ride the effect teardown. A
+    // mistyped or long-dead bookmark would otherwise leave every collapsible group
+    // in the app open for the rest of the session.
+    vi.useFakeTimers()
+    try {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.no-such-row']}>
+          <Probe>
+            <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+      act(() => { vi.advanceTimersByTime(200) })
+      render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+
+      expect(screen.queryByText('later')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['a registry id', '/settings/voice?highlight=voice.streaming'],
+    ['a config key', '/settings/voice?highlight=key:stt.streaming'],
+  ])('withdraws when the page is torn down mid-probe (%s)', (_name, entry) => {
+    // Leaving Settings before the probe finishes is the ordinary way out of it, and
+    // the two url forms take DIFFERENT branches -- a config key waits on a mutation
+    // observer, a registry id on a timer -- so each one has its own teardown.
+    vi.useFakeTimers()
+    try {
+      const view = render(
+        <MemoryRouter initialEntries={[entry]}>
+          <Probe>
+            <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+      expect(screen.getByText('inside')).toBeTruthy()
+      view.unmount()
+
+      render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+      expect(screen.queryByText('later')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays closed when the navigation carries no deep link', () => {
+    // The other half, or the fix would just be "never collapse": an ordinary visit
+    // to the tab must still cost the reader nothing.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice']}>
+        <Probe>
+          <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByText('inside')).toBeNull()
+  })
 
   it('renders its rows immediately when it is a plain heading', () => {
     // The regression guard for the other half of the prop: a section that never
