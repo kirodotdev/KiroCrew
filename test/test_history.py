@@ -6184,7 +6184,7 @@ class TestConsolidationLessonApplies:
     async def test_extraction_prompt_asks_for_the_tier(self, tmp_path) -> None:
         """The prompt the code actually builds names the field and the two
         literals, tells the model to decide from what the user said, and to omit
-        the key when it cannot tell -- the same instruction ``learn_add`` carries."""
+        the field when it cannot tell -- the same instruction ``learn_add`` carries."""
         from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
@@ -6210,4 +6210,4 @@ class TestConsolidationLessonApplies:
         prompt = " ".join(captured["prompt"].split())
         assert '"applies": "always|on_topic"' in prompt
         assert "YOU decide it from what the user actually said" in prompt
-        assert "OMIT the key when you genuinely cannot tell" in prompt
+        assert "Omit the field when you genuinely cannot tell" in prompt

@@ -21,7 +21,10 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.lesson_validation import LESSON_REFUSED_AT_CAPACITY
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_INSTRUCTION,
+    LESSON_REFUSED_AT_CAPACITY,
+)
 from kiro_crew.validation import (
     LEARN_ADD_SCHEMA,
     LESSON_LIST_LIMIT,
@@ -138,21 +141,7 @@ def schemas() -> list[dict[str, Any]]:
                     "applies": {
                         "type": "string",
                         "enum": ["always", "on_topic"],
-                        "description": (
-                            "Which startup tier this correction belongs to. YOU decide "
-                            "it from what the user actually said, because nothing else "
-                            "can: 'always' is a standing rule the user wants followed in "
-                            "every session regardless of topic (a permission, a safety "
-                            "constraint, a style or workflow requirement); 'on_topic' is "
-                            "a past finding worth having only when the task touches it (a "
-                            "troubleshooting conclusion, a project detail, how one bug "
-                            "turned out). Standing rules share a small startup budget, so "
-                            "filing a finding as 'always' spends room a real rule needs, "
-                            "and filing a rule as 'on_topic' means it stops arriving "
-                            "unless the task mentions it. Do not pick by wording: 'always' "
-                            "appears in both kinds. Omit the field when you genuinely "
-                            "cannot tell -- the row is then treated as a standing rule."
-                        ),
+                        "description": LESSON_APPLIES_INSTRUCTION,
                     },
                 },
                 "required": ["rule", "category"],

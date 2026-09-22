@@ -60,6 +60,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_VALUES,
     authored_lesson_applies,
     contains_volatile_lesson_fact,
+    extracted_lesson_applies,
     normalize_lesson_applies,
     render_lesson_tier,
     render_withheld_tier,
@@ -1990,6 +1991,12 @@ class VectorMemoryStore:
                     }
                     if scope:
                         value["repo_scope"] = scope
+                    # The authored startup tier, same contract as write_lesson:
+                    # absent when unstated, never ``null``. Same policy as the
+                    # consolidator's own _save_lessons (extracted_lesson_applies).
+                    applies = extracted_lesson_applies(item.get("applies"), logger)
+                    if applies:
+                        value["applies"] = applies
                     if self.validate_semantic(key, value, 0.9, source) is not None:
                         continue
                     if not self._write_semantic(

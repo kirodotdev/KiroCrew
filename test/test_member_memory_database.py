@@ -1,6 +1,7 @@
 """The member database is the sole learned authority and opens never provision it."""
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -268,6 +269,41 @@ def test_consolidation_receipt_deduplicates_lost_ack_across_reopen(member_db):
         assert list(iter_sql_dump(reopened.db)) == baseline
     finally:
         reopened.close()
+
+
+def _lesson_values(store) -> dict[str, dict]:
+    return {
+        json.loads(row["value_json"])["rule"]: json.loads(row["value_json"])
+        for row in store.get_lessons()
+    }
+
+
+def test_consolidation_persists_the_authored_lesson_tier(member_db, caplog):
+    """The member-store consolidation path builds the lesson value itself, so it
+    must carry the tier the model stated: both literals round-trip, an omitted
+    key lands unstated (absent, not ``null``), and a misspelling is logged and
+    still lands unstated rather than dropping the correction."""
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+        receipt = consolidate(
+            member_db,
+            result={
+                "lessons": [
+                    {"rule": "Never force-push a shared branch", "applies": "always"},
+                    {"rule": "The flaky shard was the arm64 runner", "applies": "on_topic"},
+                    {"rule": "A rule with no tier stays unstated"},
+                    {"rule": "A misspelled tier still lands", "applies": "Directive"},
+                ]
+            },
+        )
+    assert receipt["lessons"] == 4
+    values = _lesson_values(member_db)
+    assert values["Never force-push a shared branch"]["applies"] == "always"
+    assert values["The flaky shard was the arm64 runner"]["applies"] == "on_topic"
+    assert "applies" not in values["A rule with no tier stays unstated"]
+    assert "applies" not in values["A misspelled tier still lands"]
+    assert any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
+    # Only the closed-set reason is logged, never the untrusted value.
+    assert all("Directive" not in r.getMessage() for r in caplog.records)
 
 
 def test_history_does_not_duplicate_full_bodies_in_a_revision_table(member_db):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 
@@ -88,6 +89,24 @@ LESSON_APPLIES_UNSTATED = "unstated"
 
 LESSON_APPLIES_VALUES = (LESSON_APPLIES_ALWAYS, LESSON_APPLIES_ON_TOPIC)
 
+#: The one instruction every model-facing write surface gives for choosing the
+#: tier: the ``learn_add`` schema description and the consolidation extraction
+#: prompt both read it from here, so the two writers ask the same question by
+#: construction rather than by review. Kept as prose the model reads verbatim.
+LESSON_APPLIES_INSTRUCTION = (
+    "Which startup tier this correction belongs to. YOU decide it from what the "
+    "user actually said, because nothing else can: 'always' is a standing rule "
+    "the user wants followed in every session regardless of topic (a permission, "
+    "a safety constraint, a style or workflow requirement); 'on_topic' is a past "
+    "finding worth having only when the task touches it (a troubleshooting "
+    "conclusion, a project detail, how one bug turned out). Standing rules share "
+    "a small startup budget, so filing a finding as 'always' spends room a real "
+    "rule needs, and filing a rule as 'on_topic' means it stops arriving unless "
+    "the task mentions it. Do not pick by wording: 'always' appears in both "
+    "kinds. Omit the field when you genuinely cannot tell -- the row is then "
+    "treated as a standing rule."
+)
+
 #: Why a JSONL lesson write was refused when the store is full rather than
 #: because of the value's content. The JSONL store answers both cases with the
 #: bare ``refused`` outcome it shares with :class:`LessonWriteOutcome`, so a route
@@ -148,6 +167,28 @@ def authored_lesson_applies(tier: object) -> str | None:
         return None
     normalized = tier.strip().lower()
     return normalized if normalized in LESSON_APPLIES_VALUES else None
+
+
+def extracted_lesson_applies(tier: object, logger: logging.Logger) -> str | None:
+    """The tier a MODEL-extracted lesson stated, or ``None`` for unstated.
+
+    The write-side policy for a value the model, not a caller, authored -- shared
+    by every consolidation write path so it cannot drift between them. It runs
+    ``normalize_lesson_applies`` so a present-but-unrecognized value is still
+    audible (logged at warning), but it does not let that raise drop the lesson:
+    losing a correction the user actually made over a one-word slip costs more
+    than serving it as a standing rule, and unstated is the direction whose
+    mistake costs least. Only the closed-set reason is logged, never the
+    untrusted value.
+    """
+    try:
+        return normalize_lesson_applies(tier)
+    except ValueError:
+        logger.warning(
+            "Consolidation lesson names an unrecognized applies tier; "
+            "storing the lesson unstated"
+        )
+        return None
 
 
 def tighter_lesson_budget(*budgets: int) -> int:
