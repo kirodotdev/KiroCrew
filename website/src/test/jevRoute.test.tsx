@@ -20,6 +20,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import ModelDropdownList from '../components/ModelDropdownList'
 
 import {
+  isUnpinnedModel,
   JEV_ROUTE_MODEL,
   jevRouteOffered,
   jevRouteShownModel,
@@ -54,6 +55,36 @@ describe('jevRouteOffered', () => {
     expect(
       jevRouteOffered({ decisions_enabled: true }, { enabled: 'true' as never }, true),
     ).toBe(false)
+  })
+})
+
+describe('isUnpinnedModel', () => {
+  it('reads both spellings of "no model", whatever their case or padding', () => {
+    // `''` is a freshly dispatched slot, `auto` is the picker's inherit row, and the
+    // value arrives from a client -- so a near-miss that read as a pin would turn
+    // the feature off for that session with nothing said.
+    for (const model of ['', 'auto', 'AUTO', '  auto  ', undefined]) {
+      expect(isUnpinnedModel(model)).toBe(true)
+    }
+  })
+
+  it('reads any named model as pinned, including the sentinel', () => {
+    // The sentinel is resolved to `auto` at the top of the model handler, so a slot
+    // still holding it is a bug; reading it as unpinned would hide that bug.
+    for (const model of ['claude-opus-5', 'auto:jev', 'autopilot', 'auto-1']) {
+      expect(isUnpinnedModel(model)).toBe(false)
+    }
+  })
+
+  it('agrees with the gate that actually routes', () => {
+    // The Python half is `_JEV_ROUTE_AUTO_MODELS` in `dashboard/chat_runner.py`. A
+    // chip keyed off a different set would say `Auto` for a turn that routed, which
+    // is the one thing this pair exists to prevent.
+    const runner = readFileSync(
+      join(__dirname, '../../../src/kiro_crew/dashboard/chat_runner.py'),
+      'utf8',
+    )
+    expect(runner).toContain('_JEV_ROUTE_AUTO_MODELS = ("", "auto")')
   })
 })
 

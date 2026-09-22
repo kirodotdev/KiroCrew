@@ -4326,7 +4326,6 @@
         "sent_message": "message {{chars}} chars",
         "history_chars_label": "Context sent (characters)",
         "model_baseline_label": "Model without routing",
-        "model_baseline_named": "default: {{model}}",
         "model_chosen_label": "Model used",
         "model_default": "Built-in default",
         "model_latency": "{{ms}} ms",

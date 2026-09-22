@@ -10565,7 +10565,6 @@
         "sent_message": "messaggio {{chars}} caratteri",
         "history_chars_label": "Contesto inviato (caratteri)",
         "model_baseline_label": "Modello senza routing",
-        "model_baseline_named": "predefinito: {{model}}",
         "model_chosen_label": "Modello usato",
         "model_default": "Modello predefinito",
         "model_latency": "{{ms}} ms",

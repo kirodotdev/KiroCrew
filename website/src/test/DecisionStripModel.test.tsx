@@ -192,7 +192,7 @@ describe('readDecisionRecords', () => {
 describe('the model row', () => {
   const record = readModelRecord(MODEL_WIRE)!
 
-  it('names the tier, the model it ran on and the model it would have used', () => {
+  it('names the tier and the model it ran on, and keeps the baseline one click in', () => {
     render(<DecisionStrip record={record} />)
     const strip = screen.getByTestId('decision-strip-model')
     expect(strip).toHaveAttribute('data-tier', 'complex')
@@ -201,10 +201,14 @@ describe('the model row', () => {
     expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('model-c')
     expect(screen.getByTestId('decision-strip-model-confidence').textContent).toBe('(0.91)')
     expect(screen.getByTestId('decision-strip-model-latency').textContent).toContain('180')
-    // The baseline is what makes the line actionable: "complex" alone is not a
-    // claim a reader can disagree with.
-    expect(screen.getByTestId('decision-strip-model-baseline').textContent)
-      .toContain('model-b')
+    // The collapsed line carries the DECISION and nothing else: on a routed
+    // session the baseline is the previous turn's tier, so a caption there read as
+    // a "default" that changed every turn. It is still on the record, labelled for
+    // what it is, one click in.
+    expect(screen.queryByTestId('decision-strip-model-baseline')).toBeNull()
+    fireEvent.click(screen.getByTestId('decision-strip-model-toggle'))
+    expect(screen.getByText('Model without routing').closest('div')!)
+      .toHaveTextContent('model-b')
   })
 
   it('says the tier is unpinned rather than leaving a gap where a model goes', () => {
@@ -253,8 +257,9 @@ describe('the model row', () => {
   it("names the built-in default rather than an empty gap", () => {
     const inherited = readModelRecord({ ...MODEL_WIRE, baseline_model: '' })!
     render(<DecisionStrip record={inherited} />)
-    expect(screen.getByTestId('decision-strip-model-baseline').textContent)
-      .toContain('Built-in default')
+    fireEvent.click(screen.getByTestId('decision-strip-model-toggle'))
+    expect(screen.getByText('Model without routing').closest('div')!)
+      .toHaveTextContent('Built-in default')
   })
 
   it('carries ONE thumbs pair, on the Jev side', () => {

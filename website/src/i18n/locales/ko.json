@@ -10277,7 +10277,6 @@
         "sent_message": "메시지 {{chars}}자",
         "history_chars_label": "보낸 컨텍스트(글자 수)",
         "model_baseline_label": "라우팅 없는 모델",
-        "model_baseline_named": "기본값: {{model}}",
         "model_chosen_label": "사용한 모델",
         "model_default": "기본 제공 모델",
         "model_latency": "{{ms}} 밀리초",

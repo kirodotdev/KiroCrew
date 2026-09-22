@@ -10709,7 +10709,6 @@
         "sent_message": "сообщение {{chars}} символов",
         "history_chars_label": "Отправленный контекст (символов)",
         "model_baseline_label": "Модель без маршрутизации",
-        "model_baseline_named": "по умолчанию: {{model}}",
         "model_chosen_label": "Использованная модель",
         "model_default": "Модель по умолчанию",
         "model_latency": "{{ms}} мс",

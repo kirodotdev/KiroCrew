@@ -246,4 +246,9 @@ async def test_revoking_the_tool_argument_scope_silences_the_whole_chain(tmp_pat
     rows = _tool_rows(slot)
     assert rows, f"expected a tool card, got {slot.messages}"
     assert "decisions_tool_risk" not in (rows[0].get("meta") or {})
-    assert _rows() == [], "no call row and no outcome row for a point that never ran"
+    # Scoped to THIS point. The slot pins no model, so with the preview on the
+    # turn also asks `model.route` which model to run on, and that point's rows are
+    # not evidence about the tool-argument scope either way.
+    assert [
+        row for row in _rows() if row.get("point") == tr.POINT
+    ] == [], "no call row and no outcome row for a point that never ran"

@@ -10421,7 +10421,6 @@
         "sent_message": "বার্তা {{chars}} অক্ষর",
         "history_chars_label": "পাঠানো প্রসঙ্গ (অক্ষর)",
         "model_baseline_label": "রাউটিং ছাড়া মডেল",
-        "model_baseline_named": "ডিফল্ট: {{model}}",
         "model_chosen_label": "ব্যবহৃত মডেল",
         "model_default": "অন্তর্নির্মিত ডিফল্ট",
         "model_latency": "{{ms}} মিলিসেকেন্ড",

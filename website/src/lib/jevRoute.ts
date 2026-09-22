@@ -29,6 +29,22 @@
  *  `dashboard/chat_handlers.py`, which is the only reader. */
 export const JEV_ROUTE_MODEL = 'auto:jev'
 
+/** Whether a slot names no model, i.e. Jev's to pick when the preview is on.
+ *
+ *  Mirrors `_JEV_ROUTE_AUTO_MODELS` in `dashboard/chat_runner.py`, which is the
+ *  gate that actually routes: `auto` is the picker's inherit spelling and `''` is
+ *  what a freshly dispatched slot carries, and both mean the same thing here.
+ *
+ *  Takes the slot's RAW `model`, never the composer's displayed one: the display
+ *  value substitutes the backend's served id for an inheriting slot, so it is
+ *  almost never `auto` and a chip keyed off it would claim every routed turn was
+ *  pinned. Stripped and lower-cased for the same reason the gate is.
+ */
+export function isUnpinnedModel(model: string | undefined): boolean {
+  const named = (model || '').trim().toLowerCase()
+  return named === '' || named === 'auto'
+}
+
 /** Whether the picker may offer the row at all.
  *
  *  `hasSlot` is the third required answer and it is not cosmetic: a pick made

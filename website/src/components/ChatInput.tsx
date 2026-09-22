@@ -529,8 +529,27 @@ interface ChatInputProps {
    * backend's served default), not a pin. The chip then carries the same
    * ` · default` marker and explanatory tooltip the agent chip uses for its
    * inherited case, so a served model does not read as something the user
-   * chose. A pinned chip has nothing to explain. */
+   * chose. A pinned chip has nothing to explain. Yields to
+   * `modelIsJevRouted` below, which describes the same unpinned slot more
+   * specifically. */
   modelIsInheritedDefault?: boolean
+  /**
+   * True when THIS turn's model is Jev's to pick: the slot names no model
+   * (`auto`, or the empty string a freshly dispatched slot carries) and the Jev
+   * preview is on, so `model.route` puts the turn in a tier and runs it on that
+   * tier's model. The chip then carries an ` · Auto (Jev)` marker, because the
+   * bare id beside it is only where the session STARTS -- the next turn may run
+   * somewhere else, which a chip reading like a pin does not say.
+   *
+   * Hosts compute it from the SAME `jevRouteOffered()` the picker's own row is
+   * drawn from (`lib/jevRoute.ts`) against the slot's raw `model`, which is what
+   * the routing gate reads. One condition, so the chip cannot say Auto for a turn
+   * that routed, nor Auto (Jev) for one that did not.
+   *
+   * Wins over `modelIsInheritedDefault`: both describe a slot that pinned
+   * nothing, and this one names WHO picks instead, which is the more specific
+   * fact and the one that costs money. */
+  modelIsJevRouted?: boolean
   /**
    * Picker openers (agent, model, project, and `onSessionControlClick` below).
    * Each hands the host the chip's click-time rect AND the chip element itself:
@@ -922,6 +941,7 @@ function ChatInput({
   agentLabel,
   agentIsInheritedDefault,
   modelIsInheritedDefault,
+  modelIsJevRouted,
   agentSource,
   modelName,
   onAgentClick,
@@ -5090,27 +5110,41 @@ function ChatInput({
               // reads exactly like a pin. A pinned chip keeps the plain hint.
               title={isRunning
                 ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsInheritedDefault
-                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                  : i18nT('components.chatInput.model_2', { name: modelName })}
+                : modelIsJevRouted
+                  ? i18nT('pages.chatPage.model_auto_jev_description')
+                  : modelIsInheritedDefault
+                    ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+                    : i18nT('components.chatInput.model_2', { name: modelName })}
               aria-label={isRunning
                 ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsInheritedDefault
-                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                  : i18nT('components.chatInput.model_2', { name: modelName })}
+                : modelIsJevRouted
+                  ? i18nT('pages.chatPage.model_auto_jev_description')
+                  : modelIsInheritedDefault
+                    ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+                    : i18nT('components.chatInput.model_2', { name: modelName })}
             >
               <span className="truncate max-w-[180px]">
                 {modelName}
               </span>
-              {modelIsInheritedDefault && (
-                // Outside the truncating span: a long provider-prefixed id must
-                // ellipsize its own tail, never the marker that tells a served
-                // default apart from a pin.
+              {/* Outside the truncating span: a long provider-prefixed id must
+                  ellipsize its own tail, never the marker that says who picked it.
+                  Jev first -- an unpinned slot is BOTH inherited and routed, and
+                  only the routed reading tells the next turn's model apart from
+                  this one's. Same key the picker's own row is labelled with, so
+                  the chip and the menu name the choice identically. */}
+              {modelIsJevRouted ? (
+                <>
+                  <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
+                  <span className="opacity-60 shrink-0" data-testid="composer-model-chip-jev">
+                    {i18nT('components.modelDropdownList.auto_jev')}
+                  </span>
+                </>
+              ) : modelIsInheritedDefault ? (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
                   <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
                 </>
-              )}
+              ) : null}
               {onReasoningEffortClick && !shelfCompact && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>

@@ -142,10 +142,12 @@ function ModelRouteStrip({
               ms: fmtNumber(record.latencyMs),
             })}
           </span>
-          <span className="shrink-0 truncate" data-testid="decision-strip-model-baseline">
-            {'\u00B7 '}
-            {i18nT('pages.chat.decisionStrip.model_baseline_named', { model: baseline })}
-          </span>
+          {/* No baseline caption. The line says which tier this turn was put in
+              and which model that landed on, which is the whole decision. The
+              model the turn would OTHERWISE have run on is not a second fact on a
+              routed session: it is the previous turn's tier, so the caption read
+              as a "default" that changes every turn. It stays on the record and in
+              the expanded panel, where it is labelled for what it is. */}
         </button>
         <VerdictThumbs
           turnId={record.turnId}

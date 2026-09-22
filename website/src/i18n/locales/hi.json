@@ -10421,7 +10421,6 @@
         "sent_message": "संदेश {{chars}} अक्षर",
         "history_chars_label": "भेजा गया संदर्भ (अक्षर)",
         "model_baseline_label": "रूटिंग के बिना मॉडल",
-        "model_baseline_named": "डिफ़ॉल्ट: {{model}}",
         "model_chosen_label": "उपयोग किया गया मॉडल",
         "model_default": "अंतर्निहित डिफ़ॉल्ट",
         "model_latency": "{{ms}} मि.से.",

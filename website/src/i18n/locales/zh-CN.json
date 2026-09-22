@@ -10277,7 +10277,6 @@
         "sent_message": "消息 {{chars}} 字符",
         "history_chars_label": "发送的上下文（字符数）",
         "model_baseline_label": "未路由时的模型",
-        "model_baseline_named": "默认：{{model}}",
         "model_chosen_label": "使用的模型",
         "model_default": "内置默认模型",
         "model_latency": "{{ms}} 毫秒",

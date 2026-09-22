@@ -4247,6 +4247,60 @@ def _route_history_source(state: DashboardState, session_key: str) -> "Callable[
     return _rows
 
 
+#: The two spellings of "this slot names no model", which is what the picker's
+#: Auto row means and what a freshly dispatched worker slot carries. Compared
+#: against a stripped, lower-cased model so a hand-written ``"Auto"`` reads the
+#: same as the picker's own value.
+_JEV_ROUTE_AUTO_MODELS = ("", "auto")
+
+
+def _jev_route_armed(slot: Any) -> bool:
+    """Whether this slot's turns ask ``model.route`` which model to run on.
+
+    Two ways in, and they are the same answer to the same question -- "the owner
+    named no model for this session, so let Jev name one per turn":
+
+    * the owner picked the ``Auto (Jev)`` row, which survives as ``slot.jev_route``;
+    * the slot names no model at all (``auto``, or the empty string a freshly
+      dispatched worker slot carries) while the Jev preview is on, which is the
+      state the composer chip renders as ``Auto (Jev)``.
+
+    In-memory only, so the turn gate can read it on the event loop and the switch
+    can re-read it inside the model locks. Whether the PREVIEW is on is a keystone
+    read and is deliberately NOT asked here: :func:`_route_model_for_turn` asks it
+    once, off the loop, which is also what keeps the shipped default -- consent
+    off, every slot on ``auto`` -- from paying a filesystem read on the loop for
+    every turn of every session.
+    """
+    if getattr(slot, "jev_route", False):
+        return True
+    return str(getattr(slot, "model", "") or "").strip().lower() in _JEV_ROUTE_AUTO_MODELS
+
+
+def _jev_preview_on(session_key: str) -> bool:
+    """Whether the Jev preview's two switches are both on for *session_key*. Blocking.
+
+    The OWNER's keystone and the FLEET's ``capabilities.decisions`` ceiling, plus the
+    sampling bucket -- i.e. every refusal ``decide`` re-runs on its first line, asked
+    through the helper the gate exposes for exactly this ("a hook whose state is
+    expensive to build"). It grants nothing: ``decide`` checks all of it again, so a
+    config change racing this read costs one wasted question and never a turn.
+
+    Filesystem IO, so every caller runs it off the event loop. It exists to keep the
+    implicit arm cheap on the overwhelmingly common install: consent off, every slot
+    on ``auto``, and one small keystone read per turn instead of the history budget,
+    tier map and provider round trip below it.
+    """
+    try:
+        from kiro_crew.decisions import gate as _gate
+        from kiro_crew.decisions.points import model_route as _model_route
+
+        return _gate.is_enabled(_model_route.POINT, session_key=session_key)
+    except Exception:  # pragma: no cover - a build without the point
+        logger.debug("model.route: preview probe failed; not routing", exc_info=True)
+        return False
+
+
 async def _route_model_for_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4289,6 +4343,17 @@ async def _route_model_for_turn(
         from kiro_crew.decisions.points import model_route
     except Exception:  # pragma: no cover - a build without the point
         return
+    if not getattr(slot, "jev_route", False):
+        # The IMPLICIT arm: the owner never picked the sentinel, so the preview's
+        # own two switches are what authorises spending on a routed turn. Asked
+        # here rather than in the turn gate because it reads the keystone, and
+        # asked BEFORE the work below because the shipped default is consent off
+        # with every slot on ``auto`` -- which must keep costing one small read
+        # rather than a history budget, a tier map and a provider round trip.
+        # Not asked for the explicit arm: that request already proved owner
+        # identity at the picker, and ``decide`` re-checks both switches anyway.
+        if not await asyncio.to_thread(_jev_preview_on, session_key):
+            return
     try:
         routed = await model_route.routed_model(
             message,
@@ -4336,7 +4401,7 @@ async def _route_model_for_turn(
             # flag any manual pick clears, and the model the answer's baseline names.
             # Either having moved drops the answer -- re-asking would spend again on
             # a turn whose model the owner just chose.
-            if not getattr(slot, "jev_route", False) or _crew_log_model(slot) != str(
+            if not _jev_route_armed(slot) or _crew_log_model(slot) != str(
                 routed.get("baseline_model") or ""
             ):
                 logger.debug(
@@ -10749,23 +10814,27 @@ async def _run_chat(
             await _probe_fallback_restore_for_slot(slot, client)
 
         # ── Jev model routing (decisions/points/model_route.py) ──
-        # Only for a slot whose owner picked "Auto (Jev)" in the model picker, and
-        # only for a NORMAL dashboard chat turn: `_crew_log_actor` is the turn's
-        # structural origin, so cron deliveries, sub-agent turns, crew-relayed
-        # turns, app injections and autonudge wakes are all excluded -- none has an
-        # owner watching the price of the answer, and each already resolves its
-        # model through its own tier. A runner-authored recovery continuation and a
-        # harness slash command are excluded too: neither is a request whose
-        # difficulty is a question, and re-routing mid-answer would swap the model
-        # under a turn already in progress.
-        # ``_directive_user_origin`` is the load-bearing half, not the actor: a
-        # dispatch that names no actor falls back to ``user`` by design, so the
-        # rewind, regenerate and OpenAI-compatible paths reach here as ``user``
-        # while carrying an app's provenance. The origin flag is the one fact a
-        # person cannot write -- the auth middleware stamps the app claim it is
-        # derived from -- and routing spends the owner's credential, so it asks
-        # for authenticated-human provenance and keeps the actor check beside it
-        # for the wakes that do declare themselves.
+        # For a slot that names no model -- the owner picked "Auto (Jev)", or the
+        # slot is on plain ``auto``/``""`` while the preview is on -- and only for a
+        # NORMAL chat turn: `_crew_log_actor` is the turn's structural origin, so
+        # cron deliveries, sub-agent turns, crew-relayed turns, app injections and
+        # autonudge wakes are all excluded -- none has an owner watching the price
+        # of the answer, and each already resolves its model through its own tier. A
+        # runner-authored recovery continuation and a harness slash command are
+        # excluded too: neither is a request whose difficulty is a question, and
+        # re-routing mid-answer would swap the model under a turn already in
+        # progress.
+        # `_jev_route_armed` is in-memory; whether the PREVIEW is on is a keystone
+        # read and is asked off the loop inside `_route_model_for_turn`, which is
+        # also the refusal that keeps the shipped default free.
+        # ``_directive_user_origin`` is deliberately NOT a condition, so a turn
+        # delivered into this slot by its conductor (`session_send`, which queues
+        # with `user_origin=False`) routes like one typed into the composer. The two
+        # facts routing actually spends against are both the owner's and neither is
+        # agent-writable: the keystone the preview reads, and the `decisions.
+        # model_route` tier map that names every model a turn may land on. An agent
+        # that can write its own slot's model cannot widen either, and the actor
+        # check beside this still excludes every producer that declares itself.
         # The text sent is ``_jev_route_text``, not ``message``: Jev classifies the
         # difficulty of what the PERSON asked, and by here ``message`` carries every
         # prepend this turn made -- a cancelled-turn preamble, sub-agent failure text,
@@ -10779,8 +10848,7 @@ async def _run_chat(
         # membership cannot recognize, and re-routing it would re-answer a turn
         # already in progress on a model the owner is billed for twice.
         if (
-            slot.jev_route
-            and _directive_user_origin
+            _jev_route_armed(slot)
             and _crew_log_actor == "user"
             and not _is_synthetic
             and not is_slash

@@ -10421,7 +10421,6 @@
         "sent_message": "Nachricht {{chars}} Zeichen",
         "history_chars_label": "Gesendeter Kontext (Zeichen)",
         "model_baseline_label": "Modell ohne Routing",
-        "model_baseline_named": "Standard: {{model}}",
         "model_chosen_label": "Verwendetes Modell",
         "model_default": "Standardmodell",
         "model_latency": "{{ms}} ms",

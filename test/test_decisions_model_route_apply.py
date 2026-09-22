@@ -225,11 +225,14 @@ class TestTheProviderGetsTheMappedModel:
 
 class TestRefusalsKeepTheCurrentModel:
     @pytest.mark.asyncio
-    async def test_a_slot_the_owner_did_not_route_is_never_asked(self, tmp_path, answers):
-        """The picker's `Auto (Jev)` entry is the whole arming surface: a manual
-        model choice is never overridden."""
+    async def test_a_slot_that_names_a_model_is_never_asked(self, tmp_path, answers):
+        """A model picked by hand is never overridden. It is the OWNER answering the
+        very question this point asks, so it wins over the tier map -- which is what
+        keeps the auto default from being a way to ignore a pin."""
         answers("complex")
-        client = await _run(tmp_path, _slot("chat-pinned"))
+        pinned = _slot("chat-pinned")
+        pinned.model = "model-a"
+        client = await _run(tmp_path, pinned)
 
         assert _switched_to(client) == []
 
@@ -325,17 +328,27 @@ class TestOnlyANormalChatTurn:
         assert _switched_to(client) == []
 
     @pytest.mark.asyncio
-    async def test_an_app_authored_turn_routes_nothing_even_unnamed(self, tmp_path, answers):
-        """The dispatch paths an app reaches -- rewind, regenerate, the
-        OpenAI-compatible route -- pass `_directive_user_origin=not bool(request_app)`
-        and name NO actor, and the actor resolver's fallback is `user`. So the actor
-        check alone admits them and the owner is billed for a routed turn nobody typed.
-        Provenance is what the guard asks for; the actor is left unnamed here on
-        purpose, because that is the shape those paths actually dispatch."""
+    async def test_a_turn_with_no_human_provenance_is_routed_inside_the_owner_envelope(
+        self, tmp_path, answers
+    ):
+        """`_directive_user_origin` is NOT a condition, and that is the point.
+
+        A turn delivered into a slot by something other than its own composer --
+        a conductor's `session_send`, a rewind, the OpenAI-compatible route -- reaches
+        here with `user_origin=False` and an unnamed actor. It routes, because what
+        routing spends against is not the provenance of the TEXT but an envelope only
+        the owner can write: the keystone the preview reads, and the
+        `decisions.model_route` map that names every model a turn may land on. Both
+        live outside anything an agent or an app can edit, so admitting the turn
+        cannot reach a model the owner did not list.
+
+        The producers that DECLARE themselves are still excluded by the actor check
+        beside this one (the parametrized test above), because each of those already
+        resolves its model through its own tier."""
         answers("complex")
         client = await _run(tmp_path, _routed_slot(), _directive_user_origin=False)
 
-        assert _switched_to(client) == []
+        assert _switched_to(client) == ["model-c"]
 
     @pytest.mark.asyncio
     async def test_an_autonudge_wake_is_never_routed(self, tmp_path, answers):
@@ -654,16 +667,23 @@ class TestAManualPickDuringTheAwaitWins:
         self, tmp_path, monkeypatch
     ):
         """``decide`` is a network round trip and is deliberately outside the locks, so
-        the premise it was computed against can move while it is in flight. A pick made
-        by hand is the newer instruction: the answer is dropped, not applied.
+        the premise it was computed against can move while it is in flight. A model
+        picked by hand is the newer instruction: the answer is dropped, not applied.
 
         Driven through the oracle, which is the only place inside the await window: it
         moves the slot the way a landed pick does. Both halves of the premise are
-        checked here -- the model the baseline named, and the flag any manual pick
-        clears -- because either alone would leave a live overwrite path."""
+        checked here -- the served model the baseline named, and the slot no longer
+        being armed -- because either alone would leave a live overwrite path. The pin
+        case moves `model` and NOT `served_model`, so it exercises the arm half only.
+
+        A CLEARED `jev_route` is deliberately not one of the cases. With the preview
+        on, a slot that still names no model is armed either way: picking plain `Auto`
+        mid-await clears the flag and means "let Jev pick", so applying the answer is
+        the instruction rather than an overwrite of it. Only a named model is a
+        different instruction, and that is the case below."""
         import kiro_crew.decisions.impl_jev as impl_mod
 
-        for moved in ("model", "flag"):
+        for moved in ("served_model", "pin"):
             state, client = _runner_state(tmp_path)
             _turn_client(state, client)
             slot = _routed_slot(f"chat-repick-{moved}")
@@ -671,9 +691,10 @@ class TestAManualPickDuringTheAwaitWins:
 
             class _PickingOracle:
                 async def ask(self, _state, questions):
-                    if moved == "model":
+                    if moved == "served_model":
                         slot.served_model = "model-a"
                     else:
+                        slot.model = "model-a"
                         slot.jev_route = False
                     return {q.id: Answer(id=q.id, value="complex", p=0.93) for q in questions}
 
