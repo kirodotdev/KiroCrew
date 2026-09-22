@@ -86,6 +86,7 @@ from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import (
     CrewLog,
     segment_paths,
+    session_units_by_slot,
     session_units_for_slot,
     unit_header_created_at,
 )
@@ -99,6 +100,7 @@ if TYPE_CHECKING:
 # which event kinds exist, how much of each field is kept -- belong to the ledger
 # subsystem. They are imported rather than restated so one owner sets them, the
 # same direction ``store`` already takes for the store-name fold.
+from kiro_crew import session_ledger
 from kiro_crew.session_ledger import _FOLD_NAME as LEDGER_FOLD_NAME
 from kiro_crew.session_ledger import _MAX_ARTIFACT_KEY as LEDGER_ARTIFACT_KEY_LIMIT
 from kiro_crew.session_ledger import _MAX_ARTIFACTS as LEDGER_ARTIFACT_LIMIT
@@ -110,6 +112,7 @@ from kiro_crew.session_ledger import EVENT_KINDS as LEDGER_EVENT_KINDS
 from kiro_crew.session_ledger import LEDGER_ENTRY_TYPE
 from kiro_crew.session_ledger import SCHEMA_VERSION as LEDGER_SCHEMA_VERSION
 from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
+from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +145,7 @@ INTERNAL_PROJECTION_NAMES: Final[tuple[str, ...]] = ("class",)
 #: :data:`PROJECTION_NAMES` for that reason: the growth push and the side panel
 #: address a session, and pushing a slot-wide value under one session's id would
 #: report a partial answer as the whole one.
-SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger", "radar")
+SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger", "radar", "work")
 
 #: The slot-keyed fold served by its OWNER and by no generic route. This fold's owner
 #: (the Issue Radar crew store) orders a crew's units by the order the crew recorded
@@ -342,12 +345,18 @@ def _state_matches_fold(name: str, state: dict[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class _Fold:
-    """One projection's three pure pieces."""
+    """One projection's three pure pieces.
+
+    ``bind_slot`` is the fourth piece a SLOT-keyed fold has: the reader knows
+    which slot it is folding and says so before the first entry, so the fold
+    never has to infer its board from whichever entry happens to come first.
+    """
 
     name: str
     start: Callable[[], dict[str, Any]]
     step: Callable[[dict[str, Any], Entry], None]
     render: Callable[[dict[str, Any]], dict[str, Any]]
+    bind_slot: Callable[[dict[str, Any], str], None] | None = None
 
 
 def require_name(name: str) -> str:
@@ -912,6 +921,11 @@ def read_projection(session_id: str, name: str) -> Projection:
     """One projection for *session_id*, folded from the start of its crew log."""
     bundle = fold_session(session_id, (require_name(name),))
     return bundle.projection(name)
+
+
+# --------------------------------------------------------------------------- #
+# Reading a slot's logs
+# --------------------------------------------------------------------------- #
 
 
 # --------------------------------------------------------------------------- #
@@ -2437,7 +2451,7 @@ def _class_render(state: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def fold_slot_checkpoint(name: str, unit_ids: Sequence[str]) -> Checkpoint:
+def fold_slot_checkpoint(name: str, unit_ids: Sequence[str], *, slot: str = "") -> Checkpoint:
     """*name* folded over every crew log of one slot, OLDEST UNIT FIRST.
 
     The slot-keyed read. ``unit_ids`` comes from
@@ -2461,9 +2475,15 @@ def fold_slot_checkpoint(name: str, unit_ids: Sequence[str]) -> Checkpoint:
     advances this state over the entry it is appending to answer with the record
     that entry produces, so the answer comes out of this same fold instead of a
     second implementation of the same update rules.
+
+    *slot* is handed to a fold that declares ``bind_slot``, so a slot-keyed fold
+    knows which slot it answers for before the first entry instead of guessing
+    it from that entry.
     """
     fold_spec = _FOLDS[require_name(name)]
     state = fold_spec.start()
+    if slot and fold_spec.bind_slot is not None:
+        fold_spec.bind_slot(state, slot)
     reached = 0
     for unit_id in unit_ids:
         handle = open_session_log(unit_id)
@@ -2478,12 +2498,12 @@ def fold_slot_checkpoint(name: str, unit_ids: Sequence[str]) -> Checkpoint:
     return Checkpoint(name=name, last_seq=reached, state=state)
 
 
-def fold_slot(name: str, unit_ids: Sequence[str]) -> Projection:
+def fold_slot(name: str, unit_ids: Sequence[str], *, slot: str = "") -> Projection:
     """:func:`fold_slot_checkpoint` rendered -- the value a slot-keyed reader is served."""
-    return projection_of(fold_slot_checkpoint(name, unit_ids))
+    return projection_of(fold_slot_checkpoint(name, unit_ids, slot=slot))
 
 
-def read_slot_projection(slot: str, name: str) -> Projection:
+def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()) -> Projection:
     """One slot-keyed projection for *slot*, folded over every unit it ran under.
 
     The units come from the fold's OWNER, not from a raw store listing. For the ledger
@@ -2491,17 +2511,46 @@ def read_slot_projection(slot: str, name: str) -> Projection:
     ahead of the header clock, and a raw listing here would serve a different answer
     from the one every other reader gets -- including a deleted conversation's goal and
     phase on a recycled slot key. A fold whose owner has no such rule falls through to
-    the store listing, which is what it would have used anyway.
+    the store listing, which is what it would have used anyway. *also_slots* names
+    further slots whose units join the fold after those -- a caller that knows of a
+    party the record itself does not name yet (a worker bound before the board was
+    recorded) says so here.
     """
-    return fold_slot(require_name(name), _slot_units_for_fold(slot, name))
+    units = list(_slot_units_for_fold(slot, name))
+    known = set(units)
+    for extra in also_slots:
+        for unit_id in _supplemental_units(extra, name):
+            if unit_id not in known:
+                known.add(unit_id)
+                units.append(unit_id)
+    return fold_slot(require_name(name), units, slot=slot)
+
+
+def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
+    """One *also_slots* slot's units, in the same ORDER the fold uses for its own.
+
+    A supplemental slot arrives by a different route from the fold's own units -- the
+    caller names a party the record does not name yet -- but its units land in the same
+    fold, so a later one still applies over an earlier one. Resolving it through the raw
+    store listing would therefore order this one party by the header clock while every
+    other unit in the same fold is ordered causally, and a clock that steps backward
+    across that party's reset would fold its older unit last. The order log exists to
+    prevent exactly that, so the supplemental path has to read it too.
+
+    Only the work fold is redirected here. The ledger fold's supplemental units keep the
+    store listing they already used; changing that is a separate question from this one.
+    """
+    if name == "work":
+        return session_ledger.work_crew_log_units(slot)
+    return session_units_for_slot(slot)
 
 
 def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
     """The units *name* is folded over for *slot*, as that fold's owner defines them."""
     if name == LEDGER_FOLD_NAME:
-        from kiro_crew import session_ledger
-
         return session_ledger.crew_log_units(slot)
+    if name == "work":
+        return _work_units(slot, session_ledger.work_crew_log_units(slot))
     return session_units_for_slot(slot)
 
 
@@ -2519,6 +2568,506 @@ def slot_of_session(session_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# work -- the conductor work board, keyed by the conductor's slot
+# --------------------------------------------------------------------------- #
+
+
+def _work_units(slot: str, conductor_units: Sequence[str]) -> "tuple[str, ...]":
+    """The conductor's units followed by every bound worker's, oldest first.
+
+    A worker's report is appended to the WORKER's log, and that log's header names
+    the worker's own slot, so the header index alone never reaches it. The
+    conductor's ``bind`` entries carry ``worker_session_key``: each names a slot whose
+    units join the fold after the conductor's. A worker bound to several boards
+    carries the conductor's ``slot`` on every entry, and the fold keeps only the
+    entries naming this board, so the extra units add nothing that is not this
+    board's.
+    """
+    workers: list[str] = []
+    seen: set[str] = set()
+    for unit_id in conductor_units:
+        handle = open_session_log(unit_id)
+        if handle is None:
+            continue
+        for entry in handle.iter_from(1, known=KNOWN_TYPES):
+            if entry.type != "work/recorded":
+                continue
+            data = entry.data
+            if data.get("action") != "bind" or _as_str(data.get("slot")) != slot:
+                continue
+            worker = data.get("worker_session_key")
+            if isinstance(worker, str) and worker and worker not in seen:
+                seen.add(worker)
+                workers.append(worker)
+    units = list(conductor_units)
+    known = set(units)
+    for worker in workers:
+        for unit_id in session_ledger.work_crew_log_units(worker):
+            if unit_id not in known:
+                known.add(unit_id)
+                units.append(unit_id)
+    return tuple(units)
+
+
+def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
+    """Every OTHER slot whose session units carry a ``work/recorded`` entry for *slot*.
+
+    The third way a board's workers are found, and the one that needs nothing but
+    the record. The fold reaches a worker through the conductor's recorded ``bind``,
+    and a rebuild also reaches it through the cached binding file; a worker bound
+    before the board was recorded has neither once the cache is lost, yet its own
+    log holds the baseline report that names the board. A rebuild that searched
+    only the first two would rebuild the board without that worker's item.
+
+    A whole-log walk, so it is for a rebuild (an operator's request), not for the
+    per-read fold: every other slot's units are opened, and each is left as soon as
+    one entry names the board. Ordered by slot name so the result is stable.
+    """
+    if not slot:
+        return ()
+    found: list[str] = []
+    for other, unit_ids in sorted(session_units_by_slot().items()):
+        if other == slot:
+            continue
+        for unit_id in unit_ids:
+            handle = open_session_log(unit_id)
+            if handle is None:
+                continue
+            names_board = False
+            for entry in handle.iter_from(1, known=KNOWN_TYPES):
+                if entry.type == "work/recorded" and _as_str(entry.data.get("slot")) == slot:
+                    names_board = True
+                    break
+            if names_board:
+                found.append(other)
+                break
+    return tuple(found)
+
+
+#: Item records the fold retains per board. The WRITER caps a board at far fewer
+#: (it refuses a create past its own limit); this is the fold's own bound, so a
+#: log that somehow carries more still folds to a value of bounded size.
+WORK_ITEM_LIMIT: Final[int] = 256
+
+#: Newest event lines kept per item, the same tail the stored ledger kept.
+WORK_EVENT_LIMIT: Final[int] = 200
+
+#: Entries parked per item while its ``create`` is still in a unit not yet folded.
+WORK_PARKED_LIMIT: Final[int] = 64
+
+#: Longest event text a line carries, the store's own excerpt bound.
+WORK_EVENT_TEXT_LIMIT: Final[int] = 500
+
+#: Fields a conductor entry may set on an item, by action; a worker's are fixed.
+#: One table, shared with the write route through ``kiro_crew.work_vocab``.
+_WORK_CONDUCTOR_FIELDS: Final[dict[str, tuple[str, ...]]] = WORK_CONDUCTOR_FIELDS
+_WORK_WORKER_FIELDS: Final[tuple[str, ...]] = ("status", "summary", "artifacts", "pr")
+#: Every item field a baseline entry may carry: the conductor's and the worker's.
+_WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
+    "title",
+    "acceptance",
+    "state",
+    "verdict",
+    "decision",
+    "worker_session_key",
+    "round",
+    "fails",
+    "status",
+    "summary",
+    "artifacts",
+    "pr",
+)
+
+
+def _work_iso(stamp_ms: int) -> str:
+    """An entry's epoch-millisecond ``time`` in the ledger's timestamp spelling.
+
+    Work and session ledgers read the same untrusted envelope field, so they use
+    one conversion policy: local time with offset and seconds precision, or the
+    empty string when the platform cannot represent the value.
+    """
+    return _ledger_iso(stamp_ms)
+
+
+def _work_stamp(committed: Any, stamp_ms: int) -> str:
+    """The committed stamp an entry carries, else the entry's own append time."""
+    if isinstance(committed, str) and committed:
+        return committed[:TEXT_LIMIT]
+    return _work_iso(stamp_ms)
+
+
+def _work_start() -> dict[str, Any]:
+    return {
+        "slot": "",
+        "goal": "",
+        "round": 0,
+        "goal_version": 0,
+        "depth": 0,
+        "parent_item": None,
+        "created_at": "",
+        "items": {},
+        "order": [],
+        "parked": {},
+        "omitted": 0,
+        "entries": 0,
+        "first_entry_at": "",
+        "generation": "",
+    }
+
+
+def _work_new_item(item_id: str, stamp_ms: int) -> dict[str, Any]:
+    return {
+        "item_id": item_id,
+        "title": "",
+        "acceptance": {},
+        "state": "open",
+        "verdict": None,
+        "decision": "",
+        "worker_session_key": None,
+        "round": 0,
+        "fails": 0,
+        "status": None,
+        "summary": "",
+        "artifacts": {},
+        "pr": None,
+        "last_report_at": None,
+        "created_at": _work_iso(stamp_ms),
+        "closed_at": None,
+        "events": [],
+    }
+
+
+def _work_reset_board(state: dict[str, Any]) -> None:
+    """A new board generation under the same slot: the earlier board's items,
+    header, parked entries and accumulators are dropped; the slot binding is kept.
+
+    ``entries`` and ``first_entry_at`` belong to the BOARD, not to the fold: they are
+    rendered as that board's metadata, and ``first_entry_at`` is the epoch that tells
+    an item created before the board's first recorded entry from one created after.
+    Carrying them across a reset gives the new board the old one's entry count and
+    the old one's epoch, which classifies its own items as predating it.
+    ``generation`` is excluded because the caller assigns the new one immediately.
+    """
+    fresh = _work_start()
+    for key, value in fresh.items():
+        if key not in ("slot", "generation"):
+            state[key] = value
+
+
+def _work_bind_slot(state: dict[str, Any], slot: str) -> None:
+    """The board this fold is of, as the reader names it, before the first entry."""
+    state["slot"] = slot
+
+
+def _work_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type != "work/recorded":
+        return
+    data = entry.data
+    if not state["slot"]:
+        # Unbound (a caller that folded units without naming the board): only a
+        # conductor's OWN action names its board. A report this session filed
+        # as a worker names its parent's board and must not pick the fold's.
+        if data.get("actor") != "conductor":
+            return
+        state["slot"] = _as_str(data.get("slot"))
+    elif _as_str(data.get("slot")) != state["slot"]:
+        # A bound worker's log, or a nested conductor's, carries another
+        # board's entries; only this board's fold here.
+        return
+    generation = _as_str(data.get("generation"))
+    if not generation and state["generation"]:
+        # A stamped board is live, so an entry carrying NO generation cannot be its:
+        # the stamp is minted with the board and every entry of a stamped board
+        # carries it. It is a straggler from an earlier board under this slot --
+        # purged, or dropped by the reset below -- and the log is append-only, so it
+        # outlives that board forever. Applied, it silently resurrects that board's
+        # items on every fold, and the rebuild cannot refuse it either: that guard
+        # compares two generations and needs both non-empty. The mismatch branch
+        # below cannot catch this one, being reached only when the entry HAS a
+        # generation to disagree with. A board from before the stamp existed keeps
+        # working: it never adopts a generation, so `state["generation"]` stays
+        # empty and its own generationless entries still apply.
+        state["omitted"] += 1
+        return
+    if generation and generation != state["generation"]:
+        # Generations are opaque ids minted when a board's record is created, so
+        # they transition in LOG order, never by comparing them: the conductor's
+        # units fold first and in sequence, so a conductor entry with a new id is
+        # the next board under this slot and the earlier board is dropped; a
+        # worker entry whose id is not the current board's is a straggler from
+        # a purged board and is omitted.
+        if data.get("actor") != "conductor":
+            if state["generation"] or state["entries"]:
+                state["omitted"] += 1
+                return
+            # Nothing folded yet and the first entry is a worker's: a board from
+            # before the projection whose first recorded write is a report. Its
+            # generation is the board's; adopt it.
+        elif state["entries"]:
+            # Whatever came before -- a generation-stamped board or one from
+            # before the stamp existed -- was the earlier board; it is dropped.
+            _work_reset_board(state)
+        state["generation"] = generation
+    state["entries"] += 1
+    if not state["first_entry_at"]:
+        state["first_entry_at"] = _work_iso(entry.time)
+    if not state["created_at"] and data.get("actor") == "conductor":
+        state["created_at"] = _work_iso(entry.time)
+    action = _as_str(data.get("action"))
+    if action == "goal":
+        _work_apply_header(state, data)
+        return
+    item_id = _as_id(data.get("item_id"))
+    if not item_id:
+        state["omitted"] += 1
+        return
+    if action == "create":
+        if item_id in state["items"]:
+            state["omitted"] += 1
+            return
+        if len(state["items"]) >= WORK_ITEM_LIMIT:
+            state["omitted"] += 1
+            return
+        item = _work_new_item(item_id, entry.time)
+        item["round"] = state["round"]
+        item["created_at"] = _work_stamp(data.get("created_at"), entry.time)
+        state["items"][item_id] = item
+        state["order"].append(item_id)
+        _work_apply_header(state, data)
+        _work_apply(item, data, entry.time)
+        # Entries seen before the create belong to a unit folded earlier than the
+        # conductor's; they were kept aside and are applied now, in time order.
+        for parked in sorted(state["parked"].pop(item_id, ()), key=lambda p: p[0]):
+            _work_apply(item, parked[1], parked[0])
+        return
+    item = state["items"].get(item_id)
+    if item is None and data.get("baseline") is True:
+        # The entry carries the whole committed item (one the record never held
+        # whole before): materialise it here, then apply the action as usual.
+        if len(state["items"]) >= WORK_ITEM_LIMIT:
+            state["omitted"] += 1
+            return
+        item = _work_new_item(item_id, entry.time)
+        item["created_at"] = _work_stamp(data.get("created_at"), entry.time)
+        for name in _WORK_BASELINE_FIELDS:
+            if name in data:
+                item[name] = _work_field(name, data[name])
+        # The committed stamps ride along: an item with a report or a close from
+        # before the projection keeps them across a rebuild.
+        for name in ("last_report_at", "closed_at"):
+            if isinstance(data.get(name), str) and data[name]:
+                item[name] = _work_stamp(data[name], entry.time)
+        # The baseline carries the board's lineage and goal too, whoever wrote it.
+        _work_apply_header(state, data)
+        # Rendered, so a reader knows this item's history before the baseline is
+        # not in the record (its event tail starts at the baseline).
+        item["baseline"] = True
+        state["items"][item_id] = item
+        state["order"].append(item_id)
+        for parked_entry in sorted(state["parked"].pop(item_id, ()), key=lambda p: p[0]):
+            _work_apply(item, parked_entry[1], parked_entry[0])
+    if item is None:
+        parked = state["parked"].get(item_id)
+        if parked is None:
+            # A new key is retained only within the item bound: the parked map
+            # can hold no more distinct items than the board itself may.
+            if len(state["parked"]) >= WORK_ITEM_LIMIT:
+                state["omitted"] += 1
+                return
+            parked = state["parked"][item_id] = []
+        if len(parked) >= WORK_PARKED_LIMIT:
+            state["omitted"] += 1
+            return
+        parked.append([entry.time, dict(data)])
+        return
+    _work_apply(item, data, entry.time)
+
+
+def _work_apply_header(state: dict[str, Any], data: Mapping[str, Any]) -> None:
+    """The board-level fields a conductor entry may carry.
+
+    A conductor ``goal`` entry is the authoritative source for the goal text and round,
+    and it is version-stamped. A worker BASELINE carries the same fields for a board the
+    record never saw set, and it is not version-stamped -- so applying it last-writer-wins
+    let a stale baseline folded after a conductor goal regress the header, while
+    ``goal_version`` beside it was protected by ``max()``. The fold is deterministic, so a
+    regressed header is not a transient glitch: it re-derives identically on every later
+    rebuild and the wrong goal is what a resume reads.
+
+    Hence ``_from_baseline``: a baseline supplies header fields only while the record holds
+    no goal write for this board at all (``goal_version`` still 0). That is what "no newer
+    conductor goal has been folded" means here, and it keeps the baseline doing the one job
+    it exists for -- describing a board whose header was never recorded -- without letting
+    it speak over a board whose header was.
+    """
+    from_baseline = _as_str(data.get("action")) != "goal"
+    baseline_may_set = state["goal_version"] == 0
+    if isinstance(data.get("goal"), str) and (not from_baseline or baseline_may_set):
+        state["goal"] = _work_text("goal", data["goal"])
+    if "round" in data and data.get("action") == "goal":
+        state["round"] = _as_int(data.get("round"))
+    if "goal_version" in data and data.get("action") == "goal":
+        state["goal_version"] = max(state["goal_version"], _as_int(data.get("goal_version")))
+    if "depth" in data and not state["depth"]:
+        state["depth"] = _as_int(data.get("depth"))
+    if isinstance(data.get("parent_item"), str) and state["parent_item"] is None:
+        state["parent_item"] = _as_id(data["parent_item"])
+    # A baseline carries the board's own committed round and creation stamp under
+    # names of their own (``round`` on an item entry is the item's), so a board
+    # whose header the record never saw set rebuilds with them rather than with a
+    # zero round and the first entry's time.
+    if "board_round" in data and from_baseline and baseline_may_set:
+        state["round"] = _as_int(data.get("board_round"))
+    board_created = data.get("board_created_at")
+    if isinstance(board_created, str) and board_created:
+        stamp = _work_stamp(board_created, 0)
+        if not state["created_at"] or stamp < state["created_at"]:
+            state["created_at"] = stamp
+
+
+def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) -> None:
+    """One entry's delta onto *item*: its fields, then its event line.
+
+    A conductor's and a worker's fields are disjoint, so applying the two parties'
+    entries in either relative order yields the same fields -- which is what lets
+    one board be folded unit by unit when the units interleave in time. The event
+    tail is the one place order shows, and it is kept in time order on insert.
+    """
+    action = _as_str(data.get("action"))
+    actor = _as_str(data.get("actor"))
+    if actor == "worker":
+        if action != "report":
+            return
+        for name in _WORK_WORKER_FIELDS:
+            if name in data:
+                item[name] = _work_field(name, data[name])
+        item["last_report_at"] = _work_stamp(data.get("last_report_at"), stamp_ms)
+    else:
+        allowed = _WORK_CONDUCTOR_FIELDS.get(action)
+        if allowed is None:
+            return
+        for name in allowed:
+            if name in data:
+                item[name] = _work_field(name, data[name])
+        if action == "close":
+            item["closed_at"] = _work_stamp(data.get("closed_at"), stamp_ms)
+    kind = _as_str(data.get("event_kind"))
+    if not kind:
+        return
+    status = data.get("status") if action == "report" else None
+    text = _as_str(data.get("event"))[:WORK_EVENT_TEXT_LIMIT]
+    # The store's own stamp and id when the entry carries them (every entry the
+    # routes write does); the append time and the content address otherwise.
+    ts = _work_stamp(data.get("event_ts"), stamp_ms)
+    event_id = data.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        from kiro_crew.work_vocab import work_event_id
+
+        event_id = work_event_id(ts, item["item_id"], kind, text, status=status)
+    _work_add_event(
+        item,
+        {
+            "id": event_id[:TEXT_LIMIT],
+            "ts": ts,
+            "item_id": item["item_id"],
+            "kind": kind,
+            "status": status if isinstance(status, str) else None,
+            "text": text,
+            "_t": stamp_ms,
+        },
+    )
+
+
+def _work_field(name: str, value: Any) -> Any:
+    """*value* in the shape the record holds for *name*; the fold's own shape gate."""
+    if name in ("acceptance", "artifacts"):
+        if not isinstance(value, dict):
+            return {}
+        if name == "artifacts":
+            return {str(k): v for k, v in value.items() if isinstance(v, str)}
+        return dict(value)
+    if name in ("round", "fails", "pr"):
+        return _as_int(value) if value is not None else None
+    if name in ("verdict", "worker_session_key", "status"):
+        return _work_text(name, value) if value is not None else None
+    return _work_text(name, value)
+
+
+#: The store's own character caps for the work board's text fields. The shared
+#: ``TEXT_LIMIT`` (200) is a title's width; a decision or a goal the store took
+#: at 2000 must come back whole, so the fold cuts each field at the store's bound.
+_WORK_TEXT_LIMITS: Final[dict[str, int]] = {
+    "goal": 2000,
+    "decision": 2000,
+    "summary": 500,
+    "title": 200,
+}
+
+
+def _work_text(name: str, value: Any) -> str:
+    """*value* when it is a string, cut at the store's cap for *name*, else empty."""
+    if not isinstance(value, str):
+        return ""
+    return value[: _WORK_TEXT_LIMITS.get(name, TEXT_LIMIT)]
+
+
+def _work_add_event(item: dict[str, Any], event: dict[str, Any]) -> None:
+    """Insert *event* into the item's tail in time order and apply the store's rules:
+    two consecutive ``progress`` reports collapse to the newer, and the tail keeps
+    its newest :data:`WORK_EVENT_LIMIT` lines."""
+    events: list[dict[str, Any]] = item["events"]
+    at = len(events)
+    while at > 0 and events[at - 1]["_t"] > event["_t"]:
+        at -= 1
+    events.insert(at, event)
+    if _work_is_progress(event):
+        if at > 0 and _work_is_progress(events[at - 1]):
+            del events[at - 1]
+            at -= 1
+        if at + 1 < len(events) and _work_is_progress(events[at + 1]):
+            del events[at]
+    if len(events) > WORK_EVENT_LIMIT:
+        del events[: len(events) - WORK_EVENT_LIMIT]
+
+
+def _work_is_progress(event: Mapping[str, Any]) -> bool:
+    return event.get("kind") == "report" and event.get("status") == "progress"
+
+
+def _work_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The board in the shape its readers already consume: the conductor header and
+    every item in creation order, each with its event tail."""
+    items = []
+    for item_id in state["order"]:
+        item = state["items"].get(item_id)
+        if item is None:
+            continue
+        rendered = {key: value for key, value in item.items() if key != "events"}
+        rendered["schema"] = 1
+        rendered["events"] = [
+            {key: value for key, value in event.items() if key != "_t"} for event in item["events"]
+        ]
+        items.append(rendered)
+    return {
+        "conductor": {
+            "schema": 1,
+            "slot_key": state["slot"],
+            "goal": state["goal"],
+            "round": state["round"],
+            "goal_version": state["goal_version"],
+            "depth": state["depth"],
+            "parent_item": state["parent_item"],
+            "created_at": state["created_at"],
+            "entries": state["entries"],
+            "first_entry_at": state["first_entry_at"],
+            "generation": state["generation"],
+        },
+        "items": items,
+        "omitted": state["omitted"] + sum(len(p) for p in state["parked"].values()),
+    }
 
 
 def _as_int(value: Any) -> int:
@@ -2624,6 +3173,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
     "class": _Fold("class", _class_start, _class_step, _class_render),
     "ledger": _Fold("ledger", _ledger_start, _ledger_step, _ledger_render),
     "radar": _Fold("radar", _radar_start, _radar_step, _radar_render),
+    "work": _Fold("work", _work_start, _work_step, _work_render, bind_slot=_work_bind_slot),
 }
 
 if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency

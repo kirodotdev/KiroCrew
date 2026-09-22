@@ -316,6 +316,7 @@ def test_the_grant_tuples_cover_the_server_and_share_only_the_read():
     assert agent._LEDGER_CONDUCTOR_WORK_GRANTS == (
         "@kirocrew-work/work_ledger_read",
         "@kirocrew-work/work_ledger_record",
+        "@kirocrew-work/work_ledger_rebuild",
         "@kirocrew-work/work_brief",
     )
     assert agent._WORKER_WORK_GRANTS == (

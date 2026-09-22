@@ -1750,6 +1750,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/work-ledger/record", _deferred_work_ledger("api_work_ledger_record"))
     app.router.add_get("/api/work-ledger/brief", _deferred_work_ledger("api_work_brief"))
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
+    app.router.add_post(
+        "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
+    )
     # The write half of the agent panel surface -- MCP-only, like the ledger
     # above. The READ, "/api/members/{slug}/panel", is registered here too and
     # stays on cookie auth because a browser is its only caller.

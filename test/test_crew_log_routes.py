@@ -3634,3 +3634,49 @@ class TestTheListingCarriesTheWorkspaceBoundary:
         assert (
             "changed workspace while this listing was built" in json.loads(response.text)["error"]
         )
+
+
+# --- the work fold on the two projection routes ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_session_route_serves_the_work_fold_through_the_slot():
+    """`GET .../projection/work` on a session resolves the slot its unit's header
+    names and folds every unit of that slot -- the same path `ledger` takes."""
+    handle = CrewLog.create(
+        lg.KIND_SESSION, "s-conductor", owner="raymond", agent="kirocrew", slot="chat-9"
+    )
+    handle.append(
+        "work/recorded",
+        {
+            "slot": "chat-9",
+            "actor": "conductor",
+            "by": "chat-9",
+            "action": "goal",
+            "goal": "ship it",
+            "round": 1,
+            "depth": 0,
+            "event": "goal set",
+            "event_kind": "decision",
+        },
+        src="gateway",
+    )
+    fold = await routes.api_session_crew_log_projection(
+        _request_with_sessions("fold", "chat-9", {"chat-9": "s-conductor"}, name="work")
+    )
+    assert fold.status == 200, fold.text
+    body = _body(fold)
+    assert body["value"]["conductor"]["goal"] == "ship it"
+    assert body["value"]["conductor"]["entries"] == 1
+
+
+def test_the_unit_route_refuses_a_slot_keyed_fold(monkeypatch):
+    _flag_on(monkeypatch)
+    _opened(_log())
+    request = _internal_request(
+        f"/api/crew-log/units/{SESSION}/projection/work",
+        match={"unit": SESSION, "name": "work"},
+    )
+    response = asyncio.run(routes.api_crew_log_unit_projection(request))
+    assert response.status == 400
+    assert json.loads(response.text)["code"] == "slot_projection"

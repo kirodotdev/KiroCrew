@@ -7011,6 +7011,7 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
+    "@kirocrew-work/work_ledger_rebuild",
     "@kirocrew-work/work_brief",
 )
 

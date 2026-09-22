@@ -32,7 +32,13 @@ def test_all_four_tools_are_advertised_to_every_caller():
     missing conductor tools look like a broken install rather than a refusal."""
     names = [t["name"] for t in mcp_work._list_tools()]
     assert names == list(mcp_work.WORK_TOOLS)
-    assert set(names) == {"work_brief", "work_report", "work_ledger_read", "work_ledger_record"}
+    assert set(names) == {
+        "work_brief",
+        "work_report",
+        "work_ledger_read",
+        "work_ledger_record",
+        "work_ledger_rebuild",
+    }
 
 
 def test_every_tool_has_a_registered_schema():
@@ -73,7 +79,11 @@ def test_the_record_tool_advertises_the_seven_actions():
 def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
     """The channel-agent block and the grant tuples both need the names as data."""
     assert mcp_work.WORKER_TOOLS == ("work_brief", "work_report")
-    assert mcp_work.CONDUCTOR_TOOLS == ("work_ledger_read", "work_ledger_record")
+    assert mcp_work.CONDUCTOR_TOOLS == (
+        "work_ledger_read",
+        "work_ledger_rebuild",
+        "work_ledger_record",
+    )
     assert mcp_work.WORK_TOOLS == mcp_work.WORKER_TOOLS + mcp_work.CONDUCTOR_TOOLS
 
 
@@ -340,3 +350,133 @@ def test_a_successful_read_returns_the_ledger_as_json(monkeypatch):
     monkeypatch.setattr(mcp_work, "_get", lambda *a, **k: payload)
     out = mcp_work._call_tool_inner("work_ledger_read", {})
     assert json.loads(out) == payload
+
+
+# ── the two conductor writes and the rebuild, as the wire sees them ───────
+
+
+def test_the_rebuild_tool_posts_an_empty_body_and_reports_the_counts(monkeypatch):
+    """A rebuild carries no arguments: the route folds the caller's own record."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    seen: dict[str, Any] = {}
+
+    def _fake_post(path: str, body: dict | None = None, **k: Any) -> dict:
+        seen["path"] = path
+        seen["body"] = body
+        seen["session_key"] = k.get("session_key")
+        return {"ok": True, "items": 3, "events": 7, "removed": 1}
+
+    monkeypatch.setattr(mcp_work, "_post", _fake_post)
+    out = mcp_work._call_tool_inner("work_ledger_rebuild", {})
+    assert seen == {"path": mcp_work._REBUILD_PATH, "body": {}, "session_key": "chat-x"}
+    assert out == "Rebuilt the work ledger from the crew log. items=3 events=7 removed=1"
+
+
+def test_a_refused_rebuild_quotes_the_store_code(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {"error": "the log is missing a unit", "code": "crew_log_incomplete"},
+    )
+    out = mcp_work._call_tool_inner("work_ledger_rebuild", {})
+    assert out == (
+        "Error: could not rebuild the work ledger: the log is missing a unit "
+        "[crew_log_incomplete]"
+    )
+
+
+def test_the_record_tool_forwards_only_the_registered_fields(monkeypatch):
+    """Same defence as the worker report: a stray key never reaches the wire."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    sent: dict[str, Any] = {}
+
+    def _fake_post(path: str, body: dict | None = None, **k: Any) -> dict:
+        sent["path"] = path
+        sent.update(body or {})
+        return {"ok": True, "action": "create", "item": {"item_id": "it_00000001"}}
+
+    monkeypatch.setattr(mcp_work, "_post", _fake_post)
+    mcp_work._call_tool_inner(
+        "work_ledger_record",
+        {"action": "create", "title": "t", "acceptance": "a", "status": "done", "pr": "x"},
+    )
+    assert sent.pop("path") == mcp_work._RECORD_PATH
+    assert set(sent) == {"action", "title", "acceptance"}
+
+
+def test_an_item_write_reports_the_committed_item(monkeypatch):
+    """The reply quotes the store's committed fields, not the caller's request."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {
+            "ok": True,
+            "action": "decide",
+            "item": {"item_id": "it_00000002", "state": "closed", "verdict": "pass"},
+        },
+    )
+    out = mcp_work._call_tool_inner(
+        "work_ledger_record", {"action": "decide", "item_id": "it_00000002", "verdict": "pass"}
+    )
+    assert out == "Recorded decide. item=it_00000002 state=closed verdict=pass"
+
+
+def test_an_item_write_with_unset_fields_says_so(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(mcp_work, "_post", lambda *a, **k: {"ok": True, "item": {}})
+    # An empty item dict is falsy: the reply falls through to the conductor line.
+    out = mcp_work._call_tool_inner("work_ledger_record", {"action": "create", "title": "t"})
+    assert out == "Recorded create. round=(unset)"
+    monkeypatch.setattr(
+        mcp_work, "_post", lambda *a, **k: {"ok": True, "action": "create", "item": {"x": 1}}
+    )
+    out = mcp_work._call_tool_inner("work_ledger_record", {"action": "create", "title": "t"})
+    assert out == "Recorded create. item=(unknown) state=(unset) verdict=(none)"
+
+
+def test_a_conductor_write_reports_the_round(monkeypatch):
+    """``goal`` and ``round`` write the conductor record and return no item."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {"ok": True, "action": "round", "conductor": {"round": 4}},
+    )
+    out = mcp_work._call_tool_inner("work_ledger_record", {"action": "round", "round": 4})
+    assert out == "Recorded round. round=4"
+
+
+def test_a_refused_record_carries_the_code_and_field(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {"error": "too long", "code": "field_too_long", "field": "title"},
+    )
+    out = mcp_work._call_tool_inner("work_ledger_record", {"action": "create", "title": "t"})
+    assert out == "Error: could not write the work ledger: too long [field_too_long, field=title]"
+
+
+def test_arguments_for_an_unregistered_schema_pass_through_unchanged(monkeypatch):
+    """The registry is complete today; the fallback is what keeps a future tool
+    added without a schema from being silently stripped to nothing."""
+    monkeypatch.setattr(mcp_work, "MCP_WORK_SCHEMAS", {})
+    args = {"anything": 1}
+    assert mcp_work._validate_args("work_brief", args) is args
+
+
+def test_run_mcp_server_serves_this_module_and_advertises_identity(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    def _fake_loop(name: str, version: str, list_tools: Any, call_tool: Any, **kw: Any) -> None:
+        seen.update(name=name, version=version, list_tools=list_tools, call_tool=call_tool, **kw)
+
+    monkeypatch.setattr(mcp_work, "run_mcp_stdio_loop", _fake_loop)
+    mcp_work.run_mcp_server()
+    assert seen["name"] == SERVER
+    assert seen["version"] == mcp_work.SERVER_VERSION
+    assert seen["list_tools"] is mcp_work._list_tools
+    assert seen["call_tool"] is mcp_work._call_tool
+    assert seen["advertise_caller_identity"] is True

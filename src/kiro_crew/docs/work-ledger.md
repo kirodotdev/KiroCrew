@@ -54,11 +54,28 @@ An item is the unit of dispatch. It holds:
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
 whole ledger back with `work_ledger_read`. A worker writes its half with
-`work_report` and reads its own item with `work_brief`.
+`work_report` and reads its own item with `work_brief`. A conductor whose ledger
+files read as damaged or missing rewrites them from the crew log with
+`work_ledger_rebuild`: every accepted write was recorded there, so the files are a
+cache of that record. It takes no arguments, acts only on the caller's own ledger,
+and is refused when the crew log is off.
 
 The two sets are disjoint, and that is enforced by the tools rather than by a
 rule: the reporting tool takes no parameter that names a conductor field, so a
 worker cannot write a verdict, a state, or its own acceptance condition.
+
+## The crew log must be on
+
+Every write here is recorded in the crew log, so the whole board depends on it:
+without `KIROCREW_CREW_LOG=1` set at gateway start, `work_ledger_record` and
+`work_report` both answer `409 crew_log_off`, and `work_ledger_rebuild` is refused
+for the same reason. Reads are unaffected.
+
+The flag is off by default until #10705 lands, which is an UPGRADE REQUIREMENT and
+not merely a default: a deployment that ran conductors before this change has board
+writes that worked without any flag, and they stop working on upgrade until an
+operator sets it. Set it before the first conductor runs, rather than discovering
+the refusal from a worker that cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
 three kinds: `pr_checks` (a pull request's checks are all green), `file` (a path

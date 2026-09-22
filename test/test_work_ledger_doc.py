@@ -7,7 +7,7 @@ status, and stay green while a dispatched worker read it at runtime and called
 something that does not exist.
 
 This module pins the vocabulary that a worker or a conductor ACTS on, against the
-code that defines it: the four tool names on the work server, the four worker
+code that defines it: the five tool names on the work server, the four worker
 statuses, the five acceptance verdicts, the terminal item states, and the two caps
 the doc quotes as numbers. Each assertion reads the constant rather than a literal,
 so widening either side without the other fails here.
@@ -32,7 +32,7 @@ def doc_text() -> str:
 
 
 def test_the_doc_names_every_work_tool_and_no_other(doc_text: str) -> None:
-    """All four tool names appear, and the doc invents none.
+    """All five tool names appear, and the doc invents none.
 
     A worker reads this page at runtime, so a name that is not on the server is a
     call that fails. The reverse direction matters too: a tool added to the server

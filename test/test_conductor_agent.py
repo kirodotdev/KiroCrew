@@ -592,6 +592,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
         ]
 
@@ -633,6 +634,7 @@ class TestConductorInstaller:
         work_resources = [
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
+            "kirocrew-work/work_ledger_rebuild",
             "kirocrew-work/work_ledger_record",
         ]
         data = self._install(tmp_path, monkeypatch)
@@ -759,6 +761,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
         ]
 

@@ -1666,6 +1666,14 @@ async def api_crew_log_unit_projection(request: web.Request) -> web.Response:
         # Same refusal as the per-session route: this fold is slot-keyed and served
         # by its owner; a per-unit fold of it would be a part served as the whole.
         return _owner_served_refusal(name)
+    if name in projections.SLOT_PROJECTION_NAMES:
+        # This route folds ONE unit. A slot-keyed fold joins every unit the slot ran
+        # under (and, for the work board, its bound workers' units), so one unit's
+        # answer would be a partial record that reads as whole. The session route
+        # resolves the slot from the unit's header and serves these names whole.
+        return _bad_request(
+            f"projection {name!r} is keyed by slot, not by session", "slot_projection"
+        )
     try:
         result = await asyncio.to_thread(projections.read_projection, unit, name)
     except CrewLogError as exc:

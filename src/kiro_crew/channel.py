@@ -78,6 +78,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
+    "work_ledger_rebuild",
 )
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered

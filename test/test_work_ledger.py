@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import shutil
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -971,10 +972,38 @@ def test_acceptance_must_be_json_serialisable():
 
 def test_an_oversized_acceptance_is_refused(monkeypatch):
     wl.ensure_conductor(CONDUCTOR)
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 200)
+    # Above the header's own size (the header must still read back), below the blob's.
+    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 300)
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"blob": "x" * 400})
     assert caught.value.code == wl.CODE_FIELD_TOO_LONG
+
+
+def test_a_record_lands_at_the_size_the_ceiling_measured(monkeypatch):
+    """The whole-file writer pins ``newline`` so the stored bytes are the measured bytes.
+
+    :func:`_write_item_locked` and :func:`_read_json_record` both reason in the
+    ``\\n`` form ``_serialize`` produced. With the default newline translation
+    Windows writes ``\\r\\n``, one byte per line more, so a record measured just
+    under ``MAX_RECORD_BYTES`` would land over it and read back as absent. POSIX
+    cannot observe that growth, so the contract is pinned at the writer's boundary.
+    """
+    calls: list[dict] = []
+    real = wl.atomic_write
+
+    def recorder(path, content, **kwargs):
+        calls.append({"path": Path(path), "content": content, "newline": kwargs.get("newline")})
+        real(path, content, **kwargs)
+
+    monkeypatch.setattr(wl, "atomic_write", recorder)
+    wl.ensure_conductor(CONDUCTOR)
+    _new_item(acceptance={"kind": "manual"})
+    records = [c for c in calls if c["path"].suffix == ".json"]
+    assert records, "no whole-file record was written"
+    for call in records:
+        assert call["newline"] == "\n", call["path"].name
+        assert "\r" not in call["content"]
+        assert call["path"].read_bytes() == call["content"].encode("utf-8")
 
 
 def test_acceptance_is_stored_verbatim_and_never_interpreted():
@@ -2809,3 +2838,168 @@ def test_a_writer_lock_still_creates_the_store():
     assert not directory.exists()
     with wl.conductor_lock("chat-70-fresh"):
         assert (directory / ".lock").exists()
+
+
+# ── the undo holds the locks the writers of its files hold ────────────────
+
+
+def test_the_undo_waits_for_a_writer_holding_the_item_it_rewrites():
+    """An existing item's record is not rewritten under the writer holding it.
+
+    The route's write returns before the undo runs, so the item lock is free in
+    between and another writer can take it. The undo then rewrites that item's
+    record and event log from bytes older than the writer's, so without the item
+    lock it replaces a record mid-write: torn on POSIX, a refused open on
+    Windows. The dashboard's board lock cannot stand in for it -- that one is
+    in-process, and this lock is what a second gateway obeys.
+    """
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
+    started, finished = threading.Event(), threading.Event()
+
+    def _undo() -> None:
+        started.set()
+        wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
+        finished.set()
+
+    undo = threading.Thread(target=_undo, daemon=True)
+    with wl.item_lock(CONDUCTOR, item_id, create=False):
+        undo.start()
+        assert started.wait(10)
+        assert not finished.wait(1.5), "the undo rewrote the record under a lock held here"
+        # Still the writer's bytes, not the snapshot's: nothing was put back yet.
+        assert _bytes_on_disk(item_id)[0] != snapshot[str(wl.item_path(CONDUCTOR, item_id))]
+    undo.join(60)
+    assert finished.is_set(), "the undo must proceed once the writer lets the lock go"
+    assert _bytes_on_disk(item_id) == (
+        snapshot[str(wl.item_path(CONDUCTOR, item_id))],
+        snapshot[str(wl.item_events_path(CONDUCTOR, item_id))],
+    )
+
+
+def test_the_undo_waits_for_a_conductor_holding_the_binding_it_rewrites():
+    """The same gap at the binding, whose lock is third in the lock order.
+
+    ``bind`` snapshots ``bindings/<worker>.json``, and two conductors binding one
+    worker serialise on that lock so neither sees it free while the other writes.
+    An undo that rewrites the file without the lock lands between one's read and
+    its write.
+    """
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id, worker_session_key=WORKER)
+    started, finished = threading.Event(), threading.Event()
+
+    def _undo() -> None:
+        started.set()
+        wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, worker_session_key=WORKER)
+        finished.set()
+
+    undo = threading.Thread(target=_undo, daemon=True)
+    with wl.binding_lock(WORKER):
+        undo.start()
+        assert started.wait(10)
+        assert not finished.wait(1.5), "the undo rewrote a binding under a lock held here"
+    undo.join(60)
+    assert finished.is_set(), "the undo must proceed once the binding lock is free"
+
+
+def test_the_undo_leaves_a_second_gateways_write_alone_and_flags_the_cache():
+    """An undo puts back only what its own write left; another gateway's survives.
+
+    Two gateways share one store. A's write commits, its crew-log append fails,
+    so A undoes. B's write lands in that gap and B has been told it is recorded.
+    The per-file locks order neither, so bytes older than B's would replace B's
+    record -- dropping a write the record holds, with nothing to announce it.
+    Given what A's own write left behind, the undo passes that file over and
+    flags the cache, which is the state a rebuild reconciles.
+    """
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="A ships it")
+    left_by_a = wl.current_bytes(snapshot)
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="B ships it")
+    landed_by_b = _bytes_on_disk(item_id)
+
+    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, expected=left_by_a)
+
+    assert _bytes_on_disk(item_id) == landed_by_b, "B's committed record was replaced"
+    assert b"B ships it" in landed_by_b[0]
+    assert wl.cache_dirty(CONDUCTOR), "a partial undo must flag the cache for a rebuild"
+    wl.clear_cache_dirty(CONDUCTOR)
+
+
+def test_the_undo_still_puts_back_the_files_its_own_write_left():
+    """The comparison must not turn every undo into a no-op.
+
+    Nothing writes in the gap here, so every snapshotted file still holds what
+    the write left and the undo is the plain one: the bytes go back and the cache
+    is untouched. Without this, skipping everything would read as a clean undo.
+    """
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
+
+    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, expected=wl.current_bytes(snapshot))
+
+    assert _bytes_on_disk(item_id) == (
+        snapshot[str(wl.item_path(CONDUCTOR, item_id))],
+        snapshot[str(wl.item_events_path(CONDUCTOR, item_id))],
+    )
+    assert wl.cache_dirty(CONDUCTOR) is None
+
+
+def test_the_undo_of_a_purged_board_recreates_nothing():
+    """A store removed after the snapshot holds no mutation to take back.
+
+    Every file the undo writes is the board's own, so recreating one to put bytes
+    back resurrects a board an operator deleted -- and a creating lock taken to
+    do it rebuilds the directory the sweep removed, leaving the lock-only store
+    the sweep then keeps forever.
+    """
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
+    directory = wl.conductor_dir(CONDUCTOR)
+    shutil.rmtree(wl.items_dir(CONDUCTOR), ignore_errors=True)
+    shutil.rmtree(directory, ignore_errors=True)
+
+    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
+
+    assert not directory.exists(), "the undo must not recreate the store it found gone"
+    assert not wl.item_path(CONDUCTOR, item_id).exists()
+
+
+def test_the_undo_still_puts_every_snapshotted_file_back():
+    """The partner the two refusals above need: an undo that did nothing at all
+    would pass them. A healthy board's undo restores the snapshotted bytes
+    exactly."""
+    item_id = _new_item()
+    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
+    before = _bytes_on_disk(item_id)
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
+    assert _bytes_on_disk(item_id) != before
+
+    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
+
+    assert _bytes_on_disk(item_id) == before
+
+
+def test_the_undo_removes_an_item_the_write_created():
+    """A create's undo takes the new item away, and names it twice without hanging.
+
+    ``created_item`` and ``item_id`` are the same id on a create, and one thread
+    cannot hold one lock file twice -- the second acquire would wait on the first
+    until the ceiling. So the locks this takes are deduplicated, and this test is
+    what fails if they stop being.
+    """
+    wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
+    snapshot = wl.snapshot_for_write(CONDUCTOR)
+    created = wl.apply_conductor_action(
+        CONDUCTOR, "create", title="port the gate", acceptance={"kind": "human_approval"}
+    )["item"].item_id
+    assert wl.item_path(CONDUCTOR, created).exists()
+
+    wl.restore_snapshot(CONDUCTOR, snapshot, created_item=created, item_id=created)
+
+    assert not wl.item_path(CONDUCTOR, created).exists()
+    assert not wl.item_events_path(CONDUCTOR, created).exists()

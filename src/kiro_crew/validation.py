@@ -63,6 +63,7 @@ from kiro_crew.monitoring.registry import (
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 from kiro_crew.solo_spawn import SOLO_SPAWN_REASONS
+from kiro_crew.work_vocab import WORK_ITEM_STATES, WORK_VERDICTS, WORK_WORKER_STATUSES
 
 # ── Constants ──
 
@@ -3627,9 +3628,9 @@ MCP_DEBUG_SCHEMAS: dict[str, ToolSchema] = {
 # a worker cannot write a conductor-owned field because no parameter carries one,
 # which is a stronger guarantee than an allowlist that must be kept correct as
 # fields are added.
-_WORK_STATUSES = frozenset({"progress", "done", "blocked", "question"})
-_WORK_VERDICTS = frozenset({"pass", "fail", "pending", "refused", "error"})
-_WORK_ITEM_STATES = frozenset({"open", "accepted", "rejected", "abandoned"})
+_WORK_STATUSES = frozenset(WORK_WORKER_STATUSES)
+_WORK_VERDICTS = frozenset(WORK_VERDICTS)
+_WORK_ITEM_STATES = frozenset(WORK_ITEM_STATES)
 #: A superset of the store's six conductor actions: ``accept`` promotes a worker's
 #: claimed ``pr`` into ``acceptance`` and is served by its own store function.
 _WORK_RECORD_ACTIONS = frozenset({"create", "bind", "decide", "verdict", "close", "goal", "accept"})
@@ -3652,6 +3653,7 @@ WORK_REPORT_SCHEMA = ToolSchema(
 )
 
 WORK_LEDGER_READ_SCHEMA = ToolSchema(tool_name="work_ledger_read")
+WORK_LEDGER_REBUILD_SCHEMA = ToolSchema(tool_name="work_ledger_rebuild")
 
 WORK_LEDGER_RECORD_SCHEMA = ToolSchema(
     tool_name="work_ledger_record",
@@ -3703,6 +3705,7 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     "work_report": WORK_REPORT_SCHEMA,
     "work_ledger_read": WORK_LEDGER_READ_SCHEMA,
     "work_ledger_record": WORK_LEDGER_RECORD_SCHEMA,
+    "work_ledger_rebuild": WORK_LEDGER_REBUILD_SCHEMA,
 }
 
 

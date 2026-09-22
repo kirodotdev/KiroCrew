@@ -76,6 +76,14 @@ from kiro_crew.crew_log.schema import KIND_SESSION
 # functions that need it, so nothing here pulls the storage package onto the
 # gateway's boot path.
 from kiro_crew.session_ledger import EVENT_KINDS as _LEDGER_EVENT_KINDS
+from kiro_crew.work_vocab import (
+    WORK_ACTIONS,
+    WORK_ACTORS,
+    WORK_EVENT_KINDS,
+    WORK_ITEM_STATES,
+    WORK_VERDICTS,
+    WORK_WORKER_STATUSES,
+)
 
 #: JSON types a declared field may hold. ``int`` and ``float`` are separate
 #: because the wire format's numbers are separate to a reader: a count is not a
@@ -364,6 +372,9 @@ _SESSION_CLASS_FIELDS: tuple[Field, ...] = (
 OBJECT_PRODUCER_PROBE = "probe"
 OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
+#: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
+#: pure-data leaf outside this package, so the type declared below, the store and
+#: the tool schemas clamp to ONE set without the boot path loading this module.
 _SESSION_TYPES: tuple[EntryType, ...] = (
     # -- session, turn ------------------------------------------------------ #
     EntryType(
@@ -1394,6 +1405,179 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "or an issue skipped without its index entry. The crew ledger DEPENDS on this log: "
             "a crew whose session has no crew log cannot record, and the tool refuses rather "
             "than keeping a document of its own."
+        ),
+    ),
+    # -- work --------------------------------------------------------------- #
+    EntryType(
+        "work/recorded",
+        "One work-board mutation: who acted, on which item, and the fields it set.",
+        (
+            Field(
+                "slot",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The board's key -- the conductor slot this mutation belongs to. A "
+                    "worker's report names the conductor's slot, not its own, so every "
+                    "entry of one board folds under one key whichever party wrote it."
+                ),
+            ),
+            Field(
+                "actor",
+                JSON_STRING,
+                required=True,
+                enum=WORK_ACTORS,
+                enum_closed=True,
+                note="Which party wrote this entry; the fields the two may set are disjoint.",
+            ),
+            Field(
+                "by",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The acting session's slot key. Equals slot for a conductor entry and "
+                    "the bound worker's key for a report, so a reader of one entry can "
+                    "say who wrote it without opening the unit's header."
+                ),
+            ),
+            Field(
+                "action",
+                JSON_STRING,
+                required=True,
+                enum=WORK_ACTIONS,
+                enum_closed=True,
+                note=(
+                    "The one mutation this entry records. The fields below are the "
+                    "ones that action set; an omitted field means 'unchanged'."
+                ),
+            ),
+            Field(
+                "item_id",
+                JSON_STRING,
+                note="The item acted on. Absent only for goal, the board-level header write.",
+            ),
+            Field("goal", JSON_STRING, note="The board's objective, when goal set one."),
+            Field("round", JSON_INT, note="The board's or the item's round counter, when set."),
+            Field(
+                "generation",
+                JSON_STRING,
+                note=(
+                    "An opaque id minted when the conductor record was created. A slot "
+                    "reused after its board was purged mints a new one; the fold keeps "
+                    "only the latest board, transitioning in log order."
+                ),
+            ),
+            Field(
+                "depth",
+                JSON_INT,
+                note="The board's nesting depth, carried by the first entry of a board.",
+            ),
+            Field(
+                "parent_item",
+                JSON_STRING,
+                note="The parent board's item this board works, carried with depth.",
+            ),
+            Field("title", JSON_STRING, note="The item's title, set by create."),
+            Field(
+                "acceptance",
+                JSON_OBJECT,
+                note=(
+                    "The acceptance criteria object, set by create or accept. Its members "
+                    "are the caller's and are checked for shape by the writer."
+                ),
+            ),
+            Field(
+                "state",
+                JSON_STRING,
+                enum=WORK_ITEM_STATES,
+                enum_closed=True,
+                note="The item's new state, set by close.",
+            ),
+            Field(
+                "verdict",
+                JSON_STRING,
+                enum=WORK_VERDICTS,
+                enum_closed=True,
+                note="The acceptance verdict, set by verdict.",
+            ),
+            Field("decision", JSON_STRING, note="The conductor's decision text, set by decide."),
+            Field(
+                "worker_session_key",
+                JSON_STRING,
+                note="The worker slot bound to the item, set by bind.",
+            ),
+            Field("fails", JSON_INT, note="The item's failed-verdict count, when it moved."),
+            Field(
+                "status",
+                JSON_STRING,
+                enum=WORK_WORKER_STATUSES,
+                enum_closed=True,
+                note="The worker's status, set by report.",
+            ),
+            Field("summary", JSON_STRING, note="The worker's summary, set by report."),
+            Field(
+                "artifacts",
+                JSON_OBJECT,
+                note=(
+                    "String-to-string pointers replacing the item's map, set by report. "
+                    "The members are the worker's own keys and are checked for shape."
+                ),
+            ),
+            Field("pr", JSON_INT, note="The pull request number, set by report."),
+            Field(
+                "event_id",
+                JSON_STRING,
+                note="The store's content-addressed id of the event this write appended.",
+            ),
+            Field("event_ts", JSON_STRING, note="The store's stamp on that event."),
+            Field("created_at", JSON_STRING, note="The item's committed creation stamp."),
+            Field("last_report_at", JSON_STRING, note="The item's committed last-report stamp."),
+            Field("closed_at", JSON_STRING, note="The item's committed close stamp."),
+            Field(
+                "board_round",
+                JSON_INT,
+                note="The board's committed round, carried by a baseline entry.",
+            ),
+            Field(
+                "board_created_at",
+                JSON_STRING,
+                note="The board's committed creation stamp, carried by a baseline entry.",
+            ),
+            Field(
+                "goal_version",
+                JSON_INT,
+                note="The header's goal-write count after this goal write, set by goal.",
+            ),
+            Field(
+                "baseline",
+                JSON_BOOL,
+                note=(
+                    "True when the entry carries the WHOLE committed item, not a delta: "
+                    "written for an item the record has never held whole (one from before "
+                    "the projection), so a lost file rebuilds from it."
+                ),
+            ),
+            Field(
+                "event",
+                JSON_STRING,
+                note="The one-line item event this mutation appends to the item's tail.",
+            ),
+            Field(
+                "event_kind",
+                JSON_STRING,
+                enum=WORK_EVENT_KINDS,
+                enum_closed=True,
+                note="Which kind of item event this is; absent only for goal.",
+            ),
+        ),
+        note=(
+            "One entry per work-ledger write, appended to the ACTING session's log and "
+            "keyed by the conductor's slot. A conductor action and a worker report are "
+            "the two writers, each sets only its own fields, and the work fold rebuilds "
+            "the board from these entries across the conductor's and its bound workers' "
+            "units, so the ledger's files are a cache of the crew log rather than a "
+            "record beside it. The work ledger therefore DEPENDS on this log: with the "
+            "emitter off the tools refuse rather than keeping a document of their own."
         ),
     ),
 )

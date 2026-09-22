@@ -52,6 +52,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`ledger/recorded`](#ledgerrecorded) | One session-ledger update: the fields it set and the event explaining them. | live | `gateway` | — |
 | [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
+| [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
 
 ## Session and turn
 
@@ -1214,6 +1215,66 @@ is a new update and applies. An entry naming a `crew_id` other than
 the fold's first is left out: every unit of one slot belongs to one crew.
 
 **Since** — the Issue Radar crew ledger's move onto the crew log.
+
+## The work board
+
+### `work/recorded`
+
+One work-board mutation: who acted, on which item, and the fields it set.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — One entry per work-ledger write, appended to the ACTING
+session's log: a conductor action (`work_ledger_record`) or a worker report
+(`work_report`). The `work` fold rebuilds the board from these entries across the
+conductor's and its bound workers' units, so the ledger's files are a cache of the
+log rather than a record beside it; the routes still read that cache.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The board's key: the conductor slot this mutation belongs to. A worker's report names the conductor's slot, not its own, so one board folds under one key whichever party wrote the entry. | |
+| `actor` | string | required | Which party wrote this entry. The field sets the two may set are disjoint. | `conductor`, `worker` (closed) |
+| `by` | string | required | The acting session's slot key: equal to `slot` for a conductor entry, the bound worker's key for a report. | |
+| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `report` (closed) |
+| `item_id` | string | optional | The item acted on. Absent only for `goal`, the board-level header write. | |
+| `goal` | string | optional | The board's objective, when `goal` set one. | |
+| `round` | int | optional | The board's or the item's round counter, when set. | |
+| `depth` | int | optional | The board's nesting depth, carried by the first entry of a board. | |
+| `parent_item` | string | optional | The parent board's item this board works, carried with `depth`. | |
+| `title` | string | optional | The item's title, set by `create`. | |
+| `acceptance` | object | optional | The acceptance criteria, set by `create` or `accept`. Its members are the caller's and are checked for shape by the writer. | |
+| `state` | string | optional | The item's new state, set by `close`. | `open`, `accepted`, `rejected`, `abandoned` (closed) |
+| `verdict` | string | optional | The acceptance verdict, set by `verdict`. | `pass`, `fail`, `pending`, `refused`, `error` (closed) |
+| `decision` | string | optional | The conductor's decision text, set by `decide`. | |
+| `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
+| `fails` | int | optional | The item's failed-verdict count, when it moved. | |
+| `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question` (closed) |
+| `summary` | string | optional | The worker's summary, set by `report`. | |
+| `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
+| `pr` | int | optional | The pull request number, set by `report`. | |
+| `event` | string | optional | The one-line item event this mutation appends to the item's tail. | |
+| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close` (closed) |
+
+**Invariants** — A delta, never a whole record: only the fields the one `action`
+set are present. A conductor entry never carries a worker field and a worker entry
+never carries a conductor field; the writer refuses the cross before it builds the
+entry. Every item action carries its `event` and `event_kind` in the SAME entry, so
+no reader can observe an item that moved without its logged reason. The board's
+timestamps (`created_at`, `closed_at`, `last_report_at`) are the entries' own `time`
+and are not repeated in `data`. Every entry carries `generation`, an opaque id minted when the conductor record was created: a slot reused after its board was purged mints a new one, and the fold transitions in log order (a conductor entry with a new id opens the next board, a worker entry with another id is omitted), so a rebuild never revives a purged board. An entry about an item the record has never held whole (one from before the projection) carries `baseline: true` and the whole committed item. Every entry carries the store's own event id and stamps (`event_id`, `event_ts`, `created_at`, `last_report_at`, `closed_at`), so a rebuild reproduces them rather than the append time.
+
+```json
+{"type":"work/recorded","seq":72,"time":1789000002600,"src":"gateway","data":{"slot":"dashboard:3","actor":"worker","by":"dashboard:9","action":"report","item_id":"it_0badc0de","status":"progress","summary":"scoped tests green, opening the PR next","artifacts":{"branch":"feat/x","pr":"123"},"pr":123,"event":"progress: scoped tests green","event_kind":"report"}}
+```
+
+**Reader hint** — One board spans several logs: the conductor slot's units and each
+bound worker slot's units. Fold them all, oldest unit first, and key items by
+`item_id`; a report seen before its item's `create` belongs to a unit the reader has
+not folded yet, not to a missing item.
+
+**Since** — the change that made the work ledger a projection of the crew log.
 
 ## Removed types
 

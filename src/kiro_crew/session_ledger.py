@@ -249,6 +249,10 @@ _MAX_EXCLUDED_BYTES = _MAX_EXCLUDED_UNITS * (_MAX_UNIT_ID_BYTES + 1)
 #: correction, a manual set -- makes a newer unit sort before an older one, which
 #: applies a retired session's goal and phase over a later one's.
 _UNIT_ORDER_FILE = "unit-order"
+#: Work records need a separate causal order. Sharing the ledger's order would let
+#: a later ledger-only append move a unit whose work update is stale past the unit
+#: holding the newest work update.
+_WORK_UNIT_ORDER_FILE = "work-unit-order"
 #: How many of a slot's units the order log keeps, newest kept. A slot gains one
 #: per reset, so this is generous. Past it the oldest recorded ids drop out and
 #: those units fold with the never-recorded ones, which the fold applies BEFORE
@@ -1733,7 +1737,7 @@ def _withdraw_tombstone_locked(path: Path) -> None:
             raise OSError("the carry tombstone did not withdraw")
 
 
-def _note_unit_order(slot_key: str, session_id: str) -> None:
+def _note_unit_order(slot_key: str, session_id: str, *, order_file: str = _UNIT_ORDER_FILE) -> None:
     """Record that *session_id* recorded into *slot_key*, and that it recorded LAST.
 
     The fold reads units in this order and applies a later update over an earlier one,
@@ -1764,9 +1768,9 @@ def _note_unit_order(slot_key: str, session_id: str) -> None:
     if not slot_key or not session_id:
         return
     try:
-        path = _control_file(slot_key, _UNIT_ORDER_FILE, create=True)
+        path = _control_file(slot_key, order_file, create=True)
         with _locked(control_dir(slot_key)):
-            known = _recorded_unit_order(slot_key)
+            known = _recorded_unit_order(slot_key, order_file=order_file)
             if known and known[-1] == session_id:
                 return
             if session_id in known:
@@ -1801,6 +1805,38 @@ def _note_unit_order(slot_key: str, session_id: str) -> None:
         logger.warning("ledger: could not record this slot's unit order", exc_info=True)
 
 
+def note_work_unit_recorded(slot_key: str, session_id: str) -> None:
+    """Publish that *session_id* just appended a work record under its slot."""
+    _note_unit_order(
+        canonical_slot(slot_key, session_id),
+        session_id,
+        order_file=_WORK_UNIT_ORDER_FILE,
+    )
+
+
+def work_crew_log_units(slot_key: str) -> tuple[str, ...]:
+    """Work-record units for *slot_key* in causal append order, oldest first.
+
+    Units absent from the bounded order tail predate every retained unit and fold
+    first. Listing failures fail closed because this runs on a loop-cycle read path.
+    """
+    if not slot_key:
+        return ()
+    try:
+        from kiro_crew.crew_log.store import session_units_for_slot
+
+        units = session_units_for_slot(slot_key)
+        recorded = _recorded_unit_order(slot_key, order_file=_WORK_UNIT_ORDER_FILE)
+        if recorded:
+            known = [unit for unit in recorded if unit in units]
+            rest = [unit for unit in units if unit not in recorded]
+            units = tuple(rest + known)
+        return units
+    except Exception:
+        logger.warning("work ledger: could not list this slot's crew logs", exc_info=True)
+        return ()
+
+
 def _rewrite_lines(path: Path, lines: "tuple[str, ...]") -> None:
     """Replace a control file with *lines*, one per line, atomically.
 
@@ -1817,7 +1853,7 @@ def _rewrite_lines(path: Path, lines: "tuple[str, ...]") -> None:
     os.replace(tmp, path)
 
 
-def _recorded_unit_order(slot_key: str) -> "tuple[str, ...]":
+def _recorded_unit_order(slot_key: str, *, order_file: str = _UNIT_ORDER_FILE) -> "tuple[str, ...]":
     """The units this slot recorded into, oldest first. Empty when there is no log.
 
     DEDUPLICATED, and truncated to the newest :data:`_MAX_ORDERED_UNITS` distinct ids
@@ -1831,7 +1867,7 @@ def _recorded_unit_order(slot_key: str) -> "tuple[str, ...]":
     unboundedly.
     """
     try:
-        path = _control_file(slot_key, _UNIT_ORDER_FILE)
+        path = _control_file(slot_key, order_file)
         if not path.exists():
             return ()
         with path.open("r", encoding="utf-8") as fh:

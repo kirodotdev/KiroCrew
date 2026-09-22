@@ -581,6 +581,21 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
     return slot if isinstance(slot, str) and slot else None
 
 
+def unprovable_session_units() -> int:
+    """How many session-kind units under the root have a header that cannot be proved.
+
+    A slot-keyed fold reaches its units through their headers, so a unit this
+    cannot read is a unit no fold will see; a caller that must know its fold was
+    complete asks this first.
+    """
+    try:
+        root = _checked_crew_log_root(KIND_SESSION)
+        names = sorted(child.name for child in root.iterdir())
+    except (CrewLogError, OSError):
+        return 0
+    return sum(1 for name in names if _proved_header(root / name) is None)
+
+
 #: The cached slot map, the root identity it was built from, and the children that
 #: scan could NOT prove. Replaced WHOLE, so a reader loads one reference and sees
 #: either the old triple or the new one; two threads racing rebuild it twice, which
@@ -641,6 +656,24 @@ def session_units_for_slot(slot: str, *, strict: bool = False) -> "tuple[str, ..
     """
     if not slot:
         return ()
+    return session_units_by_slot(strict=strict).get(slot, ())
+
+
+def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]]":
+    """Every session crew log with a provable slot-naming header, grouped by slot.
+
+    The index :func:`session_units_for_slot` looks one slot up in; a caller that
+    must look ACROSS slots (a rebuild searching every other slot's units for entries
+    naming its board) reads the whole map once instead of scanning per slot. Same
+    order within a slot, same cache, same treatment of unprovable children.
+
+    *strict* carries the validating caller's contract down to the scan that decides
+    it, because the refusal belongs where the incompleteness is seen rather than
+    where the listing is used. It means the same thing either way in: a scan that
+    could not be made at all, and a child that cannot be proved while already
+    holding entries, are both refused instead of being answered with a listing that
+    is quietly short.
+    """
     global _slot_index
     try:
         root = _checked_crew_log_root(KIND_SESSION)
@@ -652,13 +685,13 @@ def session_units_for_slot(slot: str, *, strict: bool = False) -> "tuple[str, ..
         # would let it validate against a record that is not there.
         if strict:
             raise
-        return ()
+        return {}
     fingerprint = _slot_root_fingerprint(root, names)
     cached = _slot_index
     if cached is not None and cached[0] == fingerprint and not _any_now_provable(root, cached[2]):
         if strict:
             _refuse_unprovable_unit(root, cached[2])
-        return cached[1].get(slot, ())
+        return cached[1]
     rows: "dict[str, list[tuple[int, str]]]" = {}
     unproven: list[str] = []
     for name in names:
@@ -692,7 +725,7 @@ def session_units_for_slot(slot: str, *, strict: bool = False) -> "tuple[str, ..
     _slot_index = (fingerprint, by_slot, tuple(unproven))
     if strict:
         _refuse_unprovable_unit(root, tuple(unproven))
-    return by_slot.get(slot, ())
+    return by_slot
 
 
 def _unproven_holding_content(root: Path, unproven: "tuple[str, ...]") -> "str | None":

@@ -79,7 +79,7 @@ SERVER_VERSION = "1.0.0"
 WORKER_TOOLS: tuple[str, ...] = ("work_brief", "work_report")
 
 #: The conductor half.
-CONDUCTOR_TOOLS: tuple[str, ...] = ("work_ledger_read", "work_ledger_record")
+CONDUCTOR_TOOLS: tuple[str, ...] = ("work_ledger_read", "work_ledger_rebuild", "work_ledger_record")
 
 WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS
 
@@ -87,6 +87,7 @@ _BRIEF_PATH = "/api/work-ledger/brief"
 _REPORT_PATH = "/api/work-ledger/report"
 _READ_PATH = "/api/work-ledger"
 _RECORD_PATH = "/api/work-ledger/record"
+_REBUILD_PATH = "/api/work-ledger/rebuild"
 
 #: Fields ``work_ledger_record`` forwards. The action selects which of them it
 #: REQUIRES; a field an action has no use for is generally IGNORED rather than
@@ -140,6 +141,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "never an acceptance: nothing here can write a verdict. Write facts and "
                 "pointers to what you produced, not requests. Which item this lands on "
                 "is resolved from your own session — there is no item parameter."
+                " The whole report is one 64 KB crew-log line as JSON (a non-ASCII "
+                "character can count up to twelve bytes), so a report at every field cap with "
+                "non-ASCII text can be refused work_entry_too_large before anything is "
+                "written; keep summary and artifacts to what a reader needs. An item "
+                "from before the record whose committed acceptance is itself wider "
+                "than a line is refused work_item_too_large, which no shorter report "
+                "cures: the refusal names the conductor's accept as the remedy."
             ),
             "inputSchema": {
                 "type": "object",
@@ -204,6 +212,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "work_ledger_rebuild",
+            "description": (
+                "Rebuild the work ledger this conductor session owns from the crew log: "
+                "every accepted write was recorded there, so the ledger files are a cache "
+                "of that record. Rewrites the conductor record, every item and its events "
+                "from the crew log and removes any item file the record does not know. Use "
+                "it when the ledger reads as damaged or missing. Takes no arguments -- the "
+                "ledger is your own. Refuses when the crew log is off."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
             "name": "work_ledger_record",
             "description": (
                 "Write one conductor-owned field set on your own ledger. One action per "
@@ -215,7 +235,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "as an instruction); 'verdict' records accept_eval.py's verdict and the "
                 "fail count; 'accept' promotes a worker's claimed pr into the item's "
                 "acceptance once you have checked it; 'close' stamps a terminal state. "
-                "Caps refuse rather than truncate, naming the field."
+                "Caps refuse rather than truncate, naming the field. The whole write is "
+                "one 64 KB crew-log line as JSON (a non-ASCII character can count up to twelve "
+                "bytes), so a write at every field cap with non-ASCII text can be "
+                "refused work_entry_too_large before anything is written. A write about "
+                "an item from before the record whose committed acceptance is wider "
+                "than a line is refused work_item_too_large until an accept with a "
+                "smaller acceptance records the item whole."
             ),
             "inputSchema": {
                 "type": "object",
@@ -367,6 +393,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # The ledger holds worker-authored prose written from untrusted work, and a
         # patrol cycle re-reads it into context every round.
         return redact(json.dumps(resp, indent=2, ensure_ascii=False))
+
+    if name == "work_ledger_rebuild":
+        resp = _post(_REBUILD_PATH, {}, session_key=caller_key)
+        if resp.get("error"):
+            return _refusal("could not rebuild the work ledger", resp)
+        return (
+            f"Rebuilt the work ledger from the crew log. items={resp.get('items', 0)} "
+            f"events={resp.get('events', 0)} removed={resp.get('removed', 0)}"
+        )
 
     if name == "work_ledger_record":
         payload = {k: v for k, v in args.items() if k in _RECORD_FIELDS}
