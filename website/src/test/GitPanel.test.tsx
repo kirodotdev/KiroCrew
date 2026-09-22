@@ -716,3 +716,57 @@ describe('GitPanel filter-driver refusal', () => {
     expect(handoff).not.toContain('git_status_unavailable')
   })
 })
+
+describe('GitPanel log route outage', () => {
+  // The log route's discovery boundary now matches the status route: a failed
+  // probe that is not Git's own not-a-repository verdict is a 503 with its own
+  // code, not an empty commit list.
+  const unavailable = (message: string) =>
+    Object.assign(new Error(message), {
+      body: JSON.stringify({ error: message, code: 'git_log_unavailable' }),
+    })
+
+  it('renders the coded log outage as an untitled localized notice, not an empty history', async () => {
+    const serverMessage = 'server-only commit history detail'
+    recordError({ source: 'api', message: serverMessage, code: 'git_log_unavailable' })
+    H.api.projectGitLog.mockRejectedValue(unavailable(serverMessage))
+
+    mount()
+
+    const notice = await screen.findByTestId('git-panel-log-error', {}, { timeout: 5000 })
+    const localizedLog = i18next.t('components.gitPanel.log_failed')
+    // Untitled, like the status outage: titled-vs-untitled is what separates a
+    // transient outage from a permanent refusal at a glance.
+    expect(notice.querySelector('strong')).toBeNull()
+    expect(notice).toHaveTextContent(localizedLog)
+    expect(notice).not.toHaveTextContent(serverMessage)
+    expect(screen.getAllByText(localizedLog)).toHaveLength(1)
+    expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
+    expect(screen.queryByTestId('git-panel-status-error')).toBeNull()
+    // The changes half is healthy and stays so; the empty-history claim does
+    // not, because no history was read.
+    expect(screen.getByText('clean')).toBeInTheDocument()
+    expect(screen.queryByText(i18next.t('components.gitPanel.empty_state'))).toBeNull()
+    expect(screen.queryByText(i18next.t('components.gitPanel.commits'))).toBeNull()
+    // A retry can clear an outage, so refresh stays live.
+    expect(
+      screen.getByRole('button', { name: i18next.t('components.gitPanel.refresh') }),
+    ).toBeEnabled()
+    // The hand-off carries the structured report the localized message cannot
+    // resolve by lookup.
+    await userEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(consumeChatHandoff()).toContain('git_log_unavailable')
+  })
+
+  it('keeps an uncoded log failure titled with its own message', async () => {
+    H.api.projectGitLog.mockRejectedValue(new Error('LOG-DETAIL'))
+
+    mount()
+
+    const notice = await screen.findByTestId('git-panel-log-error', {}, { timeout: 5000 })
+    expect(notice.querySelector('strong')).toHaveTextContent(
+      i18next.t('components.gitPanel.log_failed'),
+    )
+    expect(notice).toHaveTextContent('LOG-DETAIL')
+  })
+})

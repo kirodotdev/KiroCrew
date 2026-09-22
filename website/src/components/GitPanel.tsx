@@ -110,6 +110,9 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   const listTruncated = !statusError && isRepository && status?.truncated === true
   const statusErrorMessage = errMessage(statusError)
   const statusUnavailable = gitErrorCode(statusError) === 'git_status_unavailable'
+  // The log route's coded outage, mirrored from the status side: rendered
+  // untitled with the localized copy, never the backend's English sentence.
+  const logUnavailable = gitErrorCode(logError) === 'git_log_unavailable'
   // A coded log refusal renders the localized refusal copy, the same as the
   // coalesced notice does -- it is the same condition, and the backend's own
   // English sentence under a localized title reads as mixed-language copy in the
@@ -345,12 +348,16 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     title={
                       logFilterRefused
                         ? filterRefusedTitle
-                        : logErrorMessage ? localizedLogFailure : undefined
+                        : !logUnavailable && logErrorMessage
+                          ? localizedLogFailure
+                          : undefined
                     }
                     message={
                       logFilterRefused
                         ? filterRefusedCopy
-                        : logErrorMessage || localizedLogFailure
+                        : logUnavailable
+                          ? localizedLogFailure
+                          : logErrorMessage || localizedLogFailure
                     }
                     // Explicit, because the hand-off otherwise resolves context
                     // by looking the MESSAGE up in the error journal, and a
@@ -449,8 +456,10 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </section>
         )}
 
-        {/* Empty state */}
-        {isClean && (!log?.commits || log.commits.length === 0) && !statusLoading && (
+        {/* Empty state. Not while the log route has failed: "no commits to
+            display" beside a notice saying history could not be read presents
+            an outage as an empty history. */}
+        {isClean && !logError && (!log?.commits || log.commits.length === 0) && !statusLoading && (
           <div className="px-3 py-8 text-center text-muted text-[12px]">
             {i18nT('components.gitPanel.empty_state')}
           </div>

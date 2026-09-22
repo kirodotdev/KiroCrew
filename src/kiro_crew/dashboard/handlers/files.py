@@ -7148,6 +7148,24 @@ def _probe_git_dir(base: str, env: dict) -> tuple[int, str]:
     return rc, stderr
 
 
+def _is_not_a_repo_verdict(probe_stderr: str) -> bool:
+    """True when a failed :func:`_probe_git_dir` is Git's own absence verdict.
+
+    This is the ONE classification contract the status and log routes share:
+    Git's English ``fatal: not a git repository`` line (the probe runs with
+    ``LC_ALL=C``) is confirmed absence and answers ``repo: false``. Every other
+    nonzero probe -- sandbox refusal, spawn failure, dubious ownership,
+    permission failure, timeout, kill, corrupt metadata -- is an operational
+    outage and answers 503, because an empty listing or an empty commit list is
+    exactly what a clean or unborn repository legitimately returns, so spelling
+    an outage that way is indistinguishable from a healthy answer.
+    """
+    return any(
+        line.lstrip().startswith("fatal: not a git repository")
+        for line in probe_stderr.lower().splitlines()
+    )
+
+
 def _run_git_bounded(
     args: list[str],
     cwd: str,
@@ -7446,10 +7464,7 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         # failure remains an operational outage unless the directory vanished.
         probe_rc, probe_err = _probe_git_dir(base, _env)
         if probe_rc != 0:
-            if any(
-                line.lstrip().startswith("fatal: not a git repository")
-                for line in probe_err.lower().splitlines()
-            ):
+            if _is_not_a_repo_verdict(probe_err):
                 return {"repo": False, "files": []}
             return {"_status_unavailable": True}
 
@@ -8047,14 +8062,22 @@ async def api_project_git_log(request: web.Request) -> web.Response:
             # panel can open them.
             "-c", "core.quotePath=false",
         ]
-        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+        _env = {
+            **os.environ,
+            "GIT_ATTR_NOSYSTEM": "1",
+            # The probe's verdict match reads Git's English diagnostic.
+            "LC_ALL": "C",
+            "LANGUAGE": "C",
+        }
 
-        # Check if it's a repo
-        probe_rc, _probe_out, _ = _run_git_bounded(
-            [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
-        )
+        # Same discovery boundary as the status route: Git's not-a-repository
+        # verdict is confirmed absence; any other probe failure is an outage,
+        # not an empty history.
+        probe_rc, probe_err = _probe_git_dir(base, _env)
         if probe_rc != 0:
-            return {"repo": False, "commits": []}
+            if _is_not_a_repo_verdict(probe_err):
+                return {"repo": False, "commits": []}
+            return {"_log_unavailable": True}
 
         # Same filter-driver refusal as the status handler (defense in depth:
         # ``git log`` does not run clean filters, but one uniform invariant --
@@ -8101,6 +8124,10 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         return {"repo": True, "commits": commits}
 
     result = await asyncio.to_thread(_run)
+    # Same vanished-directory re-check as the status route: a project directory
+    # deleted between the isdir gate and the spawn is absence, not an outage.
+    if await asyncio.to_thread(_project_directory_absent, base):
+        return web.json_response({"repo": False, "commits": []})
     _log_refusal = result.pop("_log_filter_refused", "")
     if _log_refusal:
         return web.json_response(
@@ -8115,6 +8142,14 @@ async def api_project_git_log(request: web.Request) -> web.Response:
                 ),
                 "code": "git_log_filter_refused",
                 "cause": _log_refusal,
+            },
+            status=503,
+        )
+    if result.pop("_log_unavailable", False):
+        return web.json_response(
+            {
+                "error": "Couldn't read the commit history.",
+                "code": "git_log_unavailable",
             },
             status=503,
         )
