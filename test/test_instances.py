@@ -6273,6 +6273,12 @@ class TestSsmTunnelArgv:
             return FakeProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        # stop() on the SSM transport reaps the child's whole process group by
+        # pid. FakeProc.pid is a made-up number, so the real signal would land
+        # on whatever unrelated process holds that pid on the host (on CI, an
+        # xdist worker). Keep the signal out of the OS; the fake's terminate()
+        # is the fallback path and settles returncode.
+        monkeypatch.setattr(stm._SshTunnel, "_signal_group", staticmethod(lambda pid, sig: False))
 
         async def main():
             t = _SshTunnel(
