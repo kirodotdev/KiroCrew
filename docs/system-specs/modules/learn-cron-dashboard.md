@@ -3243,7 +3243,14 @@ transcript, so whoever watches the session sees that no loop exists instead of
 a session that believes it armed one. Slot-less callers (a channel transport's
 `TurnDriver`) have no transcript window; the returned string is their surface.
 The notice is best-effort telemetry about an already-audited denial and never
-turns the denial into an exception.
+turns the denial into an exception. A denied `monitor_update` is surfaced through
+the SAME helper with a DIFFERENT prefix (`⚠️ Automation loop NOT updated — it kept
+its previous instruction: <reason>`), because the fact a reader acts on differs: a
+refused arm means no loop exists, while a refused revision leaves the loop in place
+and waking on its OLD instruction, so the arm wording would report the wrong state.
+Without it the paused-loop denial reached only the gateway journal and the agent
+kept the tool's neutral "update requested" ack, reporting a revision that never
+landed (issue #12311).
 `BUSY` persists a short retry for the existing claim without probing or entering
 the model, and the retry checks the runtime budget again before dispatch so an
 expired claim cannot start another turn; `DISPATCHED` persists a bounded

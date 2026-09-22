@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService
 from kiro_crew.autonudge_authz import authorize_and_update_monitor
+from kiro_crew.dashboard import session_directive_apply as sda
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.monitoring.models import (
     MonitorBudgets,
@@ -723,4 +724,54 @@ async def test_banner_cannot_silently_patch_a_structured_monitor(tmp_path):
 
     assert result.startswith("monitor_update cannot apply")
     assert "banner" in result
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_denied_monitor_update_is_surfaced_into_the_session(tmp_path):
+    # A denied REVISION is as unobservable as a denied arm: the MCP tool has
+    # already answered "update requested" over its own pipe, so a denial that
+    # stays in the gateway log leaves the agent reporting a revision that never
+    # landed. The consumer must put a row where the
+    # session's reader can see it, worded for a revision -- the loop kept its
+    # PREVIOUS instruction, which is not the same fact as "nothing is running".
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "watch the build", idle_secs=60)
+    # Pause it the way an unanswered approval does, so monitor_update's
+    # paused-loop protection denies the patch at apply time.
+    await service.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
+    surfaced = MagicMock()
+    state = SimpleNamespace(
+        _slots={
+            "chat-1": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(key="chat-1", _app="", messages=[])
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.state.append_and_surface", surfaced),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"message": "revised instruction"}},
+        )
+
+    assert "is PAUSED" in result
+    surfaced.assert_called_once()
+    called_state, called_slot, role, text, cls = surfaced.call_args.args
+    assert called_state is state and called_slot is slot
+    assert role == "notice" and cls == "msg msg-info"
+    assert text.startswith(sda.REVISION_REFUSAL_NOTICE_PREFIX)
+    # The revision wording, not the arming wording: a paused loop that kept its
+    # old instruction is not a session with no automation at all.
+    assert not text.startswith(sda.ARM_REFUSAL_NOTICE_PREFIX)
+    assert "kept its previous instruction" in text
+    assert "approval prompt" in text
     service.stop()
