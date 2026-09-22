@@ -11,6 +11,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state
 from kiro_crew.agent_discovery import AgentInfo, list_agents
+from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
@@ -23,6 +24,25 @@ from kiro_crew.executors import discovery_executor
 
 logger = logging.getLogger(__name__)
 
+# The managed specs that are not a sensible thing to run a chat AS. Only the
+# bare cheap agent behind auto-titles and compaction (no prompt, no tools) is
+# here; it is reached by the runtime itself, never picked by a person. The
+# primary ``kirocrew`` spec is deliberately NOT here: a chat session is a
+# template choice, and the main managed agent is the default one. The other
+# owned specs (conductor, worker, research, ...) are ordinary choices; hiding
+# every owned file would drop them from a fresh install.
+_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME})
+
+
+def _is_background_only(agent: AgentInfo) -> bool:
+    """A runtime-owned spec that exists for a background job, not a chat.
+
+    Matched on the owned FILE, not the display name: a project checkout may
+    declare its own ``kirocrew-lite.json`` under ``.kiro/agents`` and that is
+    the user's file, an ordinary choice like any other project template.
+    """
+    return agent.kirocrew_owned and agent.filename in _BACKGROUND_ONLY_FILES
+
 
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
     """Discover shared templates without enrolling members or allocating memory."""
@@ -30,19 +50,23 @@ def _templates(project_dir: Path | None) -> list[AgentInfo]:
     # Discovery's display enrichment can omit unreadable lineage. A selectable
     # catalog cannot interpret that omission as proof a private copy is shared.
     forks = agent_state.all_fork_info()
-    # `source != "kirocrew"` is the same exclusion the sync route applies: only
-    # the runtime's own `kirocrew` / `kirocrew-lite` files are withheld. The
-    # other shipped specs (conductor, worker, research, ...) are ordinary
-    # choices; hiding every owned file would drop them from a fresh install.
-    return [
+    # Narrower than the sync route's ``source != "kirocrew"``: that route decides
+    # which specs become ENROLLED crew members, and the runtime's own files are
+    # rightly not members. A chat session, by contrast, is a template choice, so
+    # the primary ``kirocrew`` spec must be offered; only the background-only
+    # managed spec is withheld here.
+    chosen = [
         agent
         for agent in discovered
         if not agent.private_to
         and agent.name not in forks
         and Path(agent.filename).stem not in forks
-        and agent.source != "kirocrew"
+        and not _is_background_only(agent)
         and not _name_would_be_masked(agent.name)
     ]
+    # The primary managed agent leads the list; discovery's stem order is kept
+    # for everything else (``sorted`` is stable), so nothing else moves.
+    return sorted(chosen, key=lambda agent: agent.filename != AGENT_FILENAME)
 
 
 def _template_row(agent: AgentInfo) -> dict[str, object]:

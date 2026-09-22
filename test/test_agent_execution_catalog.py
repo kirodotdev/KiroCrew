@@ -12,6 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import agent_files
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
@@ -22,6 +23,12 @@ def _template(name: str, **kwargs) -> AgentInfo:
     return AgentInfo(
         name=name, filename=f"{name}.json", description="Test helper", model="", **kwargs
     )
+
+
+def _owned(name: str, **kwargs) -> AgentInfo:
+    """A spec the runtime writes itself, as global discovery reports it."""
+    source = "kirocrew" if name in ("kirocrew", "kirocrew-lite") else "builtin"
+    return _template(name, source=source, kirocrew_owned=True, **kwargs)
 
 
 @pytest.fixture
@@ -151,13 +158,14 @@ async def test_app_can_discover_its_own_slots_project(catalog, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_private_and_owned_templates_are_not_standalone_choices(catalog, monkeypatch):
+async def test_private_and_background_templates_are_not_standalone_choices(catalog, monkeypatch):
     catalog.discovery.return_value = [
         _template("shared"),
         _template("private", private_to="reviewer"),
         _template("hidden-by-lineage"),
-        _template("kirocrew", source="kirocrew", kirocrew_owned=True),
-        _template("kirocrew-conductor", kirocrew_owned=True),
+        _owned("kirocrew"),
+        _owned("kirocrew-lite"),
+        _owned("kirocrew-conductor"),
     ]
     monkeypatch.setattr(
         agent_catalog.agent_state,
@@ -166,12 +174,48 @@ async def test_private_and_owned_templates_are_not_standalone_choices(catalog, m
     )
     async with TestClient(TestServer(catalog.app)) as client:
         rows = (await (await client.get("/api/agents/catalog")).json())["agents"]
-    # The runtime's own `kirocrew` file is withheld, as the sync route withholds
-    # it; a shipped-but-ordinary owned spec (the conductor) stays selectable.
+    # A chat session is a template choice, so the primary managed agent is
+    # offered and leads the list. The background-only cheap agent is withheld;
+    # a shipped-but-ordinary owned spec (the conductor) stays selectable.
     assert [row["name"] for row in rows if row["selection_kind"] == "template"] == [
+        "kirocrew",
         "shared",
         "kirocrew-conductor",
     ]
+    kirocrew = next(row for row in rows if row["name"] == "kirocrew")
+    assert kirocrew["selection_kind"] == "template"
+    assert kirocrew["kiro_agent"] == "kirocrew"
+    assert kirocrew["source"] == "kirocrew"
+
+
+def test_background_exclusion_is_by_owned_file_not_by_name():
+    # A project checkout's own ``kirocrew-lite.json`` is the user's template,
+    # not the runtime's background agent, so it remains an ordinary choice.
+    project_lite = _template("kirocrew-lite", scope="project", kirocrew_owned=False)
+    assert not agent_catalog._is_background_only(project_lite)
+    assert agent_catalog._is_background_only(_owned("kirocrew-lite"))
+    assert not agent_catalog._is_background_only(_owned("kirocrew"))
+    assert not agent_catalog._is_background_only(_owned("kirocrew-worker"))
+
+
+def test_every_owned_spec_is_classified_for_the_picker():
+    # Every managed spec the runtime writes is either a chat choice or a
+    # background-only file, on purpose. A new entry in OWNED_KIRO_AGENT_FILES
+    # fails here until its author sorts it into one of the two sets.
+    picker_rows = {
+        agent_files.AGENT_FILENAME,
+        agent_files.CONDUCTOR_AGENT_FILENAME,
+        agent_files.PIPELINE_CONDUCTOR_AGENT_FILENAME,
+        agent_files.LEDGER_CONDUCTOR_AGENT_FILENAME,
+        agent_files.SECURITY_CONDUCTOR_AGENT_FILENAME,
+        agent_files.WORKER_AGENT_FILENAME,
+        agent_files.KNOWLEDGE_AGENT_FILENAME,
+        agent_files.RESEARCH_AGENT_FILENAME,
+        agent_files.HEARTBEAT_AGENT_FILENAME,
+    }
+    background = set(agent_catalog._BACKGROUND_ONLY_FILES)
+    assert not picker_rows & background
+    assert set(agent_files.OWNED_KIRO_AGENT_FILES) == picker_rows | background
 
 
 @pytest.mark.asyncio

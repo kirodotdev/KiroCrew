@@ -66,9 +66,14 @@ another slot's project. An unknown slot and an app request for a foreign slot
 return `404 slot_not_found`. Project templates shadow same-named global templates
 according to discovery's existing execution precedence, not member-name precedence.
 
-Private copies and the runtime's own `kirocrew` / `kirocrew-lite` specs (discovery
-`source == "kirocrew"`, the same rule the sync route applies) are withheld from
-standalone choices; the other shipped specs are ordinary template rows.
+Private copies and the runtime's background-only `kirocrew-lite` spec (matched on
+the owned file, so a project checkout's own same-named spec stays an ordinary
+choice) are withheld from standalone choices. The primary `kirocrew` spec is
+offered and leads the template rows: a chat session is a template choice, and the
+main managed agent is the default one. This is deliberately narrower than the sync
+route's `source != "kirocrew"` exclusion, which decides enrolment as a crew member,
+a different question. The other shipped specs (conductor, worker, knowledge,
+research, heartbeat, ...) are ordinary template rows.
 Lineage is read strictly in addition to discovery's optional display enrichment:
 an unreadable lineage file cannot make a private copy appear shared. Discovery,
 config or lineage failure returns `503 agent_catalog_unavailable`, not a partial
