@@ -539,6 +539,20 @@ class TestTheRecord:
         )
         assert outcome["agree"] is True
 
+    def test_the_store_lands_on_the_outcome(self):
+        """The recall's store travels onto the record so the popover resolves ids in it.
+
+        A member (V2) recall's ids are meaningless in the default store, so the store
+        the recall ran against is what the strip's id popover has to look them up in.
+        """
+        outcome = mr.build_outcome(
+            baseline=[], injected=[], trace={"turn_id": "t"}, store="member-bob"
+        )
+        assert outcome["store"] == "member-bob"
+        # An older producer, or a caller that does not know it, leaves it None -- which
+        # the strip's reader reads as the default store.
+        assert mr.build_outcome(baseline=[], injected=[], trace={"turn_id": "t"})["store"] is None
+
     def test_the_lists_are_named_for_what_they_hold(self):
         """``baseline_keys``/``jev_keys``, never ``baseline``/``jev``.
 
@@ -822,7 +836,7 @@ class TestTheKeepHook:
         seen: list[dict] = []
 
         def _kept_memories(
-            candidates, text, *, session_key, loop, owner_turn, still_watched, pending
+            candidates, text, *, session_key, loop, owner_turn, still_watched, pending, store
         ):
             seen.append(
                 {
@@ -833,6 +847,7 @@ class TestTheKeepHook:
                     "owner_turn": owner_turn,
                     "still_watched": still_watched,
                     "pending": pending,
+                    "store": store,
                 }
             )
             return None
@@ -847,6 +862,7 @@ class TestTheKeepHook:
             owner_turn=True,
             still_watched=watching,
             pending=held,
+            store="member-bob",
         )
         assert hook([_episode("a")]) is None
         assert seen[0]["text"] == "the message"
@@ -857,6 +873,8 @@ class TestTheKeepHook:
         assert seen[0]["owner_turn"] is True
         # The caller's list travels through, so the hook records nothing itself.
         assert seen[0]["pending"] is held
+        # The store threads through so the outcome names the store the recall ran in.
+        assert seen[0]["store"] == "member-bob"
 
 
 class TestTheHookAndTheStoreAgreeOnIdentity:

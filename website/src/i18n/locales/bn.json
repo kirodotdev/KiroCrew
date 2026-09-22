@@ -10463,7 +10463,12 @@
         "memory_latest_note": "এই টার্নের সবশেষ memory_recall কলের বর্ণনা। একই টার্নে একাধিকবার কল হলে এখানে কেবল সবশেষটিই দেখা যায়; সিদ্ধান্তের লগে সবগুলোই থাকে।",
         "memory_search_ran_note": "সন্ধান নিজে চলেছে; কেবল Jev-এর ছাঁটাই ব্যর্থ হয়েছে, তাই এখানে তুমি যে স্মৃতিগুলো পেয়েছ সেগুলোই রেট করছ।",
         "memory_bounded_label": "জায়গার জন্য বাদ",
-        "memory_bounded_value": "Jev যে {{total}}টি রেখেছিল তার {{count}}টি উত্তরে জায়গা পায়নি"
+        "memory_bounded_value": "Jev যে {{total}}টি রেখেছিল তার {{count}}টি উত্তরে জায়গা পায়নি",
+        "memory_detail_title": "আনা স্মৃতি",
+        "memory_detail_text_label": "লেখা",
+        "memory_detail_empty": "(খালি)",
+        "memory_detail_loading": "লোড হচ্ছে…",
+        "memory_detail_not_found": "এই স্মৃতিটি আর সংরক্ষণে নেই।"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev এই কলটি দেখে চিহ্নিত করেছে। এতে কলটির অনুমতি ছিল কি না তা বদলায়নি: সেটি এই সেশনের নিজের অনুমতি সেটিং ঠিক করেছে, আর কলটি তবুও প্রত্যাখ্যাত হতে পারত।",

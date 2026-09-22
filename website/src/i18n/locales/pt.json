@@ -10607,7 +10607,12 @@
         "memory_latest_note": "Descreve a última chamada a memory_recall deste turno. Se o turno a fez mais de uma vez, aqui aparece só a última; o registo de decisões guarda todas.",
         "memory_search_ran_note": "A busca aconteceu; só o corte do Jev falhou, por isso aqui avalias as memórias que recebeste.",
         "memory_bounded_label": "Retiradas por espaço",
-        "memory_bounded_value": "{{count}} das {{total}} que o Jev guardou não couberam na resposta"
+        "memory_bounded_value": "{{count}} das {{total}} que o Jev guardou não couberam na resposta",
+        "memory_detail_title": "Memória trazida",
+        "memory_detail_text_label": "Texto",
+        "memory_detail_empty": "(vazio)",
+        "memory_detail_loading": "Carregando…",
+        "memory_detail_not_found": "Esta memória não está mais no armazenamento."
       },
       "toolRiskBadge": {
         "annotation_title": "O Jev olhou esta chamada e sinalizou-a. Isso não mudou nada sobre a chamada ter sido permitida: isso foi decidido pela configuração de permissões desta sessão, e a chamada pode ter sido recusada mesmo assim.",

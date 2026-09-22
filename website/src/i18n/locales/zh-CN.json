@@ -10319,7 +10319,12 @@
         "memory_latest_note": "描述本轮最后一次 memory_recall 调用。一轮里调用多次时，这里只显示最后一次；决策日志会保留全部。",
         "memory_search_ran_note": "搜索本身跑过了，失败的只有 Jev 筛减这一步，所以这里评价你收到的记忆。",
         "memory_bounded_label": "因容量移除",
-        "memory_bounded_value": "Jev 保留的 {{total}} 条里有 {{count}} 条没能装进响应"
+        "memory_bounded_value": "Jev 保留的 {{total}} 条里有 {{count}} 条没能装进响应",
+        "memory_detail_title": "召回的记忆",
+        "memory_detail_text_label": "正文",
+        "memory_detail_empty": "（空）",
+        "memory_detail_loading": "加载中…",
+        "memory_detail_not_found": "这条记忆已不在存储中。"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev 看过这次调用并做了标记。标记不会影响这次调用是否被允许：那由本会话自己的权限设置决定，而且这次调用仍可能已被拒绝。",

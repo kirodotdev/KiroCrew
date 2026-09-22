@@ -247,6 +247,7 @@ describe('the recalled-memory fixture in the decisions spec', () => {
     expect(readMemoryRecallRecord(fixture)).toEqual({
       turnId: 'turn-7d1e04',
       point: 'memory.recall',
+      store: 'default',
       baselineKeys: ['mem-a', 'mem-b', 'mem-c'],
       jevKeys: ['mem-a', 'mem-c'],
       agree: false,

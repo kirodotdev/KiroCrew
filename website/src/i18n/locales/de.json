@@ -10463,7 +10463,12 @@
         "memory_latest_note": "Beschreibt den letzten memory_recall-Aufruf dieses Zugs. Wurde er mehrmals aufgerufen, ist hier nur der letzte zu sehen; im Entscheidungs-Log stehen alle.",
         "memory_search_ran_note": "Die Suche selbst lief; nur Jevs Auswahl ist fehlgeschlagen, also bewertest du hier die Erinnerungen, die du bekommen hast.",
         "memory_bounded_label": "Aus Platzgründen entfernt",
-        "memory_bounded_value": "{{count}} der {{total}}, die Jev behielt, passten nicht in die Antwort"
+        "memory_bounded_value": "{{count}} der {{total}}, die Jev behielt, passten nicht in die Antwort",
+        "memory_detail_title": "Geholte Erinnerung",
+        "memory_detail_text_label": "Text",
+        "memory_detail_empty": "(leer)",
+        "memory_detail_loading": "Wird geladen…",
+        "memory_detail_not_found": "Diese Erinnerung ist nicht mehr gespeichert."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev hat diesen Aufruf angesehen und markiert. Das hat nichts daran geändert, ob der Aufruf erlaubt war: darüber hat die Berechtigungseinstellung dieser Sitzung entschieden, und der Aufruf kann trotzdem abgelehnt worden sein.",

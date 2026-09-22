@@ -215,6 +215,7 @@ def kept_memories(
     owner_turn: bool = False,
     still_watched: Callable[[], bool] | None = None,
     pending: list[tuple[dict[str, Any], int]] | None = None,
+    store: str | None = None,
 ) -> list[RowT] | None:
     """The memories the oracle would keep, or ``None`` to return all of *candidates*.
 
@@ -345,7 +346,7 @@ def kept_memories(
         if pending is not None:
             pending.append(
                 (
-                    build_outcome(baseline=rows, injected=injected, trace=trace),
+                    build_outcome(baseline=rows, injected=injected, trace=trace, store=store),
                     int((time.monotonic() - started) * 1000),
                 )
             )
@@ -676,8 +677,14 @@ def build_outcome(
     baseline: Sequence[Mapping[str, Any]],
     injected: Sequence[Mapping[str, Any]],
     trace: Mapping[str, Any],
+    store: str | None = None,
 ) -> dict[str, Any]:
     """Both arms of one turn as the fields the row and the publish hook share.
+
+    ``store`` is the memory store the recall ran against, carried onto the record
+    so the strip's id popover looks each id up in the RIGHT store rather than
+    always the default one. ``None`` -- an older producer or a caller that does not
+    know it -- is left as ``None`` here and read as the default store on the wire.
 
     The two lists are spelled ``baseline_keys`` and ``jev_keys`` rather than
     ``baseline`` and ``jev``, which is what keeps this record out of the skill
@@ -704,6 +711,7 @@ def build_outcome(
     jev_chars = injected_chars(injected)
     return {
         "turn_id": trace.get("turn_id"),
+        "store": store,
         "baseline_keys": baseline_keys,
         "jev_keys": jev_keys,
         "agree": set(baseline_keys) == set(jev_keys),
@@ -871,8 +879,13 @@ def keep_hook(
     owner_turn: bool,
     still_watched: Callable[[], bool] | None = None,
     pending: list[tuple[dict[str, Any], int]] | None = None,
+    store: str | None = None,
 ) -> Callable[[list[dict]], list[dict] | None]:
     """A ``keep=`` callable for ``VectorMemoryStore.recall``.
+
+    *store* is the name of the memory store this recall ran against. It is
+    threaded onto the outcome so the strip's id popover resolves each id in the
+    store it came from; ``None`` reads as the default store on the wire.
 
     The store owns the candidates and the response; this point owns the question. A
     callable is what keeps the two apart: the store hands over the rows it ranked and
@@ -893,6 +906,7 @@ def keep_hook(
             owner_turn=owner_turn,
             still_watched=still_watched,
             pending=pending,
+            store=store,
         )
 
     return keep

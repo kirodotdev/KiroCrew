@@ -10607,7 +10607,12 @@
         "memory_latest_note": "Décrit le dernier appel à memory_recall de ce tour. Si le tour en a fait plusieurs, seul le dernier apparaît ici ; le journal des décisions les garde tous.",
         "memory_search_ran_note": "La recherche a bien eu lieu ; seul le tri de Jev a échoué, donc tu évalues ici les mémoires que tu as reçues.",
         "memory_bounded_label": "Retirées par manque de place",
-        "memory_bounded_value": "{{count}} des {{total}} gardées par Jev ne tenaient pas dans la réponse"
+        "memory_bounded_value": "{{count}} des {{total}} gardées par Jev ne tenaient pas dans la réponse",
+        "memory_detail_title": "Mémoire rappelée",
+        "memory_detail_text_label": "Texte",
+        "memory_detail_empty": "(vide)",
+        "memory_detail_loading": "Chargement…",
+        "memory_detail_not_found": "Cette mémoire n’est plus dans le magasin."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev a examiné cet appel et l'a signalé. Cela n'a rien changé à son autorisation : c'est le réglage d'autorisations de cette session qui en a décidé, et l'appel a pu être refusé malgré tout.",

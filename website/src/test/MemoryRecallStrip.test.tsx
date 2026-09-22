@@ -73,6 +73,7 @@ describe('readMemoryRecallRecord', () => {
     expect(readMemoryRecallRecord(WIRE)).toEqual({
       turnId: 't-9',
       point: 'memory.recall',
+      store: 'default',
       baselineKeys: ['mem-a', 'mem-b', 'mem-c', 'mem-d', 'mem-e', 'mem-f'],
       jevKeys: ['mem-a', 'mem-c', 'mem-f'],
       agree: false,
@@ -140,6 +141,15 @@ describe('readMemoryRecallRecord', () => {
   it('treats a blank error as no error', () => {
     expect(readMemoryRecallRecord({ ...WIRE, error: '   ' })!.error).toBeNull()
     expect(readMemoryRecallRecord({ ...WIRE, error: 'timeout' })!.error).toBe('timeout')
+  })
+
+  it('reads the store the ids belong to, defaulting a missing or blank one', () => {
+    // The popover looks each id up in THIS store, so a member (V2) recall must
+    // resolve in its own store rather than the default.
+    expect(readMemoryRecallRecord({ ...WIRE, store: 'member-bob' })!.store).toBe('member-bob')
+    expect(readMemoryRecallRecord(WIRE)!.store).toBe('default')
+    expect(readMemoryRecallRecord({ ...WIRE, store: '   ' })!.store).toBe('default')
+    expect(readMemoryRecallRecord({ ...WIRE, store: 7 })!.store).toBe('default')
   })
 
   it('ignores a key it does not know, so the contract is a floor', () => {

@@ -10319,7 +10319,12 @@
         "memory_latest_note": "このターンで最後に呼ばれた memory_recall を表します。複数回呼ばれたターンでは最後の一つだけが出ます。判断ログにはすべて残ります。",
         "memory_search_ran_note": "検索そのものは動きました。失敗したのは Jev の絞り込みだけなので、ここでは受け取った記憶を評価します。",
         "memory_bounded_label": "容量のため除外",
-        "memory_bounded_value": "Jev が残した {{total}} 件のうち {{count}} 件は応答に収まりませんでした"
+        "memory_bounded_value": "Jev が残した {{total}} 件のうち {{count}} 件は応答に収まりませんでした",
+        "memory_detail_title": "呼び出した記憶",
+        "memory_detail_text_label": "本文",
+        "memory_detail_empty": "（空）",
+        "memory_detail_loading": "読み込み中…",
+        "memory_detail_not_found": "この記憶はもうストアにありません。"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev がこの呼び出しを見て印を付けました。印を付けても、その呼び出しが許可されたかどうかは変わりません。それを決めるのはこのセッションの権限設定で、呼び出しは拒否されたこともあります。",

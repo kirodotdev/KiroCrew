@@ -1,4 +1,4 @@
-import { memo, useId } from 'react'
+import { memo, useId, useState } from 'react'
 import { Brain, ChevronRight } from 'lucide-react'
 
 import ErrorNotice from '../../components/ErrorNotice'
@@ -8,26 +8,55 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { type MemoryRecallRecord } from './decisionRecord'
 import VerdictThumbs from './DecisionVerdictThumbs'
 import { useRowDisclosure } from './rowDisclosure'
+import MemoryPopover from './MemoryPopover'
 
 /** Two decimals, so `0.81` reads as a score and not as a rounded `0.8`. */
 const confidence = (p: number) => fmtNumber(p, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+/** Clipped only when it actually overflows — a short id keeps its whole self rather
+ *  than gaining a trailing ellipsis that says nothing was cut. */
+const clipId = (id: string) => (id.length > 12 ? `${id.slice(0, 12)}…` : id)
+
+const idChipClass =
+  'inline-block bg-accent/10 hover:bg-accent/20 text-accent px-2 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors'
+
 /**
  * A memory-id list, or the word for an empty one — never a bare empty span.
  *
- * `type: 'unit'` renders "a, b" rather than the conjunction default's "a and b":
- * these are identifiers standing in a measurement line, not a sentence.
+ * Each id is a chip a reader can click to open that memory's text in `MemoryPopover`.
+ * The chips are identifiers in a list, not peer actions, so they wrap rather than fold.
  */
-function ids(list: string[]): string {
-  return list.length > 0 ? fmtList(list, { type: 'unit' }) : i18nT('pages.chat.decisionStrip.memory_none')
+function IdList({ ids, onIdClick }: { ids: string[]; onIdClick: (id: string) => void }) {
+  if (ids.length === 0) {
+    return <span className="text-muted">{i18nT('pages.chat.decisionStrip.memory_none')}</span>
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {ids.map(id => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onIdClick(id)}
+          className={idChipClass}
+          title={id}
+        >
+          {clipId(id)}
+        </button>
+      ))}
+    </span>
+  )
 }
 
 /** One labelled measurement in the expanded body. */
-function Detail({ label, value }: { label: string; value: string }) {
+function Detail({ label, value }: { label: string; value: string | React.ReactNode }) {
   return (
     <div className="flex items-baseline gap-1.5 min-w-0">
       <span className="shrink-0 opacity-75">{label}</span>
-      <span className="text-text tabular-nums truncate">{value}</span>
+      {typeof value === 'string' ? (
+        <span className="text-text tabular-nums truncate">{value}</span>
+      ) : (
+        <div className="flex-1 min-w-0">{value}</div>
+      )}
     </div>
   )
 }
@@ -69,6 +98,7 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
   // switch repaints this row's strings.
   useLanguageGeneration()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
+  const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null)
   const panelId = useId()
 
   const latency = record.latencyMs > 0
@@ -203,7 +233,7 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
               number of them were. */}
           <Detail
             label={i18nT('pages.chat.decisionStrip.memory_baseline_label')}
-            value={ids(record.baselineKeys)}
+            value={<IdList ids={record.baselineKeys} onIdClick={setSelectedMemoryId} />}
           />
           {/* Retitled rather than hidden on a failure: the list is still what the
               prompt carried, which is worth seeing -- it is the ATTRIBUTION that was
@@ -214,7 +244,7 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
                 ? 'pages.chat.decisionStrip.memory_jev_label_fallback'
                 : 'pages.chat.decisionStrip.memory_jev_label',
             )}
-            value={ids(record.jevKeys)}
+            value={<IdList ids={record.jevKeys} onIdClick={setSelectedMemoryId} />}
           />
           <Detail
             label={i18nT('pages.chat.decisionStrip.memory_candidates_label')}
@@ -289,6 +319,16 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
             />
           </div>
         </div>
+      )}
+      {/* Mounted only while an id is selected: the dialog runs a `useQuery`, so
+          keeping it mounted when closed would demand a QueryClient of every host
+          (and every test) that renders a strip with nothing open. */}
+      {selectedMemoryId !== null && (
+        <MemoryPopover
+          recordId={selectedMemoryId}
+          store={record.store}
+          onClose={() => setSelectedMemoryId(null)}
+        />
       )}
     </div>
   )

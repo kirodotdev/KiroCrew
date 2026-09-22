@@ -10463,7 +10463,12 @@
         "memory_latest_note": "इस टर्न के आखिरी memory_recall कॉल का ब्यौरा। एक ही टर्न में कई बार कॉल हुआ हो तो यहाँ बस आखिरी दिखता है; निर्णय लॉग में सब रहते हैं।",
         "memory_search_ran_note": "खोज खुद चली; सिर्फ Jev की छँटाई विफल हुई, इसलिए यहाँ तू वही यादें रेट कर रहा है जो तुझे मिलीं।",
         "memory_bounded_label": "जगह के लिए हटाई गईं",
-        "memory_bounded_value": "Jev ने जो {{total}} रखीं उनमें से {{count}} उत्तर में नहीं समाईं"
+        "memory_bounded_value": "Jev ने जो {{total}} रखीं उनमें से {{count}} उत्तर में नहीं समाईं",
+        "memory_detail_title": "लाई गई याद",
+        "memory_detail_text_label": "पाठ",
+        "memory_detail_empty": "(खाली)",
+        "memory_detail_loading": "लोड हो रहा है…",
+        "memory_detail_not_found": "यह याद अब संग्रह में नहीं है।"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev ने इस कॉल को देखा और इसे चिह्नित किया। इससे यह नहीं बदला कि कॉल की अनुमति थी या नहीं: वह इस सेशन की अपनी अनुमति सेटिंग ने तय किया, और कॉल फिर भी मना की जा सकती थी।",

@@ -4367,7 +4367,12 @@
         "memory_latest_note": "Describes the turn's most recent memory_recall call. A turn that called it more than once shows only the latest; the decision log keeps them all.",
         "memory_search_ran_note": "The search itself ran; only Jev's narrowing failed, so this rates the memories you received.",
         "memory_bounded_label": "Dropped to fit",
-        "memory_bounded_value": "{{count}} of the {{total}} Jev kept did not fit the response"
+        "memory_bounded_value": "{{count}} of the {{total}} Jev kept did not fit the response",
+        "memory_detail_title": "Recalled memory",
+        "memory_detail_text_label": "Text",
+        "memory_detail_empty": "(empty)",
+        "memory_detail_loading": "Loading…",
+        "memory_detail_not_found": "This memory is no longer in the store."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev looked at this call and flagged it. That changed nothing about whether the call was allowed: this session's own permission setting decided that, and the call may still have been refused.",

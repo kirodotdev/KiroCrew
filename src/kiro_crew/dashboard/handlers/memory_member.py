@@ -82,8 +82,15 @@ async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Respo
     return tier, None
 
 
-def _memory_recall_keep(session_key: str, query: str, pending: list) -> "Callable | None":
+def _memory_recall_keep(
+    session_key: str, query: str, pending: list, store: str | None = None
+) -> "Callable | None":
     """The ``memory.recall`` keep hook for this recall, or ``None`` to return every hit.
+
+    *store* is the name of the store this recall resolved to (``resolve_*_memory_store``),
+    threaded onto the decision record so the strip's id popover looks each id up in the
+    store it came from rather than always the default one. ``None``/empty is the default
+    store.
 
     ``None`` is the answer for every request that is not an OWNER DASHBOARD one, and
     that restriction is this call site's rather than the seam's. Two reasons, both about
@@ -144,6 +151,7 @@ def _memory_recall_keep(session_key: str, query: str, pending: list) -> "Callabl
         owner_turn=True,
         still_watched=lambda: session_key in dashboard_surfaced_keys(),
         pending=pending,
+        store=store,
     )
 
 
@@ -229,7 +237,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
                 query,
                 cap=3000,
                 project_dir=str(project) if project else None,
-                keep=_memory_recall_keep(session, query, decision_pending),
+                keep=_memory_recall_keep(session, query, decision_pending, name),
             )
             if tier is not None
             else {}

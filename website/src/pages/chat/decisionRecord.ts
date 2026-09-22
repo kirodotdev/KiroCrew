@@ -504,6 +504,12 @@ export interface MemoryRecallRecord {
   turnId: string
   /** Always `memory.recall`. */
   point: typeof DECISIONS_MEMORY_POINT
+  /**
+   * The memory store the recalled ids belong to, `'default'` when the record
+   * carried none. The id popover resolves each id in THIS store, so a member (V2)
+   * recall's ids look up in their own store rather than misreporting as not found.
+   */
+  store: string
   /** The memories vector similarity recalled — every one Jev was offered. */
   baselineKeys: string[]
   /**
@@ -576,12 +582,15 @@ export function readMemoryRecallRecord(raw: unknown): MemoryRecallRecord | null 
   const baselineKeys = asNames(root.baseline_keys)
   const jevKeys = asNames(root.jev_keys)
   if (baselineKeys === null || jevKeys === null) return null
+  // Absent (older producer, or a default-store recall) reads as the default store.
+  const store = typeof root.store === 'string' && root.store.trim() ? root.store : 'default'
   const rawP = root.p
   const p = typeof rawP === 'number' && Number.isFinite(rawP) && rawP >= 0 && rawP <= 1 ? rawP : null
   const error = typeof root.error === 'string' && root.error.trim() ? root.error : null
   return {
     turnId,
     point: DECISIONS_MEMORY_POINT,
+    store,
     baselineKeys,
     jevKeys,
     agree: sameSet(baselineKeys, jevKeys),

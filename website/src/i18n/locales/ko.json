@@ -10319,7 +10319,12 @@
         "memory_latest_note": "이번 턴의 마지막 memory_recall 호출을 설명합니다. 여러 번 호출한 턴에서는 마지막 것만 보입니다. 판단 로그에는 모두 남습니다.",
         "memory_search_ran_note": "검색 자체는 실행됐습니다. 실패한 것은 Jev의 추리기뿐이라, 여기서는 받은 기억을 평가합니다.",
         "memory_bounded_label": "용량 때문에 제외",
-        "memory_bounded_value": "Jev가 남긴 {{total}}개 중 {{count}}개는 응답에 담기지 못했습니다"
+        "memory_bounded_value": "Jev가 남긴 {{total}}개 중 {{count}}개는 응답에 담기지 못했습니다",
+        "memory_detail_title": "불러온 기억",
+        "memory_detail_text_label": "본문",
+        "memory_detail_empty": "(비어 있음)",
+        "memory_detail_loading": "불러오는 중…",
+        "memory_detail_not_found": "이 기억은 더 이상 저장소에 없습니다."
       },
       "toolRiskBadge": {
         "annotation_title": "Jev가 이 호출을 보고 표시했습니다. 표시는 호출이 허용되었는지와 무관합니다. 그것은 이 세션의 권한 설정이 결정하며, 호출은 거부되었을 수도 있습니다.",
