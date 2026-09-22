@@ -52,6 +52,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    CANONICAL_TEMP_KEYS,
     CRON_SCRIPT_CHILD_ENV,
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -87,12 +88,55 @@ _GRANTED_ENV_KEYS: set[str] = set()
 
 
 def _clean_cron_env() -> dict[str, str]:
-    """Return os.environ minus the cron env-deny set (secrets never inherited)."""
-    return {
+    """Return os.environ minus the cron env-deny set (secrets never inherited).
+
+    The temp triple (``TMPDIR``/``TMP``/``TEMP``) is not copied verbatim: every
+    key of it that is present is re-pointed at :func:`_default_temp_dir`, so a
+    child never inherits a temp directory that has vanished under this
+    process (see that function). Absent keys stay absent.
+    """
+    env = {
         k: v
         for k, v in os.environ.items()
         if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
     }
+    present = [k for k in CANONICAL_TEMP_KEYS if k in env]
+    if present:
+        temp_dir = _default_temp_dir()
+        for k in present:
+            env[k] = temp_dir
+    return env
+
+
+def _default_temp_dir() -> str:
+    """``tempfile``'s default directory, re-resolved if the cached one has vanished.
+
+    ``tempfile`` resolves ``dir=None`` from a process-wide cache seeded ONCE
+    from ``TMPDIR``/``TMP``/``TEMP`` -- an ``execve`` snapshot. The gateway's
+    own value can name a per-process scratch directory (``agent_scratch``)
+    inherited from whichever agent session started it: a directory owned by a
+    pid this process is not, which the hourly sweep reclaims once that owner is
+    dead and the tree has been idle for an hour -- exactly what a daily or
+    weekly job's few-second touch guarantees. ``mkstemp`` then raises ``ENOENT``
+    for a file it is trying to CREATE, and the job silently does not run until
+    the gateway restarts. So the directory is checked at every run, not once:
+    the value that was valid at spawn is the one that goes stale.
+
+    A vanished directory is dropped by re-resolving through ``tempfile``'s own
+    candidate chain (a ``None`` cache re-probes each candidate by creating a
+    file in it, so the dead ``TMPDIR`` is skipped and the platform default
+    wins). It is never recreated: a bare ``makedirs`` under the managed scratch
+    root would put back a directory with no owner record, which the sweep
+    never deletes on purpose -- a permanent leak in place of a skipped run.
+    Nothing in this process can be using a directory that does not exist, so
+    the re-resolution takes nothing from any other ``tempfile`` caller.
+    """
+    current = tempfile.gettempdir()
+    if os.path.isdir(current):
+        return current
+    logger.warning("cron: temp dir %r has vanished; re-resolving the default temp dir", current)
+    tempfile.tempdir = None
+    return tempfile.gettempdir()
 
 
 # A script child inherits its parent's seccomp filter, and seccomp survives fork /
@@ -1784,6 +1828,11 @@ def run_script_sandboxed(
     resolved_secret_env: dict[str, str] = {}
     script_body: bytes | None = None
     pinned_dir: str | None = None
+    # Validated BEFORE the first temp file of this run: the pinned dir, the
+    # launcher and the secret file below all use ``dir=None``, which is the
+    # process-wide default -- a value cached at gateway start that can name a
+    # directory reclaimed since. See ``_default_temp_dir``.
+    _default_temp_dir()
     if secret_env:
         try:
             script_body = _read_script_body(file_path_str)
