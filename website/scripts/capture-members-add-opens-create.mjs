@@ -29,7 +29,8 @@ import { check, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/members-add-opens-create'
 const CREW = 'oncall'
-const ADD_MEMBER = 'Add member'
+const ADD_MENU = 'Add\u2026' // the roster "+" is a menu now; its crewmate item opens the form
+const ADD_MEMBER = 'Add crewmate'
 const CREATE_TITLE = 'Add crew member' // the create-mode DialogContent's aria-label when arriving from the roster
 
 mkdirSync(OUT, { recursive: true })
@@ -42,12 +43,13 @@ async function shoot(browser, theme) {
   await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
   const add = page.getByTestId('member-add')
   await add.waitFor({ state: 'visible', timeout: 20000 })
-  check(`[${theme}] roster "+" is named "${ADD_MEMBER}"`, (await add.getAttribute('aria-label')) === ADD_MEMBER)
+  check(`[${theme}] roster "+" is named "${ADD_MENU}"`, (await add.getAttribute('aria-label')) === ADD_MENU, await add.getAttribute('aria-label'))
   await page.getByTestId('member-roster').getByText(CREW).first().waitFor({ state: 'visible', timeout: 20000 })
   await page.waitForTimeout(400)
   await page.screenshot({ path: join(OUT, `01-members-roster-${theme}.png`) })
 
   await add.click()
+  await page.getByTestId('member-add-crewmate').click()
   const form = page.getByRole('dialog', { name: CREATE_TITLE })
   await form.waitFor({ state: 'visible', timeout: 20000 })
   check(`[${theme}] one click lands on the "${CREATE_TITLE}" form`, true)
