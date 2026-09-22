@@ -45,8 +45,10 @@ SHIPPED_SMOKE = {
     "settings-developer-panel-dev-mode-toggle",
     "settings-search-jump-to-theme",
     "settings-security-docs-section",
+    "settings-security-layers-section",
     "settings-security-rail-navigation",
     "settings-security-rules-custom-deny",
+    "settings-security-trusted-apps-toggle",
     "settings-shortcuts",
     "settings-tab-rail-navigation",
     "settings-theme-toggle",
@@ -80,8 +82,8 @@ class TestShippedScenarios:
             assert s.max_steps <= 14, s.name
         smoke_steps = sum(s.max_steps for s in smoke)
         smoke_seconds = sum(s.max_seconds for s in smoke)
-        assert smoke_steps == 291, f"smoke max_steps total is {smoke_steps}; re-pin"
-        assert smoke_seconds == 7920, f"smoke max_seconds total is {smoke_seconds}; re-pin"
+        assert smoke_steps == 307, f"smoke max_steps total is {smoke_steps}; re-pin"
+        assert smoke_seconds == 8420, f"smoke max_seconds total is {smoke_seconds}; re-pin"
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
@@ -208,8 +210,10 @@ class TestShippedScenarios:
             ],
             "security": [
                 "settings-security-docs-section",
+                "settings-security-layers-section",
                 "settings-security-rail-navigation",
                 "settings-security-rules-custom-deny",
+                "settings-security-trusted-apps-toggle",
             ],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
@@ -588,7 +592,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 33 scenarios (30 smoke / 3 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 35 scenarios (32 smoke / 3 nightly)._"
             in md
         )
         assert (
