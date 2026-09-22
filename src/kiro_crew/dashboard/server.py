@@ -3166,78 +3166,129 @@ def _kick_connections_warm_scavenge(state: DashboardState) -> None:
 
 
 def _kick_session_search_index(state: DashboardState) -> None:
-    """Keep the session search candidate index caught up, post-bind.
+    """Keep the session search candidate index caught up, in its OWN process.
 
-    Without this the index never gets built and search silently stays on the
-    scan path — correct, and as slow as it was (measured 6.7 s per keystroke on
-    a 2.96 GB corpus, against ~0.3 s indexed).
+    Without an indexer the index never gets built and search silently stays on
+    the scan path — correct, and as slow as it was (measured 6.7 s per keystroke
+    on a 2.96 GB corpus, against ~0.3 s indexed).
 
-    Shape, and why each part is what it is:
+    The indexing itself runs in a spawned child process, not here. It is
+    pure-Python CPU (read, ``casefold``, project, insert), so as an
+    ``asyncio.to_thread`` call it held the GIL that this gateway's event loop
+    needs: ``py-spy top --gil`` attributed 28% of all GIL-holding samples to it,
+    and the loop showed ``event-loop heartbeat: lag 1.0-6.6s`` on an 84%-idle
+    machine. See ``kiro_crew.history_index_worker`` for why a process rather than
+    a thread, why spawn rather than fork, and why deletion stays here.
 
-    * post-bind and in a worker thread, like the warm scavenge — a first pass
-      over a large corpus reads and parses every session in the search window
-      (~70 s for 500 files here) and must never sit in front of the listener or
-      on the event loop;
-    * budgeted per pass rather than run to completion, so the first pass yields
-      the thread repeatedly instead of holding it for a minute;
-    * paced by a sleep between passes once caught up, because the only work then
-      is picking up sessions that changed since the last pass;
-    * ``optimize`` on a slow multiple of the pass, since FTS5 deletes leave
-      tombstones that every query pays for until segments merge.
+    This gateway keeps only the read-only query path, plus the one index write
+    that belongs to deletion (``delete_session`` removes a session's indexed text
+    before unlinking the transcript and aborts if it cannot).
 
-    A failure is logged and the loop continues: a missing row costs one scanned
-    file, so the honest response to an index that will not build is to keep
-    serving searches from the files.
+    What is left here is supervision: start the child, restart it if it dies,
+    stop it when this gateway stops. Three things retire the child, and the
+    order matters because the first two can be skipped: this task's ``finally``
+    asks it to stop, ``daemon=True`` has ``multiprocessing`` reap it at
+    interpreter exit, and failing both the child retires ITSELF once it sees this
+    process is gone. Only the third survives a hard exit — the shutdown and
+    restart paths can end this process with ``os._exit``, which runs no
+    ``atexit`` handler, so neither parent-side path is guaranteed to run. That is
+    why the child re-checks its parent on a short slice rather than once per pass:
+    it bounds how long an orphan can keep indexing beside its replacement.
+
+    A failure to keep a child running is logged once and then left alone: a
+    missing row costs one scanned file, so the honest response to an indexer that
+    will not stay up is to keep serving searches from the transcripts.
     """
 
-    #: Seconds of indexing work per pass, and the pause between passes once the
-    #: window is fully indexed. The pass budget is small enough that the thread
-    #: is returned promptly; the idle pause is what keeps a caught-up gateway
-    #: from re-stat'ing the window in a tight loop.
-    pass_budget_secs = 5.0
-    idle_pause_secs = 60.0
-    busy_pause_secs = 2.0
-    optimize_every_passes = 60
+    # The child's own pass cadence lives with the loop that honours it, in
+    # ``history_index_worker``. Blocking calls (``Process.start`` costs a fresh
+    # interpreter, ``stop`` waits on a signal) go through ``to_thread`` so the
+    # event loop this change exists to protect is never the thing that waits.
+    def _migrate_index_schema() -> None:
+        """Bring the index schema to the current version from ONE process.
 
-    def _pass_in_thread() -> dict[str, int]:
+        ``SessionSearchIndex._init_schema`` DROPs the tables when the stored
+        ``user_version`` is stale, and the only thing guarding that is a
+        per-PROCESS lock. This change introduces a second opener, so after a
+        version bump the gateway and the child can both read the stale version
+        and both run the DROP — the later one discarding the tables the earlier
+        one just built, along with anything indexed in between. Nothing
+        authoritative is lost (the rows derive from transcripts) but search falls
+        back to scanning until a later pass repopulates it.
+
+        Opening it here, before the child is started, means the on-disk version is
+        already current when the child first opens and the gate cannot fire in two
+        processes at once. Blocking, so the caller hands it to a thread.
+        """
         log = state.conversation_log
         if log is None:
-            return {"indexed": 0, "dropped": 0, "remaining": 0}
-        return log._catalog_projection.backfill_index(budget_secs=pass_budget_secs)
+            return
+        try:
+            index = log._catalog_projection.search_index
+        except Exception:  # noqa: BLE001 — search must survive a bad index
+            logger.warning("Session search index schema migration failed", exc_info=True)
+            return
+        if not index.available:
+            logger.warning(
+                "Session search index is unavailable; the indexer will run but "
+                "search falls back to scanning the transcripts"
+            )
 
-    def _optimize_in_thread() -> None:
+    async def _session_index_supervisor() -> None:
         log = state.conversation_log
-        if log is not None:
-            log._catalog_projection.search_index.optimize()
-
-    async def _session_index_loop() -> None:
-        if state.conversation_log is None:
+        if log is None:
             # No transcript store on this gateway: nothing to index, and the
             # search path it would serve does not exist either.
             return
-        passes = 0
-        while True:
-            try:
-                report = await asyncio.to_thread(_pass_in_thread)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 — search must survive a bad index
-                logger.warning("Session search index pass failed", exc_info=True)
-                await asyncio.sleep(idle_pause_secs)
-                continue
-            passes += 1
-            if passes % optimize_every_passes == 0:
-                try:
-                    await asyncio.to_thread(_optimize_in_thread)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    logger.warning("Session search index optimize failed", exc_info=True)
-            # More to do means come straight back; caught up means idle until
-            # something changes on disk.
-            await asyncio.sleep(busy_pause_secs if report["remaining"] else idle_pause_secs)
+        # Deferred import, per ``no-new-work-on-gateway-boot-path``: this module
+        # is reached only once the listener is already serving.
+        from kiro_crew.history_index_worker import SessionIndexWorkerSupervisor
 
-    task = asyncio.create_task(_session_index_loop())
+        # The supervisor refuses a transcript directory that is not an existing
+        # absolute path, because the child would otherwise resolve it against
+        # its own working directory and create it there.
+        supervisor = SessionIndexWorkerSupervisor(log._dir)
+        try:
+            await asyncio.to_thread(_migrate_index_schema)
+            # A failed FIRST spawn is not treated differently from a child that
+            # dies later: both fall into the poll loop, which retries with backoff
+            # and eventually gives up for good. Returning here instead would let a
+            # transient failure at boot -- memory pressure, an fd limit, the very
+            # conditions this change exists to ease -- leave search scanning
+            # transcripts for the whole life of the gateway. A refusal that cannot
+            # improve by retrying, such as a transcript directory that is not
+            # there, sets ``gave_up`` inside ``start`` and so exits immediately.
+            await asyncio.to_thread(supervisor.start)
+            while not supervisor.gave_up:
+                wait_secs = await asyncio.to_thread(supervisor.poll)
+                await asyncio.sleep(wait_secs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — search must survive a bad indexer
+            logger.warning("Session search index supervisor failed", exc_info=True)
+        finally:
+            # The child is reaped OFF this loop. ``terminate`` and ``join``
+            # block, and a shutdown that freezes the loop for seconds is the
+            # exact failure this change exists to remove
+            # (no-blocking-call-on-event-loop).
+            #
+            # ``request_stop`` is the non-blocking half — one ``waitpid`` and one
+            # SIGTERM — so the child is already on its way down before anything
+            # is awaited. The waiting half goes to a thread, shielded so that
+            # cancelling THIS task does not cancel the reap with it.
+            supervisor.request_stop()
+            try:
+                await asyncio.shield(asyncio.to_thread(supervisor.reap))
+            except asyncio.CancelledError:
+                # Cancelled mid-reap. The signal is already delivered and the
+                # child is daemonic, so ``multiprocessing`` reaps it at
+                # interpreter exit regardless; blocking the loop to wait here
+                # would trade a leak that cannot happen for a stall that can.
+                raise
+            except Exception:  # noqa: BLE001 — the loop may already be closing
+                logger.warning("Session search index writer did not stop cleanly", exc_info=True)
+
+    task = asyncio.create_task(_session_index_supervisor())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
