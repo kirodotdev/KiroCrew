@@ -73,6 +73,7 @@ from kiro_crew.history import (
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    merge_pending_context,
     transcript_sort_key,
     update_metadata_off_loop,
 )
@@ -1630,6 +1631,9 @@ def _rehydrate_slot_from_history(
         # Stamped whatever was restored (including nothing), so the first flush
         # after a restart re-persists only a queue that actually changed.
         slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
+        # No user action needed, unlike the prompts above: the drain clears an entry
+        # in the step that appends its row, so one still on disk reached no prompt.
+        slot.restore_pending_context(meta.get("pending_context"))
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -2246,6 +2250,8 @@ def _apply_recent_session(
         slot._queue[:] = _restored_queue
         logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
     slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
+    # Mirror of the hand-back in _rehydrate_slot_from_history.
+    slot.restore_pending_context(meta.get("pending_context"))
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":
@@ -3678,6 +3684,9 @@ def _save_slot_to_history(
                     # window, never a fresh read: a re-read here would be a
                     # second, unpaired observation of the queue.
                     "queued_prompts": queue_snapshot,
+                    # CLEARABLE, and LIVE STATE: the disk side is decided under the
+                    # lock below, where the line's own writer is known.
+                    "pending_context": slot.export_pending_context(),
                     # None means "follow the global threshold" and is the
                     # cleared value (rehydrate reads it with ``is not None``),
                     # so the override is CLEARABLE: written even when None,
@@ -3804,6 +3813,14 @@ def _save_slot_to_history(
                     meta.get("deferred_notes"),
                     serialize_deferred_notes(slot._deferred_notes[:]),
                 )
+                if rows_only and not _line_is_this_slots(slot, meta):
+                    # Same two rules as the full save. ``final`` matters here too:
+                    # a close of a message-less slot comes through this branch.
+                    merged_fields["pending_context"] = merge_pending_context(
+                        meta.get("pending_context"),
+                        slot.export_pending_context(),
+                        final=closed or rows_only,
+                    )
                 return True
 
             applied = state.conversation_log.update_metadata_if(
@@ -4330,6 +4347,20 @@ def _save_slot_to_history(
                 carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
             else:
                 carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
+            # AFTER the deferral, deliberately: this key has no live holder to carry
+            # it forward, so a rows-only write that deferred it would discard content.
+            _merged_context = merge_pending_context(
+                # The disk side only where two holders' queues meet on one line.
+                # Elsewhere it would read the drain's own output back and re-seat it.
+                existing_meta.get("pending_context") if not queue_line_is_ours else None,
+                slot.export_pending_context(),
+                # Both paths run with no later save able to retry a deferral.
+                final=closed or rows_only,
+            )
+            if _merged_context:
+                meta_line["pending_context"] = _merged_context
+            # No ``else``: nothing above adds the key and ``carry_unowned_metadata``
+            # does not carry a slot-owned one, so an empty union clears it by absence.
             meta_str = json.dumps(meta_line) + "\n"
 
             # ── Frozen prefix (never rewritten) + freshly serialized window ──

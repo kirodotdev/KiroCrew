@@ -215,6 +215,9 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # once the drain consumes them — carried forward instead, a restart
         # would hand back a prompt whose turn already ran.
         "queued_prompts",
+        # Durable copy of the queued background context. Owned, not monotonic, like
+        # the two above -- but UNIONED on a rows-only save rather than deferred.
+        "pending_context",
         "pinned",
         "color_index",
         "color_hex",
@@ -294,9 +297,133 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 # ``channel_origin`` and ``channel_folder_filed`` are MONOTONE once-flags about the
 # CONVERSATION, set and never cleared, so a shared transcript's two writers cannot
 # disagree about them in a way that outlives the pair.
+# ``pending_context`` IS LEFT IN, and the save overrides it with a union past this
+# point: exempting it would make a path that forgets to decide it ERASE, not carry.
 ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
     SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS
 ) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
+
+
+def _dedupe_key(entry: dict) -> object | None:
+    """A hashable identity for an entry carrying no ``ctxId``, or None if there is none.
+
+    None means "cannot compare this one", and the caller then KEEPS it
+    undeduplicated -- never drops it, because a duplicate costs one repeated
+    injection while a drop loses content the API acknowledged.
+
+    Only scalars are admitted. A hand-edited metadata line can carry a list or a
+    dict in ``content``, and an unhashable member makes the tuple unhashable,
+    which raises where it is used as a set member rather than at construction.
+    """
+    parts = (entry.get("content"), entry.get("injectedAt"), entry.get("source"))
+    if all(part is None or isinstance(part, (str, int, float, bool)) for part in parts):
+        return parts
+    return None
+
+
+def merge_pending_context(disk: object, mine: object, *, final: bool = False) -> list[dict]:
+    """Union two holders' queued context, the on-disk copy first.
+
+    Called where a save would otherwise have to choose between two acknowledged
+    queues on one metadata line -- see ``ROWS_ONLY_DEFERRED_META_KEYS`` for why
+    neither side can be dropped.
+
+    Deduplicated by ``ctxId`` where present, else by content/stamp/source, so
+    repeated saves re-union their own output without growing it.
+
+    BOUNDED BY THE AGGREGATE, because per-slot admission cannot see the other
+    holder: each queue is admitted against its own cap, so a union of enough
+    holders exceeds what one metadata line may carry, and ``_maybe_rotate`` can
+    only drop MESSAGE lines -- never the metadata one.
+
+    *final* must be set by a save with no successor; see :func:`_bounded_context_union`.
+    """
+    out: list[dict] = []
+    seen: set[object] = set()
+    on_disk = 0
+    for index, group in enumerate((disk, mine)):
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("ctxId")
+            if isinstance(ident, str):
+                key: object = ident
+            else:
+                # Hand-edited metadata is a defended surface here as on the restore
+                # path: an unhashable ``content`` would raise INSIDE the set.
+                key = _dedupe_key(entry)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(entry)
+            if index == 0:
+                on_disk += 1
+    return _bounded_context_union(out, on_disk, final=final)
+
+
+def _ctx_entry_persist_cost(entry: dict) -> int:
+    """Serialized byte cost of one queued entry on the metadata line."""
+    try:
+        return len(json.dumps(entry).encode("utf-8")) + 1
+    except (TypeError, ValueError):
+        # A hand-edited entry that will not serialize is measured approximately
+        # rather than treated as free, which would escape the bound entirely.
+        return len(repr(entry).encode("utf-8")) + 1
+
+
+def _bounded_context_union(entries: list[dict], on_disk: int, *, final: bool = False) -> list[dict]:
+    """Admit the writer's additions within the persistable budget, keeping all *on_disk* ones.
+
+    THE TWO SIDES ARE NOT INTERCHANGEABLE, and that is what makes the bound safe.
+    The first *on_disk* entries came from the line being rewritten: this file is
+    their only home, so shedding one is unrecoverable. A line already over budget
+    stays over budget rather than being trimmed.
+
+    Only the writer's own additions are gated, and gating DEFERS rather than loses:
+    a save does not clear the live queue (only the drain does), so a deferred entry
+    stays queued in memory and the next save retries it.
+
+    *final* SUSPENDS THE DEFERRAL and must be set by a save with no successor,
+    where deferring would permanently discard content a 200 acknowledged.
+    """
+    budget = max(1, int(_SESSION_MAX_BYTES // 2))
+    kept: list[dict] = []
+    used = 0
+    deferred: list[str] = []
+    held: list[dict] = []
+    for position, entry in enumerate(entries):
+        cost = _ctx_entry_persist_cost(entry)
+        # ORDER-PRESERVING SUFFIX: a per-entry fit test would keep a later, smaller
+        # entry ahead of its own deferred predecessor, reordering the next drain.
+        deferrable = not final and position >= on_disk
+        if deferrable and (held or (kept and used + cost > budget)):
+            ident = entry.get("ctxId")
+            deferred.append(ident if isinstance(ident, str) else repr(_dedupe_key(entry))[:64])
+            held.append(entry)
+            continue
+        used += cost
+        kept.append(entry)
+    if deferred:
+        logger.warning(
+            "pending-context union is at the %d-byte persistable budget; DEFERRED %d of %d "
+            "entries to a later save (they remain queued in memory, nothing is dropped): %s",
+            budget,
+            len(deferred),
+            len(entries),
+            ", ".join(deferred[:20]),
+        )
+    elif final and used > budget:
+        logger.warning(
+            "final save: %d pending-context entries total %d bytes, over the %d-byte persistable "
+            "budget; KEPT on the line because no later save would retry a deferral",
+            len(kept),
+            used,
+            budget,
+        )
+    return kept
 
 
 def carry_unowned_metadata(

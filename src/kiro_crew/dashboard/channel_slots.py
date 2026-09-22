@@ -512,6 +512,9 @@ def surface_channel_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
+    # Slot-owned, so a hydration site that skipped this would come up empty and
+    # let the next save DELETE the stored copy. The Slack backfill shares it.
+    slot.restore_pending_context(meta.get("pending_context"))
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the
