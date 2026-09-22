@@ -1467,6 +1467,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "network boundary rather than the fold so the stored projection keeps "
         "its raw value for server-side folds while nothing leaves unredacted.",
     ),
+    (
+        "Process-tree diagnostics",
+        "diag/procs.py",
+        "The command line, working directory and four environment values of every "
+        "process in the Kiro Crew family, rendered into the read-only process view "
+        "that answers the dashboard and the debug MCP tool. Every one of those "
+        "fields belongs to the process being inspected rather than to this code, so "
+        "each passes the shared credential redactor BEFORE it is clipped to its "
+        "retention cap -- the same order the sinks above state, and for the same "
+        "reason: a cut taken first can halve a secret into a fragment neither "
+        "pattern matches, which ships the surviving prefix in clear. The "
+        "environment map is those four named keys and no others, and is omitted "
+        "entirely unless a caller asks for it.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

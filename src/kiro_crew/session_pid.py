@@ -3796,6 +3796,50 @@ def _tracked_agent_pids() -> set[int]:
     return tracked
 
 
+def tracked_agent_pid_owners() -> dict[int, int]:
+    """``{tracked pid: the pid that owns its registry entry}`` -- READ ONLY.
+
+    A diagnostic accessor, added for :mod:`kiro_crew.diag.procs` so a process
+    view does not have to re-spell this file format. It grants nothing and
+    authorizes nothing: it neither writes, locks, signals, nor reports
+    completeness, and no reaper consults it.
+
+    The two files record opposite field orders (:data:`_REAPABLE_PID_FIELD`),
+    and the owner is the field the reapers deliberately ignore: in
+    ``kiro_session_pids.txt`` it is the GATEWAY that spawned the runtime, and in
+    ``kiro_pids.txt`` it is the tracked PARENT the descendant hangs off. Both
+    answer "who does this process belong to" for an operator reading a tree,
+    which is why they are surfaced together here and nowhere else.
+
+    Session entries win a collision: the two files share one number space, and
+    the session entry is the one that names a gateway. A legacy single-field
+    line records no owner at all and is skipped rather than given a fabricated
+    one. This is a SUBTRACTIVE read in the same sense as
+    :func:`_pid_start_token` -- a pid absent from the result means "no recorded
+    owner", never "not ours".
+    """
+    owners: dict[int, int] = {}
+    paths = (_session_pid_file_path(), _pid_file_path())
+    for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        owner_index = 1 - reapable_index
+        for line in raw.split():
+            fields = line.split(":")
+            if len(fields) < 2:
+                continue  # legacy bare-PID line: no owner recorded
+            try:
+                pid = int(fields[reapable_index])
+                owner = int(fields[owner_index])
+            except ValueError:
+                continue
+            if pid > 0 and owner > 0:
+                owners.setdefault(pid, owner)
+    return owners
+
+
 def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: set[int]) -> bool:
     """REPORT-ONLY: a managed agent runtime that no reaper can reach.
 
