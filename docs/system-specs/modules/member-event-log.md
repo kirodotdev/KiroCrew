@@ -51,7 +51,9 @@ The binding and rules files remain. They are the trust subsystem's fail-closed f
 
 ## 4. Projections
 
-`kiro_crew.eventlog.projection.ProjectionRegistry` folds events through registered units. A unit is `{key, state_version, init(), apply(state, event), view(state)}`. `apply` returns the **same object** for an event it does not care about; the registry treats identity as "no change" and emits nothing for it. Folds are incremental — each new event passes through every unit once — and folded state is cached per `(key, slug)` with the `seq` it has observed. A unit sees a member's full history once, lazily, the first time that member is touched.
+`kiro_crew.projection.ProjectionRegistry` folds events through registered units. A unit is `{key, state_version, init(), apply(state, event), view(state)}`. `apply` returns the **same object** for an event it does not care about; the registry treats identity as "no change" and emits nothing for it. Folds are incremental — each new event passes through every unit once — and folded state is cached per `(key, slug)` with the `seq` it has observed. A unit sees a member's full history once, lazily, the first time that member is touched.
+
+The registry is a shared kernel rather than this module's own: it owns no event type and no path, and reads an event's `seq` through a reader its client supplies, so the member log's `Event` TypedDict stays in `kiro_crew.eventlog.types`. `kiro_crew.eventlog.projection` remains as a re-export of those names for existing importers.
 
 `kiro_crew.eventlog.members_projections` registers four units:
 
