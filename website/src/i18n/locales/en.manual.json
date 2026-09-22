@@ -2142,6 +2142,11 @@
       "move_to_folder_prompt": "Move this session to this folder?"
     },
     "followUpBar": {
+      "autonomous_goal": "Autonomous goal",
+      "continues_across_turns_until_delivered_or_blocked": "Continues across turns until delivered or blocked.",
+      "open_automation": "Open automation",
+      "review_and_start": "Review & start",
+      "session_already_has_automation": "This session already has a goal or monitor. Update or clear that automation first.",
       "click_to_add_to_input_double_click_to_select_and": "Click to add to input (double-click to select and send)",
       "click_to_add_to_input_editable_before_sending": "Click to add to input (editable before sending)",
       "tooltip_arrow_sends_now": "↑ sends now",

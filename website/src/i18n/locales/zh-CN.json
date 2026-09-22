@@ -6431,6 +6431,11 @@
       "yes_move_it": "移动"
     },
     "followUpBar": {
+      "autonomous_goal": "自主目标",
+      "continues_across_turns_until_delivered_or_blocked": "跨多个轮次持续工作，直到交付结果或工作受阻。",
+      "open_automation": "打开自动化任务",
+      "review_and_start": "审核并启动",
+      "session_already_has_automation": "此会话已有目标或监控任务。请先更新或清除该自动化任务。",
       "click_to_add_to_input_double_click_to_select_and": "点击添加到输入框（双击以选择并发送）",
       "click_to_add_to_input_editable_before_sending": "点击添加到输入框（发送前可编辑）",
       "tooltip_arrow_sends_now": "↑ 立即发送",

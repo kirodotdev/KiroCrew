@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
-import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowUp, Goal } from 'lucide-react'
+import { Btn } from './ui'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 
 import { i18nT } from '../i18n/t'
@@ -9,6 +10,22 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
   options: string[]
+  /** A durable multi-turn objective rendered separately from ordinary reply pills. */
+  goal?: string | null
+  /** Opens the existing Set-a-goal review flow with `goal` prefilled. */
+  onGoal?: (goal: string) => void
+  /** Keeps the suggestion visible but prevents a second incompatible automation. */
+  goalDisabledReason?: string
+  /**
+   * Opens the automation this session ALREADY holds. Honoured only while
+   * `goalDisabledReason` is set: the card then tells the user to update or
+   * clear that automation, and a disabled button under that sentence is a dead
+   * end — so the card's single action becomes the route to it. It never starts
+   * the suggested goal; `onGoal` stays unreachable for as long as the reason
+   * holds. Omit it for the crew/member state, where nothing exists to open and
+   * the card must stay non-actionable.
+   */
+  onOpenAutomation?: () => void
   picked: ReadonlySet<string>
   /**
    * Third argument is `sourceKey` AS IT WAS AT CLICK TIME (see `sourceKey`
@@ -544,16 +561,96 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey }: FollowUpBarProps) {
+function GoalSuggestionCard({
+  goal,
+  onGoal,
+  disabledReason,
+  onOpenAutomation,
+}: {
+  goal: string
+  onGoal?: (goal: string) => void
+  disabledReason?: string
+  onOpenAutomation?: () => void
+}) {
+  const blocked = !!disabledReason
+  // The route exists only while an automation blocks the suggestion. Outside
+  // that state the handler is ignored, so a caller cannot turn a startable
+  // card into a navigation button by passing it unconditionally.
+  const openAutomation = blocked ? onOpenAutomation : undefined
+  // ONE button that changes label and role, not a Chip/Card swap: the
+  // automation can be cleared from the popover while this card is on screen,
+  // and the element the user is looking at must be the one that flips back to
+  // "Review & start". Starting is unreachable whenever `blocked`: the click
+  // either opens the existing automation or does nothing.
+  const disabled = !openAutomation && (!onGoal || blocked)
+  return (
+    <div
+      data-testid="autonomous-goal-card"
+      className="mt-1 rounded-xl border border-accent/50 bg-accent-subtle p-3 text-text"
+    >
+      <div className="flex flex-col gap-3 min-[390px]:flex-row min-[390px]:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-accent">
+            <Goal className="lucide-inline" aria-hidden />
+            {i18nT('components.followUpBar.autonomous_goal')}
+          </div>
+          <div className="mt-1 text-[13px] font-medium leading-snug break-words">{goal}</div>
+          <div className={`mt-1 text-[11px] leading-relaxed ${disabledReason ? 'text-warn' : 'text-muted'}`}>
+            {disabledReason || i18nT('components.followUpBar.continues_across_turns_until_delivered_or_blocked')}
+          </div>
+        </div>
+        <Btn
+          type="button"
+          primary={!openAutomation}
+          className="w-full shrink-0 min-[390px]:w-auto"
+          disabled={disabled}
+          onClick={openAutomation ?? (() => onGoal?.(goal))}
+        >
+          {openAutomation
+            ? i18nT('components.followUpBar.open_automation')
+            : i18nT('components.followUpBar.review_and_start')}
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
+function FollowUpBar({
+  options,
+  goal,
+  onGoal,
+  goalDisabledReason,
+  onOpenAutomation,
+  picked,
+  onSelect,
+  onSend,
+  quickSend,
+  layout = 'multiline',
+  sourceKey,
+}: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
-  // \u0000 cannot occur inside an option label.
-  const animating = useChipEntrance(options.join('\u0000'))
-  if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
-  }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+  // The separators cannot occur inside an option label or goal objective.
+  const animating = useChipEntrance([goal ?? '', ...options].join('\u0000'))
+  const optionLayout = options.length > 0
+    ? layout === 'scroll'
+      ? <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+      : <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+    : null
+  return (
+    <>
+      {goal ? (
+        <GoalSuggestionCard
+          goal={goal}
+          onGoal={onGoal}
+          disabledReason={goalDisabledReason}
+          onOpenAutomation={onOpenAutomation}
+        />
+      ) : null}
+      {optionLayout}
+    </>
+  )
 }
 
 export default memo(FollowUpBar)

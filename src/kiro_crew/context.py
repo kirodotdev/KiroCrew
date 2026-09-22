@@ -2105,6 +2105,16 @@ _DIFF_RULE_CHANNEL = (
     "block.\n"
 )
 _CRITICAL_RULES_HEAD = "[CRITICAL RULES — always follow these]\n"
+_GOAL_RULE_DASHBOARD = (
+    "When a recommended next step clearly needs autonomous work across multiple "
+    "turns, you may add one standalone `[GOAL: objective]` line immediately "
+    "before the final `[OPTIONS: ...]` line. The dashboard renders it as an "
+    "Autonomous goal card that opens the existing Set-a-goal review flow with "
+    "the objective prefilled; it does not start unattended work until the user "
+    "reviews and starts it. Use an imperative, outcome-based objective. Do not "
+    "use this marker for a one-turn reply or when no autonomous follow-up is "
+    "being recommended.\n"
+)
 _CRITICAL_RULES_TAIL = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
@@ -2148,7 +2158,9 @@ _CRITICAL_RULES_TAIL = (
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _GOAL_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+)
 _CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
 
 # Product-owned working protocol for crew members (layer 2 of the member

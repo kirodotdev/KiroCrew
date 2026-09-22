@@ -371,7 +371,7 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions, followUpGoal, followUpIsPlan, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
     [allMessages, busy, pendingQuestion],
   )
@@ -397,7 +397,7 @@ export default function ChatPane({
     planActionMutationRef.current.mutate({ slot: slotKey, action, clickedSourceKey: sourceKeyAtClick })
     return true
   }
-  const followUpOptionsKey = followUpOptions.join('\x00')
+  const followUpOptionsKey = [followUpGoal ?? '', ...followUpOptions].join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
@@ -1642,6 +1642,7 @@ export default function ChatPane({
           onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
+          followUpGoal={followUpGoal}
           followUpOptions={followUpOptions}
           followUpPicked={followUpPicked}
           followUpLayout={chatConfig.followUpLayout}

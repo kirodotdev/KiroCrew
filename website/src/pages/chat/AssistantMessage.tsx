@@ -21,7 +21,7 @@ import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
-import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
+import { extractSteeringAcks, parseOptions, stripPartialGoalMarker, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
 import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
@@ -205,12 +205,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (applied) setApplied(false) }, [effectiveContent])
   const { text: parsedText } = parseOptions(effectiveContent)
-  // While the marker line is still arriving it has no closing `]`, so
-  // OPTION_MARKER_RE can't match it yet and the raw `[OPTIONS: …` would type
-  // itself out as prose before flipping to pills at turn end. Suppress the
-  // growing tail — streaming only, so a finished message still renders an
-  // unterminated marker (prose about the syntax, or a truncated turn) as written.
-  const text = isStreaming ? stripPartialOptionMarker(parsedText) : parsedText
+  // While an action marker line is still arriving it has no closing `]`, so
+  // the complete-marker parsers cannot match it yet and the raw protocol would
+  // type itself out as prose before flipping to controls at turn end. Suppress
+  // the growing tail — streaming only, so a finished unterminated marker still
+  // renders as written.
+  const text = isStreaming
+    ? stripPartialGoalMarker(stripPartialOptionMarker(parsedText))
+    : parsedText
   // Pull kiro-cli's [STEERING …] acknowledgments out of the prose; render them as
   // chips instead of raw markers. Feed the cleaned text (marker removed) to the
   // stream so the raw tag never renders.
@@ -423,7 +425,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             </DropdownMenuItem>
           )}
           {hasSpeak && (
-            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="speak-message" aria-description={i18nT('pages.chat.assistantMessage.speak_message')} onSelect={() => onSpeak?.(content)}>
+            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="speak-message" aria-description={i18nT('pages.chat.assistantMessage.speak_message')} onSelect={() => onSpeak?.(steerCleaned)}>
               <span className="flex items-center gap-2">
                 <Volume2 className="lucide-inline shrink-0" />
                 <span>{i18nT('pages.chat.assistantMessage.speak')}</span>

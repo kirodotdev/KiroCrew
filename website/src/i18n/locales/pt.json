@@ -6631,6 +6631,11 @@
       "yes_move_it": "Mover"
     },
     "followUpBar": {
+      "autonomous_goal": "Objetivo autônomo",
+      "continues_across_turns_until_delivered_or_blocked": "Continua por vários turnos até entregar o resultado ou o trabalho ficar bloqueado.",
+      "open_automation": "Abrir automação",
+      "review_and_start": "Revisar e iniciar",
+      "session_already_has_automation": "Esta sessão já tem um objetivo ou monitor. Atualize ou limpe essa automação primeiro.",
       "click_to_add_to_input_double_click_to_select_and": "Clique para adicionar ao campo de mensagem (clique duplo para selecionar e enviar)",
       "click_to_add_to_input_editable_before_sending": "Clique para adicionar ao campo de mensagem (editável antes de enviar)",
       "tooltip_arrow_sends_now": "↑ envia agora",

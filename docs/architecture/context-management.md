@@ -65,6 +65,12 @@ cannot disagree with what was sent.
 | 19 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
 | 20 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay` | compressed history passed |
 
+The dashboard form of `[CRITICAL RULES]` also advertises one typed follow-up
+contract: a standalone `[GOAL: objective]` line immediately before the final
+`[OPTIONS:]` line renders an autonomous goal card. The card opens the existing
+Set-a-goal review flow with the objective prefilled; channel runtimes do not
+receive this rule because they cannot render or start that dashboard action.
+
 **A Memory V2 member is the one exception to this order.** Its essentials
 envelope (`_build_v2_essentials`) is not a row in the table: the last step of
 `build_session_context` splices it in immediately after the critical-rules block,

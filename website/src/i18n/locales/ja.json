@@ -6431,6 +6431,11 @@
       "yes_move_it": "移動"
     },
     "followUpBar": {
+      "autonomous_goal": "自律的な目標",
+      "continues_across_turns_until_delivered_or_blocked": "成果を届けるか作業がブロックされるまで、複数のターンにわたって続行します。",
+      "open_automation": "自動化を開く",
+      "review_and_start": "確認して開始",
+      "session_already_has_automation": "このセッションにはすでに目標またはモニターがあります。先にその自動化を更新または消去してください。",
       "click_to_add_to_input_double_click_to_select_and": "クリックして入力に追加（ダブルクリックして選択して送信）",
       "click_to_add_to_input_editable_before_sending": "クリックして入力に追加（送信前に編集可能）",
       "tooltip_arrow_sends_now": "↑ は今すぐ送信",

@@ -43,6 +43,19 @@ describe('AssistantMessage', () => {
     expect(onSpeak).toHaveBeenCalledWith('Done.')
   })
 
+
+  it('reads visible prose without autonomous-goal or reply markers', () => {
+    const onSpeak = vi.fn()
+    render(<AssistantMessage
+      content={'Recommended next actions.\n[GOAL: Deliver them]\n[OPTIONS: Show details]'}
+      isStreaming={false}
+      slotRunning={false}
+      onSpeak={onSpeak}
+    />)
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Read aloud' }))
+    expect(onSpeak).toHaveBeenCalledWith('Recommended next actions.')
+  })
   it('does not offer Read aloud for a blank completed reply', () => {
     render(<AssistantMessage content={' \n\t '} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
     expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
