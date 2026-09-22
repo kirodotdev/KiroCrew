@@ -3357,12 +3357,32 @@ def _read_env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bo
 
     ``None`` distinguishes an unreadable environment from a readable one that
     lacks the marker. An explicit *proc_root* permits fixture-owned process
-    tables on every host; production reads remain Linux-only.
+    tables on every host and always takes the ``/proc`` path, so a fixture's
+    verdict never depends on the host it runs on.
+
+    Two production arms, one per platform that HAS a same-uid environ oracle:
+
+    * Linux reads ``/proc/<pid>/environ``.
+    * macOS reads the same exec-time environment out of ``sysctl
+      KERN_PROCARGS2`` (:func:`platform_compat.darwin_process_environ`) -- the
+      kernel record ``ps -E`` reads, answered for a same-uid process with no
+      entitlement and no elevated privilege, and already relied on in this
+      codebase for argv.
+
+    Both are in-process kernel reads of a copy fixed at exec, which is what
+    makes the marker ownership evidence rather than a claim: a same-uid process
+    can write any file and set any argv, but it cannot alter another process's
+    exec-time environment. Every other platform has no such oracle and stays
+    ``None``, which the boolean wrapper turns into a refusal.
     """
-    if sys.platform != "linux" and proc_root is None:
-        return None
-    root = proc_root if proc_root is not None else Path("/proc")
     needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
+    if proc_root is None:
+        if sys.platform == "darwin":
+            entries = platform_compat.darwin_process_environ(pid)
+            return None if entries is None else needle in entries
+        if sys.platform != "linux":
+            return None
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
         environ = (root / str(pid) / "environ").read_bytes()
     except OSError:
@@ -3396,11 +3416,11 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
-    Reads ``/proc/<pid>/environ`` (exec-time environment, same-UID readable).
-    Linux-only and FAIL-CLOSED: any read failure — and every non-Linux
-    platform, where there is no reliable same-UID environ read — returns
-    ``False`` so the marked-launcher sweep path never kills without positive
-    identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
+    Reads the exec-time environment through :func:`_read_env_has_kirocrew_marker`
+    (``/proc`` on Linux, ``sysctl KERN_PROCARGS2`` on macOS) and collapses its
+    tri-state answer to a verdict. FAIL-CLOSED: any read failure, and every
+    platform with no same-UID environ oracle — Windows — returns ``False``, so a
+    sweep path that needs this marker never kills without positive identity.
     *proc_root* is a test seam for fixture-owned process tables.
     """
     return _read_env_has_kirocrew_marker(pid, proc_root) is True
@@ -3414,7 +3434,9 @@ def _is_sweepable_orphan_mcp(pid: int, cmdline: bytes) -> bool:
        the pre-existing behavior, works on Linux and macOS.
     2. cmdline is a fingerprint-less MCP launcher shape AND the process
        environ carries the ``KIROCREW_SPAWNED`` marker (catches escaped
-       ``npx @playwright/mcp`` trees; Linux-only, fail-closed elsewhere).
+       ``npx @playwright/mcp`` and ``<launcher> mcp start-server`` trees).
+       Needs a same-uid environ oracle, which Linux and macOS have and Windows
+       does not, so this arm is fail-closed there.
     """
     if _is_orphan_mcp(cmdline):
         return True

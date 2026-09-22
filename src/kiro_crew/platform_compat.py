@@ -1463,6 +1463,15 @@ _DARWIN_CTL_KERN = 1
 _DARWIN_KERN_PROCARGS2 = 49
 _DARWIN_PROCARGS_BUFSIZE = 64 * 1024
 
+# The environment sits AFTER argv in that same record, so the environ probe
+# cannot share the argv probe's bound: the kernel truncates silently, and a
+# process with a long argv -- a recursively self-appending launcher is exactly
+# that shape -- would have its environment cut off and read as "no marker",
+# failing closed on the very process an identity gate most needs to place. Sized
+# at the kernel's own ``ARG_MAX`` ceiling on argv plus environment instead, so
+# truncation is impossible rather than merely unlikely.
+_DARWIN_PROCARGS_ENV_BUFSIZE = 1024 * 1024
+
 # ``sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)`` answers for a ZOMBIE where
 # ``proc_pidinfo`` refuses: the kernel walks its zombie list for this query as
 # well as the live one, and a zombie's ``proc`` still carries its start instant.
@@ -1669,6 +1678,52 @@ def darwin_process_argv(pid: int) -> list[str] | None:
         parts = rest.split(b"\0")[:argc]
         argv = [p.decode("utf-8", errors="replace") for p in parts if p]
         return argv or None
+    except Exception:
+        return None
+
+
+def darwin_process_environ(pid: int) -> list[bytes] | None:
+    """Exec-time environment of *pid* via ``sysctl KERN_PROCARGS2``, or None.
+
+    Returns the raw ``KEY=VALUE`` entries. ``None`` means the record could not
+    be read or parsed -- never an empty list for an unreadable process, so a
+    caller can tell "no such variable" apart from "could not look".
+
+    Same-uid processes only, and no entitlement or elevated privilege for our
+    own: the same kernel record and the same permission contract
+    :func:`darwin_process_argv` already reads. The environment here is the
+    kernel's copy fixed at exec, which is why it is ownership evidence a
+    process cannot forge for another, unlike anything on disk.
+
+    The ``argc`` argv entries are skipped BY COUNT, empty strings included, so
+    an *argument* that merely looks like an environment entry can never be read
+    as one -- the point of the read is that a user's own shell can reproduce any
+    argv.
+    """
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        mib = (ctypes.c_int * 3)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROCARGS2, pid)
+        buf = ctypes.create_string_buffer(_DARWIN_PROCARGS_ENV_BUFSIZE)
+        size = ctypes.c_size_t(_DARWIN_PROCARGS_ENV_BUFSIZE)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[: size.value]
+        if len(raw) < 4:
+            return None
+        argc = struct.unpack_from("<i", raw, 0)[0]
+        if argc <= 0:
+            return None
+        rest = raw[4:]
+        exe_end = rest.find(b"\0")
+        if exe_end < 0:
+            return None
+        rest = rest[exe_end:].lstrip(b"\0")
+        entries = [token for token in rest.split(b"\0")[argc:] if token]
+        # No entries past argv is a record whose environment is missing, not a
+        # process running with an empty one: every exec'd process has some.
+        return entries or None
     except Exception:
         return None
 

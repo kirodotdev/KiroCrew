@@ -315,6 +315,51 @@ unchanged and logs a **one-time loud SECURITY warning**. `RLIMIT_NOFILE` still a
 the fork-bomb and memory ceilings are NOT enforced there. Operators on such hosts should run
 the gateway under an externally-configured cgroup or container limit.
 
+### macOS: a reaper, not a ceiling
+
+macOS has containment of a different kind and strictly weaker guarantees, so the two must
+not be confused for each other. What it has is the **orphan MCP reaper**
+(`session_pid.kill_orphan_mcps`), which reclaims a launcher tree *after* it leaks. What it
+does not have is any ceiling that stops one growing in the first place.
+
+The reaper's fingerprint-less arm — the cmdlines a user's own shell could reproduce
+(`npx @playwright/mcp`, `<launcher> mcp start-server <name>`) — demands positive identity
+before it signals, and that identity is the process's exec-time `KIROCREW_SPAWNED` environ
+entry. macOS reads it from `sysctl(CTL_KERN, KERN_PROCARGS2, pid)`
+(`platform_compat.darwin_process_environ`), the record `ps -E` prints: same-uid only, no
+entitlement, no elevated privilege, and a kernel copy fixed at exec, so it is evidence one
+process cannot forge for another. The read is bounded at the kernel's `ARG_MAX` ceiling on
+argv-plus-environment rather than the smaller bound the argv probe uses, because the
+environment sits *after* argv in that one record — a launcher that appends to its own argv
+on every generation would otherwise push its own environment out of the read and be refused
+for want of identity. Windows has no comparable same-uid read and keeps failing closed.
+
+Two residuals on macOS, both deliberate:
+
+- The **descendant** walk under a reaped root stays a no-op there: it needs a per-pid parent
+  edge and start identity from one atomic read (`_pid_parent_and_token`, `/proc`-only) and a
+  NUL-separated argv (`_pid_cmdline`), and the `ps` fallback supplies neither. The root's
+  `killpg` still reclaims everything sharing its process group; a member that `setsid`-ed
+  away survives to a later sweep.
+- The sweep's own floors (`_ORPHAN_MIN_AGE_SECONDS` 120s, `_ORPHAN_SWEEP_MAX_KILLS` 30) are
+  sized for a leak, not a storm, and they are shared with every other sweep class.
+
+**No bounded per-subtree process ceiling exists on macOS.** Checked, and why each candidate
+is not one:
+
+| Candidate | Why it is not a subtree ceiling |
+|---|---|
+| cgroup v2 `pids.max` | Linux-only; macOS has no cgroup equivalent at any version |
+| `RLIMIT_NPROC` (`setrlimit`, `ulimit -u`) | Counted **per real UID**, not per spawn subtree, so a value low enough to bound one agent tree caps the operator's entire login session — and the Darwin kernel additionally clamps a non-root value to `kern.maxprocperuid` |
+| `launchd` job `SoftResourceLimits`/`HardResourceLimits` → `NumberOfProcesses` | The same `RLIMIT_NPROC`, so the same per-UID problem; it also only reaches processes launchd itself started, and the gateway spawns its MCP servers directly |
+| Seatbelt (`sandbox-exec`, `process-fork`) | The operation is deny-or-allow, not a counted budget: denying `fork` breaks every legitimate MCP server that spawns a child. Also a deprecated interface |
+| Jetsam / `memorystatus_control` | Memory pressure, not process count, and per-process rather than per-subtree; the private interface needs an entitlement |
+| `kqueue` `EVFILT_PROC` + `NOTE_TRACK` | Delivers fork events for a tracked subtree, so a supervisor could *count* — but enforcement would then be a userspace reaper racing a fork storm, which is the race this section exists to describe, not a ceiling. `NOTE_TRACK` can also fail to attach (`NOTE_TRACKERR`) |
+
+So on macOS the honest position is: a fork storm is reclaimed after the fact, on the sweep's
+cadence, and is not prevented. Operators who need prevention should run the gateway inside a
+Linux VM or container where the cgroup scope applies.
+
 ### Bus locators are part of the wrapper contract, and only the wrapper's
 
 `systemd-run --user` reaches the user session bus via `XDG_RUNTIME_DIR` and

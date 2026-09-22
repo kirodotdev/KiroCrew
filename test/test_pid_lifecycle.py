@@ -3590,13 +3590,24 @@ class TestMarkedMcpLauncherPredicates:
 
 
 class TestEnvHasKirocrewMarker:
-    """/proc/<pid>/environ positive-identity read."""
+    """Exec-time environ positive-identity read: ``/proc`` here, ``sysctl`` on macOS.
 
-    def test_non_linux_fails_closed(self) -> None:
+    Per-platform arms and the macOS record parse live in
+    ``test_darwin_spawn_marker.py``; this class keeps the ``/proc`` reader and
+    its real-child proof.
+    """
+
+    def test_platform_without_an_environ_oracle_fails_closed(self) -> None:
+        """Windows can read no same-uid environ, so the gate keeps refusing.
+
+        macOS is deliberately NOT this case any more: it reads the same
+        exec-time environment out of ``sysctl KERN_PROCARGS2``, which is what
+        makes the marked-launcher sweep reachable there at all.
+        """
         from kiro_crew.session_pid import _env_has_kirocrew_marker
 
         with patch("kiro_crew.session_pid.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+            mock_sys.platform = "win32"
             assert _env_has_kirocrew_marker(os.getpid()) is False
 
     def test_read_failure_fails_closed(self) -> None:
