@@ -1067,14 +1067,55 @@ class TestTheRouteAuthorizationMatrix:
         assert _live_slot(state, "dashboard:") is None
         assert _live_slot(object(), self.OWNER) is None
 
-    def test_the_three_diag_routes_relay_501_until_diag_lands(self) -> None:
-        """The contract string the MCP relay matches on, plus its error code."""
+    def test_a_diag_route_relays_the_gap_when_its_module_is_absent(self) -> None:
+        """The contract string the MCP relay matches on, plus its error code.
+
+        Driven through ``_diag_module`` rather than through whichever ``kiro_crew.diag``
+        submodules this checkout happens to ship. The gap relay is a standing contract
+        -- an agent must tell "this build cannot answer yet" from "the answer is
+        nothing" -- so what is pinned is the route's answer when the module is missing,
+        not the fact that it is missing. Asserting the latter dies the moment a diag
+        submodule lands, which is exactly what happened to the assertion this replaces.
+        """
         from kiro_crew.dashboard.handlers import debug as mod
 
-        for handler in (mod.api_debug_threads, mod.api_debug_processes, mod.api_debug_snapshots):
-            got = self._run(handler, self._request("/api/debug/x", self._state(self._slot())))
-            assert got.status == 501, handler.__name__
-            assert b"diag_unavailable" in got.body, handler.__name__
+        with patch.object(mod, "_diag_module", return_value=None):
+            for handler in (
+                mod.api_debug_threads,
+                mod.api_debug_processes,
+                mod.api_debug_snapshots,
+            ):
+                got = self._run(handler, self._request("/api/debug/x", self._state(self._slot())))
+                assert got.status == 501, handler.__name__
+                assert b"diag_unavailable" in got.body, handler.__name__
+
+    def test_a_diag_route_answers_rather_than_relaying_the_gap_once_its_module_lands(
+        self,
+    ) -> None:
+        """The other half of the same contract: a present module is ANSWERED.
+
+        Without this, ``_diag_module`` returning something is never driven through the
+        route at all, and the gap relay could be reached unconditionally while the
+        absent-module test still passed.
+        """
+        from kiro_crew.dashboard.handlers import debug as mod
+
+        procs = type(
+            "Procs",
+            (),
+            {
+                "scan": staticmethod(lambda: {"rows": []}),
+                "tree": staticmethod(lambda scanned, fmt, **kw: {"format": fmt, **scanned}),
+            },
+        )()
+        with patch.object(mod, "_diag_module", return_value=procs):
+            got = self._run(
+                mod.api_debug_processes,
+                self._request("/api/debug/processes", self._state(self._slot())),
+            )
+        assert got.status == 200, got.body
+        assert b"diag_unavailable" not in got.body
+        assert json.loads(got.body)["format"] == "tree"
 
 
 class TestTheRouteAuthorizationShape:
