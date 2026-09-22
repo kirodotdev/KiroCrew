@@ -142,6 +142,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 
@@ -1498,6 +1501,9 @@ class SessionLifecycleService:
             # conditional mode preserves this independently owned sidecar.
             if not preserve_autocompact_override:
                 owner.set_autocompact_pct(key, None)
+            # The slot itself is gone -- the session-map entry goes with it -- so no
+            # successor can arrive to pay the arm and it must not outlive them.
+            owner._allocation_boundary().spend_retire_arm(key)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
             # The map delete is the destructive persistence linearization point.
@@ -1658,6 +1664,9 @@ class SessionLifecycleService:
             # successor's runs. The cancel itself happens after the teardown.
             teardown_children = self._snapshot_parent_children(key)
             owner._advance_session_generation(key)
+            # Regardless of what the pop found: a cold start that cached its resume SID has
+            # not registered, so an ABSENT session is exactly the case this covers.
+            owner._allocation_boundary().note_conversation_discarded(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             # Store replay suppression atomically with the pop. Origin-link
@@ -1907,6 +1916,8 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
             owner._compact_pending_verdict.clear()
+            closing_alloc = owner._allocation_boundary()
+            closing_alloc.discard_all_retire_arms()
             # Same lock hold as the clear: the whole drained set is accounted for
             # in one call, so the awaited unlink cannot be cancelled between two
             # keys. Per-key awaits would leave every key after the cancellation

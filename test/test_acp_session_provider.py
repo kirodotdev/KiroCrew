@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -470,6 +471,63 @@ class TestAcpSessionProviderClientCompat:
         runtime = _make_runtime(acp_backend="kas")
         provider = AcpSessionProvider(handle, runtime)
         assert provider.backend == "kas"
+
+    def test_cwd_reports_the_sessions_bound_dir_not_the_shared_runtimes(self):
+        """A shared runtime carries sessions opened against different projects.
+
+        The task runtime is started once in workspace A; a task session then opens against
+        B. Answering with the runtime's directory reports a workspace this session never
+        bound, so reuse validation reads it as moved and evicts a live session -- losing
+        its conversation for failing to be somewhere it never was.
+        """
+        handle = _make_handle()
+        handle._bound_cwd = "/workspaces/b"
+        runtime = _make_runtime()
+        runtime._work_dir = Path("/workspaces/a")
+        provider = AcpSessionProvider(handle, runtime)
+        assert provider.cwd == "/workspaces/b", (
+            "the session bound to B must report B; reporting the runtime's A evicts it "
+            f"on every project-scoped claim; got {provider.cwd!r}"
+        )
+
+    def test_cwd_falls_back_to_the_runtime_when_no_bound_dir_was_recorded(self):
+        """A handle predating the record is the single-session case, where they agree."""
+        handle = _make_handle()
+        handle._bound_cwd = ""
+        runtime = _make_runtime()
+        runtime._work_dir = Path("/workspaces/a")
+        provider = AcpSessionProvider(handle, runtime)
+        assert provider.cwd == str(Path("/workspaces/a"))
+
+    def test_no_provider_invents_its_own_no_cwd_fallback(self):
+        """Both no-cwd providers must reach the SHARED definition, not a local copy.
+
+        Session allocation compares a claim naming no directory against what the provider
+        then reports, so the two only agree while every provider resolves the same
+        default. Spelled per call site, one copy drifting makes a project-less claim never
+        match its own binding: the slot cold-starts every turn, or exhausts the claim
+        retry budget and wedges. Asserted on the SOURCE rather than by construction
+        because the drift being prevented is textual, and a runtime assertion would need
+        the very agreement it is meant to police.
+        """
+        import re
+
+        root = Path(__file__).parents[1] / "src" / "kiro_crew"
+        for name in ("acp/client.py", "acp/runtime.py"):
+            source = (root / name).read_text(encoding="utf-8")
+            assert "default_workspace_dir()" in source, (
+                f"{name} no longer reaches the shared no-cwd fallback -- a project-less "
+                "claim can no longer match its own binding"
+            )
+            assert not re.search(r'config_dir\(\)\s*/\s*"workspace"', source), (
+                f"{name} spells the default workspace itself; this is the copy that "
+                "drifts out of step with default_workspace_dir()"
+            )
+
+        # Positive control: the pattern the assertion forbids is one this search DOES
+        # find, so a clean sweep above is evidence rather than a broken regex.
+        paths_src = (root / "config" / "paths.py").read_text(encoding="utf-8")
+        assert re.search(r'config_dir\(\)\s*/\s*"workspace"', paths_src)
 
     def test_has_active_turn(self):
         """has_active_turn is a METHOD (parity with AcpClient) delegating to

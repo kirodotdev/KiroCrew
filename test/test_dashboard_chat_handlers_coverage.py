@@ -55,6 +55,8 @@ def _state(slot: _ChatSlot | None = None) -> DashboardState:
     state.broadcast_ws = MagicMock()
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
+    # Awaited by the project-change producers; a bare MagicMock is not awaitable.
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     state.sessions.get_provider = MagicMock(return_value=None)
     return state
 

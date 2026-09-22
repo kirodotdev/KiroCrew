@@ -141,7 +141,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     published_autocompact_pct,
 )
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, resolved_cwd
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
@@ -1715,6 +1715,28 @@ class SessionManager:
         """Return whether a live session exists for the folded key."""
         return self._allocation_boundary().has_session(key)
 
+    async def resolve_arm_cwd(self, key: str, cwd: str) -> str:
+        """Resolve an arm's target off-thread, for the CLEARED case that touches disk.
+
+        Resolves only -- it arms nothing, so the caller's arm or transfer stays synchronous
+        and atomic in its own commit window. A cleared project resolves to the per-session
+        default, which stats, mkdirs and realpaths the workspace root; on a symlinked or
+        network root that blocks in the kernel, and every arm site is reached from an async
+        handler. A non-empty project needs no filesystem work and is handed straight back.
+        """
+        if cwd:
+            return cwd
+        return await asyncio.to_thread(resolved_cwd, cwd, self._fold_key(key))
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str | None) -> int:
+        """Mark a live session invalid for reuse without disturbing its turn.
+
+        Synchronous by design. Pass ``cwd`` already resolved for a cleared project -- see
+        :meth:`resolve_arm_cwd` -- because resolving it here would put filesystem work on
+        the event loop. Returns the arm's generation.
+        """
+        return self._allocation_boundary().mark_retire_on_next_claim(key, cwd)
+
     def get_provider(self, key: str) -> LLMProvider | None:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
@@ -2084,12 +2106,14 @@ class SessionManager:
         sess: "_Session",
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool:
         """Acquire outside the registry lock and revalidate identity."""
         return await self._allocation_boundary()._reacquire_and_validate(
             key,
             sess,
             wait_if_busy=wait_if_busy,
+            cwd=cwd,
         )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:

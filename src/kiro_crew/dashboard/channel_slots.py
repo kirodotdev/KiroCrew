@@ -512,6 +512,9 @@ def surface_channel_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
+    # Restored OUTSIDE that truthy guard: a cleared project is "" and skips it, so the
+    # marker is the only thing separating a clear from a project never set.
+    slot.project_cleared = meta.get("project_cleared") is True
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the
