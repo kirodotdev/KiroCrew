@@ -391,11 +391,19 @@ class TestAgentRegistration:
         entry = written["mcpServers"]["test-app:srv"]
         assert "autoApprove" not in entry, "a governed grant must not reach the file kiro-cli reads"
 
-    def test_register_mcp_keeps_autoapprove_when_ungoverned(self, tmp_path, app_env, monkeypatch):
+    def test_register_mcp_keeps_autoapprove_only_with_the_opt_in(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """An absent ceiling does not keep the key -- ``mcp.honour_auto_approve`` does."""
         from kiro_crew.apps import bridges as bridges_mod
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.platform import governance as gov
 
         monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)  # ungoverned
+        cfg = KiroCrewConfig()
+        cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
         src = _make_app_source(
             tmp_path,
             mcpServers={"srv": {"command": "run", "args": [], "autoApprove": ["ok"]}},

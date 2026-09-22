@@ -2352,11 +2352,20 @@ async def test_http_whole_reset_restores_parent_without_changing_peer(editor, ca
 @pytest.mark.parametrize("action", ["reconcile", "accept", "restore", "reset"])
 @pytest.mark.parametrize("ambient", [False, True, None])
 async def test_resolved_removals_respect_ambient_mcp(
-    editor, capability_app, section, action, ambient
+    editor, capability_app, section, action, ambient, monkeypatch
 ):
     from aiohttp.test_utils import TestClient, TestServer
 
     from kiro_crew.agent_capabilities import reconcile_member_capabilities
+    from kiro_crew.config import live as _live
+    from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+    # The subject is capability reconcile. The ``autoApprove`` parametrization
+    # hand-writes a grant on a user server, which the undeclared-grant floor drops
+    # before reconcile sees it, so the opt-in is pinned on for every case.
+    _cfg = _Cfg()
+    _cfg.mcp.honour_auto_approve = True
+    monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
 
     service, home, specs, parent = editor
     app, refreshes = capability_app

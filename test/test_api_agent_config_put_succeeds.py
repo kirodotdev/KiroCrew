@@ -78,9 +78,16 @@ async def test_api_agent_config_put_strips_governed_grants(tmp_path, monkeypatch
     a governed server's autoApprove written here restores the bypass the per-ref
     writers close. Executable (not source-inspection) coverage of that writer."""
     import kiro_crew.platform.governance as gov
+    from kiro_crew.config import live as _live
+    from kiro_crew.config.loader import KiroCrewConfig as _Cfg
 
     # Govern @denied only; everything else may auto-approve.
     monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: ref != "@denied")
+    # The subject is the ceiling, not the local floor: both fixture grants are
+    # hand-written, so the opt-in is pinned on to keep @ok's the control.
+    _cfg = _Cfg()
+    _cfg.mcp.honour_auto_approve = True
+    monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
 
     installed = tmp_path / "kirocrew.json"
     installed.write_text(json.dumps({"name": "kirocrew"}))

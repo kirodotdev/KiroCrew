@@ -322,7 +322,7 @@ class TestInstallAgent:
         assert literal not in raw
         json.loads(raw, parse_constant=_reject_json_constant)
 
-    def test_refresh_drops_non_string_tool_list_items(self, tmp_path: Path):
+    def test_refresh_drops_non_string_tool_list_items(self, tmp_path: Path, monkeypatch):
         """A list of the right type can still hold the wrong items.
 
         Both list-valued keys carry tool NAMES, so ``disabledTools: [1]`` passes a
@@ -330,7 +330,17 @@ class TestInstallAgent:
         ITEM, not dropped whole -- the same rule this fix applies to env entries --
         because discarding the list would re-expose every tool the user did name
         correctly, which is the opposite of what a guard is for.
+
+        ``mcp.honour_auto_approve`` is pinned on so the subject here stays the
+        per-item filter: with it off the whole key is dropped by the ungoverned
+        floor and the filter would have nothing to act on.
         """
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        _cfg = KiroCrewConfig()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(live, "snapshot", lambda: _cfg)
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
@@ -813,8 +823,15 @@ class TestInstallAgent:
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
         assert config["mcpServers"]["kirocrew-core"]["command"] == "/usr/bin/kirocrew"
 
-    def test_existing_config_preserves_mcp_auto_approve(self, tmp_path: Path):
-        """User autoApprove settings on MCP servers survive restart."""
+    def test_existing_config_drops_a_hand_added_mcp_auto_approve(self, tmp_path: Path):
+        """A hand-added ``autoApprove`` does not survive a restart.
+
+        kiro-cli approves an autoApproved MCP tool locally and emits no permission
+        request, so no card is shown and ``hooks.on_tool_call`` never runs for it.
+        Nothing DECLARES these verbs -- the managed registry seeds none -- so they
+        are the user-authored kind the floor drops. ``mcp.honour_auto_approve``
+        keeps them; the command refresh below is unaffected either way.
+        """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
@@ -845,20 +862,31 @@ class TestInstallAgent:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
-        # kirocrew-cron/core: command refreshed, autoApprove preserved
+        # kirocrew-cron/core: command still refreshed, the undeclared grant gone
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
-        assert config["mcpServers"]["kirocrew-cron"]["autoApprove"] == ["cron_list", "cron_add"]
-        assert config["mcpServers"]["kirocrew-core"]["autoApprove"] == ["learn_list"]
-        # other MCP servers: untouched
-        assert config["mcpServers"]["builder-mcp"]["autoApprove"] == ["ReadInternalWebsites"]
+        assert "autoApprove" not in config["mcpServers"]["kirocrew-cron"]
+        assert "autoApprove" not in config["mcpServers"]["kirocrew-core"]
+        # a user's own server is the reported case, and it is dropped too
+        assert "autoApprove" not in config["mcpServers"]["builder-mcp"]
         # hooks are always refreshed from bundled defaults; the retired
         # deniedCommands injection is stripped on refresh, so the emptied
         # toolsSettings scaffolding is removed entirely.
         assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
 
-    def test_kirocrew_mcp_json_overrides_kiro_mcp(self, tmp_path: Path):
-        """~/.kirocrew/mcp.json overrides ~/.kiro/settings/mcp.json for kirocrew agent."""
+    def test_kirocrew_mcp_json_overrides_kiro_mcp(self, tmp_path: Path, monkeypatch):
+        """~/.kirocrew/mcp.json overrides ~/.kiro/settings/mcp.json for kirocrew agent.
+
+        The subject is which file wins, so the opt-in is pinned on: the fixture's
+        ``autoApprove`` is hand-added and the floor would otherwise drop it from
+        both candidates, leaving nothing to compare.
+        """
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
@@ -7176,10 +7204,20 @@ class TestMcpMergePriority:
         assert "srv" in config["mcpServers"], "server dropped instead of falling back"
         assert config["mcpServers"]["srv"]["command"] == cc_cmd
 
-    def test_fallback_adopts_source_args_env_unit(self, tmp_path: Path):
+    def test_fallback_adopts_source_args_env_unit(self, tmp_path: Path, monkeypatch):
         """On cross-source fallback, the resolving source's command/args/env
         are adopted as a unit — the winner's stale args/env must not leak in,
-        but non-command fields (autoApprove) are preserved."""
+        but non-command fields (autoApprove) are preserved.
+
+        The opt-in is pinned on because the non-command field this pins is a
+        hand-added ``autoApprove``, which the undeclared-grant floor drops.
+        """
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
         cfg_dir = _bundled_defaults(tmp_path)
         cc_cmd = _make_exec(tmp_path, "cc-real")
         config = _run_install_mcp_merge(

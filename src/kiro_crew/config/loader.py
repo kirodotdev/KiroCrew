@@ -3481,6 +3481,24 @@ def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
     )
 
 
+def _build_mcp_config(mcp_data: dict) -> McpConfig:
+    """Build the ``mcp`` section in its own frame (see the compound-section rule)."""
+    return McpConfig(
+        # Kept as authored strings — validation (absolute-only, ``~`` expansion,
+        # dedup) belongs to the consumer, kiro_crew.env.augmented_path, so the ONE
+        # gate the built-in directories already pass applies to these too instead
+        # of a second rule drifting here. Non-strings ARE dropped: the field is
+        # typed list[str] and to_dict() round-trips it verbatim into the saved
+        # config.
+        extra_path_dirs=[
+            d for d in _safe_list(mcp_data.get("extra_path_dirs", [])) if isinstance(d, str)
+        ],
+        # Only a real ``true`` opts in: a hand-edited truthy string must not grant
+        # a gate bypass by accident.
+        honour_auto_approve=mcp_data.get("honour_auto_approve") is True,
+    )
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     _spawn_min = max(1, _safe_int(mcp_gateway_data.get("spawn_concurrency_min", 1), 1))
     _spawn_max = max(_spawn_min, _safe_int(mcp_gateway_data.get("spawn_concurrency_max", 8), 8))
@@ -4688,18 +4706,7 @@ class KiroCrewConfig:
                 if isinstance(r, dict) and r.get("repo")
             ],
             mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
-            mcp=McpConfig(
-                # Kept as authored strings — validation (absolute-only, ``~``
-                # expansion, dedup) belongs to the consumer,
-                # kiro_crew.env.augmented_path, so the ONE gate the built-in
-                # directories already pass applies to these too instead of a
-                # second rule drifting here. Non-strings ARE dropped now: the
-                # field is typed list[str] and to_dict() round-trips it verbatim
-                # into the saved config.
-                extra_path_dirs=[
-                    d for d in _safe_list(mcp_data.get("extra_path_dirs", [])) if isinstance(d, str)
-                ],
-            ),
+            mcp=_build_mcp_config(mcp_data),
             instances=_build_instances_config(
                 connect_timeout_raw, instances_data, mint_timeout_raw
             ),

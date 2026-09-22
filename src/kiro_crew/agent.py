@@ -42,7 +42,7 @@ from collections.abc import Collection
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any, Iterator, Literal, MutableMapping, NamedTuple
+from typing import Any, Iterator, Literal, Mapping, MutableMapping, NamedTuple
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import (
@@ -4052,6 +4052,46 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
             ),
         )
     return kiro_agents_dir_path() / AGENT_FILENAME
+
+
+def _entry_is_the_declared_server(entry: object, spec: Mapping[str, Any]) -> bool:
+    """Whether ``entry`` is still the server whose spec declared its verbs.
+
+    A declaration names a server BY NAME, in a file the user owns and can repoint.
+    The verbs were declared for the transport the spec describes, so an entry
+    carrying another one is another server and inherits nothing.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if "invocation_fn" in spec:
+        try:
+            command, args = spec["invocation_fn"]()
+        except Exception:  # noqa: BLE001 — an unresolvable invocation declares nothing
+            return False
+    else:
+        command, args = spec.get("command"), spec.get("args")
+    if command and entry.get("command") != command:
+        return False
+    return args is None or list(entry.get("args") or []) == list(args)
+
+
+def declared_auto_approve(emitted: Mapping[str, object]) -> dict[str, tuple[str, ...]]:
+    """Per server, the ``autoApprove`` verbs its own spec DECLARES.
+
+    The governance floor drops a verb nothing declared. The managed registry and the
+    edition's contribution are the two sources that may declare one, and both live
+    here, so the lookup does too. ``emitted`` is the map about to be written and is
+    required: a name whose entry was repointed declares nothing.
+    """
+    declaring = (*_MANAGED_MCP_SERVERS.items(), *_extra_mcp_servers().items())
+    return {
+        n: tuple(s["autoApprove"])
+        for n, s in declaring
+        if isinstance(s, dict)
+        and isinstance(s.get("autoApprove"), list)
+        and s["autoApprove"]
+        and _entry_is_the_declared_server(emitted.get(n), s)
+    }
 
 
 def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:

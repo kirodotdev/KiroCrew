@@ -5522,6 +5522,20 @@ class McpConfig:
             restart=True,
         ),
     )
+    honour_auto_approve: bool = field(
+        default=False,
+        metadata=_meta(
+            "Honour MCP autoApprove",
+            "Keep an ``autoApprove`` list no server spec declares -- one hand-added "
+            "to ``mcp.json`` -- in the agent config Kiro Crew writes. Off by default, "
+            "and off DROPS those verbs: such a tool is approved locally with no "
+            "permission request, so no approval card is ever shown for it. A ceiling "
+            "strips the key whatever this says; a verb a spec declares is kept either "
+            "way. Applies at restart, when the spec is rebuilt, so turning it off "
+            "does not retract a grant already in the file.",
+            restart=True,
+        ),
+    )
 
 
 @dataclass

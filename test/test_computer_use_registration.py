@@ -286,12 +286,14 @@ def test_refresh_strips_a_stale_remote_transport(tmp_path: Path):
     assert "headers" not in spec
 
 
-def test_refresh_preserves_a_user_added_auto_approve(tmp_path: Path):
-    """A user's OWN ``autoApprove`` survives a refresh.
+def test_refresh_drops_a_user_added_auto_approve(tmp_path: Path):
+    """A user's OWN ``autoApprove`` does NOT survive a refresh.
 
-    The managed spec must never SEED it (the test above), but a user who added it
-    deliberately owns that decision and a refresh must not silently revert their
-    config. The two rules are independent, and both matter.
+    The managed spec must never SEED it (the test above), and a hand-added one is
+    dropped as well: an autoApproved MCP tool is approved inside kiro-cli with no
+    permission request, so such a grant exempts the tool from the gate with no card
+    ever shown. The direction is fail-closed and ``mcp.honour_auto_approve`` is the
+    way back.
     """
     cfg_dir = _bundled_defaults(tmp_path)
     _existing_config(
@@ -303,7 +305,7 @@ def test_refresh_preserves_a_user_added_auto_approve(tmp_path: Path):
         },
     )
     spec = _installed(_run_install(tmp_path, cfg_dir))["mcpServers"][CU_SERVER]
-    assert spec["autoApprove"] == [f"{CU_SERVER}/computer_get_state"]
+    assert "autoApprove" not in spec
 
 
 def test_refresh_does_not_add_the_ref_to_allowed_tools(tmp_path: Path):

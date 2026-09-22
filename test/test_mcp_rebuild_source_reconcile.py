@@ -143,7 +143,16 @@ class TestAChangedSourceReachesTheGeneratedSpec:
 class TestAUserFieldOnTheEntrySurvives:
     """The risk the fixed key list bounds: an overwrite that revokes a grant."""
 
-    def test_an_auto_approve_the_user_added_survives(self, tmp_path: Path) -> None:
+    def test_an_auto_approve_the_user_added_survives(self, tmp_path: Path, monkeypatch) -> None:
+        """``mcp.honour_auto_approve`` is pinned on: the subject is preservation by
+        omission, and the undeclared-grant floor would otherwise drop the key before
+        the owned-key list is exercised at all."""
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
         cfg_dir = _bundled_defaults(tmp_path)
         old, new = _exe(tmp_path, "old-srv"), _exe(tmp_path, "new-srv")
 

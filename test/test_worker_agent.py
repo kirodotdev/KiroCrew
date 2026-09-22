@@ -1058,7 +1058,11 @@ def test_a_mirrored_auto_approve_cannot_carry_an_excluded_cron_verb(tmp_path, mo
     without ever touching ``allowedTools``, so filtering grants alone leaves
     ``cron_add`` auto-approved — and the ceiling pass does not close it either,
     because that one is whole-server and keeps the key whenever the server is
-    allowed."""
+    allowed.
+
+    The grant is hand-added, so the opt-in is pinned on: the subject is the
+    per-verb narrowing of a grant that exists, not whether one may exist."""
+    _pin_honour_auto_approve(monkeypatch, True)
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     spec = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
     spec["mcpServers"]["kirocrew-cron"]["autoApprove"] = [
@@ -1407,9 +1411,25 @@ def test_an_auto_approve_pattern_that_reaches_an_excluded_verb_is_dropped(
     assert "autoApprove" not in worker["mcpServers"]["kirocrew-cron"], approved
 
 
+def _pin_honour_auto_approve(monkeypatch, honour: bool) -> None:
+    """Pin ``mcp.honour_auto_approve`` for a grant no spec declares."""
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.mcp.honour_auto_approve = honour
+    monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+
 def test_an_auto_approve_naming_only_reading_verbs_survives(tmp_path, monkeypatch):
     """Nothing is narrowed for its own sake: a name that cannot reach an excluded verb
-    keeps its exemption."""
+    keeps its exemption.
+
+    The grant here is hand-added to the default spec rather than declared by the
+    managed registry, so ``mcp.honour_auto_approve`` is pinned on: the subject is
+    the per-verb narrowing, and the undeclared-grant floor would otherwise drop
+    the whole list before the narrowing has anything to narrow."""
+    _pin_honour_auto_approve(monkeypatch, True)
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     spec = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
     spec["mcpServers"]["kirocrew-cron"]["autoApprove"] = ["cron_list", "cron_pause"]

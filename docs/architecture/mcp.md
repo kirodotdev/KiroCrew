@@ -148,7 +148,11 @@ every rebuild by `_refresh_dynamic_fields()`, which rewrites `command`/`args`
 from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 `headers`) left by older builds, and re-pins `env.KIROCREW_HOME` to the home the
 gateway is actually running under while preserving the user's own env keys.
-User customizations such as `autoApprove` are preserved.
+User customizations are preserved, with one exception: an `autoApprove` list no
+server spec declares is dropped, because kiro-cli approves those tools locally and
+Crew never sees a permission request for them. Set `mcp.honour_auto_approve` to
+keep a hand-added one. A verb a managed or edition spec declares is unaffected,
+and a governance ceiling strips the key whatever the setting says.
 
 For KAS native managed servers, session projection supplies the actual gateway
 listener port and the allocation-time caller session key. These values come
@@ -313,7 +317,8 @@ before writing is filter the whole assembled `allowedTools` list through one
 predicate: a ref the governance ceiling has an opinion about loses its blanket
 grant and its calls go through the gate, where the per-argument rule actually
 applies; a ref the ceiling is silent about is kept. `mcpServers[*].autoApprove`
-gets the same treatment on the final map. `tools` is deliberately left intact,
+gets the same treatment on the final map, plus a local floor: a verb no server spec
+declares is dropped unless `mcp.honour_auto_approve` is set. `tools` is deliberately left intact,
 because mounting a tool is not auto-approving it. Withheld grants are recorded
 in SEL as `mcp_auto_approve_withheld` so an operator can see why a template tool
 now prompts.

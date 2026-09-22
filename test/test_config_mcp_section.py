@@ -49,7 +49,10 @@ def test_parses_and_preserves_order(tmp_path, monkeypatch):
 def test_round_trips_through_to_dict(tmp_path, monkeypatch):
     """A setting dropped by to_dict() would be lost the next time anything saves."""
     cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin"]}})
-    assert cfg.to_dict()["mcp"] == {"extra_path_dirs": ["/opt/a/bin"]}
+    assert cfg.to_dict()["mcp"] == {
+        "extra_path_dirs": ["/opt/a/bin"],
+        "honour_auto_approve": False,
+    }
 
 
 def test_non_string_entries_dropped(tmp_path, monkeypatch):
@@ -113,6 +116,46 @@ def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(L, "config_local_path", lambda: empty / "config.local.json")
     KiroCrewConfig.load()
     assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
+
+
+def test_honour_auto_approve_defaults_to_off():
+    """Fail-closed: the default must drop a server's own ``autoApprove``."""
+    assert KiroCrewConfig().mcp.honour_auto_approve is False
+
+
+def test_honour_auto_approve_parses_a_real_true(tmp_path, monkeypatch):
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": True}})
+    assert cfg.mcp.honour_auto_approve is True
+
+
+@pytest.mark.parametrize("raw", ["true", "yes", 1, ["x"], {}, None])
+def test_only_a_real_true_opts_in(tmp_path, monkeypatch, raw):
+    """config.json is hand-editable and this key grants a gate bypass, so a
+    merely truthy value must not be read as consent."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": raw}})
+    assert cfg.mcp.honour_auto_approve is False
+
+
+def test_honour_auto_approve_is_in_the_schema_registry():
+    """It is the documented escape hatch, so it must reach the settings UI."""
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.honour_auto_approve")
+    assert entry.type == "boolean"
+    assert entry.label
+
+
+def test_honour_auto_approve_requires_a_restart():
+    """Turning it OFF must not read as retracting a grant already on disk.
+
+    The spec is rebuilt at startup, so a live true->false edit leaves the emitted
+    `autoApprove` in the file. Marking the field restart-requiring is what tells the
+    operator that, instead of leaving them to believe the bypass is closed.
+    """
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.honour_auto_approve")
+    assert entry.requires_restart is True
 
 
 def test_section_is_in_the_schema_registry():
