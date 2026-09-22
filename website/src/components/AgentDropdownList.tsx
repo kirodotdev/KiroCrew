@@ -210,6 +210,13 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
     return a.selection_kind === 'member' || !hasMember(a.name)
   }
   const grouped = agents.some(a => a.selection_kind)
+  // A header earns its place only when it separates something. With one kind
+  // in the list (crewmates withheld by `HIDE_CREWMATE_CHOICES`, or an install
+  // with no templates) the header and the templates hint would name a
+  // distinction the list does not draw, so both are dropped; the `role="group"`
+  // label stays for assistive technology, which does not read the chrome.
+  const kinds = new Set(agents.map(a => a.selection_kind ?? 'member'))
+  const showGroupChrome = kinds.size > 1
   const row = (a: AgentItem) => (
     <AgentButton key={itemKey(a)} a={a} active={isActive(a)} isDefault={a.name === defaultAgent && a.selection_kind !== 'template'} showSource={!grouped} activeRef={activeRef} onSelect={onSelect} filter={filter} />
   )
@@ -233,8 +240,10 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
             : i18nT('components.agentDropdownList.group_templates')
           return (
             <div key={kind} role="group" aria-label={label} className="flex flex-col">
-              <PanelSectionHeader label={label} count={rows.length} className="px-2.5 pt-2 pb-1" />
-              {kind === 'template' && (
+              {showGroupChrome && (
+                <PanelSectionHeader label={label} count={rows.length} className="px-2.5 pt-2 pb-1" />
+              )}
+              {showGroupChrome && kind === 'template' && (
                 // What a template pick IS, said where the pick happens: it runs the
                 // shared template on the shared default memory and enrols nothing.
                 <p className="px-2.5 pb-1 text-[11px] leading-snug text-muted">

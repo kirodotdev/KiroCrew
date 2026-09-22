@@ -3,6 +3,16 @@ import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
 /**
+ * TEMPORARY: keep crewmates out of the chat agent pop-up. Only the picker's
+ * `choices` list is affected -- the folded `agents` list (cron, channel, project
+ * bindings, the keyboard cycle) still sees every name, so a slot already
+ * running a member keeps working and nothing is written. Flip to `false` to
+ * restore the two-group pop-up; the only other touch is
+ * `test/useAgents.hideCrewmates.test.tsx`, which pins the flag on.
+ */
+export const HIDE_CREWMATE_CHOICES = true
+
+/**
  * Reads the execution-choice catalog (`GET /api/agents/catalog`): configured
  * members AND installed shared templates, each row tagged `selection_kind`.
  *
@@ -21,10 +31,12 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
  *   the roster without changing `sessionKey`. Omit on surfaces with no slot
  *   context (the roster is then global-only and cannot go stale this way).
  *
- * @returns `choices` — every catalog row, members and templates alike, keyed by
- *   (selection_kind, name). The list a picker that can express the namespace
- *   renders (the chat agent pop-up): a member and a template of one name are two
- *   rows there, and picking one sends its kind.
+ * @returns `choices` — the catalog rows a namespace-aware picker (the chat agent
+ *   pop-up) renders, keyed by (selection_kind, name). While
+ *   `HIDE_CREWMATE_CHOICES` is on, member rows are withheld and the pop-up offers
+ *   templates only; a member is still reachable from its DM thread on the Crew
+ *   Members page. With the flag off, a member and a template of one name are two
+ *   rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
  *   name-only consumers (the schedule form's `agent_id`, the channel and project
  *   pages, the keyboard cycle). A member wins the fold because the backend's
@@ -97,8 +109,14 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   }, [refreshTrigger, sessionKey, projectDir, reloadTick])
 
   const agents = useMemo(() => foldByName(choices), [choices])
+  // Filtered AFTER the fold, so hiding a member from the pop-up never changes
+  // which row a bare name resolves to for the name-only consumers.
+  const pickerChoices = useMemo(
+    () => (HIDE_CREWMATE_CHOICES ? choices.filter(c => c.selection_kind !== 'member') : choices),
+    [choices],
+  )
 
-  return { agents, choices, defaultAgent, error, reload, reloading }
+  return { agents, choices: pickerChoices, defaultAgent, error, reload, reloading }
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */

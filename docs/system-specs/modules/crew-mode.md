@@ -77,14 +77,21 @@ and memory unchanged. The member-management API (`/api/agents`) and the
 synchronization route (`POST /api/agents/sync`) retain their contracts, but the
 dashboard pickers no longer call sync: `useAgents` reads the catalog, so opening a
 chat, the schedule form or the channel page enrols nothing. The hook returns the
-full typed list as `choices` (the chat agent pop-up renders it grouped under
+typed list as `choices` (the chat agent pop-up renders it grouped under
 **Crewmates** / **Agent templates**, each member row wearing the same avatar the
 roster draws for it, the origin badge dropped because the header already says what
 a row is, and the templates group carrying a one-line hint that a template pick
 runs the shared template on the shared default memory and enrols nothing) and
 the same list folded to one row per name, member first, as `agents` for the
 name-only consumers (cron `agent_id`, channel and project bindings, the cycle
-shortcuts). A pick sends `agent_kind` with the name on slot create and on
+shortcuts). The pop-up draws the group headers and the templates hint only when it
+lists more than one kind: a header that separates nothing is chrome, and the hint
+contrasts a template against a crewmate the list must then be showing. Temporarily,
+`HIDE_CREWMATE_CHOICES` in `useAgents.ts` withholds the member rows from `choices`,
+so the pop-up offers templates only -- a plain list, no header -- and a crewmate is
+reached from its DM thread instead; the folded `agents` list and the request
+contract below are unaffected, and turning the flag off restores the two groups.
+A pick sends `agent_kind` with the name on slot create and on
 `/api/chat/slots/{slot}/agent`; the slot stores the committed kind, persists it with
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list

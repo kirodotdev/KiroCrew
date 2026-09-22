@@ -92,6 +92,21 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
     expect(screen.getByText(/runs the shared template on shared memory/i)).toBeInTheDocument()
   })
 
+  it('drops the header and the templates hint when the list holds one kind only', () => {
+    // With crewmates withheld (HIDE_CREWMATE_CHOICES) the list is templates
+    // only. A header then separates nothing and the hint contrasts a template
+    // against a crewmate the list never shows, so both go; the accessible
+    // group label stays, and the rows keep their grouped rendering (no origin
+    // badge) so the flag flips nothing but the chrome.
+    const templatesOnly = both.filter(a => a.selection_kind === 'template')
+    render(<AgentDropdownList agents={templatesOnly} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    expect(screen.getByRole('group', { name: 'Agent templates' })).toBeInTheDocument()
+    expect(screen.queryByText('Agent templates')).toBeNull()
+    expect(screen.queryByText(/runs the shared template on shared memory/i)).toBeNull()
+    expect(screen.queryByText('package')).toBeNull()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+  })
+
   it('keeps the origin badge on the flat, name-only list', () => {
     render(<AgentDropdownList agents={[{ name: 'x', source: 'package' }]} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     expect(screen.getByText('package')).toBeInTheDocument()
