@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -1003,6 +1004,22 @@ _POSIX_SAFE_ENV_KEYS = (
     "TMPDIR",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
+    # A registry URL, not a credential: it is how an operator points every
+    # Dev Fleet npm step (the preflight rehearsal AND the real `npm ci` /
+    # `npm run build`) at a public registry or a private mirror when the
+    # host's ~/.npmrc default registry is unreachable or its token has
+    # expired. npm_preflight's own docstring insists its flags MIRROR the
+    # real install step, so this must reach both or they resolve
+    # differently. Do NOT add any `NPM_CONFIG_*_AUTHTOKEN`, `NPM_TOKEN`,
+    # `_auth`-suffixed key, `NPM_CONFIG_USERCONFIG` (points at a file that
+    # may hold a token), or a wildcard `NPM_CONFIG_*` — those are
+    # credentials or can carry them, and this allowlist exists so
+    # worktree-controlled build scripts cannot read gateway credentials.
+    # `_build_env` additionally validates the VALUE of this key before
+    # forwarding it — see `_sanitized_npm_registry_env` — since URL syntax
+    # itself permits a userinfo-embedded credential, a query, or a fragment
+    # that "not a credential" does not rule out.
+    "NPM_CONFIG_REGISTRY",
 )
 
 # Windows counterparts of the POSIX set above, written in the spelling Microsoft
@@ -1061,6 +1078,37 @@ def _is_safe_env_key(key: str) -> bool:
     return platform_compat.env_key_allowed(key, _SAFE_ENV_KEYS)
 
 
+def _sanitized_npm_registry_env(value: str) -> "str | None":
+    """Validate an operator-set npm registry URL before it reaches a
+    worktree-controlled build subprocess.
+
+    The allowlist comment above the ``NPM_CONFIG_REGISTRY`` entry asserts it
+    is "a registry URL, not a credential", but URL syntax itself permits
+    userinfo (``https://user:token@host/``), a query string, or a fragment —
+    any of which can carry a secret through exactly the boundary that
+    allowlist exists to hold. A value can also carry embedded whitespace
+    (e.g. a control character or a second smuggled value) that survives
+    ``urlsplit`` inside the netloc/path rather than being rejected by it.
+    Returns *value* unchanged only when it is a bare ``http``/``https``
+    origin plus path with none of those, and ``None`` otherwise so the
+    caller drops the key outright (fail closed) rather than forward a
+    value that is not purely a location.
+    """
+    if not value or any(ch.isspace() for ch in value):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if not parsed.netloc or "@" in parsed.netloc:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    return value
+
+
 def _build_env(*, with_credentials: bool = False) -> dict:
     """Allowlisted base environment for build/CLI subprocesses.
 
@@ -1100,6 +1148,9 @@ def _build_env(*, with_credentials: bool = False) -> dict:
     remove one on the assumption that the other covers it.
     """
     out = {k: v for k, v in os.environ.items() if _is_safe_env_key(k)}
+    _registry_value = out.get("NPM_CONFIG_REGISTRY")
+    if _registry_value is not None and _sanitized_npm_registry_env(_registry_value) is None:
+        del out["NPM_CONFIG_REGISTRY"]
     out["PATH"] = _TRUSTED_PATH if with_credentials else _build_path()
     out.update(_GIT_ENV_NEUTRALIZERS)
     if with_credentials and _GIT_TRUSTED_HELPERS:
@@ -1160,6 +1211,7 @@ __all__ = (
     "_run_cmd",
     "_run_uninterruptible",
     "_sanitize_helper_value",
+    "_sanitized_npm_registry_env",
     "_sel",
     "_start_run",
     "_toolchain_bin",

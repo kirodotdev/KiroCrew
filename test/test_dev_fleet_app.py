@@ -2089,6 +2089,58 @@ def test_build_env_excludes_credentials(monkeypatch):
     assert mod._build_env(with_credentials=True)["PATH"] == mod._TRUSTED_PATH
 
 
+def test_build_env_passes_npm_registry_but_drops_credential_shaped_keys(monkeypatch):
+    """NPM_CONFIG_REGISTRY is a registry URL, not a credential -- it must reach
+    every Dev Fleet npm step (preflight AND the real ``npm ci``/``npm run
+    build``) so both resolve against the same registry. A credential-shaped
+    variable next to it must still be dropped by the same allowlist.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.npmjs.org")
+    monkeypatch.setenv("NPM_CONFIG__AUTHTOKEN", "npm-secret-token")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+
+    for env in (mod._build_env(), mod._build_env(with_credentials=True)):
+        assert env["NPM_CONFIG_REGISTRY"] == "https://registry.npmjs.org"
+        assert "NPM_CONFIG__AUTHTOKEN" not in env
+        assert "SLACK_BOT_TOKEN" not in env
+
+
+def test_build_env_rejects_npm_registry_values_that_smuggle_credentials(monkeypatch):
+    """``NPM_CONFIG_REGISTRY`` is forwarded only when it is a bare
+    ``http``/``https`` registry URL with no userinfo, query, fragment, or
+    embedded whitespace -- URL syntax otherwise permits a credential-bearing
+    value (``https://user:token@host/``) or a smuggled second value to reach
+    a worktree-controlled build script through this allowlist entry. A value
+    that fails validation is dropped outright (fail closed), never rewritten,
+    and an unrelated credential-shaped variable next to it is still dropped
+    too.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    dropped = (
+        "https://u:tok@registry.example/",  # userinfo
+        "https://registry.example/?x=1",  # query
+        "https://registry.example/#f",  # fragment
+        "file:///etc/passwd",  # non-http(s) scheme
+        "",  # empty
+        "https://registry.npmjs.org ",  # embedded whitespace
+    )
+    for value in dropped:
+        monkeypatch.setenv("NPM_CONFIG_REGISTRY", value)
+        monkeypatch.setenv("NPM_CONFIG__AUTHTOKEN", "npm-secret-token")
+        monkeypatch.setenv("NPM_TOKEN", "npm-secret-token-2")
+        env = mod._build_env()
+        assert "NPM_CONFIG_REGISTRY" not in env, value
+        assert "NPM_CONFIG__AUTHTOKEN" not in env
+        assert "NPM_TOKEN" not in env
+
+    # A clean value right after a dropped one still passes through.
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.npmjs.org")
+    assert mod._build_env()["NPM_CONFIG_REGISTRY"] == "https://registry.npmjs.org"
+
+
 def test_is_safe_env_key_matches_documented_spelling_on_windows():
     """A mixed-case allowlist entry must still match what ``os.environ`` yields.
 
