@@ -3721,6 +3721,7 @@
       "preview_read_network_error": "Couldn't read this document — the request didn't reach the server. Check your connection and retry.",
       "preview_read_server_error": "Couldn't read this document — the server reported an error.",
       "preview_relative_path_body": "This document's location was recorded relative to its original project, so it can't be opened safely from here. Open it from the session that created it.",
+      "preview_binary_body": "This document isn't readable as text, so there's nothing to preview here.",
       "save_to_artifacts": "Save to artifacts",
       "saved_to_library_notice": "Saved “{{name}}” to your artifacts."
     },

@@ -9626,6 +9626,7 @@
       "preview_read_network_error": "Impossible de lire ce document : la requête n’a pas atteint le serveur. Vérifiez votre connexion et réessayez.",
       "preview_read_server_error": "Impossible de lire ce document : le serveur a renvoyé une erreur.",
       "preview_relative_path_body": "L’emplacement de ce document a été enregistré par rapport à son projet d’origine ; il ne peut donc pas être ouvert en toute sécurité depuis ici. Ouvrez-le depuis la session qui l’a créé.",
+      "preview_binary_body": "Ce document n’est pas lisible en tant que texte ; il n’y a donc rien à prévisualiser ici.",
       "save_to_artifacts": "Enregistrer dans les artefacts",
       "saved_to_library_notice": "« {{name}} » a été enregistré dans vos artefacts."
     },

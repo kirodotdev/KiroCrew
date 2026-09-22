@@ -436,12 +436,25 @@ describe('ArtifactsPage', () => {
   // a read-only preview (via the redacting /api/file-read), so the user can
   // read a document before deciding to keep it.
   describe('session-doc preview', () => {
+    // Carries `headers` because the shared read asks for the backend's binary
+    // verdict (`X-File-Binary`): a double without them models a response no
+    // gateway sends, and would hide exactly the field the entry must store.
     const stubFileRead = (text: string) =>
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
         statusText: 'OK',
+        headers: { get: () => null },
         text: () => Promise.resolve(text),
+      }))
+    /** The envelope /api/file-read answers for bytes it could not decode. */
+    const stubBinaryFileRead = () =>
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: (h: string) => (h === 'X-File-Binary' ? 'true' : null) },
+        text: () => Promise.resolve('{"binary": true, "content": ""}'),
       }))
     afterEach(() => vi.unstubAllGlobals())
 
@@ -459,9 +472,13 @@ describe('ArtifactsPage', () => {
 
       await user.click(screen.getByText('FINDINGS.md'))
       const dialog = await screen.findByRole('dialog')
-      // Content comes from the same redacting file-read the chat panel uses.
+      // Content comes from the same redacting file-read the chat panel uses,
+      // through the shared helper -- which forwards React Query's AbortSignal,
+      // so a preview closed mid-read cancels its request instead of landing in
+      // the cache after the modal is gone.
       expect(globalThis.fetch).toHaveBeenCalledWith(
         '/api/file-read?path=' + encodeURIComponent('/ws/research/FINDINGS.md'),
+        expect.objectContaining({ signal: expect.anything() }),
       )
       await waitFor(() => expect(within(dialog).getByText('Findings headline')).toBeInTheDocument())
 
@@ -497,10 +514,10 @@ describe('ArtifactsPage', () => {
     })
 
     // The preview shares `['file-read', path]` with the chat side panel, whose
-    // cold-tab hydration reads `{ text, ok, status }` from the same entry
-    // within staleTime. A divergent shape here (say `{ text, missing }`) would
-    // poison that consumer: preview a doc, open it in chat within 10s, and the
-    // panel sees an entry with `ok`/`status` undefined.
+    // cold-tab hydration and chip click read the WHOLE entry from it within
+    // staleTime. The shape is the helper's, not this surface's: `binary` is
+    // what decides whether that tab offers an editor, so an entry missing it
+    // opens an editable buffer over bytes a save would corrupt.
     it('populates the shared file-read cache with the chat panel contract shape', async () => {
       const user = userEvent.setup()
       vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
@@ -516,7 +533,56 @@ describe('ArtifactsPage', () => {
       const dialog = await screen.findByRole('dialog')
       await waitFor(() => expect(within(dialog).getByText('Findings headline')).toBeInTheDocument())
       expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md']))
-        .toEqual({ text: '# Findings headline', ok: true, status: 200 })
+        .toEqual({ text: '# Findings headline', ok: true, status: 200, binary: false })
+    })
+
+    // A session doc is a .md/.txt path, but the BYTES on disk decide whether
+    // /api/file-read can decode them: the endpoint sniffs the first 8 KiB for a
+    // NUL and answers a binary file with the envelope `{"binary": true,
+    // "content": ""}` under `X-File-Binary: true` (a UTF-16-saved .md is the
+    // ordinary way a doc row lands here). The envelope is NOT the document, so
+    // it must never be rendered as one -- MarkdownPanel refuses to promote on
+    // exactly this header for exactly this reason.
+    it('never renders the binary envelope as the document body', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      stubBinaryFileRead()
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      const dialog = await screen.findByRole('dialog')
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+      expect(dialog.textContent).not.toContain('"binary"')
+      expect(dialog.textContent).not.toContain('"content"')
+    })
+
+    // The entry this preview writes is READ BACK by the chat side panel's
+    // openFile within its 10s staleTime, and `binary` is what decides whether
+    // that tab offers an editor at all. An entry missing the verdict opens an
+    // editable buffer over the envelope, and a save writes the envelope over
+    // the user's file.
+    it('carries the backend binary verdict into the shared cache entry', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      stubBinaryFileRead()
+      const { queryClient } = renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      await screen.findByRole('dialog')
+      await waitFor(() =>
+        expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md'])).toBeTruthy())
+      expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md']))
+        .toEqual({ text: '', ok: true, status: 200, binary: true })
     })
 
     // The row is a keyboard target too — and the star nested inside it bubbles
@@ -619,6 +685,7 @@ describe('ArtifactsPage', () => {
       vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: false, status: 500, statusText: 'Internal Server Error',
+        headers: { get: () => null },
         text: () => Promise.resolve(''),
       }))
       renderWithProviders(<ArtifactsPage />)
