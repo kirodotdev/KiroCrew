@@ -4876,7 +4876,11 @@
       "artifacts_more_keep_typing": "还有 {{count}} 个——继续输入以缩小范围",
       "fallback_artifacts": "在产物中搜索“{{query}}”",
       "fallback_artifacts_sub": "按这段文字查找你保存过的图表、文档和 widget。",
-      "action_search_artifacts": "搜索产物"
+      "action_search_artifacts": "搜索产物",
+      "copied": "已复制",
+      "copy_failed": "复制失败——浏览器阻止了访问剪贴板。请选中文字后手动复制。",
+      "copy_nothing": "这里没有可复制的内容。",
+      "copy_hint": "复制链接"
     },
     "awsControl": {
       "manifest": {

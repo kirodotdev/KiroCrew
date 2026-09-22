@@ -1207,7 +1207,11 @@
       "artifacts_more_keep_typing": "+{{count}} weitere — weiter tippen, um einzugrenzen",
       "fallback_artifacts": "Artefakte nach „{{query}}“ durchsuchen",
       "fallback_artifacts_sub": "Findet gespeicherte Diagramme, Dokumente und Widgets, die zu diesem Text passen.",
-      "action_search_artifacts": "Artefakte durchsuchen"
+      "action_search_artifacts": "Artefakte durchsuchen",
+      "copied": "Kopiert",
+      "copy_failed": "Kopieren fehlgeschlagen – dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text und kopiere ihn selbst.",
+      "copy_nothing": "Hier gibt es nichts zu kopieren.",
+      "copy_hint": "Link kopieren"
     },
     "crewCompanion": {
       "accessory": {

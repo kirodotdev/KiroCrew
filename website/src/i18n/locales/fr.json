@@ -1240,7 +1240,11 @@
       "artifacts_more_keep_typing": "+{{count}} autres — continuez à taper pour affiner",
       "fallback_artifacts": "Rechercher « {{query}} » dans les artefacts",
       "fallback_artifacts_sub": "Trouve les graphiques, documents et widgets enregistrés correspondant à ce texte.",
-      "action_search_artifacts": "Rechercher des artefacts"
+      "action_search_artifacts": "Rechercher des artefacts",
+      "copied": "Copié",
+      "copy_failed": "Échec de la copie : le navigateur a bloqué l’accès au presse-papiers. Sélectionne le texte et copie-le toi-même.",
+      "copy_nothing": "Rien à copier ici.",
+      "copy_hint": "Copier le lien"
     },
     "crewCompanion": {
       "accessory": {

@@ -5034,7 +5034,11 @@
       "artifacts_more_keep_typing": "+{{count}} altri — continua a digitare per restringere",
       "fallback_artifacts": "Cerca «{{query}}» negli artefatti",
       "fallback_artifacts_sub": "Cerca grafici, documenti e widget salvati che corrispondono a quel testo.",
-      "action_search_artifacts": "Cerca artefatti"
+      "action_search_artifacts": "Cerca artefatti",
+      "copied": "Copiato",
+      "copy_failed": "Copia non riuscita: il browser ha bloccato l’accesso agli appunti. Seleziona il testo e copialo manualmente.",
+      "copy_nothing": "Niente da copiare qui.",
+      "copy_hint": "Copia link"
     },
     "awsControl": {
       "manifest": {

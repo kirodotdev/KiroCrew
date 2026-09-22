@@ -5034,7 +5034,11 @@
       "artifacts_more_keep_typing": "+{{count}} más — sigue escribiendo para filtrar",
       "fallback_artifacts": "Buscar «{{query}}» en los artefactos",
       "fallback_artifacts_sub": "Busca gráficos, documentos y widgets guardados que coincidan con ese texto.",
-      "action_search_artifacts": "Buscar artefactos"
+      "action_search_artifacts": "Buscar artefactos",
+      "copied": "Copiado",
+      "copy_failed": "Error al copiar: el navegador bloqueó el acceso al portapapeles. Selecciona el texto y cópialo manualmente.",
+      "copy_nothing": "Aquí no hay nada que copiar.",
+      "copy_hint": "Copiar enlace"
     },
     "awsControl": {
       "manifest": {

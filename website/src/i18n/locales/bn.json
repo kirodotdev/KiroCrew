@@ -4955,7 +4955,11 @@
       "artifacts_more_keep_typing": "আরও {{count}}টি — সংকুচিত করতে টাইপ করতে থাকো",
       "fallback_artifacts": "আর্টিফ্যাক্টে “{{query}}” খুঁজুন",
       "fallback_artifacts_sub": "সেভ করা চার্ট, ডকুমেন্ট আর উইজেট ওই লেখা দিয়ে খোঁজে।",
-      "action_search_artifacts": "আর্টিফ্যাক্ট খুঁজুন"
+      "action_search_artifacts": "আর্টিফ্যাক্ট খুঁজুন",
+      "copied": "কপি হয়েছে",
+      "copy_failed": "কপি ব্যর্থ হয়েছে — তোমার ব্রাউজার ক্লিপবোর্ড অ্যাক্সেস আটকে দিয়েছে। টেক্সট নির্বাচন করে নিজে কপি করো।",
+      "copy_nothing": "এখানে কপি করার কিছু নেই।",
+      "copy_hint": "লিংক কপি করো"
     },
     "awsControl": {
       "manifest": {

@@ -1174,7 +1174,11 @@
       "artifacts_more_keep_typing": "他に{{count}}件 — 入力を続けて絞り込み",
       "fallback_artifacts": "アーティファクトを「{{query}}」で検索",
       "fallback_artifacts_sub": "保存したチャート、ドキュメント、ウィジェットをそのテキストで検索します。",
-      "action_search_artifacts": "アーティファクトを検索"
+      "action_search_artifacts": "アーティファクトを検索",
+      "copied": "コピーしました",
+      "copy_failed": "コピーに失敗しました — ブラウザーがクリップボードへのアクセスをブロックしました。テキストを選択して手動でコピーしてください。",
+      "copy_nothing": "コピーできるものがありません。",
+      "copy_hint": "リンクをコピー"
     },
     "crewCompanion": {
       "accessory": {

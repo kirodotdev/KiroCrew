@@ -1439,7 +1439,11 @@
       "artifacts_more_keep_typing": "+{{count}} more — keep typing to narrow",
       "fallback_artifacts": "Search artifacts for “{{query}}”",
       "fallback_artifacts_sub": "Finds saved charts, documents and widgets matching that text.",
-      "action_search_artifacts": "Search Artifacts"
+      "action_search_artifacts": "Search Artifacts",
+      "copied": "Copied",
+      "copy_failed": "Copy failed — your browser blocked clipboard access. Select the text and copy it yourself.",
+      "copy_nothing": "Nothing here to copy.",
+      "copy_hint": "Copy link"
     },
     "papyrus": {
       "workspace": {

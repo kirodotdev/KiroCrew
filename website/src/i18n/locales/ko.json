@@ -1174,7 +1174,11 @@
       "artifacts_more_keep_typing": "{{count}}개 더 — 계속 입력해 좁히기",
       "fallback_artifacts": "아티팩트에서 {{query}} 검색",
       "fallback_artifacts_sub": "저장한 차트, 문서, 위젯을 그 텍스트로 찾습니다.",
-      "action_search_artifacts": "아티팩트 검색"
+      "action_search_artifacts": "아티팩트 검색",
+      "copied": "복사됨",
+      "copy_failed": "복사 실패 — 브라우저가 클립보드 접근을 차단했습니다. 텍스트를 선택해 직접 복사하세요.",
+      "copy_nothing": "복사할 것이 없습니다.",
+      "copy_hint": "링크 복사"
     },
     "crewCompanion": {
       "accessory": {

@@ -46,6 +46,10 @@ import type { ArtifactsResponse } from '../../components/commandPalette/provider
 import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { useSessionsProvider } from '../../components/commandPalette/providers/sessionsProvider'
 import type { Result } from '../../components/commandPalette/types'
+import { resolveCopyTarget, type CopyableRow } from '../../components/commandPalette/copyTarget'
+import { copyToClipboard } from '../../utils/clipboard'
+import { platformShortcut } from '../../utils/platform'
+import { buildShareableUrl } from '../../utils/shareUrl'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -142,6 +146,25 @@ function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string
   // column already uses for folder/timestamp rather than a new string, so no catalog
   // learns a sentence about attribution -- the app's own name is data, not copy.
   return row.appLabel ? `${row.appLabel}${META_SEP}${kind}` : kind
+}
+
+/**
+ * The root list's own row model, expressed as something the copy layer can read.
+ *
+ * The root index is not the palette's `Result` — it predates the declarative Enter
+ * matrix and says where a row goes with `kind` + `route`. That is the same fact in
+ * different words, so the adapter is a restatement rather than new wiring, and every
+ * `navigate` row in the index (each settings row, each app row, each page row) becomes
+ * copyable without touching the place that builds it.
+ *
+ * The other kinds have no address on purpose. A `view` row opens a surface INSIDE the
+ * bar, so there is nothing to hand anybody; `invoke` runs a callback; `prompt` is a
+ * question the reader has not answered yet.
+ */
+function rootRowCopyable(row: RootRow): CopyableRow {
+  return row.kind === 'navigate' && row.route
+    ? { enter: { kind: 'navigate', route: row.route } }
+    : {}
 }
 
 function groupIcon(group: RootGroup) {
@@ -350,6 +373,14 @@ const SKELETON_WIDTHS = ['58%', '46%', '34%'] as const
  * untranslated-literal gate is not asked to judge a lone punctuation mark.
  */
 const ENTER_KEY = '\u21B5'
+/**
+ * The copy chord, spelled for the machine the reader is on.
+ *
+ * Through the product's own formatter rather than a literal, because the chord is not
+ * the same everywhere: a hardcoded glyph would name a key Windows and Linux readers do
+ * not have.
+ */
+const COPY_KEY = platformShortcut('Cmd+C')
 
 /**
  * Separator between a session row's folder and its timestamp.
@@ -446,6 +477,32 @@ export default function CommandBarOverlay({
   const [selected, setSelected] = useState(0)
   const [usage, setUsage] = useState<UsageMap>(() => loadUsage())
   const [actionError, setActionError] = useState<string | null>(null)
+  /**
+   * What the last copy did, held until the reader moves.
+   *
+   * A copy is the one action on this surface with NO observable result: the bar looks
+   * identical afterwards, the clipboard is not visible, and the reader finds out
+   * whether it worked when they paste somewhere else. So it is stated here, and it is
+   * stated from `copyToClipboard`'s own return value rather than from having called
+   * it -- that helper explicitly warns that a tick over an unchanged clipboard is
+   * worse than no affordance at all, and it fails for real on a plain-HTTP LAN
+   * gateway, where the async clipboard API is unavailable.
+   */
+  const [copyNotice, setCopyNotice] = useState<{ text: string; what?: string } | null>(null)
+  /**
+   * A clipboard write that did NOT land.
+   *
+   * Held apart from `copyNotice` because it is a different kind of thing: a failed
+   * write is an error, and an error renders through `ErrorNotice` like every other one
+   * on this surface. A copy with no target is not an error -- the reader asked a row
+   * with no address for its address -- so it stays on the status line.
+   *
+   * Carries `what` as well as the message, because the message names a REMEDY -- select
+   * the text and copy it by hand -- and this is the one path where the text is not on
+   * screen: the clipboard refused, so nothing else put it there. An instruction that
+   * points at nothing is worse than no instruction.
+   */
+  const [copyError, setCopyError] = useState<{ text: string; what: string } | null>(null)
   /** Row id whose `invoke` work is still resolving, or null. */
   const [pendingRow, setPendingRow] = useState<string | null>(null)
   /**
@@ -1353,6 +1410,67 @@ export default function CommandBarOverlay({
   )
 
   /**
+   * Put the selected row's address on the clipboard.
+   *
+   * Returns whether the gesture was CLAIMED, so the key handler can decline ⌘C in the
+   * one state where the bar has no row to answer with and let the browser's own copy
+   * run instead.
+   *
+   * The address itself is resolved, never stored per row: `resolveCopyTarget` reads
+   * what the row already says about where it points. That is the whole reason this is
+   * a layer rather than a command -- a launcher that lists sessions, artifacts, pages
+   * and settings can copy all four without any of the four knowing about copying, and
+   * the next corpus added to the bar arrives copyable.
+   */
+  const copyTarget = useMemo(() => {
+    const slot = slots[Math.min(selected, Math.max(0, slots.length - 1))]
+    if (!slot) return null
+    const row: CopyableRow | null =
+      slot.tag === 'root' ? rootRowCopyable(slot.row) : slot.tag === 'result' ? slot.row : null
+    if (!row) return null
+    return resolveCopyTarget(row, {
+      origin: window.location.origin,
+      // The chat surface's own copy button builds the session link with this, and one
+      // builder is the point: two would drift into two different links for one session.
+      sessionLink: buildShareableUrl,
+    })
+  }, [selected, slots])
+
+  const copySelected = useCallback(() => {
+    if (slots.length === 0) return false
+    if (!copyTarget) {
+      // Claimed anyway, and answered. A launcher row is a thing the reader pressed a
+      // key at, so the honest reply to "copy this" is that this one has no address --
+      // silence would read as a copy that worked.
+      setCopyError(null)
+      setCopyNotice({ text: i18nT('apps.commandBar.copy_nothing') })
+      return true
+    }
+    setCopyNotice(null)
+    setCopyError(null)
+    void copyToClipboard(copyTarget).then(ok => {
+      if (!ok) {
+        setCopyError({ text: i18nT('apps.commandBar.copy_failed'), what: copyTarget })
+        return
+      }
+      // The address travels with the confirmation. "Copied" alone left the reader to
+      // find out WHICH address on paste, and the two are genuinely different things: a
+      // deployed artifact yields its public URL where every other row yields a link
+      // into this dashboard.
+      setCopyNotice({ text: i18nT('apps.commandBar.copied'), what: copyTarget })
+    })
+    return true
+  }, [copyTarget, slots.length])
+
+  // The outcome describes ONE row's copy, so it must not outlive the reader's attention
+  // on that row: a "Copied" line still sitting there after they arrow somewhere else
+  // reads as a claim about the row they arrived at.
+  useEffect(() => {
+    setCopyNotice(null)
+    setCopyError(null)
+  }, [selected, query, scope])
+
+  /**
    * Enter in the argument state: check the value, then hand the command to a session.
    *
    * The check runs HERE, against the pattern the CONTRIBUTION declared, because the
@@ -1459,6 +1577,25 @@ export default function CommandBarOverlay({
           return
         }
         activateIndex(selected)
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === 'c' || e.key === 'C')
+      ) {
+        // The launcher's copy gesture, on the chord every other application already
+        // uses for copying, which is why it needs no affordance to teach.
+        //
+        // Declined in two states rather than claimed unconditionally. The input holds
+        // focus the entire time the bar is open, so a reader who SELECTED part of what
+        // they typed means that selection, and taking ⌘C from it would make this field
+        // behave unlike every other text box on the machine. And the argument state
+        // lists no rows at all -- what is on screen there is the value they are
+        // pasting in, which is theirs for the same reason.
+        const input = e.currentTarget
+        const selecting = input.selectionStart !== null && input.selectionStart !== input.selectionEnd
+        if (selecting || argCommand) return
+        if (copySelected()) e.preventDefault()
       } else if (e.key === 'Backspace' && query === '' && (scope || argCommand)) {
         // Leaving a scope is Backspace on an empty input — the same gesture that
         // deletes a character, so it needs no separate key to learn. An argument
@@ -1475,6 +1612,7 @@ export default function CommandBarOverlay({
     [
       activateIndex,
       argCommand,
+      copySelected,
       exitArgumentState,
       ime,
       query,
@@ -2131,10 +2269,78 @@ export default function CommandBarOverlay({
             a keycap — the panel's weight belongs on the selected row. */}
         {rowCount > 0 && (
           <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-t border-border text-[11px] text-muted">
-            <span className="truncate">{actionLabel(slots[Math.min(selected, rowCount - 1)])}</span>
-            <span className="shrink-0 px-1 rounded border border-border leading-4">{ENTER_KEY}</span>
+            {copyNotice ? (
+              /* The copy outcome takes the footer's OWN line rather than a strip of its
+                 own. The panel is height-capped, so any strip added anywhere shortens
+                 the list: a row at the bottom vanished on every copy and a reader could
+                 not tell whether it had scrolled away or been pushed out. One line in,
+                 one line out, and nothing else moves. Affordable because the outcome is
+                 transient -- it clears on the next keystroke, which is exactly when the
+                 Enter hint starts mattering again.
+
+                 `role="status"` on the WRAPPER, so the address is announced together
+                 with the word: a reader who cannot see the line still learns which of
+                 two possible addresses landed. */
+              <span role="status" className="flex items-center gap-1.5 min-w-0 flex-1">
+                <span className={`shrink-0 ${copyNotice.what ? 'text-accent' : 'text-warn'}`}>
+                  {copyNotice.text}
+                </span>
+                {copyNotice.what && (
+                  <span className="min-w-0 truncate" title={copyNotice.what}>
+                    {copyNotice.what}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <>
+                <span className="truncate">{actionLabel(slots[Math.min(selected, rowCount - 1)])}</span>
+                <span className="shrink-0 px-1 rounded border border-border leading-4">
+                  {ENTER_KEY}
+                </span>
+                {/* The copy chord, named only while the selected row HAS an address. A
+                    gesture with no visible counterpart is one most readers never learn
+                    exists, and this footer is already where the surface says what a key
+                    does to the highlighted row. Withheld rather than greyed on a row
+                    with no address: the hint doubles as the answer to "can this one be
+                    copied", which a permanently-present label could not give. */}
+                {copyTarget && (
+                  <>
+                    <span className="shrink-0">{i18nT('apps.commandBar.copy_hint')}</span>
+                    <span className="shrink-0 px-1 rounded border border-border leading-4">
+                      {COPY_KEY}
+                    </span>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
+        {/* BELOW the footer, not above the list, and that placement is the point: a
+            notice mounted over the rows pushed the whole list down on every copy, and a
+            reader watching the row they had just copied saw it move and could not tell
+            whether it had scrolled away or gone. At the bottom of the panel a copy
+            changes nothing about where anything else sits.
+
+            A clipboard write that did not land is an ERROR, so it goes through the
+            product's error surface rather than the status line below it.
+            No hand-off: the query typed into the bar is unsaved -- the navigation would
+            close the bar and take it along. */}
+        {copyError && (
+          <div className="px-3 py-2 border-t border-border">
+            <ErrorNotice message={copyError.text} variant="inline" />
+            {/* The address the write did not land, in FULL and selectable. The message
+                above names a remedy -- select the text and copy it yourself -- and on
+                this path nothing else on screen holds that text. Not truncated, for the
+                same reason: a reader who selects half an address gets half a link. */}
+            <div
+              className="mt-1 text-[12px] text-muted select-all"
+              style={{ overflowWrap: 'anywhere' }}
+            >
+              {copyError.what}
+            </div>
+          </div>
+        )}
+
         {/* The argument state has no row to name an action for, and it is the state
             that most needs one: the verb here is "approve" or "merge", and it fires on
             the next Enter. The spinner lives here for the same reason -- the work is

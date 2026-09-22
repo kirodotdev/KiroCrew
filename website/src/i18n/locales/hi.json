@@ -4955,7 +4955,11 @@
       "artifacts_more_keep_typing": "+{{count}} और — सीमित करने के लिए टाइप करते रहो",
       "fallback_artifacts": "आर्टिफ़ैक्ट में “{{query}}” खोजें",
       "fallback_artifacts_sub": "उस लेख से मेल खाते सहेजे गए चार्ट, दस्तावेज़ और विजेट ढूँढता है।",
-      "action_search_artifacts": "आर्टिफ़ैक्ट खोजें"
+      "action_search_artifacts": "आर्टिफ़ैक्ट खोजें",
+      "copied": "कॉपी हो गया",
+      "copy_failed": "कॉपी विफल — तुम्हारे ब्राउज़र ने क्लिपबोर्ड एक्सेस रोक दिया। टेक्स्ट चुनकर खुद कॉपी करो।",
+      "copy_nothing": "यहाँ कॉपी करने के लिए कुछ नहीं है।",
+      "copy_hint": "लिंक कॉपी करें"
     },
     "awsControl": {
       "manifest": {

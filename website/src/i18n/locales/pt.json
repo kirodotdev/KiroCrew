@@ -5034,7 +5034,11 @@
       "artifacts_more_keep_typing": "+{{count}} mais — continue digitando para filtrar",
       "fallback_artifacts": "Pesquisar “{{query}}” nos artefatos",
       "fallback_artifacts_sub": "Encontra gráficos, documentos e widgets salvos que correspondem a esse texto.",
-      "action_search_artifacts": "Pesquisar artefatos"
+      "action_search_artifacts": "Pesquisar artefatos",
+      "copied": "Copiado",
+      "copy_failed": "Falha ao copiar — o navegador bloqueou o acesso à área de transferência. Selecione o texto e copie manualmente.",
+      "copy_nothing": "Não há nada para copiar aqui.",
+      "copy_hint": "Copiar link"
     },
     "awsControl": {
       "manifest": {
