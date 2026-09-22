@@ -233,6 +233,16 @@ class TestShippedScenarios:
         )  # the longer title is still a valid reading
         assert any('"Crew Members" item appears in the left rail' in s for s in sc.steps)
 
+    def test_members_scenarios_hedge_the_card_label(self) -> None:
+        """A seeded member has no display name, so its card shows the id; both members scenarios say so."""
+        for name in ("members-dm-hello", "members-private-memory-keeps-thread"):
+            sc = scenarios.load_scenario(SCENARIOS_DIR / f"{name}.yaml")
+            card_steps = [s for s in sc.steps if "Nova Sky" in s]
+            assert card_steps, name
+            for step in card_steps:
+                assert 'may read "nova-sky"' in step, (name, step)
+            assert not any('named "Nova Sky"' in s for s in sc.steps), name
+
 
 def _write(tmp_path: Path, name: str, doc: dict) -> Path:
     p = tmp_path / f"{name}.yaml"
