@@ -1,0 +1,39 @@
+# Smoke: the Security tab of Settings is split into sections by its own inner
+# rail, and every section is a path, /settings/security/<section>, so a section
+# can be bookmarked and deep-linked. The rail groups its rows under small
+# headers (Status, Your settings, Enforced, Reference) and each row reuses the
+# heading of the pane it opens, so the label the tester clicks is the heading
+# the tester then reads. The harness opens the page at /settings/security (the
+# default section, Live Security Posture) and the tester clicks four sections
+# spanning the three lower groups, reading the pane heading and the address bar
+# after each -- the window keeps its omnibox exactly so the tester can see the
+# URL like a person would. Read-only: nothing on any pane is toggled, typed or
+# submitted, so the run leaves the install exactly as it found it. The three
+# surviving screenshots are the last three clicks, so the final expectations
+# read the Documentation landing and the screenshot taken right after the
+# Governance Policy click.
+name: settings-security-rail-navigation
+tier: smoke
+feature: security
+user_story: >-
+  As a user, I want each Security section at /settings/security/<section>, so
+  that I can move between my security controls and deep-link to any of them.
+docs_url: docs/feature-map/README.md
+summary: Open Settings > Security, click four sections in its inner rail and read the heading and address bar change with each
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/security
+steps:
+  - You are on the Settings page with its Security tab selected. Inside the pane, to the left, is a second, narrower navigation whose rows sit under small group headers reading "Status", "Your settings", "Enforced" and "Reference". The pane heading reads "Live Security Posture" and the browser's address bar ends in "/settings/security". Do not scroll or click anything yet.
+  - In that inner navigation, under "Your settings", click the row labelled "Denied Commands". The pane heading changes to "Denied Commands" and the address bar now ends in "/settings/security/rules". A long list of built-in rules and a card headed "Your custom denies" render below it; do not toggle, type or delete anything.
+  - In the inner navigation, under "Enforced", click the row labelled "Defense-in-Depth Architecture". The pane heading changes to match and the address bar now ends in "/settings/security/layers".
+  - Still under "Enforced", click the row labelled "Governance Policy". The pane heading changes to "Governance Policy" and the address bar now ends in "/settings/security/governance".
+  - Under "Reference", click the row labelled "Documentation". Read the pane heading and the address bar again.
+expectations:
+  - The browser's address bar ends in "/settings/security/docs" (no "?section=" or "?sub=" query string).
+  - The pane heading reads "Documentation", and "Documentation" is the highlighted row in the inner security navigation while "Governance Policy", "Defense-in-Depth Architecture" and "Denied Commands" are not.
+  - In the screenshot taken right after you clicked "Governance Policy", the pane heading read "Governance Policy" and the address bar ended in "/settings/security/governance".
+  - The "Settings" item is highlighted as active in the left rail, "Security" is the highlighted tab in the settings navigation, and no red error banner is visible on any of the sections you opened.
+max_steps: 10
+max_seconds: 300
