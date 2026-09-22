@@ -6661,6 +6661,7 @@ def _settle_consumed_steers(
     slot._pending_steers[:] = remaining
     for settled_msg in set(previous) - set(remaining):
         slot._steer_attachment_meta.pop(settled_msg, None)
+        slot._steer_decision_strips.pop(settled_msg, None)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -6742,6 +6743,17 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         if _sid:
             _meta["sendId"] = _sid
         _meta.update(getattr(slot, "_steer_attachment_meta", {}).pop(steer_msg, {}))
+        # The decision receipt rides the entry for the same reason the two ids do:
+        # the drain unions a consumed entry's meta onto the row it writes, so this is
+        # the only writer a requeued steer has. Both outcomes a `message.steer`
+        # decision can CHOOSE already stamp it -- the steer path on its persisted row,
+        # `queue_for_next_turn` on its entry -- and this is the third path, the race
+        # where the turn ended while the RPC was suspended. Popped in lockstep with the
+        # maps above. Additive: a manual steer recorded nothing and its entry meta
+        # keeps the exact prior shape.
+        _strip = getattr(slot, "_steer_decision_strips", {}).pop(steer_msg, None)
+        if _strip:
+            _meta["decisions_strip"] = _strip
         # Provenance is REPORTED by the steer's caller, not derived from the slot.
         # `steer_into_running_turn` has two callers that differ on exactly this
         # point: the api_chat composer branch, whose text its session's own human

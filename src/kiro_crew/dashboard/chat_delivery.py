@@ -362,6 +362,7 @@ async def steer_into_running_turn(
             slot._steer_user_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
+            slot._steer_decision_strips,
         )
     )
     if retained_steer_count >= MAX_PENDING_STEERS:
@@ -402,6 +403,13 @@ async def steer_into_running_turn(
         slot._steer_admissions[message] = admission
     if attachments:
         slot._steer_attachment_meta[message] = attachments
+    if decision_strip:
+        # Recorded for the REQUEUE, like the maps above: the three `STEER_REQUEUED`
+        # returns below all come back before the stamp on the persisted row, and the
+        # requeue that writes the entry instead runs in the turn's teardown, which
+        # never sees this call's arguments. Absent stores nothing, so a manual steer's
+        # requeued entry keeps the exact prior shape.
+        slot._steer_decision_strips[message] = decision_strip
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -471,6 +479,7 @@ async def steer_into_running_turn(
         slot._steer_user_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
+        slot._steer_decision_strips.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -501,6 +510,7 @@ async def steer_into_running_turn(
             slot._steer_user_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
+            slot._steer_decision_strips.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -588,6 +598,13 @@ async def steer_into_running_turn(
     slot._steer_send_ids.pop(message, None)
     slot._steer_user_origin.pop(message, None)
     slot._steer_admissions.pop(message, None)
+    # Same reason as `sendId` above, and why this is NOT held for the requeue the way
+    # the attachments below are: the row persisted below carries the receipt, so a
+    # turn-end requeue stamping it on the queue entry too would put one decision on
+    # two rows -- the corrected REQUEUED row and the drained one, neither ever
+    # removed. Attachments are payload the drained row must render; a receipt is an
+    # attribution, and one send decided once.
+    slot._steer_decision_strips.pop(message, None)
     # No ledger entry from here either. Reaching this point rules out every requeue
     # and discard KNOWN SO FAR, which is what entitles this path to persist a
     # transcript row -- but that row is mutable and starts as `written`, promoted to

@@ -64,6 +64,23 @@ const STEER_RECORD = {
   latency_ms: 150,
 }
 
+/**
+ * The receipt on a REQUEUED steer's row.
+ *
+ * Its own `turn_id` and numbers rather than a reuse of the two above, because this
+ * row is a different send: the turn ended while the steer RPC was suspended, so the
+ * teardown degraded the steer into a queue card and the DRAIN wrote the row.
+ */
+const REQUEUED_RECORD = {
+  turn_id: 'turn-7b21ce',
+  ts: '2026-09-20T07:06:02Z',
+  point: 'message.steer',
+  choice: 'queue',
+  baseline: 'steer',
+  p: 0.77,
+  latency_ms: 210,
+}
+
 const t0 = Date.now() / 1000 - 600
 
 const slots = [
@@ -109,6 +126,17 @@ const detail = {
       meta: { decisions_strip: STEER_RECORD, steer: true, steerState: 'consumed' },
     },
     { role: 'assistant', ts: t0 + 58, content: 'Switched to config/read.py.' },
+    {
+      // A REQUEUED steer: the turn ended while the steer RPC was suspended, so its
+      // teardown moved the message into the queue and the drain wrote this row.
+      // The receipt has to be here -- the decision chose this path, and until the
+      // side map carried it across that teardown the row read as undecided.
+      role: 'user',
+      ts: t0 + 72,
+      content: 'Also drop the legacy INI branch while you are in there.',
+      meta: { decisions_strip: REQUEUED_RECORD, steer: true, steerState: 'requeued' },
+    },
+    { role: 'assistant', ts: t0 + 96, content: 'Dropped the INI branch too.' },
   ],
 }
 
@@ -213,6 +241,22 @@ async function main() {
     check(
       !/steered/.test(steeredText),
       `${theme}: the line describes the CHOICE, so it cannot contradict the delivery`,
+    )
+
+    // A REQUEUED steer's row still carries its receipt. The row the drain wrote,
+    // not the one the steer path persisted -- the receipt reaches it only because
+    // the requeue carries it onto the queue entry the drain unions onto this row.
+    const requeuedRow = page
+      .locator('div[data-role="user"]')
+      .filter({ hasText: 'legacy INI branch' })
+      .first()
+    await requeuedRow.evaluate(el => el.scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(300)
+    await requeuedRow.screenshot({ path: `${OUT}/06-requeued-receipt-${theme}.png` })
+    console.log('wrote', `${OUT}/06-requeued-receipt-${theme}.png`)
+    check(
+      (await requeuedRow.locator(LINE).count()) === 1,
+      `${theme}: a requeued steer's row draws its one receipt`,
     )
 
     // The picker, with the third mode offered.

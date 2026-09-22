@@ -2472,6 +2472,7 @@ class _ChatSlot:
         "_steer_send_ids",
         "_steer_user_origin",
         "_steer_admissions",
+        "_steer_decision_strips",
         "_steer_audience_fences",
         "_steer_attachment_meta",
         "_wait_state",
@@ -3419,6 +3420,16 @@ class _ChatSlot:
         # key, which puts it on the drain's fail-closed floor: checked against every
         # currently held constraint rather than against a baseline built at teardown.
         self._steer_admissions: dict[str, dict] = {}
+        # The `message.steer` decision row that chose the STEER path for an
+        # in-flight steer, keyed by the same message text as the maps above and
+        # kept in the same LOCKSTEP. Only the requeue reads it: the receipt is
+        # stamped on the persisted row by the steer path itself and on the queue
+        # entry by `queue_for_next_turn`, but a steer the turn's teardown requeues
+        # takes neither of those writers -- the teardown is a different coroutine
+        # that never sees the caller's argument -- so without this map the one
+        # outcome a decision did choose lands as a queue entry with no receipt.
+        # Absent for a manual steer, which has none to carry.
+        self._steer_decision_strips: dict[str, dict] = {}
         # Admission snapshots of the peer steers that influenced THIS turn, keyed by
         # an opaque token. The turn consults them before publishing its CROSS-SURFACE
         # reply leg and withholds it when a constraint newly holds:

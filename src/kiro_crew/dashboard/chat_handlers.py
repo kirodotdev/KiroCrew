@@ -4703,6 +4703,7 @@ async def stop_slot_turn(
             slot._steer_user_origin.pop(_discarded, None)
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
+            slot._steer_decision_strips.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)

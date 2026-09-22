@@ -1782,3 +1782,169 @@ class TestSendIdMapLifecycle:
             "delivery id, or a reader cannot assume the two maps agree"
         )
         assert slot._steer_delivery_ids == {}
+
+
+class TestRequeuedSteerKeepsItsDecisionReceipt:
+    """A steer a `message.steer` decision CHOSE must reach its row with the receipt.
+
+    Both outcomes the decision can choose already stamp one: the steer path puts it
+    on the row it persists, `queue_for_next_turn` puts it on the entry it appends.
+    The third path is neither -- the turn ended while the steer RPC was suspended,
+    so the teardown degrades the steer into a queue card and the DRAIN writes the
+    row. The receipt therefore has to travel registration -> entry meta -> row, the
+    same one step further the client's `sendId` travels, or the one outcome a
+    decision did choose lands as a row that reads as undecided.
+    """
+
+    _TEXT = "use the cached build"
+    _STRIP = {"point": "message.steer", "decision": "steer", "id": "d-1"}
+
+    @pytest.mark.asyncio
+    async def test_requeued_entry_meta_carries_the_receipt(self, tmp_path, monkeypatch):
+        """Registration -> entry meta, driving the real requeue from inside the RPC."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+
+        async def _steer(message):
+            from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
+
+            _requeue_unconsumed_steers(state, slot)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = _steer
+        slot._acp_client = client_mock
+
+        from kiro_crew.dashboard.chat_delivery import STEER_REQUEUED, steer_into_running_turn
+
+        outcome = await steer_into_running_turn(state, slot, self._TEXT, decision_strip=self._STRIP)
+        assert outcome == STEER_REQUEUED
+        assert slot._queue[0]["meta"].get("decisions_strip") == self._STRIP, (
+            "the requeued entry must carry the decision receipt -- the drain unions "
+            "entry meta onto the row it writes, so this is the only writer a steer "
+            "that never persists its own row has"
+        )
+        assert slot._steer_decision_strips == {}, "popped in lockstep with the other maps"
+
+    @pytest.mark.asyncio
+    async def test_drained_row_carries_the_receipt(self, tmp_path, monkeypatch):
+        """Entry meta -> row meta: the row is what the transcript reader reads."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = [self._TEXT]
+        slot._steer_delivery_ids = {self._TEXT: "did-1"}
+        slot._steer_decision_strips = {self._TEXT: self._STRIP}
+
+        from kiro_crew.dashboard import chat_runner
+
+        chat_runner._requeue_unconsumed_steers(state, slot)
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        rows = [m for m in slot.messages if m.get("role") == "user"]
+        assert rows, "the drain must have written a user row for the requeued steer"
+        assert (rows[-1].get("meta") or {}).get("decisions_strip") == self._STRIP
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_already_carries_the_receipt_does_not_requeue_it(
+        self, tmp_path, monkeypatch
+    ):
+        """The live-then-died path must not put ONE decision's receipt on two rows.
+
+        A delivery still registered when it reaches the persisting tail stamps the
+        receipt on the row it writes there, and the turn can still die afterwards and
+        requeue the text. Carrying the receipt into that requeue too would stamp it on
+        the queue entry, the drain would union it onto a second row, and
+        `_mark_steer_row_state` rewrites only `steerState` -- so both the corrected
+        REQUEUED row and the drained row would claim the decision and neither copy is
+        ever removed. `sendId` is dropped at that same site for the same reason.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+
+        assert (
+            await steer_into_running_turn(state, slot, self._TEXT, decision_strip=self._STRIP)
+            == STEER_STEERED
+        )
+        # The row this path persisted is where the receipt lives.
+        _rows = [m for m in slot.messages if m.get("role") == "user"]
+        assert (_rows[-1].get("meta") or {}).get("decisions_strip") == self._STRIP
+
+        # The turn ends without the echo, so its teardown degrades the live steer.
+        chat_runner._requeue_unconsumed_steers(state, slot)
+        assert "decisions_strip" not in (slot._queue[0].get("meta") or {}), (
+            "the persisted row already carries this decision; a second copy on the "
+            "drained row would render one decision as two receipts"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_settled_steer_releases_its_receipt(self, tmp_path, monkeypatch):
+        """The other side of that hold: an echo-confirmed steer keeps nothing.
+
+        The map is keyed by message TEXT, so an entry left behind holds a whole
+        message for the slot's lifetime -- and a steer the echo accounted for is
+        never requeued, so nothing will read it again.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = [self._TEXT]
+        slot._steer_decision_strips = {self._TEXT: self._STRIP}
+
+        from kiro_crew.dashboard import chat_runner
+
+        chat_runner._settle_consumed_steers(
+            slot, f"<user_message>\n{self._TEXT}\n</user_message>", state
+        )
+
+        assert slot._pending_steers == []
+        assert slot._steer_decision_strips == {}
+
+    @pytest.mark.asyncio
+    async def test_a_manual_steer_keeps_the_prior_entry_shape(self, tmp_path, monkeypatch):
+        """Additive: an undecided steer has no receipt, and its entry must not gain one.
+
+        Pinned as an ABSENT KEY rather than a falsy value: the entry meta is
+        persisted with the queue and reaches the row, where an empty receipt would
+        render as a decision that never happened.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+
+        async def _steer(message):
+            from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
+
+            _requeue_unconsumed_steers(state, slot)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = _steer
+        slot._acp_client = client_mock
+
+        from kiro_crew.dashboard.chat_delivery import steer_into_running_turn
+
+        await steer_into_running_turn(state, slot, self._TEXT)
+        assert "decisions_strip" not in slot._queue[0]["meta"]
