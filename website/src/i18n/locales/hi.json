@@ -12124,6 +12124,9 @@
       "topic": "विषय"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "activityViewer": {
         "activity": "गतिविधि",
         "approval_needed": "स्वीकृति आवश्यक",
@@ -12238,6 +12241,7 @@
         "copied_as_rich_text": "रिच टेक्स्ट के रूप में कॉपी हो गया",
         "copied_as_markdown": "Markdown के रूप में कॉपी हो गया",
         "speak_message": "संदेश ज़ोर से पढ़ें",
+        "speaker_heading": "{{productName}}",
         "steered": "निर्देशित",
         "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
         "switch_to_rendered_view": "रेंडर किए गए व्यू पर स्विच करें",
@@ -12973,6 +12977,7 @@
         "edit_resend": "संपादित करें और फिर भेजें",
         "send": "भेजें",
         "send_enter": "भेजें (Enter)",
+        "speaker_heading": "तुम",
         "steered_into_the_running_turn": "चल रहे टर्न में निर्देशित किया गया",
         "pin_message": "संदेश पिन करें",
         "unpin_message": "संदेश अनपिन करें",

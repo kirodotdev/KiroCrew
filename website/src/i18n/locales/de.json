@@ -12124,6 +12124,9 @@
       "topic": "Thema"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "activityViewer": {
         "activity": "Aktivität",
         "approval_needed": "Genehmigung erforderlich",
@@ -12238,6 +12241,7 @@
         "copied_as_rich_text": "Als formatierter Text kopiert",
         "copied_as_markdown": "Als Markdown kopiert",
         "speak_message": "Nachricht vorlesen",
+        "speaker_heading": "{{productName}}",
         "steered": "Gesteuert",
         "switch_to_raw_markdown_view": "Zur Roh-Markdown-Ansicht wechseln",
         "switch_to_rendered_view": "Zur gerenderten Ansicht wechseln",
@@ -12973,6 +12977,7 @@
         "edit_resend": "Bearbeiten & erneut senden",
         "send": "Senden",
         "send_enter": "Senden (Enter)",
+        "speaker_heading": "Du",
         "steered_into_the_running_turn": "In den laufenden Zug eingesteuert",
         "pin_message": "Nachricht anheften",
         "unpin_message": "Nachricht loslösen",

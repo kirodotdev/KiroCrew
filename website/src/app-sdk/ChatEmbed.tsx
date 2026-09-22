@@ -49,6 +49,7 @@ import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } fro
 import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
 import { Loader2, Paperclip } from 'lucide-react'
 import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList'
+import { useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import ErrorNotice from '../components/ErrorNotice'
 import { FilePreviewStrip } from '../components/chat-input/FilePreviewStrip'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
@@ -686,6 +687,9 @@ function ChatEmbed({
     const rows = pendingHere.filter(p => !p.asQueued && isShown(p)).map(p => p.row)
     return rows.length ? [...listMessages, ...rows] : listMessages
   }, [listMessages, pendingHere, isShown])
+  // Text for the transcript's one live region, the same decision ChatPage makes.
+  const embedTail = messages[messages.length - 1]
+  const { announcement, announceSent } = useTranscriptAnnouncement(embedTail, embedTail?.role === 'streaming')
   const { queuedMessages, systemDeliveryCount } = useMemo(() => {
     const entries = normalizeQueueEntries(queueRaw)
     for (const p of pendingHere) {
@@ -1161,8 +1165,11 @@ function ChatEmbed({
       text: msg,
       before,
     }])
+    // Spoken at the send, as on ChatPage: a user row at the tail is also what a
+    // still-running session looks like on first load.
+    announceSent(msg)
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes, armRefocus])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes, armRefocus, announceSent])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1334,6 +1341,7 @@ function ChatEmbed({
         handOff={false}
         transcript={{
           sessionId: `embed:${slotKey}`,
+          announcement,
           followOutput: !!startAtBottom,
           initialPlacement: startAtBottom ? 'bottom' : 'top',
           onAtBottomChange: setIsAtBottom,

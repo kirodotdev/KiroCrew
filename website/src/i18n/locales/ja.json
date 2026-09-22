@@ -11863,6 +11863,9 @@
       "topic": "トピック"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}：{{text}}"
+      },
       "activityViewer": {
         "activity": "アクティビティ",
         "approval_needed": "承認が必要",
@@ -11976,6 +11979,7 @@
         "copied_as_rich_text": "リッチテキストとしてコピーしました",
         "copied_as_markdown": "Markdown としてコピーしました",
         "speak_message": "メッセージを読み上げ",
+        "speaker_heading": "{{productName}}",
         "steered": "ステアリング済み",
         "switch_to_raw_markdown_view": "生 Markdown ビューに切り替え",
         "switch_to_rendered_view": "レンダリング済みビューに切り替え",
@@ -12669,6 +12673,7 @@
         "edit_resend": "編集して再送信",
         "send": "送信",
         "send_enter": "送信 (Enter)",
+        "speaker_heading": "あなた",
         "steered_into_the_running_turn": "実行中のターンに追加しました",
         "pin_message": "メッセージをピン留め",
         "unpin_message": "メッセージのピン留めを解除",

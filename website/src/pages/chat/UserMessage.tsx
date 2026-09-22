@@ -573,6 +573,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       // the fold would otherwise continue inside an invisible textarea, with its
       // Send out of reach. The editor stays visible; the banner is simply absent.
       <div data-role="user" data-message-editing="" className="group/msg flex flex-col items-end max-w-full">
+        {/* Offscreen heading: the transcript is a flat run of bubbles, so a
+            screen reader arriving mid-conversation has nothing to navigate by
+            and no cue to who is speaking — the right/left alignment that says
+            it visually is announced as nothing. A heading per message makes the
+            turns the page's heading outline, which is how the H key steps
+            through a conversation. Offscreen because the visual design already
+            carries the speaker. */}
+        <h2 className="sr-only">{i18nT('pages.chat.userMessage.speaker_heading')}</h2>
         {/* `edit-grow` is a CSS grid auto-sizer: a hidden ::after mirror (fed by
             data-replicated-value) drives the grid track so the textarea grows
             with its own content — width AND height — exactly like the read-only
@@ -750,6 +758,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
     <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
+      {/* Offscreen heading — see the editing branch above for why. */}
+      <h2 className="sr-only">{i18nT('pages.chat.userMessage.speaker_heading')}</h2>
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
