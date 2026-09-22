@@ -803,6 +803,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Called by MCP (loopback + secret) AND browser polling
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
+        # Owner-authenticated source snapshots sent hub→crew over the existing
+        # tunnel. The handler independently requires the dashboard owner and
+        # refuses internal/app callers.
+        "/api/remote-workspaces",
         # The update step-up's arm record: POST (arm), GET (status), DELETE
         # (decline). Two callers, two credentials: the About panel polls it with
         # a cookie, and an agent asking for an app update presents
@@ -1713,6 +1717,10 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
+    app.router.add_post(
+        "/api/remote-workspaces",
+        _deferred("remote_workspaces", "api_remote_workspace_upload"),
+    )
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
     # MCP Apps (SEP-1865): embedded app iframe -> gateway tool callback.

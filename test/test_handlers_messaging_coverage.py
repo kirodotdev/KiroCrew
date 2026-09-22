@@ -2235,3 +2235,33 @@ def test_slack_timestamp_contract_matches_the_handler_regex() -> None:
     """The pins/reactions ts guard is a literal ``\\d+\\.\\d+`` shape check."""
     assert re.match(r"^\d+\.\d+$", "1712793600.123456")
     assert not re.match(r"^\d+\.\d+$", "1712793600")
+
+
+@pytest.mark.parametrize(
+    "handler,body,local_method",
+    [
+        (mod.api_spawn_continue, {"task": "next"}, "continue_conversation"),
+        (mod.api_spawn_steer, {"message": "adjust"}, "steer_run"),
+        (mod.api_spawn_release, None, "release_conversation"),
+        (mod.api_spawn_retry, None, "spawn"),
+    ],
+)
+def test_remote_run_refuses_local_only_lifecycle_handlers(
+    handler: Any, body: Any, local_method: str
+) -> None:
+    mgr = _mgr()
+    mgr.get.return_value = _info(
+        id="a1",
+        done=True,
+        outcome="failed",
+        executor="remote",
+        instance_id="crew-a",
+        remote_id="peer01",
+    )
+    request = _Req(_state(subagents=mgr), body, match_info={"agent_id": "a1"})
+
+    response = _run(handler, request)
+
+    assert response.status == 409
+    assert _payload(response)["code"] == "remote_operation_unsupported"
+    getattr(mgr, local_method).assert_not_called()

@@ -59,7 +59,7 @@ class WaveDigestCoordinator(ManagerComponent):
         _bs = self._manager._batch_submitted.get(batch_id)
         if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
             return True  # submissions still in flight
-        if any(a.batch_id == batch_id and not a.done for a in self._manager._agents.values()):
+        if any(a.batch_id == batch_id and not a.done for a in self._manager.all_agents):
             return True
         return any(p.get("batch_id") == batch_id for p in self._manager._queue)
 
@@ -87,14 +87,14 @@ class WaveDigestCoordinator(ManagerComponent):
             return False
         member_keys = {
             (a.conversation_key or f"subagent:{a.id}")
-            for a in self._manager._agents.values()
+            for a in self._manager.all_agents
             if a.batch_id == batch_id
         }
         if not member_keys:
             return False
         if any(
             not a.done and a.batch_id != batch_id and a.parent_session_key in member_keys
-            for a in self._manager._agents.values()
+            for a in self._manager.all_agents
         ):
             return True
         return any(
@@ -217,7 +217,7 @@ class WaveDigestCoordinator(ManagerComponent):
             last = self._manager._batch_progress_ts.get(batch_id, 0.0)
             if now - last < _facade._WAVE_STUCK_SECS:
                 continue  # still within the grace window
-            members = [a for a in self._manager._agents.values() if a.batch_id == batch_id]
+            members = [a for a in self._manager.all_agents if a.batch_id == batch_id]
             if any(not a.done for a in members):
                 continue  # live members will re-evaluate the wave on completion
             if any(p.get("batch_id") == batch_id for p in self._manager._queue):
@@ -303,7 +303,7 @@ class WaveDigestCoordinator(ManagerComponent):
         oldest: dict[str, float] = {}
         parents: dict[str, str] = {}
         totals: dict[str, int] = {}
-        for info in list(self._manager._agents.values()):
+        for info in list(self._manager.all_agents):
             _bid = info.batch_id
             if not _bid or info._digest_held_at <= 0.0:
                 continue

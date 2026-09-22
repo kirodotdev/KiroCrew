@@ -11741,6 +11741,8 @@ class GatewayOrchestrator:
             adaptive_controller.register(None)
             self._unwire_overload_health()
             cleanup_tasks.append(self._adaptive_controller.stop())
+        if self.dashboard_state and self.dashboard_state.remote_subagents is not None:
+            cleanup_tasks.append(self.dashboard_state.remote_subagents.close())
         if self.subagent_mgr:
             cleanup_tasks.append(self.subagent_mgr.cancel_all())
         if self.sessions:
