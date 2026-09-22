@@ -26,6 +26,7 @@ const apiMocks = vi.hoisted(() => ({
   dictionary: vi.fn(),
   addTerm: vi.fn(),
   removeTerm: vi.fn(),
+  calendarCredentials: vi.fn(),
 }))
 
 vi.mock('../apps/meetings/api', async importOriginal => {
@@ -98,6 +99,9 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   apiMocks.config.mockResolvedValue(configResponse())
   apiMocks.dictionary.mockResolvedValue({ terms: [] })
+  // The credential form is its own suite (MeetingsCalendarCredentials.test.tsx);
+  // here it only has to resolve so the Calendar card renders without a pending query.
+  apiMocks.calendarCredentials.mockResolvedValue({ status: {}, providers: {} })
   apiMocks.saveConfig.mockImplementation((config: MeetingsConfig) => Promise.resolve({ config }))
   apiMocks.addTerm.mockResolvedValue({ terms: [TERM] })
   apiMocks.removeTerm.mockResolvedValue({ terms: [] })
