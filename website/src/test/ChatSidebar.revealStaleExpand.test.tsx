@@ -1,5 +1,5 @@
 /**
- * Reveal-in-sidebar must pre-expand the stale-session ("Dormant sessions")
+ * Reveal-in-sidebar must pre-expand the stale-session ("N dormant sessions hidden")
  * section hiding its target. The stale collapse is a per-container disclosure,
  * not a registered filter dimension, so the reveal effect's filter-clearing
  * walk cannot see it: without the pre-expand, revealing a dormant NON-active

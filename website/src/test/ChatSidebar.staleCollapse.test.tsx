@@ -1,6 +1,6 @@
 /**
  * Stale-session collapse, component level: sessions idle past the threshold
- * collapse behind a per-container "Dormant sessions (N)" expander row — at the
+ * collapse behind a per-container "N dormant sessions hidden" expander row — at the
  * ungrouped root AND inside each folder independently — while pinned, focused,
  * running and needs-input sessions are exempt. localStorage "0" turns the
  * feature off. The pure split predicate is pinned in staleCollapse.test.ts.
@@ -207,6 +207,59 @@ describe('chat sidebar — stale-session collapse', () => {
     fireEvent.click(getByTestId('stale-expander-f1'))
     expect(queryByText('foldered old')).not.toBeNull()
     expect(queryByText('root old')).toBeNull()
+  })
+
+  it('names the hidden count in one sentence, so a folder badge of 2 over one row adds up', () => {
+    // gui-user-test friction: "Demos 2" over one visible row and a bare
+    // "Dormant sessions" + pill left the tester unsure where the second session
+    // was. The row now says "1 dormant session hidden" — the numbers add up.
+    const folders = [{ id: 'demos', name: 'Demos', order: 0, collapsed: false }]
+    const { container, getByTestId, queryByText } = renderSidebar([
+      slot('in-fresh', 'Fix empty-glob crash', 1, { folder_id: 'demos' }),
+      slot('in-old', 'foldered old', 10 * 24, { folder_id: 'demos' }),
+    ], { folders })
+    // The header badge still counts every filed session (behaviour unchanged) …
+    expect(container.querySelector('[data-folder-row="demos"]')).toHaveTextContent('2')
+    // … and the row below now says where the one you cannot see went.
+    const expander = getByTestId('stale-expander-demos')
+    expect(expander).toHaveTextContent('1 dormant session hidden')
+    // No separate count pill: the sentence IS the count.
+    expect(expander.querySelector('.rounded-full')).toBeNull()
+    expect(queryByText('foldered old')).toBeNull()
+  })
+
+  it('pluralises the hidden sentence and labels the button with the sentence + folder name', () => {
+    const folders = [{ id: 'f1', name: 'Work', order: 0, collapsed: false }]
+    const { getByTestId } = renderSidebar([
+      slot('a', 'old a', 10 * 24, { folder_id: 'f1' }),
+      slot('b', 'old b', 12 * 24, { folder_id: 'f1' }),
+      slot('c', 'root old', 9 * 24),
+    ], { folders })
+    expect(getByTestId('stale-expander-f1')).toHaveTextContent('2 dormant sessions hidden')
+    expect(getByTestId('stale-expander-f1')).toHaveAccessibleName('2 dormant sessions hidden Work folder')
+    expect(getByTestId('stale-expander-root')).toHaveTextContent('1 dormant session hidden')
+    expect(getByTestId('stale-expander-root')).toHaveAccessibleName('1 dormant session hidden outside folders')
+  })
+
+  it('tooltip names the dormancy window and the click action; both flip when expanded', () => {
+    const { getByTestId } = renderSidebar([
+      slot('fresh', 'fresh session', 2),
+      slot('old-1', 'old session one', 10 * 24),
+    ])
+    // Default window is 7 days; the same compact label the sort/filter menu shows.
+    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to show.')
+    fireEvent.click(getByTestId('stale-expander-root'))
+    expect(getByTestId('stale-expander-root')).toHaveTextContent('1 dormant session shown')
+    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to hide.')
+  })
+
+  it('tooltip follows a persisted custom threshold', () => {
+    localStorage.setItem('mc-session-stale-collapse-ms', String(3 * DAY))
+    const { getByTestId } = renderSidebar([
+      slot('fresh', 'fresh session', 2),
+      slot('old-1', 'old session one', 5 * 24),
+    ])
+    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 3d. Click to show.')
   })
 
   it('a persisted "0" turns the feature off and shows every session', () => {

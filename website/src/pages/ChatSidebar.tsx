@@ -4200,7 +4200,7 @@ function ChatSidebar({
 
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
-  // "Dormant sessions (N)" expander row, independently at every tree level (each
+  // "N dormant sessions hidden" expander row, independently at every tree level (each
   // folder body + the ungrouped root). Pinned, focused, running and
   // needs-input sessions are exempt: collapsing de-noises settled work, it is
   // never a place where live or deliberately-kept rows can disappear.
@@ -4326,19 +4326,32 @@ function ChatSidebar({
     const open = staleExpanded.has(containerId)
     const regionId = `stale-rows-${containerId}`
     const lblId = `stale-lbl-${containerId}`
-    const countId = `stale-count-${containerId}`
     const ctxId = `stale-ctx-${containerId}`
+    // One pluralised sentence carries the count AND says where the rows went,
+    // so a folder badge of "2" over one visible row plus "1 dormant session
+    // hidden" visibly adds up. A bare noun + count pill read as a category,
+    // not as "the rest are in here" (gui-user-test friction on this row).
+    const count = staleSlots.length
+    const label = open
+      ? i18nT('pages.chatSidebar.stale_collapse_row_shown', { count })
+      : i18nT('pages.chatSidebar.stale_collapse_row_hidden', { count })
+    // The threshold is otherwise only named in the sort/filter menu; the same
+    // compact window label ("7d") ties the row back to that setting.
+    const windowLabel = formatRecentWindow(staleCollapseMs)
+    const hint = open
+      ? i18nT('pages.chatSidebar.stale_collapse_row_hint_open', { window: windowLabel })
+      : i18nT('pages.chatSidebar.stale_collapse_row_hint', { window: windowLabel })
     return (
       <Fragment key={`stale-${containerId}`}>
-        {/* aria-labelledby composes the visible label + count badge + a
-            visually-hidden container name, so AT announces "Dormant sessions
-            3 <folder>" — an aria-label would drop the count (it overrides
-            button contents) and re-pluralizing it per locale is exactly the
-            concatenation trap the i18n rules ban. */}
+        {/* aria-labelledby composes the visible sentence + a visually-hidden
+            container name, so AT announces "1 dormant session hidden <folder>"
+            — an aria-label would override the button contents and re-composing
+            it per locale is exactly the concatenation trap the i18n rules ban. */}
         <button type="button"
           aria-expanded={open}
           aria-controls={regionId}
-          aria-labelledby={`${lblId} ${countId} ${ctxId}`}
+          aria-labelledby={`${lblId} ${ctxId}`}
+          title={hint}
           data-testid={`stale-expander-${containerId}`}
           onClick={() => setStaleExpanded(prev => {
             const next = new Set(prev)
@@ -4347,8 +4360,7 @@ function ChatSidebar({
           })}
           className="w-full flex items-center gap-1.5 px-3 py-0.5 rounded-md text-[11px] leading-4 text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <DisclosureChevron open={open} size={11} />
-          <span id={lblId}>{i18nT('pages.chatSidebar.stale_collapse_row')}</span>
-          <span id={countId} className="px-1 rounded-full bg-bg-hover text-[10px] tabular-nums">{staleSlots.length}</span>
+          <span id={lblId} className="tabular-nums">{label}</span>
           <span id={ctxId} className="sr-only">{containerName
             ? i18nT('pages.chatSidebar.stale_collapse_ctx_in_name', { name: containerName })
             : i18nT('pages.chatSidebar.stale_collapse_row_ungrouped')}</span>

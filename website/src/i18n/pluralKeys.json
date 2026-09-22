@@ -155,6 +155,8 @@
   "pages.chatSidebar.session",
   "pages.chatSidebar.session_failed_to_switch",
   "pages.chatSidebar.show_hidden_folder",
+  "pages.chatSidebar.stale_collapse_row_hidden",
+  "pages.chatSidebar.stale_collapse_row_shown",
   "pages.chatSidebar.sub_agent_needs_approval",
   "pages.chatSidebar.switch_session",
   "pages.chatSidebar.workflow_running",
