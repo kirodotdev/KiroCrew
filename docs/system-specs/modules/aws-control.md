@@ -988,6 +988,11 @@ anywhere clears one: an owner pressing the button is present and has just
 demonstrated the fault is gone, which is the line `_unattended_sessions_redaction_gap`
 already draws. The status read serves the record as `nightlyFailures` so an operator
 can see the count and the day it started; no console renderer ships with it.
+When the success itself cannot write the state file, its process-local run overlay masks
+the older persisted failure from that status projection immediately. The next successful
+state mutation persists the held run and removes the row on disk; until then `runs` and
+`nightlyFailures` still describe one latest outcome rather than success and stale failure
+at once.
 
 The clear alone is not enough, because the two writers serialize under the sidecar lock
 but each mutate re-reads fresh state. An unconditional failure write can therefore land

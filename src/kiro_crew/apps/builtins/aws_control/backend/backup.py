@@ -4565,10 +4565,33 @@ def nightly_failures(account: str) -> dict[str, Any]:
     record, so this stays one projection of the state file rather than a second
     validator of it -- :func:`_backoff_withholds` is where the values are judged.
     """
-    recorded = _account_view(account).get(NIGHTLY_FAILURE_STATE_KEY, {})
-    if not isinstance(recorded, dict):
-        return {}
-    return {str(kind): dict(row) for kind, row in recorded.items() if isinstance(row, dict)}
+    with _run_lock:
+        entry = _account_view(account)
+        recorded = entry.get(NIGHTLY_FAILURE_STATE_KEY, {})
+        if not isinstance(recorded, dict):
+            return {}
+        visible = {str(kind): dict(row) for kind, row in recorded.items() if isinstance(row, dict)}
+
+        # A completed upload whose state write failed is still the latest run: `last_runs`
+        # overlays it so the schedule does not upload again, and the status payload serves
+        # that same projection. Until the next successful state mutation drains the overlay,
+        # the older persisted failure row still exists on disk. Serving both would report a
+        # successful latest run and a current failure for the same kind. Mask only a held
+        # record that is newer than the persisted run; a stale hold must not hide a later
+        # genuine failure.
+        runs = entry.get("runs")
+        persisted_runs = runs if isinstance(runs, dict) else {}
+        state_path = _state_key()
+        with _unpersisted_lock:
+            held_runs = {
+                kind: record
+                for (path, acct, kind), record in _unpersisted_runs.items()
+                if path == state_path and acct == account
+            }
+        for kind, record in held_runs.items():
+            if _run_is_newer(record, persisted_runs.get(kind)):
+                visible.pop(kind, None)
+        return visible
 
 
 def nightly_retry_delay_secs(consecutive: int) -> int:

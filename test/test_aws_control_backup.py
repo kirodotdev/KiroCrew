@@ -1409,6 +1409,27 @@ class TestALostRunWriteDoesNotReUploadForever:
 
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
 
+    def test_a_held_success_hides_the_failure_it_superseded(self):
+        """The status projections must describe the same latest attempt.
+
+        The successful upload is held in memory when its state write fails, and
+        ``last_runs`` already serves it so the schedule does not upload again.  Serving
+        the older persisted failure beside that success reports a healthy account as
+        failing until some unrelated later state write happens to drain the overlay.
+        """
+        backup.set_nightly(ACCOUNT, True)
+        witness = backup.nightly_run_witness(ACCOUNT, backup.KIND_SNAPSHOT)
+        backup.record_nightly_failure(
+            ACCOUNT, backup.KIND_SNAPSHOT, "mount gone", run_witness=witness
+        )
+        assert backup.KIND_SNAPSHOT in backup.nightly_failures(ACCOUNT)
+
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
+        assert backup.nightly_failures(ACCOUNT) == {}
+
     def test_the_log_names_the_write_not_the_read(self, caplog):
         backup.set_nightly(ACCOUNT, True)
         with caplog.at_level(logging.ERROR), self._full_disk():
@@ -2249,7 +2270,11 @@ class TestNightlyRetryBackoff:
         held = backup.last_runs(ACCOUNT).get(backup.KIND_SNAPSHOT)
         assert held and held["key"] == "snapshots/i/held.tar.gz"  # the overlay holds it
         # Still on disk, because the write never landed -- the precondition of the case.
-        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 4
+        # The public projection masks it beside the newer held success; inspect storage
+        # directly here because this assertion is specifically about persistence.
+        persisted_failures = backup._account_view(ACCOUNT)[backup.NIGHTLY_FAILURE_STATE_KEY]
+        assert persisted_failures[backup.KIND_SNAPSHOT]["consecutive"] == 4
+        assert backup.nightly_failures(ACCOUNT) == {}
 
         # Any later successful state update drains the overlay through `_merge_pending`.
         backup.set_nightly(ACCOUNT, True)
