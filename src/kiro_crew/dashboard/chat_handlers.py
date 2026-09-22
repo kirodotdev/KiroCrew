@@ -847,6 +847,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # The receipt for an `auto` send that was decided; absent for a
                 # manual steer, which is what keeps that row byte-identical.
                 decision_strip=_auto_strip,
+                attachments=user_meta,
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -4632,6 +4633,7 @@ async def stop_slot_turn(
             slot._steer_send_ids.pop(_discarded, None)
             slot._steer_user_origin.pop(_discarded, None)
             slot._steer_admissions.pop(_discarded, None)
+            slot._steer_attachment_meta.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)

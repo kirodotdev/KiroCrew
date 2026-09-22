@@ -70,12 +70,30 @@ STEER_STATE_REQUEUED = "requeued"
 # input that gets persisted into slot history and broadcast to every tab.
 SEND_ID_MAX_LEN = 128
 
+# Slots rarely have more than a handful pending; 32 leaves generous burst headroom.
+MAX_PENDING_STEERS = 32
+
 # The accepted send-id alphabet. Client mints are ``s-<base36>-<base36>``; the
 # allowlist is deliberately a little wider (URL-safe id charset) so a future
 # client id shape does not silently lose reconciliation, while still excluding
 # every separator a structured secret needs (``/ + = .`` — base64 padding, JWT
 # dots, path-shaped tokens).
 _SEND_ID_RE = re.compile(rf"^[A-Za-z0-9_-]{{1,{SEND_ID_MAX_LEN}}}$")
+
+# Upper bounds on a send's attachment lists (``meta.files`` / ``meta.dirs``) as
+# RETAINED by ``attachment_meta``. Every retention site stores the normalized
+# result -- the queue entry, the pending-steer map, the persisted row meta, and
+# the ``steer_push`` / ``queue_pop`` frames -- after paths pass through
+# ``_redact_meta``. Redaction can rewrite credential content, but it does not
+# limit input size. The gateway caps request bodies at 60 MiB, still far above
+# the roughly 1 MiB per list these bounds admit, so these per-field bounds at
+# the one normalizer remain the only size check before every retained copy. One
+# named constant per bound, applied in the one normalizer every site calls, so
+# no two stores can disagree about what was admitted. Generous against the
+# composer (20 files per upload batch; a path is a filesystem path, PATH_MAX
+# 4096 on Linux) so a legitimate send never trips them.
+ATTACHMENT_LIST_MAX_ITEMS = 256
+ATTACHMENT_PATH_MAX_LEN = 4096
 
 
 def normalize_send_id(value: object) -> str | None:
@@ -241,6 +259,7 @@ async def steer_into_running_turn(
     user_origin: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
+    attachments: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -291,6 +310,7 @@ async def steer_into_running_turn(
     byte-identical.
     """
     send_id = normalize_send_id(send_id)
+    attachments = attachment_meta(attachments)
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
@@ -335,6 +355,23 @@ async def steer_into_running_turn(
         logger.info("identical steer already pending for slot %s; queueing instead", slot.key)
         return STEER_UNAVAILABLE
 
+    retained_steer_count = len(
+        set(slot._pending_steers).union(
+            slot._steer_delivery_ids,
+            slot._steer_send_ids,
+            slot._steer_user_origin,
+            slot._steer_admissions,
+            slot._steer_attachment_meta,
+        )
+    )
+    if retained_steer_count >= MAX_PENDING_STEERS:
+        logger.warning(
+            "pending steer limit reached for slot %s (%d); queueing instead",
+            slot.key,
+            MAX_PENDING_STEERS,
+        )
+        return STEER_UNAVAILABLE
+
     # A real identity, not a content match: text cannot survive the transitions,
     # because consumed, requeued, drained, or merged into a larger row all look
     # alike afterwards. The id is keyed by the
@@ -363,6 +400,8 @@ async def steer_into_running_turn(
     slot._steer_user_origin[message] = bool(user_origin)
     if admission is not None:
         slot._steer_admissions[message] = admission
+    if attachments:
+        slot._steer_attachment_meta[message] = attachments
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -431,6 +470,7 @@ async def steer_into_running_turn(
         slot._steer_send_ids.pop(message, None)
         slot._steer_user_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
+        slot._steer_attachment_meta.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -460,6 +500,7 @@ async def steer_into_running_turn(
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
+            slot._steer_attachment_meta.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -553,6 +594,8 @@ async def steer_into_running_turn(
     # `consumed` only when the echo confirms the injection. A crew log line has no
     # such state: it would assert consumption this coroutine cannot prove, and a
     # turn that ends without the echo still requeues the text.
+    if not still_registered:
+        slot._steer_attachment_meta.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -626,6 +669,8 @@ async def steer_into_running_turn(
         # transcript page is what mergePreservedThinking reads to resolve an
         # optimistic bubble by id (accepted steer vs raced new turn).
         meta["sendId"] = send_id
+    if attachments:
+        meta.update(attachments)
     # Store the sanitized form — raw content must never reach an external
     # surface — so the steer survives a page reload via the dirty-flush cycle.
     _row = slot.append("user", sanitized, "msg msg-u", ts=ts, meta=meta)
@@ -650,6 +695,8 @@ async def steer_into_running_turn(
         # id; omitted when absent so the payload shape is unchanged for sends
         # that never minted one.
         push_payload["sendId"] = send_id
+    if attachments:
+        push_payload["meta"] = attachments
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 
@@ -857,6 +904,14 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
     just as a message can, and this list reaches every client of the slot
     (queue entry, drained row, ``queue_pop`` frame) -- the same places the
     message text reaches only after ``redact_credentials``.
+
+    Bounded here, at the point of retention: a list over
+    ``ATTACHMENT_LIST_MAX_ITEMS`` entries, or one carrying a path over
+    ``ATTACHMENT_PATH_MAX_LEN`` chars, is refused WHOLE rather than sliced. A
+    list cut at N leaves the markers past N resolving through the renderer's
+    whitespace-bounded fallback (a spaced path truncated at its first space),
+    and a path cut in place is a different path -- so the refusal takes the
+    same shape a malformed list already gets, and says so once in the log.
     """
     out: dict[str, list[str]] = {}
     if not isinstance(user_meta, dict):
@@ -866,6 +921,23 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
         if not isinstance(raw, list) or not raw:
             continue
         if not all(isinstance(p, str) and p for p in raw):
+            continue
+        if len(raw) > ATTACHMENT_LIST_MAX_ITEMS:
+            logger.warning(
+                "attachment meta %r refused: %d entries over the %d-entry bound",
+                key,
+                len(raw),
+                ATTACHMENT_LIST_MAX_ITEMS,
+            )
+            continue
+        longest = max(len(p) for p in raw)
+        if longest > ATTACHMENT_PATH_MAX_LEN:
+            logger.warning(
+                "attachment meta %r refused: a %d-char path over the %d-char bound",
+                key,
+                longest,
+                ATTACHMENT_PATH_MAX_LEN,
+            )
             continue
         out[key] = list(raw)
     if not out:

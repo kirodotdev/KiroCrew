@@ -181,4 +181,23 @@ describe('useWebSocket: steer with a chunk still pending in the frame buffer (#9
       { role: 'streaming', content: 'after' },
     ])
   })
+
+  it('steer_push carries attachment paths into the live user row', () => {
+    const { ws } = mount()
+    seedStore()
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'steer_push',
+        data: {
+          slot: 'slot-1', content: 'read [attached_file 1] /tmp/My Report.pdf',
+          meta: { files: ['/tmp/My Report.pdf'], dirs: ['/tmp/my designs/'] },
+        },
+      })
+    })
+
+    const steer = globalStore.getState().chat.messages.find(m => m.meta?.steer)
+    expect(steer?.meta?.files).toEqual(['/tmp/My Report.pdf'])
+    expect(steer?.meta?.dirs).toEqual(['/tmp/my designs/'])
+  })
 })
