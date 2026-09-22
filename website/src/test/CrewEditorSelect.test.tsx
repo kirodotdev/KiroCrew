@@ -368,6 +368,63 @@ describe('crew editor — collision warning', () => {
   })
 })
 
+describe('crew editor — a registry write re-reads the config snapshot', () => {
+  /* The memory row is the only field on this page that reads `['kirocrewConfig']`
+     rather than the registry: `memberMemoryState` decides it from
+     `kirocrewCfg.memory_stores`. Creating a member writes BOTH records in one
+     config.json write, so a create that invalidates only `['kirocrew-agents']`
+     leaves the pre-write config in cache — the just-created store key is absent
+     from it, and the row reports a store the gateway calls valid as
+     "unavailable … kirocrew doctor". Reported against a member created at 06:48
+     whose store probed `lineage=crew`, owner matching, on the same install whose
+     `kirocrew doctor` printed `valid binding` for it. */
+  it('shows the created member as private V2 instead of unavailable', async () => {
+    // The roster and the config BOTH move with the write. First resolution is
+    // the pre-write world (no such member, no such store); every later one is
+    // the post-write world. Only a second config read can reach it.
+    mockApi.kirocrewAgents
+      .mockResolvedValueOnce(AGENTS_RESPONSE)
+      .mockResolvedValue({
+        agents: [DEFAULT_CREW, OTHER_CREW, {
+          name: 'fix', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'member-fix-1',
+        }],
+        default_agent: 'kirocrew',
+      })
+    mockApi.kirocrewConfig
+      .mockResolvedValueOnce(CONFIG_RESPONSE)
+      .mockResolvedValue({
+        memory_stores: {
+          ...CONFIG_RESPONSE.memory_stores,
+          'member-fix-1': { memory_version: 2, owner_member: 'fix' },
+        },
+      })
+
+    await renderRoster()
+    const create = await openCreate()
+    fireEvent.change(within(create).getByPlaceholderText('e.g. oncall'), { target: { value: 'fix' } })
+    // The template is required and starts unselected (see
+    // KiroCrewAgentsPage.templateRequired.test.tsx), so the create cannot be
+    // fired without choosing one. `kirocrew` names an installed template and
+    // nothing else in this sheet — the workspace and model pickers offer
+    // different values — so the option is unambiguous without scoping to the
+    // stub's listbox.
+    fireEvent.click(within(create).getByRole('combobox', { name: 'Agent Template' }))
+    fireEvent.click(within(create).getByRole('option', { name: 'kirocrew' }))
+    fireEvent.click(within(create).getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
+    // The write's own invalidation, not a window refocus or the server's generic
+    // refresh broadcast (hooks/useWebSocket.ts), which are not firing here.
+    await waitFor(() => expect(mockApi.kirocrewConfig.mock.calls.length).toBeGreaterThanOrEqual(2))
+
+    const sheet = await openEditor('fix')
+    fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
+    await waitFor(() =>
+      expect(within(sheet).getByText('This member uses Member memory (V2).')).toBeVisible())
+    expect(within(sheet).queryByText(/configured memory store is unavailable/)).toBeNull()
+  })
+})
+
 describe('crew editor — keyboard (via a binding select)', () => {
   it('gives the nested workspace dialog sole ownership of Escape', async () => {
     await renderRoster()

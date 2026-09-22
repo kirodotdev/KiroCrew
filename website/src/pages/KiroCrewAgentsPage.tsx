@@ -817,8 +817,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // crew created, renamed or deleted here reaches it without this page
   // knowing who else reads the registry. This query is active, so the
   // invalidation refetches it exactly as `refetch()` did.
+  //
+  // `['kirocrewConfig']` goes with it because the SAME write lands in
+  // config.json: creating a crew writes its `memory_stores` record alongside
+  // its `agents` record, and the edit sheet's memory row reads that record
+  // through this query (`memberMemoryState(editing, memoryStore,
+  // kirocrewCfg?.memory_stores)`). Invalidating only the registry leaves the
+  // pre-write config snapshot in cache, the new store key is absent from it,
+  // and the row renders the freshly-created member as
+  // `unavailable` — "configured memory store is unavailable, check
+  // `kirocrew doctor`" — for a store the gateway reports as valid. The generic
+  // server refresh broadcast (hooks/useWebSocket.ts) heals it eventually;
+  // healing it here makes the row correct on the write that caused it.
   const refetchAgents = useCallback(
-    () => void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] }),
+    () => {
+      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
     [queryClient],
   )
   // Memoised for the empty case: a bare `|| []` hands out a new array on every
