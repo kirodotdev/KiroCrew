@@ -14807,13 +14807,14 @@
         "skips_shell_hint_mac": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere ⌃C (Ctrl+C) o ⌃R (Ctrl+R)."
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando la sessione dimostra una procedura ricorrente — una che una sessione futura, lavorando su un obiettivo diverso, eseguirebbe di nuovo. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
+        "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando la sessione dimostra una procedura ricorrente — una che una sessione futura, lavorando su un obiettivo diverso, eseguirebbe di nuovo. Disattivato per impostazione predefinita. Le bozze vengono messe in coda in Capacità dell'agente → Competenze per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
         "auto_generate_skills_from_sessions": "Genera automaticamente skill dalle sessioni",
         "failed_to_save_skills_setting": "Impossibile salvare l’impostazione delle skill",
         "keep_every_auto_generated_candidate_in_the_pendi": "Mantieni ogni candidato generato automaticamente nella coda in attesa fino alla tua approvazione. Disattivandolo, le skill di solo testo vengono pubblicate automaticamente; le skill che includono script richiedono sempre l'approvazione.",
         "require_approval_before_generated_skills_go_live": "Richiedi l'approvazione prima che le skill generate vadano in produzione",
         "skills": "Skill",
-        "config_load_failed": "Impossibile caricare le impostazioni delle skill. Gli interruttori mostrano i valori predefiniti, non quelli salvati."
+        "config_load_failed": "Impossibile caricare le impostazioni delle skill. Gli interruttori mostrano i valori predefiniti, non quelli salvati.",
+        "review_pending_candidates_on_agent_capabilities": "Esamina i candidati in attesa in Capacità dell'agente → Competenze"
       },
       "slackPanel": {
         "add": "Aggiungi",

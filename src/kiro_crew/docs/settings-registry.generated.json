@@ -1269,7 +1269,7 @@
       "label": "Auto-generate skills from sessions",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.auto_create_from_sessions",
-      "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
+      "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Agent Capabilities → Skills for review — nothing goes live without your approval (see below).",
       "configKey": "skills.auto_create_from_sessions"
     },
     {

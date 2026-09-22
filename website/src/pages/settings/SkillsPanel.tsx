@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { api } from '../../api/client'
@@ -8,13 +9,27 @@ import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 type SkillsCfg = { auto_create_from_sessions?: boolean; approval_required?: boolean }
 
+/** Where the pending queue lives — Approve, Dismiss, Dismiss-all and `?review=`. */
+const PENDING_QUEUE_ROUTE = '/capabilities?tab=skills'
+
 /**
  * Settings → Skills: opt in to automatic skill generation from sessions.
  *
  * Auto-generation is OFF by default. When enabled, completed sessions are
- * analyzed and candidate skills are staged to the pending queue (reviewable on
- * the Skills tab) — they never go live without approval unless "Require
- * approval" is turned off.
+ * analyzed and candidate skills are staged to the pending queue — they never go
+ * live without approval unless "Require approval" is turned off.
+ *
+ * That queue is rendered by `PendingSkillsPanel` on Agent Capabilities →
+ * Skills, which owns Approve, Dismiss and Dismiss-all. This panel is the place
+ * the toggles above put candidates INTO it, so it links there rather than
+ * mounting a second copy of the list: one queue with one home cannot disagree
+ * with itself.
+ *
+ * `?review=<slug>` belongs to that queue, and the staged-candidate notification
+ * addresses it there (`dashboard/server.py`). A `?review=` that arrives HERE is
+ * hand-written or bookmarked — #12543 reports doing exactly that, because this
+ * page's own copy pointed at "the Skills tab" — so it is handed on rather than
+ * silently ignored.
  */
 export function SkillsPanel() {
   const qc = useQueryClient()
@@ -23,6 +38,8 @@ export function SkillsPanel() {
   // its stale failure, but a save on the other toggle says nothing about
   // whether this one persisted, so its failure stays up.
   const saveErrorPathRef = useRef<string | null>(null)
+  const [params] = useSearchParams()
+  const reviewSlug = params.get('review')
 
   const cfgQ = useQuery<{ skills?: SkillsCfg }>({
     queryKey: ['kirocrewConfig'],
@@ -60,6 +77,14 @@ export function SkillsPanel() {
 
   const disabled = cfgQ.isLoading || cfgQ.isError || patchMut.isPending
 
+  // Hand a hand-written or bookmarked `?review=` to the queue that honours it,
+  // rather than rendering a page with no queue on it.
+  // `useSearchParams` returns the value DECODED, so re-encoding is what keeps a
+  // slug carrying a reserved character from opening a second parameter.
+  if (reviewSlug) {
+    return <Navigate to={`${PENDING_QUEUE_ROUTE}&review=${encodeURIComponent(reviewSlug)}`} replace />
+  }
+
   return (
     <SettingsSection title={i18nT('pages.settings.skillsPanel.skills')}>
       {/* Load failure: the toggles below would otherwise show defaults as if they
@@ -85,6 +110,14 @@ export function SkillsPanel() {
           configKey="skills.approval_required"
         />
       </SettingsCard>
+      {/* The way out. Naming a destination the reader has to find themselves is
+          most of the friction here: the toggles decide what gets staged, and
+          nothing on this page can approve what they staged. */}
+      <p className="mt-2 text-[12px] text-muted">
+        <Link to={PENDING_QUEUE_ROUTE} className="text-accent hover:underline">
+          {i18nT('pages.settings.skillsPanel.review_pending_candidates_on_agent_capabilities')}
+        </Link>
+      </p>
       <ErrorNotice message={saveError} className="mt-2" askAgent />
     </SettingsSection>
   )
