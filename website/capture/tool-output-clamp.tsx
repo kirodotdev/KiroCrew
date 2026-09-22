@@ -1,9 +1,11 @@
 /**
  * A tool row whose result came in above `TOOL_OUTPUT_MAX_CHARS`.
  *
- * The live tool log clamps each result to head + `…(N characters truncated — …)`
- * + tail, with both cuts snapped to a line break (`clampToolOutput` in
- * store/chatSlice.ts). This entry does NOT preload a clamped string: it seeds
+ * The live tool log clamps each result to head + tail with both cuts snapped
+ * to a line break and records the seam as `output_cut` (`clampToolOutput` in
+ * store/chatSlice.ts); the details panel renders the localized
+ * `…(N characters truncated — …)` marker at that seam. This entry does NOT
+ * preload a clamped string: it seeds
  * the row with `output: null` and then dispatches the real `sseToolResult`
  * action with a 120 000-character result, so the frame shows what the reducer
  * actually stores. The driver scrolls the Output panel to the marker and
@@ -86,8 +88,8 @@ const store = configureStore({
   },
 })
 
-// Before the dispatch below: the clamp reads its marker through `i18nT`, and
-// an uninitialized i18next hands back the bare key tail instead.
+// Before the render below: the details panel reads the marker through `i18nT`,
+// and an uninitialized i18next hands back the bare key tail instead.
 initI18n('en')
 
 // The result arrives through the same reducer the websocket feed uses.

@@ -1407,12 +1407,25 @@ export interface SubagentActivity {
   result?: string
 }
 
+/** Where `clampToolOutput` (store/chatSlice.ts) removed the middle of a tool
+ *  payload: the stored string is `head + '\n' + tail`, `at` is the offset of
+ *  the tail (right after that newline) and `count` is how many characters were
+ *  dropped between the two. Renderers put the localized marker there at view
+ *  time, so the store never holds a rendered string and the marker follows a
+ *  later language switch. */
+export interface ToolPayloadCut {
+  at: number
+  count: number
+}
+
 export interface ToolActivity {
   type: string
   text: string          // tool name (or approval / activity label)
   purpose?: string      // tool purpose
   input?: string        // tool input (commands, file content, etc.)
   output?: string       // tool output (stdout, results, etc.)
+  input_cut?: ToolPayloadCut   // set only when `input` was clamped
+  output_cut?: ToolPayloadCut  // set only when `output` was clamped
   ts: number
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call

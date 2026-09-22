@@ -15924,7 +15924,7 @@
       "session_open_error_named": "「{{name}}」を開けませんでした。",
       "session_open_error": "セッションを開けませんでした。",
       "session_gone_open_failed_named": "「{{name}}」は削除されたため開けません。",
-      "truncated_chars": "…({{count}} 文字を省略 — 再読み込みで全文を表示)",
+      "truncated_chars": "…({{count}} 文字を省略 — セッションを開き直すと全文を表示できます)",
       "truncated": "…(省略)"
     }
   },

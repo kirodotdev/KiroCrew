@@ -16342,7 +16342,7 @@
       "session_open_error_named": "Impossibile aprire “{{name}}”.",
       "session_open_error": "Impossibile aprire la sessione.",
       "session_gone_open_failed_named": "“{{name}}” è stata eliminata e non può essere aperta.",
-      "truncated_chars": "…({{count}} caratteri troncati: output completo al ricaricamento)",
+      "truncated_chars": "…({{count}} caratteri troncati: riapri la sessione per vedere l'output completo)",
       "truncated": "…(troncato)"
     }
   },

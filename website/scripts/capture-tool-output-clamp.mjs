@@ -7,11 +7,14 @@
  *     ../temp-screenshots/tool-output-clamp
  *
  * The assertion carries the evidence: a 120 000-character tool result goes
- * through the real `sseToolResult` reducer, and the Output panel must show the
- * head, the `…(N characters truncated — …)` marker exactly once with whole
- * source lines on both sides of it, and the tail — with the sentinel line from
- * the dropped middle absent. A frame that merely looks like a long output
- * would prove nothing, so the probe reads the rendered text first.
+ * through the real `sseToolResult` reducer, which stores head + tail plus a
+ * structural seam (`output_cut`), and the Output panel must render the
+ * `…(N characters truncated — …)` marker at that seam exactly once, with whole
+ * source lines on both sides of it, the head above, the tail below — and the
+ * sentinel line from the dropped middle absent. A frame that merely looks like
+ * a long output would prove nothing, so the probe reads the rendered text first.
+ * The marker is the panel's own render, so the probe also checks that no
+ * dialog sits over the frame before each shot.
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -19,9 +22,10 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.argv[2] || 'http://127.0.0.1:6841'
 const OUT = process.argv[3] || '../temp-screenshots/tool-output-clamp'
 // `store.chatSlice.truncated_chars` in i18n/locales/en.manual.json, with the
-// elided-character count interpolated. Anchored to the line so a source row
-// that merely mentions the word cannot count as a marker.
-const MARKER_RE = /^…\((\d+) characters truncated — full output on reload\)$/m
+// elided-character count interpolated in the locale's digit grouping
+// (`84,080`). Anchored to the line so a source row that merely mentions the
+// word cannot count as a marker.
+const MARKER_RE = /^…\(([\d,]+) characters truncated — reopen the session to see the full output\)$/m
 // Mirrors TOOL_OUTPUT_MAX_CHARS in store/chatSlice.ts; the marker line fits
 // inside the 4 000-character slack the head + tail slices leave under it.
 const CEILING = 64_000
@@ -67,7 +71,7 @@ for (const theme of ['dark', 'light']) {
     return {
       length: text.length,
       markers: hits.length,
-      count: first ? Number(first[1]) : -1,
+      count: first ? Number(first[1].replace(/,/g, '')) : -1,
       headLength: at > 0 ? at - 1 : -1,
       tailLength: at >= 0 ? text.length - (at + markerLen + 1) : -1,
       lineBefore,
@@ -91,6 +95,12 @@ for (const theme of ['dark', 'light']) {
   check(`${theme} tail survives`, probe.hasTail, '')
   check(`${theme} elided middle is gone`, !probe.hasSentinel, '')
   check(`${theme} no page errors`, errors.length === 0, errors.join(' | ').slice(0, 200))
+  // The marker lives in its own span inside the panel's <pre>; a frame with a
+  // dialog over it would still pass the text probes above.
+  const dialogs = await page.locator('[role="dialog"]').count()
+  check(`${theme} no dialog over the frame`, dialogs === 0, `dialogs=${dialogs}`)
+  const markerSpans = await page.locator('[data-capture-root] [data-testid="tool-payload-truncated"]').count()
+  check(`${theme} marker is the panel's own span`, markerSpans === 1, `spans=${markerSpans}`)
 
   // Scroll the marker to the middle of the Output panel so the frame shows
   // head above, tail below, and the marker between them.

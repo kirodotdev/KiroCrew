@@ -14,7 +14,7 @@ import type { ToolAction } from '../utils/toolAction'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
-import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
+import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, ToolPayloadCut, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
@@ -344,12 +344,18 @@ const TOOL_OUTPUT_SNAP_WINDOW = 2_000
 /** Clamp a tool result to `TOOL_OUTPUT_MAX_CHARS`, keeping head + tail.
  *
  *  Each cut snaps to a line break within `TOOL_OUTPUT_SNAP_WINDOW` of its raw
- *  offset so neither side of the marker starts with a short mid-line fragment.
+ *  offset so neither side of the seam starts with a short mid-line fragment.
  *  A cut without a nearby usable line break keeps its raw offset, preserving
- *  the intended head and tail budgets. The marker carries the exact number of
- *  characters elided between the two slices. */
-export function clampToolOutput(output: string): string {
-  if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output
+ *  the intended head and tail budgets.
+ *
+ *  Returns the clamped `text` plus a structural `cut` — the seam offset and the
+ *  exact number of characters elided — or `cut: null` when nothing was
+ *  removed. The marker the user reads is NOT part of `text`: it is a locale
+ *  string, and a reducer that baked it in would freeze it in the language
+ *  active when the result arrived. `ToolDetails` renders it at the seam at
+ *  view time instead. */
+export function clampToolOutput(output: string): { text: string; cut: ToolPayloadCut | null } {
+  if (output.length <= TOOL_OUTPUT_MAX_CHARS) return { text: output, cut: null }
   const headCut = output.lastIndexOf('\n', TOOL_OUTPUT_HEAD_CHARS)
   const headEnd = headCut >= TOOL_OUTPUT_HEAD_CHARS - TOOL_OUTPUT_SNAP_WINDOW
     ? headCut
@@ -367,13 +373,23 @@ export function clampToolOutput(output: string): string {
   const parts = [
     output.slice(0, headEnd),
     '\n',
-    i18nT('store.chatSlice.truncated_chars', { count: tailStart - headEnd }),
-    '\n',
     output.slice(tailStart),
   ]
   // V8's multi-part Array#join path copies the characters into a fresh
   // sequential string instead of retaining the sliced parents through a cons.
-  return parts.join('')
+  return { text: parts.join(''), cut: { at: headEnd + 1, count: tailStart - headEnd } }
+}
+
+/** Write a clamped payload onto a tool-log entry as its `input`/`input_cut` or
+ *  `output`/`output_cut` pair. An unclamped payload CLEARS a stale `*_cut`: an
+ *  `is_update` frame can replace an oversize `input_preview` with a short one,
+ *  and a leftover offset would make the renderer split the new text. */
+function setClampedField(entry: ToolActivity, field: 'input' | 'output', payload: string): void {
+  const { text, cut } = clampToolOutput(payload)
+  const cutField = field === 'input' ? 'input_cut' : 'output_cut'
+  entry[field] = text
+  if (cut) entry[cutField] = cut
+  else delete entry[cutField]
 }
 
 /** Drop every MCP App render payload belonging to `sessionKey` (slot deleted
@@ -5676,7 +5692,7 @@ const chatSlice = createSlice({
         if (existing) {
           if (action.payload.tool) existing.text = action.payload.tool
           if (action.payload.purpose) existing.purpose = action.payload.purpose
-          if (action.payload.input_preview) existing.input = clampToolOutput(action.payload.input_preview)
+          if (action.payload.input_preview) setClampedField(existing, 'input', action.payload.input_preview)
           if (action.payload.kind) existing.kind = action.payload.kind
           if (action.payload.is_shell !== undefined) existing.is_shell = action.payload.is_shell
           if (action.payload.tool_name) existing.tool_name = action.payload.tool_name
@@ -5689,7 +5705,9 @@ const chatSlice = createSlice({
       }
       // `input` is fed by the server's `input_preview`, which `_redact_tool_field`
       // caps at the same 1 MB as a result, so it takes the same clamp.
-      log.push({ type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, input: clampToolOutput(action.payload.input_preview), kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell, tool_name: action.payload.tool_name, mcp_server: action.payload.mcp_server })
+      const entry: ToolActivity = { type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell, tool_name: action.payload.tool_name, mcp_server: action.payload.mcp_server }
+      setClampedField(entry, 'input', action.payload.input_preview)
+      log.push(entry)
       if (log.length > 100) log.splice(0, log.length - 100)
     },
     sseActivityEvent(state, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {
@@ -5775,7 +5793,7 @@ const chatSlice = createSlice({
           if (log[i].type === 'tool' && (!tid || !log[i].tool_call_id)) { target = i; break }
         }
       }
-      if (target >= 0) log[target].output = clampToolOutput(action.payload.output)
+      if (target >= 0) setClampedField(log[target], 'output', action.payload.output)
     },
     /** Store an MCP App (SEP-1865) render payload, keyed by BOTH its session
      *  and tool_call_id (see mcpAppKey): the session scope means an ACP

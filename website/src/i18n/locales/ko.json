@@ -15924,7 +15924,7 @@
       "session_open_error_named": "‘{{name}}’을(를) 열 수 없었습니다.",
       "session_open_error": "세션을 열 수 없었습니다.",
       "session_gone_open_failed_named": "‘{{name}}’은(는) 삭제되어 열 수 없습니다.",
-      "truncated_chars": "…({{count}}자 생략됨 — 새로 고침하면 전체 출력 표시)",
+      "truncated_chars": "…({{count}}자 생략됨 — 세션을 다시 열면 전체 출력을 볼 수 있습니다)",
       "truncated": "…(생략됨)"
     }
   },

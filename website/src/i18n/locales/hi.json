@@ -16133,7 +16133,7 @@
       "session_open_error_named": "“{{name}}” खोला नहीं जा सका।",
       "session_open_error": "सत्र खोला नहीं जा सका।",
       "session_gone_open_failed_named": "“{{name}}” हटा दिया गया है, इसलिए इसे खोला नहीं जा सकता।",
-      "truncated_chars": "…({{count}} अक्षर छोटे किए गए — पुनः लोड करने पर पूरा आउटपुट दिखेगा)",
+      "truncated_chars": "…({{count}} अक्षर छोटे किए गए — पूरा आउटपुट देखने के लिए सेशन दोबारा खोलो)",
       "truncated": "…(छोटा किया गया)"
     }
   },

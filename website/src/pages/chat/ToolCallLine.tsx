@@ -236,7 +236,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // expansion as well as completion status for the icon. All transcript scans go
   // through the shared per-slot index (see toolRowIndex.ts): built once per
   // (messages, toolLog) identity change, O(1) per row per dispatch.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -284,6 +284,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         purpose: e.purpose || '',
         input: e.input || '',
         output: e.output || '',
+        // Clamp seams for the two payloads (null when nothing was cut). The
+        // panel renders the localized marker there at view time; the store
+        // holds only the offset, so a language switch re-renders it.
+        inputCut: e.input_cut ?? null,
+        outputCut: e.output_cut ?? null,
         auto: !!e.auto,
         ts: e.ts || 0,
         executionStartedAt: e.execution_started_at || 0,
@@ -320,7 +325,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       isAutoDenied: !rejected && autoDenied,
       autoDenyReason,
       purpose: (message.meta?.purpose as string) || '',
-      input: metaInput, output: metaOutput, auto: false,
+      // Persisted meta is served whole by the server (_tool_meta caps at 1 MB,
+      // never clamps), so a historical row has no seam to mark.
+      input: metaInput, output: metaOutput, inputCut: null, outputCut: null, auto: false,
       // ChatMessage.ts is a string (ISO timestamp) when restored from history;
       // parse it for the meta-row time renderer. Falls to 0 if unparseable —
       // fmtTime hides the row when ts is 0.
@@ -1163,7 +1170,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} inputCut={inputCut} outputCut={isAutoDenied ? null : outputCut} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>
