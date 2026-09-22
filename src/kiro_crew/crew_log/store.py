@@ -474,6 +474,40 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
                     history_gone,
                     failures,
                 )
+                if kind == KIND_SESSION:
+                    # Some of this unit's history is gone, which is why the in-memory
+                    # edge is suspect -- but "some" is not "the opening record", and the
+                    # two ways it can be wrong call for different answers. The disk
+                    # decides, by the same reading a fresh scan of this unit would make.
+                    # Same import-here reason as the removed path below.
+                    from kiro_crew.crew_log.session_tree import opened_record
+                    from kiro_crew.crew_log.session_tree_projection import (
+                        forget_unit,
+                        retract_unit_parent,
+                    )
+
+                    surviving = None
+                    try:
+                        ordered = segment_paths(kind, unit_id)
+                        if ordered:
+                            header, entry, _announced = read_head(ordered[0])
+                            surviving = opened_record(directory, header, entry)
+                    except OSError:
+                        # Cannot read it, so cannot prove anything survives. Treated as
+                        # gone, which is the conservative direction: a dropped edge
+                        # comes back on the next seed, a kept one that names nothing
+                        # readable stays wrong until the process restarts.
+                        surviving = None
+                    if surviving is None:
+                        # Nothing here still yields a record at all.
+                        forget_unit(unit_id)
+                    elif surviving.parent_slot is None:
+                        # The CREATING segment went while later ones survive, so a scan
+                        # now contributes this slot with NO parent. Dropping the whole
+                        # record instead would orphan this unit's CHILDREN, which cite
+                        # its slot: a slot with no record reads as a creator that never
+                        # existed, rather than one whose own creator is unknown.
+                        retract_unit_parent(unit_id)
             else:
                 logger.warning(
                     "crew log retention: %s log %r not removed; its history is intact",
@@ -498,6 +532,20 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
         # Every file this owns is gone. A directory that will not go is residue,
         # not retained history, so the removal still counts -- but say so.
         logger.debug("crew log retention: %s log %r directory not removed", kind, unit_id)
+    if kind == KIND_SESSION:
+        # The session tree projection holds this unit's lineage edge in memory, and
+        # the disk it was folded from has stopped holding it. Dropped HERE, at the one
+        # point the removal is established, rather than in the sweep: ``remove_unit``
+        # is also reached by a direct delete, and a projection updated only by the
+        # retention pass would keep serving an edge into a unit that is gone.
+        #
+        # Deliberately after the ``rmdir``, which is allowed to fail: what makes the
+        # record wrong is that the unit's SEGMENTS are gone, and an empty directory
+        # left standing is residue that answers no record either way. Imported here
+        # because the projection imports this module for the root and the replay.
+        from kiro_crew.crew_log.session_tree_projection import forget_unit
+
+        forget_unit(unit_id)
     return REMOVE_REMOVED
 
 

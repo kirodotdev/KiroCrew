@@ -8,7 +8,7 @@
  * grouping, and aggregation come from `@tanstack/react-table`.
  */
 import { type MutableRefObject, useCallback, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   createColumnHelper,
@@ -126,6 +126,12 @@ export default function SessionsTab({ planeStateRef }: Props) {
     queryKey: ['sessionsMemory'],
     queryFn: () => api.sessionsMemory(),
     refetchInterval: 5000,
+    // Keep the last sample on screen while the next one is in flight. Without it a
+    // slow sample blanks the whole table for its duration — every five seconds, on a
+    // page whose job is to be watched — and the rows jump back as it lands. The
+    // lineage phase of this payload is now ~0, so the remaining latency is the /proc
+    // and spend passes; this makes their cost invisible instead of disruptive.
+    placeholderData: keepPreviousData,
   })
 
   const sessions = data?.sessions ?? EMPTY_SESSIONS

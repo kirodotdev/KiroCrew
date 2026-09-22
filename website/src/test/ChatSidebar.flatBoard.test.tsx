@@ -206,9 +206,13 @@ describe('flat view inside the board', () => {
   it('keeps the flat toggle reachable in board view, with board-specific copy', () => {
     const { getByTestId } = renderSidebar()
     const toggle = getByTestId('flat-view-toggle')
-    // With a board configured the toggle flattens INSIDE each column, so its
-    // copy must not promise "all chats without folders" (one combined list).
-    expect(toggle.getAttribute('title')).toBe('Flat view — hide folders in the board columns')
+    // Two things at once. The copy names the ACTION the next press performs, never the
+    // lane in view -- this is the feature's only entry point, so naming the current
+    // lane tells the user the press goes somewhere it does not. And with a board
+    // configured the toggle flattens INSIDE each column, so it must still not promise
+    // "all chats without folders" (one combined list).
+    expect(toggle.getAttribute('title')).toBe('Switch to flat view (hide folders in the board columns)')
+    expect(toggle.getAttribute('aria-label')).toBe('Switch to flat view (hide folders in the board columns)')
     fireEvent.click(toggle)
     const on = getByTestId('flat-view-toggle')
     expect(on.getAttribute('title')).toBe('Show folders in the board columns')

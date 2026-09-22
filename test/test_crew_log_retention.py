@@ -905,6 +905,124 @@ def test_a_partial_removal_reports_that_the_history_is_already_gone(caplog, monk
     assert "history is intact" not in text
 
 
+def test_a_partial_removal_keeps_lineage_whose_opening_record_still_reads(monkeypatch):
+    """ "Some history went" is not "the opening record went".
+
+    Segments go first, so the ordinary lease-only refusal really does take the opening
+    entry with them. But a refusal on a LATER segment can leave the earliest one -- and
+    the opening entry in it -- readable, and dropping the edge then would lose a valid
+    citation until the process re-seeds. The disk is asked rather than assumed, so this
+    pins the answer for the case where it still yields a record.
+    """
+    from kiro_crew.crew_log import session_tree
+    from kiro_crew.crew_log import session_tree_projection as stp
+
+    forgotten: list[str] = []
+    retracted: list[str] = []
+    monkeypatch.setattr(stp, "forget_unit", lambda sid: forgotten.append(sid))
+    monkeypatch.setattr(stp, "retract_unit_parent", lambda sid: retracted.append(sid))
+
+    log = _closed_session()
+    del log
+    real_unlink = store.Path.unlink
+
+    def _refuse_lock(self, *args, **kwargs):
+        if self.name.endswith(".lock"):
+            raise OSError("held")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "unlink", _refuse_lock)
+    # An earliest segment survived this pass and still parses as an opening record.
+    survivor = store.Path(__file__)
+    monkeypatch.setattr(store, "segment_paths", lambda kind, unit_id: [survivor])
+    monkeypatch.setattr(store, "read_head", lambda path: ({}, None, True))
+    monkeypatch.setattr(
+        session_tree,
+        "opened_record",
+        lambda directory, header, entry: session_tree.OpenedRecord(
+            sid=SESSION, slot="slot-a", created_at=1, parent_slot="slot-parent"
+        ),
+    )
+
+    assert _remove() == store.REMOVE_FAILED
+    assert forgotten == [], "a still-readable opening record was forgotten"
+    assert retracted == [], "a citation the log still carries was retracted"
+
+
+def test_a_partial_removal_downgrades_to_parentless_when_the_creating_segment_went(
+    monkeypatch,
+):
+    """The creating segment went, later ones survive: the citation goes, the record stays.
+
+    A fresh scan of this unit contributes the slot with NO parent in that case, so a
+    projection still serving the old edge disagrees with the disk it is an image of.
+    Dropping the whole record instead would orphan this unit's CHILDREN, which cite its
+    SLOT -- a slot with no record reads as a creator that never existed, rather than one
+    whose own creator is unknown.
+    """
+    from kiro_crew.crew_log import session_tree
+    from kiro_crew.crew_log import session_tree_projection as stp
+
+    forgotten: list[str] = []
+    retracted: list[str] = []
+    monkeypatch.setattr(stp, "forget_unit", lambda sid: forgotten.append(sid))
+    monkeypatch.setattr(stp, "retract_unit_parent", lambda sid: retracted.append(sid))
+
+    log = _closed_session()
+    del log
+    real_unlink = store.Path.unlink
+
+    def _refuse_lock(self, *args, **kwargs):
+        if self.name.endswith(".lock"):
+            raise OSError("held")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "unlink", _refuse_lock)
+    # A later segment survives with a readable header, but its first entry is not the
+    # opening one -- which is exactly what the scanner reads as "no parent".
+    survivor = store.Path(__file__)
+    monkeypatch.setattr(store, "segment_paths", lambda kind, unit_id: [survivor])
+    monkeypatch.setattr(store, "read_head", lambda path: ({}, None, True))
+    monkeypatch.setattr(
+        session_tree,
+        "opened_record",
+        lambda directory, header, entry: session_tree.OpenedRecord(
+            sid=SESSION, slot="slot-a", created_at=1, parent_slot=None
+        ),
+    )
+
+    assert _remove() == store.REMOVE_FAILED
+    assert retracted == [SESSION], "the citation the log no longer carries was kept"
+    assert forgotten == [], "the record was dropped, which orphans this unit's children"
+
+
+def test_a_partial_removal_drops_lineage_once_the_opening_record_is_unreadable(monkeypatch):
+    """The other half: nothing on disk still yields an opening record, so the edge goes.
+
+    Left held, the projection serves an edge into a log nobody can read and writes it to
+    the checkpoint, so a restart reads it back as fact.
+    """
+    from kiro_crew.crew_log import session_tree_projection as stp
+
+    forgotten: list[str] = []
+    monkeypatch.setattr(stp, "forget_unit", lambda sid: forgotten.append(sid))
+    # Whatever survives the pass, the disk cannot prove an opening record.
+    monkeypatch.setattr("kiro_crew.crew_log.session_tree.opened_record", lambda *a, **k: None)
+
+    log = _closed_session()
+    del log
+    real_unlink = store.Path.unlink
+
+    def _refuse_lock(self, *args, **kwargs):
+        if self.name.endswith(".lock"):
+            raise OSError("held")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "unlink", _refuse_lock)
+    assert _remove() == store.REMOVE_FAILED
+    assert forgotten == [SESSION], "a partial removal left the projection serving a gone unit"
+
+
 def test_a_removal_that_got_nowhere_reports_the_history_intact(caplog, monkeypatch):
     """The other half of the same line: nothing went, so nothing may be implied gone."""
     log = _closed_session()

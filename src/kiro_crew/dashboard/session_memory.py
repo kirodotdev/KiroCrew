@@ -32,6 +32,7 @@ import logging
 import sys
 import time
 from collections import deque
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Callable, Optional
 
 from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
@@ -130,6 +131,80 @@ def _bare_slot_key(key: str) -> str:
     return key
 
 
+def live_sids(rows: Iterable[dict[str, object]]) -> list[str]:
+    """The ACP session ids of *rows*, for the scan's ``preferred`` list.
+
+    The rows on screen are what a lineage scan is folded for, so their own logs
+    are admitted before the store's order (see :class:`SessionTree`). A row
+    carrying no ``sid`` contributes nothing rather than an empty string, which
+    would address no unit.
+    """
+    return [sid for sid in (row.get("sid") for row in rows) if isinstance(sid, str) and sid]
+
+
+def lineage_parents(
+    rows: list[dict[str, object]],
+    nodes: "Mapping[str, TreeNode]",
+    spend_slot_by_session: Optional[dict[str, str]] = None,
+) -> dict[str, Optional[dict[str, object]]]:
+    """Per live row, the ``parent`` it carries on the wire -- ``{slot, key}`` or ``None``.
+
+    ONE implementation of the join, used by both the Sessions table's memory payload
+    and the dashboard slot payload the chat sidebar's conductor lane nests on
+    (``state._attach_slot_parents``). Two implementations would let the two views nest
+    the same gateway differently, which is the one thing a reader comparing them cannot
+    recover from: neither view says which is right.
+
+    The join is by SLOT, never by pid or title, and a row is reachable under
+    three spellings of its slot because three writers spell it differently. A
+    crew log names a slot the way ``session_create`` attributed it -- the bare
+    ``slot.key`` for a dashboard session -- while the row's key is the full
+    ``dashboard:`` session key. A slot bound to a channel or cron conversation
+    runs its turns under ``linked_session_key`` while its log still carries the
+    dashboard slot key, so *spend_slot_by_session* (the alias
+    :func:`_spend_for_session` already bridges for credits) is the third.
+
+    *nodes* is the projection's fold, and each caller passes the one it reads: the
+    memory payload takes :meth:`SessionMemorySampler._lineage` (whose companion flag
+    is specifically ``over_cap``), and the slot payload takes
+    ``projection().nodes()`` directly. The join itself needs no completeness flag, so
+    it takes the nodes alone rather than a whole reading -- which is also what keeps it
+    from deciding a question that belongs to its caller.
+
+    An empty *nodes* means no row has a creator (the crew log is off, or nothing
+    on disk cites one), and the storage package stays UNIMPORTED on that path:
+    ``parent_payload`` is imported below the early return, so a flag-off boot
+    never loads it. Existing tests pin that.
+    """
+    if not nodes:
+        return {}
+    from kiro_crew.crew_log.session_tree import parent_payload
+
+    def slot_spellings(row_key: str) -> list[str]:
+        spellings = [row_key, _bare_slot_key(row_key)]
+        if isinstance(spend_slot_by_session, dict):
+            aliased = spend_slot_by_session.get(row_key)
+            if isinstance(aliased, str) and aliased:
+                spellings.append(aliased)
+        return spellings
+
+    live_key_of: dict[str, str] = {}
+    for row in rows:
+        row_key = row.get("key")
+        if isinstance(row_key, str) and row_key:
+            for spelling in slot_spellings(row_key):
+                live_key_of.setdefault(spelling, row_key)
+
+    out: dict[str, Optional[dict[str, object]]] = {}
+    for row in rows:
+        key = row.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        node = next((nodes[s] for s in slot_spellings(key) if s in nodes), None)
+        out[key] = parent_payload(node, live_key_of, key)
+    return out
+
+
 def session_title(key: str, get_slot: Callable[[str], object]) -> dict[str, object]:
     """Resolve a session key to a human title for display.
 
@@ -184,40 +259,44 @@ class SessionMemorySampler:
         self._tree: Optional["SessionTree"] = None
 
     def _lineage(self, rows: list[dict[str, object]]) -> "tuple[dict[str, TreeNode], bool, int]":
-        """Who opened whom, folded from the crew logs; whether the store held more
-        session logs than the scan admits; and that cap (``TREE_UNIT_CAP``), so
-        the payload can say "N+" without this module importing the storage
-        package on a flag-off boot. ``({}, False, 0)`` with the crew log off. The live rows' logs are admitted first (their ACP session
-        ids name their units), so past the cap it is closed sessions' logs that
-        go unread, not a row's on screen -- while the live rows fit in the cap,
-        and except a slot restarted since it was opened, whose parent lives only
-        in its older, closed log (``SessionTree``'s docstring; spec section 6).
+        """Who opened whom; whether the store held more session logs than a scan
+        admits; and that cap (``TREE_UNIT_CAP``), so the payload can say "N+"
+        without this module importing the storage package on a flag-off boot.
+        ``({}, False, 0)`` with the crew log off.
 
-        BLOCKING (a ``stat`` per live row, a listing that stops one past the cap,
-        and a ``stat`` per admitted log), so it is called from
-        :meth:`_blocking_sample`, never from the coroutine.
+        Reads the session-tree PROJECTION, which is folded in memory and advanced by
+        the emitter at commit time. So this is a dictionary lookup rather than a scan,
+        and it costs the same on a store of four thousand session logs as on one --
+        which is what the ``lineage`` entry in ``timings_ms`` reports.
 
-        The crew log is optional behind ``KIROCREW_CREW_LOG`` and this module is
-        on the dashboard's boot path, so the storage package is imported here,
-        lazily, and only once the flag says there is a store to read -- the same
-        split the emitter and the crew-log routes keep, pinned by the tests that
-        launch with the flag unset and assert the package never loaded. Asking
-        the emitter is the one import that is safe: it is pure glue and loads
-        nothing until a write or a read reaches storage.
+        Blocking only ONCE per process, on the projection's cold start -- a
+        checkpoint load plus a tail replay proportional to the delta. It is still
+        called from :meth:`_blocking_sample` rather than the coroutine for exactly
+        that reason: the first call in a process can touch the disk.
+
+        Reports ``over_cap`` specifically, not the projection's broader
+        ``incomplete``: the payload's field is named ``lineage_over_cap`` and a page
+        saying "the store is larger than the cap" must not also light up for a
+        transient read fault.
+
+        The crew log is optional behind ``KIROCREW_CREW_LOG`` and this module is on
+        the dashboard's boot path, so the projection is imported here, lazily, and
+        only once the flag says there is a store to read -- the same split the
+        emitter and the crew-log routes keep, pinned by the tests that launch with
+        the flag unset and assert the package never loaded. Asking the emitter is
+        the one import that is safe: it is pure glue and loads nothing until a write
+        or a read reaches storage.
         """
         from kiro_crew.crew_log import emit as crew_log_emit
 
         if not crew_log_emit.enabled():
             return {}, False, 0
-        if self._tree is None:
-            from kiro_crew.crew_log.session_tree import SessionTree
-
-            self._tree = SessionTree()
         from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP
+        from kiro_crew.crew_log.session_tree_projection import projection
 
-        live = [sid for sid in (row.get("sid") for row in rows) if isinstance(sid, str)]
-        nodes = self._tree.snapshot(live)
-        return nodes, self._tree.over_cap, TREE_UNIT_CAP
+        tree = projection()
+        tree.ensure_seeded(tuple(live_sids(rows)))
+        return tree.nodes(), tree.over_cap, TREE_UNIT_CAP
 
     # ── history ────────────────────────────────────────────────────────────
     def record_total(self, total_mb: float, *, now: Optional[float] = None) -> None:
@@ -327,6 +406,7 @@ class SessionMemorySampler:
         out: dict[int, dict[str, object]] = {}
         # One pass over /proc for the whole poll; None off Linux and when /proc
         # cannot be listed, which each row then walks for itself as before.
+        proc_started = time.perf_counter()
         children = proc_child_map()
         for row in rows:
             pid = row.get("pid")
@@ -339,18 +419,38 @@ class SessionMemorySampler:
             except Exception:  # pragma: no cover — a dying pid must not fail the page
                 logger.debug("session memory sample failed for pid %s", pid, exc_info=True)
         self._prune_cpu_baselines({r.get("pid") for r in rows})
+        proc_ms = (time.perf_counter() - proc_started) * 1000.0
         # circular import: handlers/__init__ imports handlers.sessions,
         # which imports this module
         from kiro_crew.dashboard.handlers.usage import slot_spend
 
+        spend_started = time.perf_counter()
+        spend = slot_spend()
+        spend_ms = (time.perf_counter() - spend_started) * 1000.0
+        lineage_started = time.perf_counter()
+        lineage = self._lineage(rows)
+        lineage_ms = (time.perf_counter() - lineage_started) * 1000.0
+
         return {
             "per_pid": out,
-            "spend": slot_spend(),
+            "spend": spend,
             # Who opened whom, folded from the crew logs, and the count of logs
             # the scan left unread past its cap. Here rather than in the coroutine
             # for the same reason as the two above: it lists and stats every
             # session log's directory.
-            "lineage": self._lineage(rows),
+            "lineage": lineage,
+            # Where this call's wall time went, per phase, so a latency complaint
+            # about this page can be attributed instead of guessed at. Measured
+            # around the three blocking phases individually because they have
+            # different costs and different fixes: a /proc walk per session tree, a
+            # shard-window read, and a directory listing plus a stat per session
+            # log. ``perf_counter`` rather than ``monotonic``: this measures short
+            # durations, which is the counter's stated purpose.
+            "timings_ms": {
+                "proc": round(proc_ms, 1),
+                "spend": round(spend_ms, 1),
+                "lineage": round(lineage_ms, 1),
+            },
         }
 
     def _prune_cpu_baselines(self, live_pids: set[object]) -> None:
@@ -386,6 +486,7 @@ class SessionMemorySampler:
         dashboard slot key — without it those rows report credits as unknown even
         though the spend exists. Omitting it degrades to the direct join.
         """
+        total_started = time.perf_counter()
         rows = sessions.runtime_pids()
         samples = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), self._blocking_sample, rows
@@ -394,6 +495,9 @@ class SessionMemorySampler:
         assert isinstance(per_pid, dict)
         spend = samples["spend"]
         assert isinstance(spend, dict)
+        phase_ms = samples.get("timings_ms")
+        if not isinstance(phase_ms, dict):  # pragma: no cover — defensive
+            phase_ms = {}
         lineage_sample = samples["lineage"]
         assert isinstance(lineage_sample, tuple)
         lineage, lineage_over_cap, lineage_cap = lineage_sample
@@ -402,39 +506,11 @@ class SessionMemorySampler:
         assert isinstance(lineage_cap, int)
         now_wall = time.time()
 
-        # Which LIVE row a creator citation lands on. A crew log names a slot the
-        # way ``session_create`` attributed it -- the bare slot key for a dashboard
-        # session -- while a row's key is the full session key, so both spellings
-        # point at the row. A slot bound to a channel or cron conversation runs
-        # under ``linked_session_key`` while its log still carries the dashboard
-        # slot key, the same split ``_spend_for_session`` bridges, so the alias
-        # ``spend_slot_by_session`` supplies is a third spelling of the same row.
-        # The join is by slot, never by pid or title.
-        def slot_spellings(row_key: str) -> list[str]:
-            spellings = [row_key, _bare_slot_key(row_key)]
-            if isinstance(spend_slot_by_session, dict):
-                aliased = spend_slot_by_session.get(row_key)
-                if isinstance(aliased, str) and aliased:
-                    spellings.append(aliased)
-            return spellings
-
-        live_key_of: dict[str, str] = {}
-        for row in rows:
-            row_key = row.get("key")
-            if isinstance(row_key, str) and row_key:
-                for spelling in slot_spellings(row_key):
-                    live_key_of.setdefault(spelling, row_key)
-
-        def parent_of(key: object) -> Optional[dict[str, object]]:
-            # An empty tree (crew log off, or nothing on disk) means no row has a
-            # creator, and the tree module stays unimported -- ``_lineage`` is
-            # the only place that loads it, and only behind the flag.
-            if not lineage or not isinstance(key, str):
-                return None
-            from kiro_crew.crew_log.session_tree import parent_payload
-
-            node = next((lineage[s] for s in slot_spellings(key) if s in lineage), None)
-            return parent_payload(node, live_key_of, key)
+        # Which LIVE row a creator citation lands on, per row. The join lives in
+        # ``lineage_parents`` because the dashboard slot payload needs the same
+        # answer, and two implementations of it would let the Sessions table and
+        # the sidebar's conductor lane nest the same gateway differently.
+        parents = lineage_parents(rows, lineage, spend_slot_by_session)
 
         sessions_out: list[dict[str, object]] = []
         total_mb = 0.0
@@ -501,7 +577,7 @@ class SessionMemorySampler:
                     # its own crew log records it; null for a session nobody
                     # created. ``key`` is the creator's live row when there is
                     # one, which is the edge the Sessions table nests on.
-                    "parent": parent_of(key),
+                    "parent": parents.get(key) if isinstance(key, str) else None,
                 }
             )
             # Count each runtime ONCE, at its UNDIVIDED size. The split above is
@@ -540,4 +616,16 @@ class SessionMemorySampler:
                 "lineage_cap": lineage_cap,
             },
             "history": self.series(),
+            # Per-phase wall time for THIS sample, additive to the payload so an
+            # older client ignores it. ``total`` is measured on the coroutine and
+            # so includes the executor hop and the row assembly, which the three
+            # phase figures do not -- a gap between ``total`` and their sum is the
+            # queueing this page shares with every other request, and is itself
+            # the answer to a latency question the phases alone cannot settle.
+            "timings_ms": {
+                "proc": phase_ms.get("proc", 0.0),
+                "spend": phase_ms.get("spend", 0.0),
+                "lineage": phase_ms.get("lineage", 0.0),
+                "total": round((time.perf_counter() - total_started) * 1000.0, 1),
+            },
         }

@@ -16,6 +16,7 @@
  */
 import { api } from '../../api/client'
 import { fmtDuration, fmtNumber, fmtPercent, fmtUnit, type FormatUnit } from '../../i18n/format'
+import { nestsUnder } from '../../lib/sessionLineage'
 
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
 export type SessionPayloadRow = Payload['sessions'][number]
@@ -223,35 +224,13 @@ function sessionRow(s: SessionPayloadRow): SessionRow {
 /**
  * The session a row nests under, or null when it is a top-level row.
  *
- * The backend already resolved `parent.key` to a LIVE creator (null when the
- * creator is not running, or when the crew logs formed a cycle), so the edge is
- * followed as given. Two things are still refused here, because a table must
- * never fail to paint on a payload it did not produce: a key that names no row
- * in this payload, and a chain that returns to its own start. A member of such a
- * chain becomes a top-level row; a row that merely hangs off the chain keeps
- * its edge, since its parent is now a root.
+ * `nestsUnder` itself now lives in `../../lib/sessionLineage` and is shared with the
+ * chat sidebar's conductor lane, which nests on the same edge from a different payload
+ * (bare slot keys off the slots broadcast, rather than `dashboard:` session keys from
+ * `/api/sessions/memory`). Two copies would let the two views nest the same gateway
+ * differently, and a reader comparing them would have no way to tell which was right.
+ * See that module for the cycle and unknown-key rules.
  */
-function nestsUnder(
-  session: SessionPayloadRow,
-  byKey: Map<string, SessionPayloadRow>,
-): string | null {
-  const parentKey = session.parent?.key ?? null
-  if (parentKey == null || parentKey === session.key || !byKey.has(parentKey)) return null
-  const seen = new Set<string>()
-  let cursor: string | null = parentKey
-  while (cursor != null) {
-    if (cursor === session.key) return null
-    // Some OTHER key repeats: the chain leads into a cycle this row is not on.
-    // Its members detach themselves (each sees its own key come back), so this
-    // row's parent is, or hangs off, a root -- the edge is safe to keep.
-    if (seen.has(cursor)) break
-    seen.add(cursor)
-    const next: SessionPayloadRow | undefined = byKey.get(cursor)
-    const nextKey = next?.parent?.key ?? null
-    cursor = nextKey != null && nextKey !== next?.key && byKey.has(nextKey) ? nextKey : null
-  }
-  return parentKey
-}
 
 /**
  * Sessions + tasks -> the tree TanStack Table consumes.

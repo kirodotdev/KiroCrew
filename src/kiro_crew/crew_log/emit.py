@@ -2993,6 +2993,22 @@ def on_session_opened(
                 session_class["workspace"] = workspace
             data["class"] = session_class
         log.append("session/opened", data, src=_SRC_GATEWAY)
+        # DURABILITY FIRST, THEN MEMORY. The session tree is a projection folded in
+        # memory and advanced here, at commit, so no reader ever has to re-derive it
+        # from disk; this line is the only thing that keeps it current. It runs AFTER
+        # the append, never before, so the disk can never hold an edge the memory
+        # lacks -- and if it did run first, an append that then failed would leave a
+        # creator edge that no log records.
+        #
+        # This gateway is the store's only writer (a pod or the internal gateway has
+        # its own data home), which is what makes an in-process projection complete
+        # rather than a guess about somebody else's writes.
+        #
+        # Never raises: ``record_opened`` swallows its own failures, because an append
+        # that already succeeded must not be reported as failed on account of the
+        # memory image of it, and a projection that missed a record self-heals through
+        # the tail replay on the next cold start.
+        _record_session_tree_edge(session_id, slot, log, parent_slot, superseded)
         if observed is not None:
             # This line states the class, so it is also what later turns compare
             # themselves against. Seeding it here is what stops the first warm turn
@@ -4687,3 +4703,48 @@ __all__ = [
 # ``_ensure_shutdown_hook`` on the first drain pass rather than here, so a launch
 # with the flag unset registers nothing at all. See that function for why first
 # use still puts this handler behind the executor's own.
+
+
+def _record_session_tree_edge(
+    session_id: str,
+    slot: str,
+    log: Any,
+    parent_slot: str | None,
+    superseded: str | None,
+) -> None:
+    """Fold a just-committed ``session/opened`` into the in-memory session tree.
+
+    Called immediately AFTER the append succeeded, which is the whole point: the
+    session tree is a projection (:mod:`kiro_crew.crew_log.session_tree_projection`)
+    that applies deltas and never rescans, so without this line a reader would be
+    back to re-deriving the tree from the whole store on every poll.
+
+    The record is built from what was just WRITTEN, not from a re-read of it: the
+    values are the emitter's own, and reading the entry back would be the disk access
+    this design exists to remove.
+
+    ``created_at`` comes from the log's immutable header, through the same
+    ``getattr(..., "created_at", 0)`` idiom :mod:`kiro_crew.crew_log.read` uses on the
+    same object. It only orders a slot's several records inside the fold, so a header
+    that cannot answer costs ordering, never an edge.
+
+    Never raises, and never logs at a level an operator has to act on: the append has
+    already succeeded, so this session's history is safe on disk whatever happens here,
+    and a missed record is recovered by the projection's tail replay on the next cold
+    start. Raising would turn a bookkeeping miss into a failed session open.
+    """
+    try:
+        from kiro_crew.crew_log.session_tree_projection import record_opened
+
+        created_at = 0
+        try:
+            header = log.header()
+            raw = getattr(header, "created_at", 0)
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                created_at = raw
+        except Exception:
+            # An unreadable header orders nothing and blocks nothing.
+            created_at = 0
+        record_opened(session_id, slot, created_at, parent_slot, superseded)
+    except Exception:  # pragma: no cover -- defensive; record_opened guards itself
+        logger.debug("session tree projection not advanced for %s", session_id, exc_info=True)
