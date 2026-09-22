@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
 const mockApi = vi.hoisted(() => ({
@@ -24,6 +24,7 @@ const mockApi = vi.hoisted(() => ({
   agentTemplateCreate: vi.fn(),
   agentTemplateDelete: vi.fn(),
   createKirocrewAgent: vi.fn(),
+  kirocrewAgents: vi.fn(),
   skillsCatalog: vi.fn(),
   skills: vi.fn(),
 }))
@@ -116,6 +117,7 @@ beforeEach(() => {
   mockApi.agentTemplateCreate.mockResolvedValue({ ok: true, name: 'pr-summarizer', filename: 'pr-summarizer.json' })
   mockApi.agentTemplateDelete.mockResolvedValue({ ok: true })
   mockApi.createKirocrewAgent.mockResolvedValue({ ok: true })
+  mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: 'kirocrew' })
   mockDispatch.mockImplementation(() => ({ unwrap: () => Promise.resolve({ key: 'chat-1' }) }))
 })
 
@@ -621,5 +623,57 @@ describe('AgentTemplatesTab actions', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New template' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'has space' } })
     expect(within(dialog).getByRole('button', { name: 'Create and edit' })).toBeDisabled()
+  })
+})
+
+describe('AgentTemplatesTab — enrolling reaches the crew registry', () => {
+  /* Enrolling POSTs /api/agents: the same config.json write the Crews tab's own
+     create makes, which #12740 paired with `['kirocrewConfig']` because both
+     records land together. This tab is the Crews tab's SIBLING under
+     Agent Capabilities (CapabilitiesPage.tsx renders `crews` and `templates`
+     off one rail), and the dashboard's QueryClient sets `staleTime: Infinity`
+     (api/queryClient.ts) — "queries never go stale on their own. Freshness is
+     driven exclusively by WebSocket push". `POST /api/agents` pushes nothing:
+     the only `push_refresh("agents")` in the backend is the MCP capability
+     install. So while the registry entry is live -- another consumer mounted,
+     or within its `gcTime` of the Crews tab unmounting, which is what opening
+     Capabilities on Crews and coming back here buys -- nothing refetches it,
+     and a remount serves the cached roster rather than asking again.
+
+     The consumer mounted beside the tab is the Crews tab's own query, spelled
+     exactly as KiroCrewAgentsPage.tsx:810-813 spells it. */
+  const CrewsRosterProbe = () => {
+    const { data } = useQuery({ queryKey: ['kirocrew-agents'], queryFn: () => mockApi.kirocrewAgents() })
+    return <ul data-testid="crews-roster">{(data?.agents ?? []).map((a: { name: string }) => <li key={a.name}>{a.name}</li>)}</ul>
+  }
+
+  function renderWithCrews() {
+    // Production defaults, not the per-test client the other blocks use: with
+    // the library default (staleTime 0) a remount would refetch and hide this.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter><AgentTemplatesTab /><CrewsRosterProbe /></MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('shows the enrolled crewmate on the Crews roster', async () => {
+    // Pre-write world first, post-write world after: only a second registry
+    // read can reach the crewmate the enroll just created (#12740's idiom).
+    mockApi.kirocrewAgents
+      .mockResolvedValueOnce({ agents: [{ name: 'pr-bot' }], default_agent: 'kirocrew' })
+      .mockResolvedValue({ agents: [{ name: 'pr-bot' }, { name: 'reviewer' }], default_agent: 'kirocrew' })
+    mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, PKG, RUNTIME, COPY] })
+
+    renderWithCrews()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    await waitFor(() => expect(screen.getByTestId('crews-roster')).toHaveTextContent('pr-bot'))
+
+    const items = await openMore()
+    fireEvent.click(items[0])
+    await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
+
+    await waitFor(() => expect(screen.getByTestId('crews-roster')).toHaveTextContent('reviewer'))
   })
 })
