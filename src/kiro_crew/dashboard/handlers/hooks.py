@@ -1744,7 +1744,30 @@ async def api_webhooks(request: web.Request) -> web.Response:
 
 @_store_failure_guard
 async def api_webhook_token_create(request: web.Request) -> web.Response:
-    """POST /api/webhooks/tokens — mint a routed source credential."""
+    """POST /api/webhooks/tokens — mint a routed source credential. Owner-only.
+
+    The bearer this route hands back authenticates on ``POST /api/hooks/agent``
+    through :func:`_verify_hook_token`, and that route's own comment states what
+    the credential buys: a real agent turn with full tool access. Minting one is
+    therefore at least as privileged as the agent writes
+    ``handlers/agents.py::api_kirocrew_agents_create`` reserves for the owner, so
+    this route applies the same predicate and returns the same 403 shape.
+
+    The caller it stops is a real principal, not a hypothetical one: an
+    allow-listed messaging user running ``!dashboard`` holds an ordinary
+    dashboard session (``app == ""``, ``sub != owner_id``) that token auth
+    admits, and an ungated mint lets that scoped session trade itself for a
+    durable, session-independent credential.
+    """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "webhooks.token_create")
+    if denied is not None:
+        return denied
     body = await _json_object(request)
     if body is None:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)

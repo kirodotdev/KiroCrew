@@ -50,12 +50,26 @@ def _req(
     headers=None,
     sign_with: str | None = None,
     timestamp: int | None = None,
+    user: str = "local-app",
+    app_token: str = "",
+    owner_id: str = "",
 ):
     """Build a mocked request whose raw body matches its parsed body.
 
     ``sign_with`` adds the timestamp + signature headers for that signing
-    secret, computed over the same bytes ``request.read()`` returns — the
+    secret, computed over the same bytes ``request.read()`` returns -- the
     handler verifies raw bytes, so the test double has to be byte-accurate.
+
+    ``user`` / ``app_token`` / ``owner_id`` describe the CALLER, because
+    ``api_webhook_token_create`` is owner-gated
+    (``handlers._shared.require_owner_dashboard_request``) and the predicate
+    reads the claims the token-auth middleware publishes plus
+    ``state.owner_id``. The defaults are the standalone-local owner shape --
+    ``owner_id == ""`` with the signed local bootstrap subject ``local-app`` --
+    which is the same shape ``test/dashboard_owner_helpers.NoConfiguredOwner``
+    encodes for the fixtures that go through a ``TestClient``. A test that wants
+    a non-owner passes ``user=`` and ``owner_id=``; one that wants an app token
+    passes ``app_token=``.
     """
     hdrs = dict(headers or {})
     raw = b"" if body is None else json.dumps(body).encode("utf-8")
@@ -64,7 +78,11 @@ def _req(
         hdrs[webhooks.TIMESTAMP_HEADER] = str(stamp)
         hdrs[webhooks.SIGNATURE_HEADER] = webhooks.sign_payload(sign_with, stamp, raw)
     req = make_mocked_request(method, path, match_info=match_info or {}, headers=hdrs)
-    req.app["state"] = MagicMock()
+    state = MagicMock()
+    state.owner_id = owner_id
+    req.app["state"] = state
+    req["user"] = user
+    req["app"] = app_token
     # make_mocked_request's app is a Mock, so .get() would hand back a Mock
     # rather than the port the real Application holds.
     req.app.get = lambda key, default=None: {"port": 6776}.get(key, default)
@@ -1627,3 +1645,186 @@ class TestMalformedStoreDoesNotFiveHundredTheExternalRoute:
         )
 
         assert store.path.read_text(encoding="utf-8") == payload
+
+
+class TestTokenMintIsOwnerOnly:
+    """``POST /api/webhooks/tokens`` mints a credential for the agent-run route.
+
+    ``_verify_hook_token`` accepts the bearer this route returns on
+    ``POST /api/hooks/agent``, which runs a real agent turn with full tool
+    access, so the mint is owner-gated exactly like the closest guarded sibling
+    (``handlers/agents.py::api_kirocrew_agents_create`` ->
+    ``handlers/_shared.require_owner_dashboard_request``). These tests hold both
+    directions: the callers that legitimately mint today keep minting, and the
+    non-owner dashboard session that ordinary token auth admits does not.
+
+    The non-owner is a real principal: an allow-listed messaging user running
+    ``!dashboard`` authenticates with ``app == ""`` and ``sub != owner_id``.
+    """
+
+    _MINT = {"label": "Review Bot", "agent": "kirocrew", "require_signature": False}
+
+    @pytest.mark.asyncio
+    async def test_non_owner_dashboard_session_is_refused(self, wired):
+        """THE DEFECT: an authenticated non-owner must not mint a bearer."""
+        resp = await H.api_webhook_token_create(
+            _req(
+                "POST",
+                "/api/webhooks/tokens",
+                dict(self._MINT),
+                user="U0NONOWNER",
+                owner_id="U0THEOWNER",
+            )
+        )
+        assert resp.status == 403
+        assert (await _payload(resp))["code"] == "owner_only"
+        assert webhooks.token_store().count() == 0, (
+            "the refusal must be taken BEFORE the store write, or the credential "
+            "exists whatever the response says"
+        )
+
+    @pytest.mark.asyncio
+    async def test_app_token_caller_is_refused(self, wired):
+        """An app token is not the owner, the same answer the sibling gives it."""
+        resp = await H.api_webhook_token_create(
+            _req(
+                "POST",
+                "/api/webhooks/tokens",
+                dict(self._MINT),
+                user="someapp",
+                app_token="someapp",
+                owner_id="U0THEOWNER",
+            )
+        )
+        assert resp.status == 403
+        assert (await _payload(resp))["code"] == "owner_only"
+        assert webhooks.token_store().count() == 0
+
+    @pytest.mark.asyncio
+    async def test_configured_owner_still_mints(self, wired):
+        """POSITIVE CONTROL: an exact owner match keeps the full 201 body."""
+        resp = await H.api_webhook_token_create(
+            _req(
+                "POST",
+                "/api/webhooks/tokens",
+                {"label": "Review Bot", "agent": "kirocrew"},
+                user="U0THEOWNER",
+                owner_id="U0THEOWNER",
+            )
+        )
+        assert resp.status == 201
+        data = await _payload(resp)
+        assert data["ok"] is True
+        assert data["token"].startswith(webhooks.TOKEN_PREFIX)
+        assert data["signing_secret"].startswith(webhooks.SIGNING_SECRET_PREFIX)
+        assert data["entry"]["label"] == "Review Bot"
+        assert data["entry"]["agent"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_standalone_local_install_with_no_owner_still_mints(self, wired):
+        """POSITIVE CONTROL: the deployment an over-strict gate would break.
+
+        No owner configured is the standalone-local shape, where the predicate
+        accepts the signed local bootstrap subject. That install has no Slack
+        member id to match against, so refusing it would make the Webhooks page
+        unusable for every single-user gateway.
+        """
+        resp = await H.api_webhook_token_create(
+            _req(
+                "POST",
+                "/api/webhooks/tokens",
+                {"label": "CI runner", "agent": "kirocrew"},
+                user="local-app",
+                owner_id="",
+            )
+        )
+        assert resp.status == 201
+        assert (await _payload(resp))["entry"]["label"] == "CI runner"
+
+    @pytest.mark.asyncio
+    async def test_the_probe_route_still_mints_its_throwaway_credential(
+        self, wired, monkeypatch
+    ):
+        """POSITIVE CONTROL: ``POST /api/webhooks/test`` is not gated by this fix.
+
+        It mints through ``token_store().create`` directly rather than through
+        the handler, so the gate must not reach it. Driven with the SAME
+        non-owner the defect test uses, which is what makes it a control on the
+        blast radius rather than a restatement of the owner path.
+        """
+
+        class _Resp:
+            status = 200
+
+            async def text(self):
+                return ""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, data=None, headers=None):
+                assert headers["Authorization"].startswith("Bearer ")
+                return _Resp()
+
+        monkeypatch.setattr("aiohttp.ClientSession", _Session)
+        resp = await H.api_webhook_test(
+            _req(
+                "POST",
+                "/api/webhooks/test",
+                {"message": "ping"},
+                user="U0NONOWNER",
+                owner_id="U0THEOWNER",
+            )
+        )
+        assert resp.status == 200
+        assert (await _payload(resp))["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_sibling_routes_answer_exactly_as_before(self, wired):
+        """POSITIVE CONTROL: this fix gates ONE route and no other.
+
+        PATCH, DELETE and the kill switch reach their own logic for the same
+        non-owner caller, so none of them acquired an owner gate as a side
+        effect. Their missing gates are separate findings, and a test that
+        expected 403 here would silently swallow the decision to fix them.
+        """
+        non_owner = {"user": "U0NONOWNER", "owner_id": "U0THEOWNER"}
+
+        patched = await H.api_webhook_token_update(
+            _req(
+                "PATCH",
+                "/api/webhooks/tokens/nope",
+                {"enabled": False},
+                match_info={"token_id": "nope"},
+                **non_owner,
+            )
+        )
+        assert patched.status == 404
+
+        deleted = await H.api_webhook_token_delete(
+            _req(
+                "DELETE",
+                "/api/webhooks/tokens/nope",
+                match_info={"token_id": "nope"},
+                **non_owner,
+            )
+        )
+        assert deleted.status == 404
+
+        switched = await H.api_webhooks_switch(
+            _req("POST", "/api/webhooks/switch", {"enabled": False}, **non_owner)
+        )
+        assert switched.status == 200
