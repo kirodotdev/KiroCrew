@@ -67,6 +67,16 @@ export interface ChatEmbedProps {
    * fixed offset that breaks whenever the composer's height changes.
    */
   aboveComposer?: ReactNode
+  /**
+   * Cap for the composer's auto-grow, in px. The textarea grows with the draft
+   * up to this height, then keeps it and scrolls. Defaults to the shared
+   * `useComposerDraft` cap (240px), which suits a full-height page but not a
+   * host that boxes the embed at a fixed height: there a maxed-out draft takes
+   * most of the box and the transcript above it is squeezed to a few lines. A
+   * fixed-height host passes a proportion of its own box here; the resting
+   * (empty) size is unaffected. Omitted, behaviour is unchanged.
+   */
+  composerMaxHeight?: number
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -90,7 +100,16 @@ export const EMBED_PAGE_LIMIT = 200
 /** The handler clamps `limit` here; a wider ask is silently this. */
 export const EMBED_PAGE_LIMIT_MAX = 500
 
-function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
+function ChatEmbed({
+  slotKey,
+  agent,
+  placeholder,
+  frameless,
+  startAtBottom,
+  onSend,
+  aboveComposer,
+  composerMaxHeight,
+}: ChatEmbedProps) {
   const api = useAppApi()
   const lastHashRef = useRef('')
   // The transcript is ChatMessageList's virtualized mount: it owns the scroller
@@ -203,7 +222,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
   const { draft, setDraft, textareaRef, picked, toggleOption, composition, submitOnEnter } =
-    useComposerDraft({ followUpOptions })
+    useComposerDraft({ followUpOptions, maxHeight: composerMaxHeight })
 
   // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires

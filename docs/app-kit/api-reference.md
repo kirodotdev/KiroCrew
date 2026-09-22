@@ -116,6 +116,17 @@ inserts a line break, and an Enter used to commit an input method editor (IME)
 candidate does not send. The box grows with the draft up to 240 pixels, then
 keeps its height and scrolls vertically.
 
+A host that boxes the embed at a fixed height passes `composerMaxHeight` (in
+pixels) to lower that cap, so a long draft cannot take most of the box from the
+transcript. The resting (empty) size of the composer is unchanged; only the cap
+moves. Omitted, the 240-pixel default applies.
+
+```tsx
+<div style={{ height: 420 }}>
+  <ChatEmbed slotKey="coder-abc123" composerMaxHeight={160} />
+</div>
+```
+
 ## Native Chat Panel
 
 `ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required

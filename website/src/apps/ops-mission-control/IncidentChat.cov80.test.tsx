@@ -12,7 +12,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useAppApi, useAppEvents, useAppInfo, useNavigate, useNotify } from '../../app-sdk'
 import { i18nT } from '../../i18n/t'
-import IncidentChat, { incidentSlotKey } from './IncidentChat'
+import IncidentChat, {
+  INCIDENT_CHAT_BOX_HEIGHT_PX,
+  INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX,
+  incidentSlotKey,
+} from './IncidentChat'
 
 const probeProps = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
 const unsubscribes = vi.hoisted(() => ({ current: [] as unknown[] }))
@@ -61,6 +65,20 @@ describe('IncidentChat', () => {
     expect(probeProps.current.placeholder).toBe(
       i18nT('apps.opsMissionControl.incidentChat.ask_about_incident', { incidentId: 'zzq-42' }),
     )
+  })
+
+  it('caps the composer below the shared default so the transcript keeps most of the box', () => {
+    // The panel is a fixed-height box. Left at the embed's shared 240px cap, a
+    // long draft would claim more than half of it and squeeze the agent's
+    // findings to a few lines. The cap is a proportion of the box and the box
+    // reads its height from the same module, so neither can move alone.
+    render(<IncidentChat incidentId="zzq-42" />)
+    expect(probeProps.current.composerMaxHeight).toBe(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX)
+    expect(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeLessThan(240)
+    // At the maxed-out draft, at least ~240px of the box is still transcript.
+    expect(INCIDENT_CHAT_BOX_HEIGHT_PX - INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeGreaterThanOrEqual(240)
+    const box = screen.getByTestId('zzq-embed').parentElement?.parentElement as HTMLElement
+    expect(box.style.height).toBe(`${INCIDENT_CHAT_BOX_HEIGHT_PX}px`)
   })
 
   it('scopes the provider to the chat AND approvals APIs', () => {

@@ -27,6 +27,21 @@ import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import ChatEmbed from '../../app-sdk/ChatEmbed'
 
 import { i18nT } from '../../i18n/t'
+/**
+ * The panel's fixed box height and the composer's auto-grow cap, together.
+ *
+ * The embed's composer grows with the draft up to a cap; its shared default
+ * (240px) is sized for a full-height page. In this 420px box that cap lets a
+ * long draft claim more than half the panel and squeezes the transcript to a
+ * few lines -- the agent's findings scroll out of view exactly when the user is
+ * writing a long answer. The cap is therefore a proportion of the box (~38%),
+ * which keeps at least ~240px of transcript at the maxed-out draft. Both live
+ * here, and the box reads its height from the constant, so the box cannot be
+ * resized without the cap being reconsidered beside it.
+ */
+export const INCIDENT_CHAT_BOX_HEIGHT_PX = 420
+export const INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX = 160
+
 /** Slot key convention shared with the dispatch SOP: one slot per incident. */
 export function incidentSlotKey(incidentId: string): string {
   return `ops-mission-control-${incidentId}`
@@ -66,7 +81,10 @@ export default function IncidentChat({
     // investigation becomes unreadable AND unanswerable. `min-h-0` is required
     // too — a flex child's default `min-height: auto` refuses to shrink below its
     // content, which silently defeats the overflow.
-    <div className="mt-2 border-t border-border pt-2 flex flex-col h-[420px]">
+    <div
+      className="mt-2 border-t border-border pt-2 flex flex-col"
+      style={{ height: INCIDENT_CHAT_BOX_HEIGHT_PX }}
+    >
       <p className="text-[12px] text-muted mb-2 shrink-0">
         {i18nT('apps.opsMissionControl.incidentChat.live_investigation_header', {
           incident: incidentId,
@@ -83,6 +101,7 @@ export default function IncidentChat({
           <ChatEmbed
             slotKey={incidentSlotKey(incidentId)}
             placeholder={i18nT('apps.opsMissionControl.incidentChat.ask_about_incident', { incidentId })}
+            composerMaxHeight={INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX}
           />
         </AppScopedApiProvider>
       </div>

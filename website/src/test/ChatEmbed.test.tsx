@@ -328,6 +328,40 @@ describe('ChatEmbed', () => {
       expect(input.style.height).toBe('240px')
       expect(input).toHaveClass('overflow-y-auto')
     })
+
+    it('caps the auto-grow at composerMaxHeight when a fixed-height host passes one', async () => {
+      // A host that boxes the embed at a fixed height (IncidentChat's 420px
+      // panel) cannot afford the shared 240px cap: a maxed-out draft would take
+      // more than half the box. The prop is forwarded to the draft hook as its
+      // cap; the resting size is the element's own CSS floor and is not touched.
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" composerMaxHeight={160} />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      Object.defineProperty(input, 'scrollHeight', { value: 9999, configurable: true })
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'a long multi-line draft' } })
+      })
+
+      expect(input.style.height).toBe('160px')
+    })
+
+    it('lets a draft below composerMaxHeight grow to its own content height', async () => {
+      // The prop is a cap, not a fixed height: a short draft still sizes to its
+      // content, so the prop cannot be implemented as a constant height.
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" composerMaxHeight={160} />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      Object.defineProperty(input, 'scrollHeight', { value: 76, configurable: true })
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'three\nshort\nlines' } })
+      })
+
+      expect(input.style.height).toBe('76px')
+    })
   })
 
   describe('onSend routing', () => {
