@@ -134,6 +134,11 @@ with no row here.
        as two config-option writes)
    * - ``effort_config_option_id``
      - driver-internal (which ``configId`` carries the reasoning effort)
+   * - ``effort_config_option_value``
+     - driver-internal (which VALUE that option spells a Crew effort level with)
+   * - ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``
+     - driver-internal (whether the ADVERTISED option, rather than Crew's model
+       registry, answers that this session takes an effort level and which ones)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -1406,16 +1411,24 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
 # for: the same ``session/new`` result that advertises its ``model`` select
 # advertises a ``mode`` select beside it and no ``effort`` option at all.
 #
-# pi is NOT a member for the same kind of reason: the option beside its ``model``
-# select is ``thought_level`` (off ... xhigh), a different id with a different
-# vocabulary, and this set names the harnesses whose option is ``effort``.
+# pi IS a member, and joins under its OWN spelling rather than the default one: the
+# option beside its ``model`` select is ``thought_level``, offering off, minimal,
+# low, medium, high and xhigh, and describing itself as "Set the reasoning effort
+# for this session". ``test/fixtures/acp_frames/pi/session-live.jsonl`` carries that
+# select off a live ``session/new`` result, which is the evidence this membership
+# rests on. A DIFFERENT id is not an absent channel -- resolving the id per harness
+# is what ``EFFORT_CONFIG_OPTION_IDS`` below already exists for, and reading the
+# difference as absence is what left this harness reporting no effort control at
+# all. Its vocabulary differs too, and that half is answered by
+# ``EFFORT_CONFIG_OPTION_VALUES``: membership says the channel exists, one table
+# says what to call the OPTION and the other what to call the LEVEL.
 #
 # deepseek IS a member: the same ``session/new`` result carries both selects, the
 # effort one offering off, low, high and max. It advertises that option under its own
 # id, ``reasoning_effort``, which ``EFFORT_CONFIG_OPTION_IDS`` below records --
 # membership says the channel exists, the table says what to call it.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI}
 )
 
 # Backends whose ADVERTISED model ids are ``<model>[<effort>]`` pairs that the
@@ -1432,9 +1445,10 @@ ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 
 # The ``configId`` each backend spells its reasoning-effort option with. One home
 # for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
-# advertises ``effort`` and codex-acp advertises ``reasoning_effort``, and a
-# session that writes the other one's spelling is answered with "unknown config
-# option" and silently keeps whatever effort it already had.
+# advertises ``effort``, codex-acp advertises ``reasoning_effort`` and pi-acp
+# advertises ``thought_level``, and a session that writes another one's spelling is
+# answered with "unknown config option" and silently keeps whatever effort it
+# already had.
 #
 # Opt-in by exception (harness-parity H13): the default is the ``effort`` spelling
 # every existing member of ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` runs through,
@@ -1447,11 +1461,50 @@ ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_CODEX: "reasoning_effort",
     ACP_BACKEND_DEEPSEEK: "reasoning_effort",
+    ACP_BACKEND_PI: "thought_level",
 }
 
 #: The spelling used by every backend without a row in
 #: ``EFFORT_CONFIG_OPTION_IDS``.
 DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
+
+# Backends whose ADVERTISED effort option answers two questions Crew's model
+# registry answers everywhere else: whether this session takes an effort level at
+# all, and which levels may be written. A member advertises the option per
+# SESSION rather than per model, so the option served on ``session/new`` is the
+# authority and the registry cannot speak for it.
+#
+# Membership is what makes the channel above REACHABLE, and the two are separate
+# claims rather than one: ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` says a change
+# travels as ``session/set_config_option``, and this set says who decides there is
+# a level to send. A harness in the first and not the second is asked
+# ``model_supports_effort``, which is a NAME test -- it answers True for the
+# Claude and GPT families and False for everything it does not recognise, so on a
+# harness serving the operator's own model ids it answers False for every ordinary
+# session and the effort control never appears.
+#
+# pi is a member: its ids are ``provider/model`` pairs out of the operator's own
+# ``models.json`` (``ollama/llama3.2:3b`` in
+# ``test/fixtures/acp_frames/pi/session-live.jsonl``), which no registry entry and
+# no name heuristic carries, while the ``thought_level`` select sits on the same
+# ``session/new`` result for all of them.
+#
+# deepseek is NOT a member, though its model ids are equally foreign to the
+# registry and it advertises its own ``reasoning_effort`` select. Membership here
+# would light a write path whose vocabulary gap is unmeasured: deepseek advertises
+# off, low, high and max, so Crew's ``medium`` and ``xhigh`` land on nothing it
+# offers, and ``EFFORT_CONFIG_OPTION_VALUES`` carries no deepseek row to fold them
+# onto. A member whose stored level is silently dropped at its own cold start is
+# the defect this set exists to remove, so deepseek waits for its own fold rows
+# and its own round-trip coverage rather than riding in on pi's.
+#
+# The kiro family and claude are NOT members, and that is the split this set
+# exists for: there the level rides the MODEL. kiro-cli refuses effort with
+# "Effort configuration is currently not available on <model>", and
+# claude-agent-acp rebuilds its effort options per model from
+# ``supportedEffortLevels`` -- so the registry, which knows which model families
+# take a level, is the right authority for them.
+ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset({ACP_BACKEND_PI})
 
 
 def effort_config_option_id(backend: str) -> str:
@@ -1466,6 +1519,56 @@ def effort_config_option_id(backend: str) -> str:
     skips, so the session runs an effort the UI does not report.
     """
     return EFFORT_CONFIG_OPTION_IDS.get(backend, DEFAULT_EFFORT_CONFIG_OPTION_ID)
+
+
+# What each backend calls a LEVEL, where its own vocabulary omits one of Crew's.
+# The sibling of ``EFFORT_CONFIG_OPTION_IDS`` and kept beside it: that table answers
+# what to call the OPTION, this one what to call the value written into it, and both
+# are per-harness vocabulary rather than a constant.
+#
+# Asked only where the two vocabularies genuinely differ, so most harnesses have no
+# row. Crew's ladder (``kiro_crew.effort.EFFORT_LEVELS``) is low, medium, high,
+# xhigh, max; pi's ``thought_level`` is off, minimal, low, medium, high, xhigh. Every
+# Crew level but ``max`` is spelled identically, so pi's row is exactly that one
+# fold, onto the ceiling its own capture advertises
+# (``test/fixtures/acp_frames/pi/session-live.jsonl``). pi's two EXTRA values are not
+# folds in the other direction and are absent here deliberately: the dropdown is
+# filled from what the harness advertised, so a member picking ``minimal`` sends
+# ``minimal``, and nothing maps a Crew level onto ``off`` -- clearing the level is
+# ``clear_effort``, not a level of its own.
+#
+# A DECLARED fold and not the reactive step-down in
+# ``AcpProvider._set_effort_config_option``, which is why this table exists rather
+# than the ladder being left to cover it. That step-down descends only when the
+# refusal is RECOGNISED, and ``_is_config_value_rejection`` recognises a bare
+# ``-32602`` on per-adapter grounds its own docstring states -- along with the
+# requirement that a harness joining ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` have
+# its ``-32602`` semantics checked before it joins. The pi corpus carries no
+# config-value refusal at all, so pushing ``max`` to pi would rest on an unchecked
+# guess: read as a value refusal it descends correctly, read as anything else it
+# propagates -- and on the live-change path that resets the session. Folding before
+# the write means pi is never asked for a value it never advertised, and the ladder
+# stays the backstop for the per-model ceilings it was built for.
+EFFORT_CONFIG_OPTION_VALUES: Mapping[str, Mapping[str, str]] = {
+    ACP_BACKEND_PI: {"max": "xhigh"},
+}
+
+
+def effort_config_option_value(backend: str, level: str) -> str:
+    """The value *backend*'s effort option spells Crew's *level* with.
+
+    The value-side twin of :func:`effort_config_option_id`, read by the same sites
+    for the same reason: the dashboard's live change, the startup application of a
+    persisted slot level, the knowledge pool's apply, and the effort half of a
+    ``<model>[<effort>]`` pick. One site resolving the level while another writes it
+    raw is the same silent divergence two spellings of the option id produce -- the
+    session runs a level the UI does not report, or the write is refused and read as
+    "this adapter has no effort selector".
+
+    A backend without a row, and a level a backend already spells the same way, come
+    back unchanged, so a harness whose vocabulary matches Crew's is untouched.
+    """
+    return EFFORT_CONFIG_OPTION_VALUES.get(backend, {}).get(level, level)
 
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list

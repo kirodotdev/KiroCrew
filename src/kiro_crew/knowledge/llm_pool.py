@@ -16,7 +16,10 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_sdk.backends import effort_config_option_id
+from kiro_crew.agent_sdk.backends import (
+    effort_config_option_id,
+    effort_config_option_value,
+)
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
@@ -360,6 +363,12 @@ class AcpWorker(Worker):
                     requested,
                 )
                 return
+            # The harness's own spelling first, then the advertised fold: the
+            # table answers a level this harness does not HAVE, and
+            # ``_select_effort_level`` answers one the current model will not
+            # take. Both are asked here so this site writes the same value as
+            # the three other effort writers.
+            requested = effort_config_option_value(backend, requested)
             supported = client.get_valid_effort_levels()
             if not isinstance(supported, list):
                 supported = []

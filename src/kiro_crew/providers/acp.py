@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -37,6 +38,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
+    ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
 )
 from kiro_crew.acp.types import (
@@ -56,6 +58,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
     effort_config_option_id,
+    effort_config_option_value,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
@@ -1379,12 +1382,39 @@ class AcpProvider(LLMProvider):
 
     # ── Reasoning-effort control ─────────────────────────────────────
 
-    def supports_effort(self) -> bool:
-        """True when the current model accepts a reasoning-effort level.
+    def _advertised_effort_levels(self) -> list[str] | None:
+        """The vocabulary this harness is the authority on, or None.
 
-        Drives the dashboard effort dropdown: shown only when the active
-        model is effort-capable (Opus/Sonnet), for both ACP backends.
+        A member of ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` advertises its
+        effort option per SESSION rather than per model, so the option it served
+        on ``session/new`` answers both which levels exist and whether any do.
+        ``None`` -- every other harness -- means the model registry answers, which
+        is right where the level rides the model.
         """
+        if self._client.backend not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION:
+            return None
+        return self._client.get_valid_effort_levels()
+
+    def supports_effort(self) -> bool:
+        """True when this session accepts a reasoning-effort level.
+
+        Drives the dashboard effort dropdown, and the single answer the three
+        effort verbs below read -- a second copy of this question is how one of
+        them comes to offer a control the others refuse.
+
+        WHICH fact answers is per harness. Where the level rides the MODEL --
+        kiro-cli refuses it per model, claude-agent-acp rebuilds the option from
+        the model's ``supportedEffortLevels`` -- the registry answers. Where the
+        harness advertises the option per SESSION
+        (``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``) the option answers,
+        because the registry carries no entry for the operator's own model ids and
+        its name heuristic recognises none of them, so it reports "no effort" for
+        every ordinary session on such a harness and the control never appears.
+        """
+        if self._client.backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION:
+            return self._client.supports_config_option(
+                effort_config_option_id(self._client.backend)
+            )
         return model_supports_effort(self._client._model)
 
     def _resolve_effort(self) -> str | None:
@@ -1400,10 +1430,17 @@ class AcpProvider(LLMProvider):
         ``change_effort`` writes the override under the same recorded spelling
         this reads, so the override path matches by construction.
         """
+        # The fold the WRITE path takes, handed in so it runs BEFORE the
+        # advertised-list check rather than after it. ``change_effort`` admits any
+        # level the dynamic validation set knows, so a stored ``max`` on a harness
+        # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
+        # that ran first would drop the very level the live push applied.
         return resolve_effort_for_model(
             self._client._model,
             slot_overrides=self._effort_per_model,
             defaults=self._effort_defaults,
+            levels=self._advertised_effort_levels(),
+            normalize=functools.partial(effort_config_option_value, self._client.backend),
         )
 
     def _apply_effort_overlay(self, *, timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS) -> bool:
@@ -1501,12 +1538,18 @@ class AcpProvider(LLMProvider):
         adapter-behaviour notes below are what that channel does in practice.
 
         WHICH option id carries the effort is resolved per backend through
-        ``effort_config_option_id``: claude-agent-acp spells it ``effort`` and
-        codex-acp spells it ``reasoning_effort``. Naming one spelling here writes
-        an id the other adapter does not know, which comes back as "unknown
-        config option" -- and the branch below reads that as "no effort selector"
-        and skips, so the session keeps whatever effort it already had while the
-        dashboard reports the level the user picked.
+        ``effort_config_option_id``: claude-agent-acp spells it ``effort``,
+        codex-acp ``reasoning_effort`` and pi-acp ``thought_level``. Naming one
+        spelling here writes an id the other adapters do not know, which comes
+        back as "unknown config option" -- and the branch below reads that as "no
+        effort selector" and skips, so the session keeps whatever effort it
+        already had while the dashboard reports the level the user picked.
+
+        WHICH value carries the level is resolved the same way, through
+        ``effort_config_option_value``, and before the descent rather than by it:
+        a harness whose vocabulary omits one of Crew's levels is a declared fact,
+        and the descent recovers from an omission only when the refusal arrives in
+        a shape ``_is_config_value_rejection`` recognises for that adapter.
 
         claude-agent-acp validates the value against the *current model's*
         ``supportedEffortLevels`` and throws ``Invalid value for config option
@@ -1531,19 +1574,31 @@ class AcpProvider(LLMProvider):
         if not self._client.supports_config_option(effort_option):
             logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
             return
+        # The harness's own spelling of the level, resolved BEFORE the write for
+        # the reason ``effort_config_option_value`` gives: a vocabulary that omits
+        # one of Crew's levels is a declared fact, and the descent below can only
+        # recover from it when the refusal shape is one this tree recognises.
+        target = effort_config_option_value(self._client.backend, level)
+        if target != level:
+            logger.info(
+                "effort %r spelled %r on backend %s",
+                level,
+                target,
+                self._client.backend,
+            )
         # Descend from the requested level through lower levels (e.g.
         # max → xhigh → high). Never escalate above what was asked.
         try:
-            start = EFFORT_LEVELS.index(level)
+            start = EFFORT_LEVELS.index(target)
         except ValueError:
-            await self._client.set_config_option(effort_option, level)
+            await self._client.set_config_option(effort_option, target)
             return
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
                 await self._client.set_config_option(effort_option, candidate)
-                if candidate != level:
+                if candidate != target:
                     logger.info(
                         "CC effort %r unsupported by model %s — applied %r instead",
                         level,
@@ -1577,8 +1632,12 @@ class AcpProvider(LLMProvider):
         so has no effort channel at all.
         """
         model = self._client._model
-        if not model_supports_effort(model):
-            logger.info("change_effort skipped — model %s does not support effort", model)
+        if not self.supports_effort():
+            logger.info(
+                "change_effort skipped — no effort level applies to this session (backend=%s model=%s)",
+                self._client.backend,
+                model,
+            )
             return False
         via_config_option = self._client.backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
         via_slash_command = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
@@ -1708,7 +1767,7 @@ class AcpProvider(LLMProvider):
         resets nothing.
         """
         model = self._client._model
-        if not model_supports_effort(model):
+        if not self.supports_effort():
             return False
         cleared = self._effort_per_model.pop(model, None)
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:

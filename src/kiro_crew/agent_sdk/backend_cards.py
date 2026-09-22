@@ -373,6 +373,16 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "it recycles a session that did not need it -- and neither is an absent "
         "feature a card could mark"
     ),
+    "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": (
+        "which fact answers whether a session takes an effort level -- the option the "
+        "harness advertised, or Crew's model registry. The card already reports whether "
+        "effort can be changed on this harness at all, which is the part a reader "
+        "choosing one acts on, and both states of THIS set are correct behaviour for the "
+        "harness they describe. A wrong membership is a defect in either direction: "
+        "asking the registry about a harness whose model ids it does not carry hides a "
+        "control that works, and asking the option on a harness whose level rides the "
+        "model offers one the model will refuse"
+    ),
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS": (
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"

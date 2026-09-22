@@ -593,21 +593,36 @@ def test_the_levels_parser_reads_the_table(tmp_path) -> None:
     assert '== "effort"' not in body
 
 
+#: How many sites in ``AcpProvider`` resolve the effort option id per backend, and
+#: what each one is. An exact count rather than a floor: a literal at any of them
+#: makes the whole channel a silent no-op for a harness that spells the option
+#: differently, and a count that only grows cannot tell a new reader from a
+#: hard-coded one that slipped in beside a correct one.
+_PROVIDER_EFFORT_ID_SITES = (
+    "the advertised-option CHECK in ``_set_effort_config_option``",
+    "the skip-if-unadvertised check in ``change_effort``",
+    "the capability answer in ``supports_effort``, for a harness whose ADVERTISED "
+    "option decides that a level applies at all "
+    "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",
+)
+
+
 def test_no_site_that_asks_about_effort_spells_the_id_itself() -> None:
     """Membership in the effort set is worth nothing if a consumer hard-codes the id.
 
-    The levels parser is one of four sites. The advertised-option CHECK and the two
-    pushes live in ``providers/acp.py``, and a literal at any of them makes the whole
-    channel a silent no-op for this harness: the check reports the option
-    unsupported, the push never happens, and the dropdown still offers levels that
-    can never be applied.
+    The levels parser is one site; ``_PROVIDER_EFFORT_ID_SITES`` names the ones in
+    ``providers/acp.py``. A literal at any of them makes the whole channel a silent
+    no-op for this harness: the check reports the option unsupported, the push never
+    happens, and the dropdown still offers levels that can never be applied.
     """
     from kiro_crew.providers import acp as provider_module
 
     body = inspect.getsource(provider_module.AcpProvider)
     assert 'supports_config_option("effort")' not in body
     assert 'set_config_option("effort"' not in body
-    assert body.count("effort_config_option_id(self._client.backend)") == 2
+    assert body.count("effort_config_option_id(self._client.backend)") == len(
+        _PROVIDER_EFFORT_ID_SITES
+    )
 
 
 @pytest.mark.asyncio

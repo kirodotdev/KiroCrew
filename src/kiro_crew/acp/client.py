@@ -175,6 +175,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
     effort_config_option_id,
+    effort_config_option_value,
     model_registry_namespace,
     overlay_project_scope,
 )
@@ -3857,6 +3858,9 @@ async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str)
     # selector" and skips -- the session then runs the suffix's effort while the
     # UI reports the slot's.
     effort_option = effort_config_option_id(backend)
+    # ...and the same resolver for the VALUE, so the split writes the level in the
+    # harness's own vocabulary rather than the suffix's verbatim.
+    effort = effort_config_option_value(backend, effort)
     if not driver.supports_config_option(effort_option):
         logger.warning(
             "ACP model %s applied as %s; adapter exposes no %r option, effort %s not applied",
