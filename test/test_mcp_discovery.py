@@ -5132,3 +5132,296 @@ class TestProbeHeaderReferenceExpansion:
         assert _needs_authorization(401, {}, {"Authorization": "Bearer abc"}) is False
         # Only 401/403-with-challenge become needs_auth even when unresolved.
         assert _needs_authorization(500, {}, {"Authorization": "Bearer ${TOKEN}"}) is False
+
+
+class TestQuarantinedServersAreNotSpawned:
+    """A server that wedges on every probe stops being spawned.
+
+    ``PROBE_MAX_CONCURRENCY`` bounds how many probes run at once, never how many
+    times a hopeless one is retried, so the thing under test is REPETITION. The
+    consecutive-failure count is not kept here: ``mcp_quarantine`` already holds
+    it, and these tests drive it exactly as the dashboard does — ``probe_all``,
+    then ``record_verdicts`` with that round's outcome.
+    """
+
+    LIMIT = 3
+
+    @pytest.fixture(autouse=True)
+    def _store(self, tmp_path, monkeypatch):
+        from kiro_crew import mcp_quarantine
+        from kiro_crew.mcp_discovery import _quarantine_warned
+
+        monkeypatch.setattr(mcp_quarantine, "_STORE_PATH", tmp_path / "quarantine.json")
+        monkeypatch.setattr(mcp_quarantine, "threshold", lambda: self.LIMIT)
+        _clear_cache()
+        _quarantine_warned.clear()
+        yield
+        _quarantine_warned.clear()
+        _clear_cache()
+
+    @staticmethod
+    def _wedged_config(tmp_path: Path, monkeypatch) -> None:
+        """Point discovery at one enabled server and nothing else."""
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(json.dumps({"mcpServers": {"wedged": {"command": "hangs-forever"}}}))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+
+    @staticmethod
+    def _always_times_out(spawned: list[str]):
+        """A ``probe_server`` stand-in for a server that wedges on every spawn."""
+
+        async def fake_probe(server):
+            spawned.append(server.name)
+            server.status = "error"
+            server.error = "probe timed out after 15s"
+            _cache_probe(server)
+            return server
+
+        return fake_probe
+
+    async def _pass(self, monkeypatch, spawned: list[str]) -> list:
+        """One discovery pass, folded back into the store like the dashboard's.
+
+        ``dashboard/handlers/mcp.py`` calls ``probe_all`` and then hands
+        ``_record_probe_verdicts`` EVERY row it returned -- it does not know which
+        ones were spawned. This helper must do the same, or it tests a caller that
+        does not exist and hides what the real one does with an unprobed row.
+        """
+        from kiro_crew import mcp_quarantine
+        from kiro_crew.mcp_discovery import probe_all
+
+        probed = await probe_all()
+        mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in probed])
+        return probed
+
+    @pytest.mark.asyncio
+    async def test_wedged_server_leaves_the_spawn_set_at_the_threshold(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Five passes, three spawns: exclusion holds once the count crosses.
+
+        Asserted against the configured threshold rather than a literal 3, so
+        retuning ``agent.mcp_quarantine_after_failures`` cannot leave a test that
+        only agrees with itself.
+        """
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        results = [await self._pass(monkeypatch, spawned) for _ in range(self.LIMIT + 2)]
+
+        assert spawned == ["wedged"] * self.LIMIT
+        # Excluded from the SPAWN set, not from the answer: a caller that decides
+        # freshness by comparing returned names against its own cache would read a
+        # dropped row as a brand-new server on every request and re-arm the very
+        # fan-out this stops.
+        for probed in results:
+            assert [s.name for s in probed] == ["wedged"]
+        # The rows that WERE probed report the failure; the excluded ones report
+        # no fresh result, which is what test_an_unprobed_row_cannot_advance_the_count
+        # depends on.
+        assert results[self.LIMIT - 1][0].status == "error"
+        assert results[-1][0].status == "outdated"
+
+    @pytest.mark.asyncio
+    async def test_an_unprobed_row_cannot_advance_the_count(self, tmp_path, monkeypatch) -> None:
+        """The excluded row reports no fresh result, so it is not a verdict.
+
+        Its caller folds every returned row back into the store, so a row still
+        carrying the old ``error`` would re-count a probe that never ran: the
+        count would climb with no handshake behind it, and raising the threshold
+        afterwards could never release the server.
+        """
+        from kiro_crew import mcp_quarantine
+
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        for _ in range(self.LIMIT + 3):
+            probed = await self._pass(monkeypatch, spawned)
+
+        assert probed[0].status == "outdated"
+        assert probed[0].error == ""
+        # Exactly the real failures, with nothing added by the passes that
+        # returned the row without probing it.
+        assert mcp_quarantine.state_for("wedged")["fails"] == self.LIMIT
+        # And the count that governs exclusion is therefore still releasable by
+        # the operator lever that reads it.
+        monkeypatch.setattr(mcp_quarantine, "threshold", lambda: self.LIMIT + 1)
+        spawned.clear()
+        await self._pass(monkeypatch, spawned)
+        assert spawned == ["wedged"]
+
+    @pytest.mark.asyncio
+    async def test_a_second_crossing_warns_again(self, tmp_path, monkeypatch, caplog) -> None:
+        """Recovery then a fresh wedge is news, so it warns a second time.
+
+        A ledger keyed by server name alone would stay silent here for the life of
+        the process, which is the failure mode warn-once must not become.
+        """
+        from kiro_crew import mcp_quarantine
+        from kiro_crew.mcp_discovery import _quarantine_warned
+
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+            for _ in range(self.LIMIT + 1):
+                await self._pass(monkeypatch, spawned)
+            assert len([r for r in caplog.records if "will no longer" in r.getMessage()]) == 1
+
+            mcp_quarantine.clear("wedged")
+            # One pass to drop the cleared crossing from the ledger, proving the
+            # prune keeps it bounded rather than growing one key per crossing.
+            await self._pass(monkeypatch, spawned)
+            assert _quarantine_warned == set()
+
+            for _ in range(self.LIMIT + 1):
+                await self._pass(monkeypatch, spawned)
+
+        opened = [r for r in caplog.records if "will no longer" in r.getMessage()]
+        assert len(opened) == 2
+        assert all("wedged" in r.getMessage() for r in opened)
+
+    @pytest.mark.asyncio
+    async def test_exactly_one_warning_per_crossing(self, tmp_path, monkeypatch, caplog) -> None:
+        """One warning for the whole wedge, naming both ways back out."""
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+            for _ in range(self.LIMIT + 3):
+                await self._pass(monkeypatch, spawned)
+
+        opened = [r for r in caplog.records if "will no longer" in r.getMessage()]
+        assert len(opened) == 1
+        message = opened[0].getMessage()
+        assert "wedged" in message
+        # The remedy matters more than the diagnosis here: the exclusion outlives a
+        # gateway restart, so the one line an operator gets has to name the reset
+        # that clears it and the switch that turns the whole thing off.
+        assert "/api/mcp/quarantine/clear" in message
+        assert "agent.mcp_quarantine_after_failures" in message
+
+    @pytest.mark.asyncio
+    async def test_clearing_the_quarantine_restores_spawning(self, tmp_path, monkeypatch) -> None:
+        """The operator reset that already ships is the reopen path."""
+        from kiro_crew import mcp_quarantine
+
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+        for _ in range(self.LIMIT + 1):
+            await self._pass(monkeypatch, spawned)
+        assert spawned == ["wedged"] * self.LIMIT
+
+        mcp_quarantine.clear("wedged")
+
+        spawned.clear()
+        await self._pass(monkeypatch, spawned)
+        assert spawned == ["wedged"]
+
+    @pytest.mark.asyncio
+    async def test_a_successful_probe_clears_the_count(self, tmp_path, monkeypatch) -> None:
+        """A success below the threshold clears the count rather than pausing it.
+
+        Without this, two failures far apart on either side of a healthy probe
+        would still add up and exclude a server that is working.
+        """
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+        for _ in range(self.LIMIT - 1):
+            await self._pass(monkeypatch, spawned)
+
+        async def healthy(server):
+            spawned.append(server.name)
+            server.status = "ok"
+            server.tools = ["t"]
+            _cache_probe(server)
+            return server
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", healthy)
+        await self._pass(monkeypatch, spawned)
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+        spawned.clear()
+        for _ in range(self.LIMIT - 1):
+            await self._pass(monkeypatch, spawned)
+        assert spawned == ["wedged"] * (self.LIMIT - 1)
+
+    @pytest.mark.asyncio
+    async def test_threshold_zero_turns_exclusion_off_too(self, tmp_path, monkeypatch) -> None:
+        """One switch, one meaning: ``0`` disables quarantining, badge and spawn.
+
+        An operator who turns the feature off has to get the pre-change behaviour
+        back, not a silent exclusion whose badge has been hidden.
+        """
+        from kiro_crew import mcp_quarantine
+
+        monkeypatch.setattr(mcp_quarantine, "threshold", lambda: 0)
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        for _ in range(self.LIMIT + 2):
+            await self._pass(monkeypatch, spawned)
+
+        assert spawned == ["wedged"] * (self.LIMIT + 2)
+
+    @pytest.mark.asyncio
+    async def test_a_hostile_store_record_cannot_break_discovery(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Any stored value must be inert on the probe path.
+
+        The store is unfenced and its contents are attacker-influenced, and this
+        read happens inside ``probe_all``: an exception here would take out the
+        whole fleet's discovery, not one row. ``_as_time`` bounds NaN, infinities
+        and negatives but passes a large finite value through, so nothing on this
+        path may hand a stored number to an API with a platform range.
+        """
+        from kiro_crew import mcp_quarantine
+
+        store = tmp_path / "quarantine.json"
+        store.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "servers": {
+                        "wedged": {"fails": 10**9, "crossed_at": 1e30, "last_status": "error"}
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(mcp_quarantine, "_STORE_PATH", store)
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        probed = await self._pass(monkeypatch, spawned)
+
+        assert [s.name for s in probed] == ["wedged"]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_store_still_probes(self, tmp_path, monkeypatch) -> None:
+        """Fail OPEN: one bad file must not become a fleet-wide probe outage."""
+        from kiro_crew import mcp_quarantine
+
+        def boom():
+            raise OSError("store unreadable")
+
+        monkeypatch.setattr(mcp_quarantine, "snapshot", boom)
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+
+        for _ in range(self.LIMIT + 2):
+            await self._pass(monkeypatch, spawned)
+
+        assert spawned == ["wedged"] * (self.LIMIT + 2)

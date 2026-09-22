@@ -41,10 +41,11 @@ def _fail(name: str, status: str = "error", error: str = "boom"):
 def _failing() -> set[str]:
     """Names currently past the threshold, read back through the PUBLIC surface.
 
-    ``record_verdicts`` returns nothing and there is no ``failing_names`` helper:
-    nothing in the product acts on a crossing, it only reports one, so the store's
-    only consumer is the snapshot the API serves. Asserting through that is what
-    the dashboard actually sees.
+    ``record_verdicts`` returns nothing and there is no ``failing_names`` helper, so
+    the snapshot the API serves is how every consumer learns of a crossing: the
+    dashboard renders it, and ``mcp_discovery.probe_all`` reads it to leave the
+    server out of the spawn set. Asserting through that surface is asserting what
+    both of them actually see.
     """
     return {name for name, state in mcp_quarantine.snapshot().items() if state["failing"]}
 

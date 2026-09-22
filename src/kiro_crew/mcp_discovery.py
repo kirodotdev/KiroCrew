@@ -29,7 +29,7 @@ from typing import Any
 
 import aiohttp
 
-from kiro_crew import platform_compat
+from kiro_crew import mcp_quarantine, platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import (
     MCP_PATH_HINT,
@@ -2585,6 +2585,46 @@ async def probe_server(
     return server
 
 
+# Warn once per crossing PER GATEWAY RUN, not per pass: the quarantine is re-read
+# every pass, so warning on the STATE would reprint one line forever. This ledger is
+# process memory while the quarantine is durable, so a crossing outliving a restart is
+# announced again — right, because that run has told nobody. Pruning to what is
+# quarantined now bounds it and self-heals it: a server must leave the store to re-cross.
+_quarantine_warned: set[str] = set()
+
+
+def _spawn_excluded() -> set[str]:
+    """Servers to report from cache without spawning them again.
+
+    The count comes from ``mcp_quarantine``, not a second counter here: that
+    store is already the per-server consecutive-probe-failure ledger, already
+    skips ``needs_auth``, and already has an operator reset. ``probe_all``'s
+    caller folds each round's verdicts back into it, so this sees the previous
+    pass. Reads a file, so callers run it off the loop; an unreadable store
+    probes everything, because refusing would make one bad file a fleet outage.
+    """
+    try:
+        snap = mcp_quarantine.snapshot()
+    except Exception:
+        logger.debug("cannot read MCP quarantine state; probing all", exc_info=True)
+        return set()
+    excluded = {name for name, st in snap.items() if st.get("failing")}
+    _quarantine_warned.intersection_update(excluded)
+    for name in sorted(excluded):
+        if name in _quarantine_warned:
+            continue
+        _quarantine_warned.add(name)
+        logger.warning(
+            "MCP server %s failed %d consecutive probes, so discovery will no longer "
+            "spawn it. Fix it, then clear it from the MCP panel (POST "
+            "/api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
+            "or set agent.mcp_quarantine_after_failures to 0 to stop quarantining.",
+            name,
+            snap[name].get("fails") or 0,
+        )
+    return excluded
+
+
 # Cap how many MCP servers we probe concurrently.  Each probe spawns a
 # subprocess (or opens a remote connection) and resolves DNS on the event
 # loop's default executor; an unbounded fan-out across 25+ servers floods that
@@ -2625,8 +2665,26 @@ async def probe_all() -> list[McpServerInfo]:
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
     sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
+    excluded = await asyncio.to_thread(_spawn_excluded)
 
     async def _guarded(s: McpServerInfo) -> McpServerInfo:
+        # Left out of the SPAWN set only, and still returned: callers judge
+        # freshness by comparing returned names against their own cache, so a
+        # dropped row reads as brand-new every request and re-arms this fan-out.
+        #
+        # Returned as ``outdated``, not with the failure ``list_servers`` merged
+        # on, because no handshake was attempted and a row must not present a
+        # stale observation as a current one. ``_quarantine_verdicts`` folds these
+        # rows into the very count that decided the exclusion, under the rule that
+        # only a status reporting an attempt may move the counter: a re-reported
+        # ``error`` would inflate that count with no probe behind it, and a later
+        # threshold rise could then never release the server. ``outdated`` with no
+        # error is what ``_get_cached`` gives any entry lacking a fresh result, so
+        # this says now what the row says anyway once the TTL lapses.
+        if s.name in excluded:
+            s.status = "outdated"
+            s.error = ""
+            return s
         async with sem:
             return await probe_server(s)
 

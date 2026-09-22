@@ -1,7 +1,7 @@
 # MCP Probe-Failure Counter
 
 Status: implemented. The unmount half is deferred; see §6.
-Owners: `src/kiro_crew/mcp_quarantine.py` (durable counter and decision), `src/kiro_crew/dashboard/handlers/mcp.py` (verdict extraction, annotation, reset), and `website/src/pages/overview/McpTab.tsx` (surface).
+Owners: `src/kiro_crew/mcp_quarantine.py` (durable counter and decision), `src/kiro_crew/dashboard/handlers/mcp.py` (verdict extraction, annotation, reset), `src/kiro_crew/mcp_discovery.py` (probe-spawn exclusion), and `website/src/pages/overview/McpTab.tsx` (surface).
 
 ## 1. Purpose
 
@@ -19,7 +19,13 @@ A record becomes `probeFailing` only when `record_verdicts` has stamped `crossed
 
 ## 3. Decision boundary and overrides
 
-This mechanism is a diagnostic counter, not a mount gate. `mcp_quarantine.record_verdicts`, `clear`, and the callers in `dashboard.handlers.mcp` do not change `disabled`, rebuild the agent configuration, or stop a server from spawning. A persistent-failure badge therefore does not establish that a server is blocked, trusted, or even currently reachable.
+This mechanism is not a mount gate. `mcp_quarantine.record_verdicts`, `clear`, and the callers in `dashboard.handlers.mcp` do not change `disabled` or rebuild the agent configuration, so a persistent-failure badge does not establish that a server is blocked or trusted.
+
+It is a probe-spawn gate. `mcp_discovery.probe_all` reads `snapshot` once per discovery pass and leaves every `probeFailing` server out of the set it spawns, because a server that wedges on each spawn would otherwise be started again by every later pass. Such a row is still returned, reporting `outdated` with no error: no handshake was attempted, so it must not present the previous failure as a current one, and `_quarantine_verdicts` must not re-count a probe that never ran. `mcp_discovery` warns once per crossing, naming both the reset endpoint and the threshold. `TestQuarantinedServersAreNotSpawned` in `test/test_mcp_discovery.py` enforces the exclusion, the unprobed row's shape, the single warning, and the reset.
+
+Recovery from an exclusion is by operator action, not by self-healing, and that is the intended contract. The record clears on a successful handshake, and an excluded server is not handshaked by a discovery pass, so a server quarantined by three transient failures stays excluded until `POST /api/mcp/quarantine/clear` removes the record, a direct `probe_server` caller succeeds, or the threshold is raised or set to `0`. There is deliberately no timer or half-open re-probe: a bounded retry cadence would reintroduce the repetition this gate exists to stop, so the recovery lever is explicit instead of automatic. The crossing warning names the reset endpoint and the threshold for that reason.
+
+Setting the threshold to `0` therefore turns off the exclusion as well as the badge: one switch with one meaning. The count remains writable by any principal that can write the store, so the exclusion inherits that integrity property rather than adding one.
 
 A successful handshake removes the record, the reset endpoint removes it on request, and a live threshold change can make an existing record no longer `probeFailing`. `threshold` treats a configuration-read exception as disabled, so configuration-read failure makes the displayed decision fail open rather than preserving the prior failure decision.
 
@@ -56,6 +62,8 @@ The reader does not establish full path containment. `O_NOFOLLOW` is absent on W
 `api_mcp_quarantine_clear` records `mcp_probe_failures_reset` only after `clear` persists a removed record.
 
 ## 6. Deferred unmount
+
+Exclusion from discovery's spawn set is implemented (§3); dropping the server from the generated agent configuration is what remains deferred. The two are not the same act: a probe is ours to skip, while an agent entry is the user's configuration.
 
 A failing server remains mounted because this feature has no safe unmount decision point. `mcp_quarantine.py` stores only diagnostic state, and `dashboard.handlers.mcp` does not invoke `rebuild_agent_config` from a probe verdict.
 
