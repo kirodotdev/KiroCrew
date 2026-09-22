@@ -546,18 +546,37 @@ def member_owns_slot(state: "DashboardState", slot: Any, caller_key: str) -> boo
     folder/tag routes exactly the sessions it reaches through session-control
     and no others:
 
-    * (a) its OWN session -- the slot whose session key is ``caller_key``; and
-    * (b) a session it CREATED -- ``_created_by == caller_key``, stamped by
-      :func:`create_session` on every child a member mints.
+    * (a) its OWN session -- the slot whose slot key is the caller's own; and
+    * (b) a session it CREATED -- ``_created_by == <caller's slot key>``, the
+      value :func:`create_session` stamps on every child a member mints.
 
-    Everything else is refused: the person's own sessions, an app's sessions,
-    and another member's sessions all fail both arms. ``caller_key`` is the
-    VERIFIED ``X-Session-Key`` the gate authorized on, never a body value.
+    ``caller_key`` is the VERIFIED ``X-Session-Key`` the gate authorized on --
+    a SESSION key (``effective_session_key``, e.g. ``dashboard:chat-20-...``),
+    never a body value. :func:`create_session` stamps ``_created_by`` with a
+    SLOT key (``caller_slot_key(state, ...)``, e.g. ``chat-20-...``), so the two
+    live in DIFFERENT key spaces: a raw ``_created_by == caller_key`` compare
+    never matches a created child, because it compares a slot key to a session
+    key. Resolve the caller to its slot key ONCE through :func:`caller_slot_key`
+    (the same map :func:`create_session` writes the field through) and compare in
+    that one space: ``_created_by`` and the slot's own ``key`` are both slot
+    keys.
+
+    The ``effective_session_key(slot) == caller_key`` arm stays as a
+    session-space fallback: a channel-born slot whose key the live slot map
+    cannot resolve (``caller_slot_key`` returns ``""``) is still owned when its
+    session key IS the caller. Everything else is refused: the person's own
+    sessions, an app's sessions, and another member's sessions all fail every
+    arm.
     """
     if not caller_key or slot is None:
         return False
-    if getattr(slot, "_created_by", "") == caller_key:
-        return True
+    resolved_slot_key = caller_slot_key(state, caller_key)
+    if resolved_slot_key:
+        created_by = getattr(slot, "_created_by", "")
+        if created_by and created_by == resolved_slot_key:
+            return True
+        if getattr(slot, "key", "") == resolved_slot_key:
+            return True
     return effective_session_key(slot) == caller_key
 
 

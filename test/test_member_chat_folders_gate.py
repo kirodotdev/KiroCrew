@@ -334,36 +334,109 @@ class TestFolderOwnerComparisons:
 # member_owns_slot + the slot filing/tagging fence.
 # --------------------------------------------------------------------------- #
 class TestMemberOwnsSlot:
-    def test_own_session_is_owned(self):
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+    """The slot key space, not the session key space.
 
-        slot = SimpleNamespace(
-            key="member-conductor", linked_session_key="", _created_by="", channel_origin=False
+    ``create_session`` stamps ``_created_by`` with the caller's SLOT key
+    (``caller_slot_key(state, ...)``), while the routes call ``member_owns_slot``
+    with the raw ``X-Session-Key`` -- a SESSION key. The predicate must resolve
+    the session key to a slot key before comparing, so ``state`` here holds the
+    caller's OWN slot for :func:`sc.caller_slot_key` to resolve against. The
+    member's own slot ``member-conductor`` has history key
+    ``dashboard:member-conductor`` == ``MEMBER_SESSION``, so it resolves to slot
+    key ``member-conductor``.
+    """
+
+    #: slot key that MEMBER_SESSION (dashboard:member-conductor) resolves to.
+    OWN_SLOT_KEY = "member-conductor"
+
+    def _own_slot(self):
+        return SimpleNamespace(
+            key=self.OWN_SLOT_KEY,
+            linked_session_key="",
+            _created_by="",
+            channel_origin=False,
         )
-        caller = effective_session_key(slot)
-        assert sc.member_owns_slot(SimpleNamespace(), slot, caller) is True
+
+    def _state_with_caller(self, *extra_slots):
+        own = self._own_slot()
+        slots = {own.key: own}
+        for s in extra_slots:
+            slots[s.key] = s
+        return SimpleNamespace(_slots=slots)
+
+    def test_own_session_is_owned(self):
+        # The caller's own slot: slot.key resolves to itself.
+        own = self._own_slot()
+        state = SimpleNamespace(_slots={own.key: own})
+        assert sc.member_owns_slot(state, own, MEMBER_SESSION) is True
 
     def test_created_session_is_owned(self):
-        slot = SimpleNamespace(
+        # A child stamped with the caller's SLOT key (what create_session
+        # writes) is owned when the caller passes its SESSION key header. This is
+        # the exact key-space mismatch the bug got wrong: _created_by holds the
+        # slot key, the header is the session key.
+        created = SimpleNamespace(
             key="chat-9-9",
             linked_session_key="",
-            _created_by=MEMBER_SESSION,
+            _created_by=self.OWN_SLOT_KEY,  # the caller's SLOT key
             channel_origin=False,
         )
-        assert sc.member_owns_slot(SimpleNamespace(), slot, MEMBER_SESSION) is True
+        state = self._state_with_caller(created)
+        assert sc.member_owns_slot(state, created, MEMBER_SESSION) is True
+
+    def test_created_by_session_key_is_not_owned(self):
+        # A slot whose _created_by is a SESSION key (never what create_session
+        # writes) must NOT match: the compare is in slot-key space only, so a
+        # stray session-key value cannot masquerade as ownership.
+        created = SimpleNamespace(
+            key="chat-9-9",
+            linked_session_key="",
+            _created_by=MEMBER_SESSION,  # a session key, not a slot key
+            channel_origin=False,
+        )
+        state = self._state_with_caller(created)
+        assert sc.member_owns_slot(state, created, MEMBER_SESSION) is False
 
     def test_foreign_session_is_not_owned(self):
-        slot = SimpleNamespace(
+        # A slot created by another caller's slot key is not owned.
+        foreign = SimpleNamespace(
             key="chat-1-1",
             linked_session_key="",
-            _created_by="dashboard:owner",
+            _created_by="chat-77-1",  # another slot key
             channel_origin=False,
         )
-        assert sc.member_owns_slot(SimpleNamespace(), slot, MEMBER_SESSION) is False
+        state = self._state_with_caller(foreign)
+        assert sc.member_owns_slot(state, foreign, MEMBER_SESSION) is False
+
+    def test_empty_created_by_is_not_owned_by_a_third_slot(self):
+        # An unattributed slot (empty _created_by) is not owned by a member that
+        # is neither it nor its creator -- an empty _created_by must never match
+        # an empty resolved key by accident.
+        other = SimpleNamespace(
+            key="chat-1-1",
+            linked_session_key="",
+            _created_by="",
+            channel_origin=False,
+        )
+        state = self._state_with_caller(other)
+        assert sc.member_owns_slot(state, other, MEMBER_SESSION) is False
+
+    def test_channel_born_slot_owned_by_session_key_fallback(self):
+        # A channel-born slot whose key the live slot map cannot resolve is still
+        # owned via the effective_session_key session-space fallback.
+        chan = SimpleNamespace(
+            key="slack_123",
+            linked_session_key="slack:123",
+            _created_by="",
+            channel_origin=True,
+        )
+        # State has no caller slot to resolve, so caller_slot_key returns "".
+        state = SimpleNamespace(_slots={chan.key: chan})
+        assert sc.member_owns_slot(state, chan, "slack:123") is True
 
     def test_empty_caller_owns_nothing(self):
         slot = SimpleNamespace(key="x", linked_session_key="", _created_by="", channel_origin=False)
-        assert sc.member_owns_slot(SimpleNamespace(), slot, "") is False
+        assert sc.member_owns_slot(SimpleNamespace(_slots={}), slot, "") is False
 
 
 class TestMemberSlotWriteFence:
@@ -450,19 +523,22 @@ class TestSessionListMemberFilter:
         from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 
         # Three slots: the member's own, one it created, and a foreign one.
+        # The own slot's history key is dashboard:member-conductor == MEMBER_SESSION,
+        # so caller_slot_key resolves the header to slot key "member-conductor" --
+        # which is what create_session stamps into _created_by on the child.
         own = SimpleNamespace(
             key="member-conductor", linked_session_key="", _created_by="", channel_origin=False
         )
         created = SimpleNamespace(
             key="chat-2-2",
             linked_session_key="",
-            _created_by=MEMBER_SESSION,
+            _created_by="member-conductor",  # caller's SLOT key, as create_session writes
             channel_origin=False,
         )
         foreign = SimpleNamespace(
             key="chat-9-9",
             linked_session_key="",
-            _created_by="dashboard:owner",
+            _created_by="chat-77-1",  # another caller's slot key
             channel_origin=False,
         )
         payloads = [
