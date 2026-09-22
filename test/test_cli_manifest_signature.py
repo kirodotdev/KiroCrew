@@ -259,6 +259,95 @@ def test_helper_builds_a_canonical_independently_verifiable_manifest(
     assert verified.returncode == 0, verified.stderr
 
 
+def test_helper_accepts_paths_relative_to_its_own_cwd(tmp_path: Path, test_key: SigningKey) -> None:
+    """The publish workflow hands the helper RELATIVE paths, from the checkout.
+
+    ``publish-cli.yml`` runs ``--public-key packaging/signing/cli-manifest-public.pem``
+    with the repository as cwd.  The helper pins openssl's own cwd to the temp
+    dir (so openssl's stray output files never land in the checkout), which
+    means every path must be anchored BEFORE it reaches openssl -- a path still
+    relative at that point is looked up under the temp dir instead, and the
+    publish fails with "openssl rejected the public key" while the key is fine.
+    Drive the two subcommands the workflow uses, plus ``verify`` and
+    ``key-info``, exactly the way the workflow does.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / "packaging" / "signing").mkdir(parents=True)
+    shutil.copy(test_key.public, checkout / "packaging" / "signing" / "public.pem")
+    wheel = checkout / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    (checkout / "dist").mkdir()
+
+    _run_helper(
+        "payload",
+        "--channel",
+        CHANNEL,
+        "--version",
+        VERSION,
+        "--wheel-url",
+        f"{CDN_BASE}/cli/{CHANNEL}/{VERSION}/{WHEEL_NAME}",
+        "--sha256",
+        hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "--python-requires",
+        ">=3.10",
+        "--pub-date",
+        "2026-08-01T00:00:00Z",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--output",
+        "dist/payload.json",
+        cwd=checkout,
+    )
+    assert (checkout / "dist" / "payload.json").is_file()
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(test_key.private),
+            "-out",
+            "dist/signature.bin",
+            "dist/payload.json",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=checkout,
+    )
+    _run_helper(
+        "assemble",
+        "--payload",
+        "dist/payload.json",
+        "--signature",
+        "dist/signature.bin",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--output",
+        "dist/cli-manifest.json",
+        cwd=checkout,
+    )
+    assert (checkout / "dist" / "cli-manifest.json").is_file()
+    _run_helper(
+        "verify",
+        "--manifest",
+        "dist/cli-manifest.json",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        cwd=checkout,
+    )
+    key_info = _run_helper("key-info", "--public-key", "packaging/signing/public.pem", cwd=checkout)
+    assert json.loads(key_info.stdout)["key_id"] == test_key.key_id
+    # And the cwd pin still holds: openssl left nothing in the checkout.
+    assert sorted(path.name for path in checkout.iterdir()) == sorted(
+        [WHEEL_NAME, "dist", "packaging"]
+    )
+
+
 def test_optional_min_version_is_signed_and_round_trips(
     tmp_path: Path, test_key: SigningKey
 ) -> None:

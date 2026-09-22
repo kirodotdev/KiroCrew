@@ -61,16 +61,31 @@ class ManifestError(ValueError):
     """A manifest or trust-root contract violation."""
 
 
+def _absolute(path: str | Path) -> Path:
+    """*path* anchored to the caller's cwd, so a later cwd change cannot move it.
+
+    Every openssl invocation below runs with its cwd pinned to the temp dir (see
+    ``_run_openssl``), so a path that is still relative when it reaches openssl
+    is resolved against the WRONG directory: the publish workflow's
+    ``--public-key packaging/signing/cli-manifest-public.pem`` would be looked
+    up under the temp dir and openssl would report the miss as a rejected key.
+    Anchor once, at the boundary where the path enters this module, and openssl
+    only ever sees absolute paths.
+    """
+    return Path(path).absolute()
+
+
 def _run_openssl(args: list[str]) -> bytes:
     try:
         proc = subprocess.run(
             ["openssl", *args],
             check=False,
-            # Every path handed to openssl here is absolute, so the working
-            # directory is not an input -- but an unpinned one is an OUTPUT
-            # location: whatever a given openssl build drops beside itself (an
-            # RNG seed file, a debug artifact) would otherwise land in the
-            # caller's cwd, which under pytest is the repository checkout.
+            # Every path handed to openssl here is absolute (``_absolute`` at
+            # each entry point), so the working directory is not an input --
+            # but an unpinned one is an OUTPUT location: whatever a given
+            # openssl build drops beside itself (an RNG seed file, a debug
+            # artifact) would otherwise land in the caller's cwd, which under
+            # pytest is the repository checkout.
             cwd=tempfile.gettempdir(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -104,6 +119,7 @@ def _run_aws_json(args: list[str]) -> dict[str, Any]:
 
 
 def _public_key_der(public_key: Path) -> bytes:
+    public_key = _absolute(public_key)
     if not public_key.is_file():
         raise ManifestError("CLI manifest public key is missing")
     raw = public_key.read_bytes()
@@ -512,33 +528,33 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="optional fleet floor: installs below this bare release must update",
     )
-    payload.add_argument("--public-key", type=Path, required=True)
-    payload.add_argument("--output", type=Path, required=True)
+    payload.add_argument("--public-key", type=_absolute, required=True)
+    payload.add_argument("--output", type=_absolute, required=True)
     payload.set_defaults(handler=_payload_command)
 
     assemble = subparsers.add_parser(
         "assemble", help="verify a detached signature and write the signed manifest"
     )
-    assemble.add_argument("--payload", type=Path, required=True)
-    assemble.add_argument("--signature", type=Path, required=True)
-    assemble.add_argument("--public-key", type=Path, required=True)
-    assemble.add_argument("--output", type=Path, required=True)
+    assemble.add_argument("--payload", type=_absolute, required=True)
+    assemble.add_argument("--signature", type=_absolute, required=True)
+    assemble.add_argument("--public-key", type=_absolute, required=True)
+    assemble.add_argument("--output", type=_absolute, required=True)
     assemble.set_defaults(handler=_assemble_command)
 
     kms_sign = subparsers.add_parser(
         "kms-sign", help="sign the canonical payload with a non-exportable AWS KMS key"
     )
-    kms_sign.add_argument("--payload", type=Path, required=True)
+    kms_sign.add_argument("--payload", type=_absolute, required=True)
     kms_sign.add_argument("--key-arn", required=True)
-    kms_sign.add_argument("--public-key", type=Path, required=True)
-    kms_sign.add_argument("--output", type=Path, required=True)
+    kms_sign.add_argument("--public-key", type=_absolute, required=True)
+    kms_sign.add_argument("--output", type=_absolute, required=True)
     kms_sign.set_defaults(handler=_kms_sign_command)
 
     verify = subparsers.add_parser(
         "verify", help="verify a signed manifest against the pinned public key"
     )
-    verify.add_argument("--manifest", type=Path, required=True)
-    verify.add_argument("--public-key", type=Path, required=True)
+    verify.add_argument("--manifest", type=_absolute, required=True)
+    verify.add_argument("--public-key", type=_absolute, required=True)
     verify.add_argument("--expected-channel", choices=CHANNELS, required=True)
     verify.add_argument("--artifact-base", required=True)
     verify.set_defaults(handler=_verify_command)
@@ -546,7 +562,7 @@ def _parser() -> argparse.ArgumentParser:
     key_info = subparsers.add_parser(
         "key-info", help="print the public values that must be pinned in cli.sh"
     )
-    key_info.add_argument("--public-key", type=Path, required=True)
+    key_info.add_argument("--public-key", type=_absolute, required=True)
     key_info.set_defaults(handler=_key_info_command)
     return parser
 

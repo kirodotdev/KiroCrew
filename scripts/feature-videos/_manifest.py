@@ -353,7 +353,7 @@ def verify_signature(manifest: dict[str, Any], *, public_key: Path) -> str:
                     "dgst",
                     "-sha256",
                     "-verify",
-                    str(public_key),
+                    str(Path(public_key).absolute()),
                     "-signature",
                     str(signature_path),
                     str(payload_path),
