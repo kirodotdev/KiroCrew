@@ -57,6 +57,7 @@ from kiro_crew.crew_log.entry_types import (
     RADAR_TERMINAL_PHASES,
     RADAR_TTL_ACTIVE_PHASES,
 )
+from kiro_crew.crew_log.store import log_exception_text
 
 from . import store
 
@@ -855,10 +856,11 @@ def _landed_since(
                 e.type == LEDGER_ENTRY_TYPE and e.data == data for e in since
             )
         except Exception:
-            logger.debug(
+            log_exception_text(
+                logger,
+                logging.DEBUG,
                 "crew ledger: could not read the appended entry back (attempt %d)",
                 attempt,
-                exc_info=True,
             )
     return None, False
 
@@ -2465,7 +2467,9 @@ def _all_landed(session_id: str, seq_before: int, payloads: list[dict[str, Any]]
             if e.type == LEDGER_ENTRY_TYPE
         ]
     except Exception:
-        logger.debug("crew ledger: could not read the carried entries back", exc_info=True)
+        log_exception_text(
+            logger, logging.DEBUG, "crew ledger: could not read the carried entries back"
+        )
         return False
     return all(any(landed == data for landed in since) for data in payloads)
 
