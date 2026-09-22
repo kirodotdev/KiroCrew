@@ -28,6 +28,8 @@ from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
 )
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[1]
@@ -37,9 +39,30 @@ SKILL_DIR = (
     / "goal-ledger-conductor"
 )
 
+#: A release that accepts a spec ``permissions`` block, and one that refuses it,
+#: expressed against the floor so raising it cannot strand these tests.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+_INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
 
-def _stub(tmp_path, monkeypatch, *, may_auto_approve=None):
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the shared writer gate believes the installed kiro-cli is.
+
+    ``_write_derived_permissions`` reads ``installed_kiro_cli_version``
+    function-locally from ``kiro_crew.kiro_cli``, so the patch lands there.
+    Without it the answer is whatever the test HOST has -- nothing on CI, which
+    reads as "unknown" and withholds the field, so a shared permissions
+    assertion would fail for a host reason. ``which`` is ``"accepts"``,
+    ``"refuses"`` or ``"unknown"``.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
+
+
+def _stub(tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    _pin_spec_permissions_cli(monkeypatch, cli_version)
     monkeypatch.setattr(
         agent,
         "build_agent_config",
@@ -52,6 +75,7 @@ def _stub(tmp_path, monkeypatch, *, may_auto_approve=None):
             },
             "tools": ["fs_write", "@kirocrew-core"],
             "allowedTools": ["@kirocrew-core"],
+            "permissions": _INHERITED_PERMISSIONS,
         },
     )
     monkeypatch.setattr(
@@ -62,8 +86,8 @@ def _stub(tmp_path, monkeypatch, *, may_auto_approve=None):
     monkeypatch.setattr(agent, "_may_auto_approve", may_auto_approve or (lambda ref: True))
 
 
-def _install(tmp_path, monkeypatch, *, may_auto_approve=None):
-    _stub(tmp_path, monkeypatch, may_auto_approve=may_auto_approve)
+def _install(tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
+    _stub(tmp_path, monkeypatch, may_auto_approve=may_auto_approve, cli_version=cli_version)
     agent._install_ledger_conductor_agent()
     return json.loads((tmp_path / LEDGER_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
 
@@ -112,6 +136,28 @@ def test_the_alias_prompt_closes_a_child_once_its_item_is_terminal(tmp_path, mon
     and this one proves the clause is in the one the alias ships."""
     alias = _install(tmp_path, monkeypatch)
     assert "`session_close` (close a child once its item is terminal)" in alias["prompt"]
+
+
+def test_the_alias_permissions_field_is_gated_on_the_installed_kiro_cli(tmp_path, monkeypatch):
+    """The alias shares the conductor spec, so it shares its version gate too.
+
+    Written on an accepting release and withheld on a refusing or unknown one --
+    the alias must not be the one generated spec that still forces the field
+    onto a kiro-cli whose schema predates it and loses the whole spec to the
+    fallback. ``allowedTools`` is untouched either way.
+    """
+    accepting = _install(tmp_path, monkeypatch, cli_version="accepts")
+    assert accepting.get("permissions"), "an accepting CLI must get the block"
+    assert accepting["permissions"] != _INHERITED_PERMISSIONS
+    assert accepting["permissions"] == derived_agent_permissions(
+        accepting["allowedTools"], LEDGER_CONDUCTOR_AGENT_FILENAME
+    )
+    assert accepting["allowedTools"], "the grant list is never withheld"
+
+    for refusing in ("refuses", "unknown"):
+        data = _install(tmp_path, monkeypatch, cli_version=refusing)
+        assert "permissions" not in data, f"{refusing} CLI must get no block"
+        assert data["allowedTools"], "the grant list is never withheld"
 
 
 def test_the_governance_ceiling_reaches_the_alias_the_same_way(tmp_path, monkeypatch):

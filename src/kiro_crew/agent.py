@@ -4113,6 +4113,45 @@ def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
     return dict(strip_ungoverned_auto_approve(servers))
 
 
+def _write_derived_permissions(
+    config: dict[str, Any], allowed_tools: object, agent_filename: str
+) -> None:
+    """Derive ``config["permissions"]`` from *allowed_tools*, but only if kiro-cli accepts it.
+
+    The one version gate every generated spec writer shares. kiro-cli validates
+    specs with serde ``deny_unknown_fields`` and also serves the KAS backend, so
+    a release whose schema predates ``permissions`` refuses the WHOLE spec and
+    falls back to broader default grants -- and cannot be the KAS relay the field
+    exists for. An accepting version replaces any inherited value with the fresh
+    derivation. A refusing or unknown version removes any inherited value, where
+    keeping it costs the spec and withholding it costs nothing that release could
+    honour. The default-spec seed guards its existing block before calling here,
+    so hand-written seed input remains untouched.
+
+    Generated conductor and worker configs start from ``build_agent_config``,
+    which may carry a user override for this field; the version gate therefore
+    owns both replacement and removal rather than assuming a fresh config.
+
+    Function-local imports on a boot path, and routed through the agent-sdk
+    boundary: ``drivers.acp`` is the one layer permitted to import
+    ``kiro_crew.acp``.
+    """
+    from kiro_crew.kiro_cli import (  # noqa: PLC0415 - boot path
+        installed_kiro_cli_version,
+        spec_permissions_supported,
+    )
+
+    if not spec_permissions_supported(installed_kiro_cli_version()):
+        config.pop("permissions", None)
+        return
+
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
+    )
+
+    config["permissions"] = derived_agent_permissions(allowed_tools, agent_filename)
+
+
 def _seed_kas_permissions(config: dict[str, Any]) -> None:
     """Give the spec a KAS ``permissions`` block if it has none. Never edit one.
 
@@ -4163,26 +4202,9 @@ def _seed_kas_permissions(config: dict[str, Any]) -> None:
     if config.get("permissions") is not None:
         return
 
-    # Function-local like every import here; bounded and cached inside.
-    from kiro_crew.kiro_cli import (  # noqa: PLC0415 - boot path
-        installed_kiro_cli_version,
-        spec_permissions_supported,
-    )
-
-    if not spec_permissions_supported(installed_kiro_cli_version()):
-        return
-
-    # Routed through the agent-sdk boundary: ``drivers.acp`` is the one layer
-    # permitted to import ``kiro_crew.acp``, and agent.py's direct-import count
-    # is a shrink-only baseline that must not grow. Function-local for the same
-    # boot-path reason as every import here — this module has no business
-    # dragging the ACP stack onto the gateway boot path just to write one JSON
-    # field.
-    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
-        derived_agent_permissions,
-    )
-
-    config["permissions"] = derived_agent_permissions(config.get("allowedTools"), AGENT_FILENAME)
+    # The version gate and the derive live in the shared writer; the guard above
+    # is what is specific to seeding -- a hand-written block is never edited.
+    _write_derived_permissions(config, config.get("allowedTools"), AGENT_FILENAME)
 
 
 def _may_auto_approve(ref: str) -> bool:
@@ -7703,15 +7725,8 @@ def _conductor_spec(*, name: str, description: str, filename: str, source: str) 
     # as a literal: the rules come out byte-identical, a later edit to
     # ``allowedTools`` carries through, and a ceiling that strips a grant strips
     # its KAS rule with it (a hand-written ``kirocrew-core/*`` allow would have
-    # survived the filter on the KAS backend). Routed through the agent-sdk
-    # boundary like the pipeline conductor below: ``drivers.acp`` is the one
-    # layer permitted to import ``kiro_crew.acp``, and agent.py's direct-import
-    # count is a shrink-only baseline that must not grow.
-    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
-        derived_agent_permissions,
-    )
-
-    config["permissions"] = derived_agent_permissions(config["allowedTools"], filename)
+    # survived the filter on the KAS backend). The shared writer version-gates it.
+    _write_derived_permissions(config, config["allowedTools"], filename)
     return config
 
 
@@ -8202,16 +8217,8 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
     # Derived from the FILTERED grant list rather than restated as a literal, so a
     # ceiling that strips a grant strips its KAS rule with it, and the cron
     # subtraction reaches the KAS backend rather than stopping at ``allowedTools``,
-    # which nothing reads there. Routed through the agent-sdk boundary like the
-    # conductors: ``drivers.acp`` is the one layer permitted to import
-    # ``kiro_crew.acp``.
-    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
-        derived_agent_permissions,
-    )
-
-    config["permissions"] = derived_agent_permissions(
-        config["allowedTools"], _WORKER_AGENT_FILENAME
-    )
+    # which nothing reads there. The shared writer version-gates it.
+    _write_derived_permissions(config, config["allowedTools"], _WORKER_AGENT_FILENAME)
 
     existing = _read_spec_capped(path)
     if isinstance(existing, dict) and "model" in existing and _worker_model_is_user_pinned():
@@ -8750,17 +8757,9 @@ def _install_pipeline_conductor_agent() -> None:
         source="_install_pipeline_conductor_agent",
     )
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Same derive-don't-restate rationale as the conductor above, but routed
-    # through the agent-sdk boundary: ``drivers.acp`` is the one layer permitted
-    # to import ``kiro_crew.acp``, and agent.py's direct-import count is a
-    # shrink-only baseline that must not grow.
-    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
-        derived_agent_permissions,
-    )
-
-    config["permissions"] = derived_agent_permissions(
-        config["allowedTools"], _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    )
+    # Same derive-don't-restate rationale as the conductor above; the shared
+    # writer version-gates it.
+    _write_derived_permissions(config, config["allowedTools"], _PIPELINE_CONDUCTOR_AGENT_FILENAME)
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _PIPELINE_CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)
@@ -8934,17 +8933,9 @@ def _install_security_conductor_agent() -> None:
     )
     config["mcpServers"] = _conductor_mcp_servers(config)
     # Derived from the FILTERED grant list rather than restated, so a ceiling
-    # that strips a grant strips its KAS rule with it. Routed through the
-    # agent-sdk boundary like both siblings: ``drivers.acp`` is the one layer
-    # permitted to import ``kiro_crew.acp``, and agent.py's direct-import count
-    # is a shrink-only baseline that must not grow.
-    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
-        derived_agent_permissions,
-    )
-
-    config["permissions"] = derived_agent_permissions(
-        config["allowedTools"], _SECURITY_CONDUCTOR_AGENT_FILENAME
-    )
+    # that strips a grant strips its KAS rule with it; the shared writer
+    # version-gates it.
+    _write_derived_permissions(config, config["allowedTools"], _SECURITY_CONDUCTOR_AGENT_FILENAME)
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _SECURITY_CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)

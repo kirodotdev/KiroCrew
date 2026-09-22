@@ -33,6 +33,26 @@ from kiro_crew.agent_files import (
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+
+#: A release that accepts a spec ``permissions`` block, and one that refuses it,
+#: expressed against the floor so raising it cannot strand these tests.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+_INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the shared writer gate believes the installed kiro-cli is.
+
+    ``_write_derived_permissions`` reads ``installed_kiro_cli_version``
+    function-locally from ``kiro_crew.kiro_cli``, so the patch lands there.
+    ``which`` is ``"accepts"``, ``"refuses"`` or ``"unknown"``.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
+
 
 # One xdist worker for the whole module: the four enumeration gates below share ONE read of
 # src/ (~1,550 files, 0.9 s and ~187 MB of text while it is warm), and under `--dist
@@ -64,6 +84,20 @@ def _package_sources() -> tuple[tuple[Path, str], ...]:
     (and ``agent.py``, defining every name these gates hunt for, would match them all).
     """
     return tuple((path, text) for path, text in source_texts() if path.name != "agent.py")
+
+
+@pytest.fixture(autouse=True)
+def _accepting_kiro_cli(monkeypatch):
+    """Pin an ACCEPTING kiro-cli for every worker test by default.
+
+    The worker writer now gates its ``permissions`` write on the installed
+    kiro-cli, like the conductors and the default spec. Almost every test here
+    asserts the derived block, and CI's absent binary reads as "unknown" and
+    withholds it -- so without this pin those assertions would fail for a host
+    reason rather than a code one. The one test that exercises the gate itself
+    re-pins a refusing and an unknown version over this default.
+    """
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
 
 
 @pytest.fixture()
@@ -176,6 +210,45 @@ def test_the_worker_spec_derives_its_kas_permissions_from_the_filtered_grants(sp
     for ref in worker["allowedTools"]:
         if ref.startswith("@kirocrew-work/"):
             assert ref.split("/", 1)[1] in rendered, ref
+
+
+def test_the_worker_permissions_field_is_gated_on_the_installed_kiro_cli(tmp_path, monkeypatch):
+    """Written on an accepting release, withheld on a refusing or unknown one.
+
+    The worker spec gates its ``permissions`` write on the installed kiro-cli,
+    sharing the default spec's gate: a kiro-cli whose schema predates the field
+    would otherwise refuse the WHOLE spec and fall back to broader default
+    grants. ``permissions`` is not a mirrored key, so a withheld write leaves the
+    key absent rather than a stale block, and ``allowedTools`` -- the field
+    kiro-cli reads -- is untouched either way.
+    """
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    inherited_config = agent.build_agent_config()
+    inherited_config["permissions"] = _INHERITED_PERMISSIONS
+    monkeypatch.setattr(
+        agent,
+        "build_agent_config",
+        lambda: json.loads(json.dumps(inherited_config)),
+    )
+
+    def _install() -> dict[str, Any]:
+        agent._install_worker_agent()
+        return json.loads((tmp_path / WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
+    accepting = _install()
+    assert accepting.get("permissions"), "an accepting CLI must get the block"
+    assert accepting["permissions"] != _INHERITED_PERMISSIONS
+    assert accepting["permissions"] == derived_agent_permissions(
+        accepting["allowedTools"], WORKER_AGENT_FILENAME
+    )
+    assert accepting["allowedTools"], "the grant list is never withheld"
+
+    for refusing in ("refuses", "unknown"):
+        _pin_spec_permissions_cli(monkeypatch, refusing)
+        data = _install()
+        assert "permissions" not in data, f"{refusing} CLI must get no block"
+        assert data["allowedTools"], "the grant list is never withheld"
 
 
 def test_the_worker_filename_is_owned_and_wired(specs, tmp_path):

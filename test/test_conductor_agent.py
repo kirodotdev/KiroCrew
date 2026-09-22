@@ -28,6 +28,8 @@ from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
 SKILL_DIR = (
@@ -35,12 +37,33 @@ SKILL_DIR = (
 )
 SCRIPT = SKILL_DIR / "scripts" / "accept_eval.py"
 
-#: An allowlisted command that always exits 0 — the "pass" fixture.
+#: A release that accepts a spec ``permissions`` block, and one that refuses it.
+#: Expressed against the floor rather than as literals so raising the floor
+#: cannot leave a test asserting the old boundary.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+_INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the writer's version gate believes the installed kiro-cli is.
+
+    The five spec writers share one gate (``_write_derived_permissions``), which
+    reads ``installed_kiro_cli_version`` function-locally from
+    ``kiro_crew.kiro_cli``, so the patch lands in the owning module. Without it
+    the answer is whatever the test HOST has, which on CI is nothing and reads
+    as "unknown" -- the refusing case -- so a writer test asserting a
+    ``permissions`` block would fail for a host reason rather than a code one.
+    ``which`` is one of ``"accepts"``, ``"refuses"`` or ``"unknown"``.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
 class TestConductorInstaller:
-    def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None):
+    def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+        _pin_spec_permissions_cli(monkeypatch, cli_version)
         monkeypatch.setattr(
             agent,
             "build_agent_config",
@@ -53,6 +76,7 @@ class TestConductorInstaller:
                 },
                 "tools": ["fs_write", "@kirocrew-core"],
                 "allowedTools": ["@kirocrew-core"],
+                "permissions": _INHERITED_PERMISSIONS,
             },
         )
         monkeypatch.setattr(
@@ -683,6 +707,29 @@ class TestConductorInstaller:
         data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
         assert data["permissions"] == {"rules": []}
         assert data["allowedTools"] == []
+
+    def test_the_permissions_field_is_gated_on_the_installed_kiro_cli(self, tmp_path, monkeypatch):
+        """Written on an accepting release, withheld on a refusing or unknown one.
+
+        The generated conductor spec gates its ``permissions`` write on the
+        installed kiro-cli, sharing the default spec's gate: a kiro-cli whose
+        schema predates the field would otherwise refuse the WHOLE spec and fall
+        back to broader default grants. ``allowedTools`` is untouched either way
+        -- it is the KAS-only projection that is withheld, not the grant list
+        kiro-cli reads.
+        """
+        accepting = self._install(tmp_path, monkeypatch, cli_version="accepts")
+        assert accepting.get("permissions"), "an accepting CLI must get the block"
+        assert accepting["permissions"] != _INHERITED_PERMISSIONS
+        assert accepting["permissions"] == derived_agent_permissions(
+            accepting["allowedTools"], CONDUCTOR_AGENT_FILENAME
+        )
+        assert accepting["allowedTools"], "the grant list is never withheld"
+
+        for refusing in ("refuses", "unknown"):
+            data = self._install(tmp_path, monkeypatch, cli_version=refusing)
+            assert "permissions" not in data, f"{refusing} CLI must get no block"
+            assert data["allowedTools"], "the grant list is never withheld"
 
     def test_withholding_a_grant_is_audit_logged(self, tmp_path, monkeypatch):
         """A withheld grant is a permission DECISION and must leave a record.
