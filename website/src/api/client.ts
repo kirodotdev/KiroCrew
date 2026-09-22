@@ -1374,8 +1374,21 @@ export interface AcpBackendProbe {
    * of the `policy_id` fallback for a name: a bare `private_memory_mcp` in
    * front of a reader is worse than one line fewer, while a chip with no text
    * at all is worse than a policy id.
+   *
+   * `available` is a BOOL on every line, including an unmeasured one, where it is
+   * false: a reader that ignores `measured` gets the fail-closed not-available
+   * answer and never a promise. `measured` is absent from a gateway that predates
+   * the third state, which is why the panel tests it for `=== false` rather than for
+   * falsiness -- absent means measured, the two-level answer that gateway is sending.
+   * `unmeasured_reason` is a machine CODE (`no_driven_capture`), labelled in the
+   * panel like every other id on the card, and is `''` on a measured line.
    */
-  capabilities?: { id: string; available: boolean }[]
+  capabilities?: {
+    id: string
+    available: boolean
+    measured?: boolean
+    unmeasured_reason?: string
+  }[]
   /**
    * Ids of the SECURITY notes that hold for this harness: which layer confines
    * the agent, whether Crew hands its own credential to the child, how an

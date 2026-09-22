@@ -70,7 +70,12 @@ function schemaWith(values: string[] | undefined) {
 /** A card payload shaped like the server's, defaulted to the dull answer. */
 function card(
   over: Partial<{
-    capabilities: { id: string; available: boolean }[]
+    capabilities: {
+      id: string
+      available: boolean
+      measured?: boolean
+      unmeasured_reason?: string
+    }[]
     security_notes: string[]
     operator_notes: string[]
     tool_approval: string
@@ -140,7 +145,12 @@ function probeRow(
     install_command: string
     restart_required: boolean
     auth: { sign_in_remedy: string; signs_in_separately: boolean }
-    capabilities: { id: string; available: boolean }[]
+    capabilities: {
+      id: string
+      available: boolean
+      measured?: boolean
+      unmeasured_reason?: string
+    }[]
     security_notes: string[]
     operator_notes: string[]
     tool_approval: string
@@ -1351,6 +1361,138 @@ describe('AgentBackendTab detail card', () => {
     )
     expect(screen.queryByText(/some_future_capability/)).toBeNull()
     expect(screen.getByText('Kiro CLI supports 1 of 1 features')).toBeInTheDocument()
+  })
+
+  it('marks a cell nobody has measured as neither, in its own word and its own glyph', async () => {
+    // The third state, and the reason it is not a cross: `available: false` is the
+    // same value a real absence carries, so a reader told only that cannot tell "this
+    // harness cannot" from "nobody has driven it". The word and the reason are what
+    // make the difference readable, and the glyph is a third glyph for the same
+    // reason the verdict is text -- one alphabet, one meaning per mark.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(
+          '',
+          card({
+            capabilities: [
+              { id: 'crew_tools', available: true, measured: true },
+              { id: 'mid_turn_steer', available: false, measured: true },
+              {
+                id: 'manual_compact',
+                available: false,
+                measured: false,
+                unmeasured_reason: 'no_driven_capture',
+              },
+            ],
+          }),
+        ),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() => expect(screen.getByText('The /compact command works')).toBeInTheDocument())
+    const row = screen.getByText('The /compact command works').parentElement
+    expect(row?.textContent).toContain('Not checked yet.')
+    // Never the not-available word, which is the whole point of the state.
+    expect(row?.textContent).not.toContain('Not available.')
+    // And the reason, because "not measured" alone is not something a reader can act
+    // on: the cell is waiting for a live run.
+    expect(row?.textContent).toContain('Nobody has tried this on a real session yet')
+    // A third GLYPH, asserted by DISTINCTNESS rather than by the icon's name: either
+    // of the other two marks would put this cell back in the state it is being lifted
+    // out of, while which icon carries the third meaning is a design choice a test
+    // has no business pinning.
+    const glyph = (label: string) =>
+      screen.getByText(label).closest('li')?.querySelector('svg')?.getAttribute('class') ?? ''
+    expect(glyph('The /compact command works')).not.toEqual('')
+    expect(glyph('The /compact command works')).not.toEqual(
+      glyph('Kiro Crew tools work in the chat'),
+    )
+    expect(glyph('The /compact command works')).not.toEqual(
+      glyph('You can add a message while it works'),
+    )
+  })
+
+  it('keeps an unmeasured cell out of the count and names what sits outside it', async () => {
+    // THREE lines render and the denominator is TWO: an unchecked cell inside the
+    // fraction, described beside it as uncounted, is a sentence that contradicts
+    // itself -- and a reader who counts the rows cannot tell which half is true.
+    // Out of the fraction it is counted as neither BY the arithmetic, and the clause
+    // says how many sit outside. The denominator, not the wording, is what this
+    // asserts, which is why the fixture's row count and its total differ.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(
+          '',
+          card({
+            capabilities: [
+              { id: 'crew_tools', available: true, measured: true },
+              { id: 'mid_turn_steer', available: false, measured: true },
+              {
+                id: 'manual_compact',
+                available: false,
+                measured: false,
+                unmeasured_reason: 'no_driven_capture',
+              },
+            ],
+          }),
+        ),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() =>
+      expect(screen.getByText(/Kiro CLI supports 1 of 2 features/)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/plus 1 not checked/)).toBeInTheDocument()
+    // All three rows are on screen, so the missing third is the denominator's doing
+    // rather than a dropped line.
+    expect(screen.getByText('The /compact command works')).toBeInTheDocument()
+  })
+
+  it('says nothing about measurement where the gateway sends no flag', async () => {
+    // A gateway that predates the third state sends `available` alone. Absent is
+    // MEASURED, so its card renders exactly as it does today -- tick and cross, and
+    // no remainder line claiming a gap nobody reported.
+    acpBackendsMock.mockResolvedValue({ backends: [probeRow('', card())] })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() =>
+      expect(screen.getByText('You can add a message while it works')).toBeInTheDocument(),
+    )
+    const absent = screen.getByText('You can add a message while it works')
+    expect(absent.parentElement?.textContent).toContain('Not available.')
+    expect(absent.parentElement?.textContent).not.toContain('Not checked yet.')
+    expect(screen.queryByText(/plus \d+ not checked/)).toBeNull()
+  })
+
+  it('states not measured even for a reason code this frontend cannot label', async () => {
+    // Same rule as an unlabelled capability id, applied one level down: the STATE is
+    // the server's and renders whatever the reason is, while a raw
+    // `some_future_reason` in front of a reader says less than nothing.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(
+          '',
+          card({
+            capabilities: [
+              {
+                id: 'manual_compact',
+                available: false,
+                measured: false,
+                unmeasured_reason: 'some_future_reason',
+              },
+            ],
+          }),
+        ),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() => expect(screen.getByText('The /compact command works')).toBeInTheDocument())
+    const row = screen.getByText('The /compact command works').parentElement
+    expect(row?.textContent).toContain('Not checked yet.')
+    expect(row?.textContent).not.toContain('some_future_reason')
   })
 
   it('states tool approval outside any disclosure, from the mechanism the server named', async () => {

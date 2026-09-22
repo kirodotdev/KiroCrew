@@ -40,6 +40,14 @@ Four facts per row, from four owners that must not be conflated:
   this handler or to the panel. A second place deciding it is a second place that
   can disagree about what a line means.
 
+  A capability line carries THREE states, and this handler forwards all three
+  untouched: ``available`` is a bool, and ``measured`` is false on the cells the
+  projection declares nobody has driven yet. Nothing here collapses the pair,
+  which is the one thing that would matter -- ``available`` is already false on an
+  unmeasured line, so a reader of that field alone gets the fail-closed answer,
+  and a handler that dropped ``measured`` would silently turn "no answer yet" into
+  "this harness cannot".
+
 Owner-only, and the snapshot is offloaded: the Claude probe shells out to mise
 and walks the filesystem, and resolving the governance ceiling loads config, so
 neither may run on the event loop.

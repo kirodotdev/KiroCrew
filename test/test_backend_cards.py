@@ -17,7 +17,14 @@ Four properties, and each one is a cost the card exists to avoid paying again:
    here and the projection has become a table. Membership is the allowed shape --
    ``backend in <set>`` is the whole mechanism -- so the check is scoped to
    EQUALITY against an id, which is the shape that captures one harness.
-4. **The two unions rest on a coincidence, so the coincidence is pinned.** Two
+4. **The third card state is DECLARED, so the declaration is gated.** Available and
+   not-available are projected; "not measured" cannot be, because no bit carries it
+   -- it is ``DECLARED_UNMEASURED``, the one per-harness table in the card module.
+   Three tests are what keep that exception from becoming the per-harness card this
+   design exists to remove: an entry must be supported by the deciding set's OWN
+   comment in the vocabulary module, it may not name a MEMBER of that set, and a
+   harness the table does not name must be measured on every line.
+5. **The two unions rest on a coincidence, so the coincidence is pinned.** Two
    lines read ``ACP_BACKENDS_ACP_RUNTIME`` as a stand-in for the kiro family. That
    set's own meaning is narrower (served by the shared runtime, reads the
    kiro-family ``cli.json`` overlay), and its docstring names the harness that
@@ -30,6 +37,7 @@ Four properties, and each one is a cost the card exists to avoid paying again:
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from typing import Set, Tuple
 
@@ -39,12 +47,20 @@ from kiro_crew.agent_sdk import backend_cards as cards_mod
 from kiro_crew.agent_sdk import backends as sdk_backends
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     Routing,
 )
+
+VOCABULARY_MODULE = Path(sdk_backends.__file__)
+
+#: Words a set comment uses when it is declining on EVIDENCE rather than on a
+#: capability. One of these has to appear for a declared-unmeasured entry to be
+#: admissible, which is what keeps the table from outrunning the vocabulary.
+EVIDENCE_GAP_WORDS = ("unclassified", "driven capture", "no capture", "not been measured")
 
 CARD_MODULE = Path(cards_mod.__file__)
 
@@ -451,7 +467,9 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
     }
     capabilities = payload["capabilities"]
     assert isinstance(capabilities, list)
-    assert all(set(entry) == {"id", "available"} for entry in capabilities)
+    assert all(
+        set(entry) == {"id", "available", "measured", "unmeasured_reason"} for entry in capabilities
+    )
     # A LIST and not a map: the server owns the order, so a new line lands in the
     # right place with no frontend edit.
     assert [entry["id"] for entry in capabilities] == [
@@ -475,6 +493,153 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
         assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in notes, backend
         assert cards_mod.NOTE_KEEPS_OWN_CHAT_RECORD not in notes, backend
         assert cards_mod.NOTE_HARNESS_MODEL_LIST not in notes, backend
+
+
+# ── 7. the third state, which is declared rather than projected ────────────
+
+
+def _comment_block_above(name: str) -> str:
+    """The contiguous ``#`` comment block directly above set *name*'s definition.
+
+    Read out of the vocabulary module's own SOURCE rather than out of a docstring,
+    because that is where the reason for a non-membership is actually written: these
+    sets carry their evidence in the comment above the assignment, and the rule this
+    gate enforces is about that text.
+    """
+    lines = VOCABULARY_MODULE.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{name} ") and not line.startswith(f"{name}:"):
+            continue
+        block: list = []
+        cursor = index - 1
+        while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+            block.append(lines[cursor])
+            cursor -= 1
+        return "\n".join(reversed(block))
+    raise AssertionError(f"no assignment of {name} found in {VOCABULARY_MODULE.name}")
+
+
+def test_every_declared_unmeasured_entry_names_a_real_cell() -> None:
+    """A stale entry is a cell that reads unmeasured about nothing.
+
+    The harness is keyed by CONSTANT NAME, so a rename raises rather than quietly
+    naming nobody -- this asserts the resolved id is a harness this build knows and
+    the line is one the card actually renders, which a ``getattr`` alone cannot.
+    """
+    for (harness_name, line_id), entry in cards_mod.DECLARED_UNMEASURED.items():
+        harness = getattr(sdk_backends, harness_name)
+        assert harness in sdk_backends.ACP_BACKENDS_KNOWN, harness_name
+        assert line_id in {spec.id for spec in cards_mod.USER_FACING_LINES}, line_id
+        assert entry.reason, (harness_name, line_id)
+        assert entry.declared_by in vars(sdk_backends), entry.declared_by
+        # The citation is the admissibility evidence, so a label is not one.
+        assert len(entry.citation.split()) >= 12, (harness_name, line_id)
+
+
+def test_every_declared_unmeasured_entry_is_supported_by_the_set_comment() -> None:
+    """THE threshold: the vocabulary has to say the gap is evidence.
+
+    This is what stops the third state from becoming a second opinion. An entry is
+    admissible only where the deciding set's own comment names the harness AND says
+    what is missing is a measurement -- "unclassified", "no driven capture". A
+    reading of the harness's capability that only this table holds would be exactly
+    the per-harness prose the card exists to remove, and a reviewer could not tell
+    the two apart by looking.
+    """
+    for (harness_name, line_id), entry in cards_mod.DECLARED_UNMEASURED.items():
+        block = _comment_block_above(entry.declared_by).lower()
+        word = harness_name.replace("ACP_BACKEND_", "").lower()
+        assert re.search(rf"\b{re.escape(word)}\b", block), (
+            f"{entry.declared_by}'s comment does not name {word}, so the vocabulary "
+            f"does not support the unmeasured entry for ({word}, {line_id})"
+        )
+        assert any(phrase in block for phrase in EVIDENCE_GAP_WORDS), (
+            f"{entry.declared_by}'s comment does not say the gap is EVIDENCE "
+            f"({EVIDENCE_GAP_WORDS}), so ({word}, {line_id}) is a not-available cell "
+            "rather than an unmeasured one"
+        )
+
+
+def test_no_declared_unmeasured_entry_names_a_member() -> None:
+    """The table may soften a negative, never overrule a membership.
+
+    A member has demonstrated the capability, so an entry naming one would be prose
+    withdrawing a measured fact. Checked against the line's own union rather than
+    against one set, because a union line is available on ANY of its inputs.
+    """
+    by_id = {spec.id: spec for spec in cards_mod.USER_FACING_LINES}
+    for (harness_name, line_id), _entry in cards_mod.DECLARED_UNMEASURED.items():
+        harness = getattr(sdk_backends, harness_name)
+        line = cards_mod.card_for(harness)
+        rendered = next(item for item in line.capabilities if item.id == line_id)
+        assert rendered.available is False, (
+            f"{harness_name} is a member of one of {by_id[line_id].sets}, so this cell "
+            "is measured and the entry is stale"
+        )
+        assert rendered.measured is False
+
+
+def test_the_compact_capture_gap_is_the_only_unmeasured_thing_on_any_card() -> None:
+    """The two cells, named, and every other cell on every card measured.
+
+    pi and goose both dispatch ``/compact`` before a model turn in their own source
+    and neither has been driven, which ``ACP_BACKENDS_COMPACT`` records as
+    "unclassified". A plain cross means something else: deepseek has no compaction on
+    its ACP surface at all -- in the set's own words it emits no
+    ``available_commands_update`` and answers ``session/load`` with "Method not
+    found". Those two answers are not the same answer, and this test is where the
+    difference is pinned.
+    """
+    unmeasured = {
+        (card.backend, line.id)
+        for card in _every_card()
+        for line in card.capabilities
+        if not line.measured
+    }
+    assert unmeasured == {
+        (ACP_BACKEND_PI, cards_mod.LINE_MANUAL_COMPACT),
+        (ACP_BACKEND_GOOSE, cards_mod.LINE_MANUAL_COMPACT),
+    }
+    # The harness with no compaction surface keeps the cross: its answer is known.
+    deepseek = cards_mod.card_for(ACP_BACKEND_DEEPSEEK)
+    compact = next(
+        line for line in deepseek.capabilities if line.id == cards_mod.LINE_MANUAL_COMPACT
+    )
+    assert (compact.available, compact.measured) == (False, True)
+    assert compact.unmeasured_reason == ""
+
+
+def test_an_unmeasured_line_is_never_counted_as_available() -> None:
+    """Fail-closed, on the object and on the wire.
+
+    The one reading that would be worse than the two-level card is an unmeasured
+    line that some consumer reads as a capability. ``available`` stays a bool and
+    stays False, so the panel's own "supports N of M" count, ``kirocrew doctor`` and
+    anything predating ``measured`` all answer not-available.
+    """
+    for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
+        for entry in cards_mod.card_payload(backend)["capabilities"]:
+            assert isinstance(entry["available"], bool)
+            if not entry["measured"]:
+                assert entry["available"] is False, (backend, entry)
+                assert entry["unmeasured_reason"], (backend, entry)
+            else:
+                # A measured line carries no reason, so a reader cannot render one
+                # beside a cross it does not belong to.
+                assert entry["unmeasured_reason"] == "", (backend, entry)
+
+
+def test_a_harness_the_table_does_not_name_is_measured_on_every_line() -> None:
+    """Onboarding still costs no edit here, and claims no evidence gap either.
+
+    The acceptance condition for the whole design survives the third state: a new
+    harness renders a complete card, and every line of it is measured -- unmeasured
+    is a statement about Crew's own measurements, not a synonym for an id nothing
+    has been declared about.
+    """
+    card = cards_mod.card_for(STRANGER)
+    assert all(line.measured for line in card.capabilities)
+    assert all(line.unmeasured_reason == "" for line in card.capabilities)
 
 
 def test_the_payload_is_json_native() -> None:

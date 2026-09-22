@@ -7,6 +7,7 @@ import {
   Circle,
   CircleCheck,
   CircleDot,
+  CircleHelp,
   Download,
   Minus,
   RotateCw,
@@ -198,8 +199,8 @@ const PROBE_REFRESH_MS = 30_000
  * ## What the detail says about the harness, and where those words come from
  *
  * A reader choosing between agents is choosing between capability sets, so the
- * detail carries a CARD: one line per capability, marked available or not, plus the
- * notes that hold and the one line about tool approval.
+ * detail carries a CARD: one line per capability, marked available, not available or
+ * not measured, plus the notes that hold and the one line about tool approval.
  *
  * Two things on it are never behind the disclosure: how the agent is made to ask
  * before it runs a tool, and the SECURITY notes, which say which layer confines
@@ -224,11 +225,22 @@ const PROBE_REFRESH_MS = 30_000
  * membership some other file had to justify with evidence, and this file cannot
  * state anything the core does not already claim.
  *
- * The card is two-level, available or not, and that ceiling is the source data's
- * rather than a simplification: a membership set carries one bit, so "does it
- * differently" and "nobody measured it" are indistinguishable from "cannot". The
- * one genuinely graded fact — how the harness is made to ask before running a tool
- * — arrives as the core's own five-mechanism enum and is rendered from it.
+ * The card has three levels: available, not available, and NOT MEASURED. The first
+ * two are the server's projection over membership, and a set carries one bit, so
+ * "does it differently" and "cannot" reach this file as the same absence. The third
+ * is the server's own declaration rather than a projection — it arrives per line as
+ * `measured: false` plus a reason code, for the cells where Crew has no answer yet
+ * instead of a negative one (`/compact` on a harness nobody has driven).
+ *
+ * It gets its own glyph and its own word, never the tick and never the cross, and it
+ * counts as neither half of "supports N of M": a reader who cannot tell "no" from
+ * "nobody looked" cannot tell which cell a measurement would pay for, which is the
+ * whole reason the state exists. `available` is false on such a line too, so this
+ * file cannot render a promise even where it ignores the flag — an older panel
+ * against a newer gateway shows the honest cross.
+ *
+ * The one genuinely graded fact — how the harness is made to ask before running a
+ * tool — arrives as the core's own five-mechanism enum and is rendered from it.
  *
  * ## The MCP half, which a capability set cannot answer
  *
@@ -740,6 +752,20 @@ export function AgentBackendTab() {
   }
 
   /**
+   * One label per REASON a line is unmeasured, keyed by the server's reason code.
+   *
+   * Keyed by reason and not by agent, for the same trade as the capability labels: a
+   * reason is a class of missing evidence, so it is phrased once and every agent
+   * reuses it. A code this frontend has no label for renders the line with its glyph
+   * and its word and no clause — the same rule as an unlabelled capability id, and
+   * for the same reason: a raw `no_driven_capture` in front of a reader says less
+   * than nothing.
+   */
+  const UNMEASURED_REASON_LABEL: Record<string, string> = {
+    no_driven_capture: i18nT('pages.developer.agentBackendTab.card_unmeasured_no_driven_capture'),
+  }
+
+  /**
    * One label per note, for BOTH note lists. The server keeps them in two lists
    * because they render in two places, and the ids are disjoint, so one map
    * cannot confuse them. Same rule as the capability labels above: keyed by
@@ -899,6 +925,13 @@ export function AgentBackendTab() {
    */
   const securityNotes = (value: string) =>
     (probe(value)?.security_notes ?? []).filter(id => NOTE_LABEL[id])
+
+  /**
+   * The sentence for an unmeasured line's reason, or `''` where this frontend has no
+   * label for the code the server sent.
+   */
+  const unmeasuredReason = (code: string | undefined): string =>
+    (code && UNMEASURED_REASON_LABEL[code]) || ''
 
   /** The where-it-lives notes that hold, dropping ids with no label here. */
   const noteLines = (value: string) =>
@@ -1384,8 +1417,30 @@ export function AgentBackendTab() {
                   {i18nT('pages.developer.agentBackendTab.card_supports_n_of_m', {
                     name: nameOf(shown),
                     available: capabilityLines(shown).filter(line => line.available).length,
-                    total: capabilityLines(shown).length,
+                    // CHECKED lines, not every line. An unchecked cell inside the
+                    // denominator and named as uncounted in the same breath is a
+                    // sentence that contradicts itself, and a reader has no way to
+                    // tell which half is true. Out of the fraction, it is counted as
+                    // neither BY the arithmetic, and the clause beside it says how
+                    // many sit outside. Identical to the old number on any harness
+                    // with nothing unchecked, which is every harness but two.
+                    total: capabilityLines(shown).filter(line => line.measured !== false).length,
                   })}
+                  {capabilityLines(shown).filter(line => line.measured === false).length > 0 && (
+                    /* The count above is supported of TOTAL, and an unmeasured line sits
+                       in the total without being in the supported half -- so the numbers
+                       alone read as "unsupported" by subtraction. Naming the remainder is
+                       what stops the count from making the claim the third state exists
+                       to withdraw. */
+                    <span className="font-normal text-[10px] opacity-80">
+                      {' '}
+                      {i18nT('pages.developer.agentBackendTab.card_n_not_measured', {
+                        unmeasured: capabilityLines(shown).filter(
+                          line => line.measured === false,
+                        ).length,
+                      })}
+                    </span>
+                  )}
                 </div>
                 <ul className="mt-1 mb-0 list-none pl-0 space-y-0.5 text-[11px] leading-relaxed">
                   {capabilityLines(shown).map(line => (
@@ -1393,18 +1448,50 @@ export function AgentBackendTab() {
                       {/* The icon is decorative and the STATE is text: a mark that
                           only differs by shape and colour is unreadable to a screen
                           reader and to anyone who cannot tell the two colours apart. */}
-                      {line.available ? (
+                      {/* Three answers, three glyphs, and the unmeasured one borrows
+                          neither of the others: a tick would promise what nobody has
+                          driven, and the cross a real absence wears is what hides the
+                          cell a measurement would pay for. Tested `=== false` rather
+                          than for falsiness, so a gateway that sends no flag reads as
+                          measured and the card it serves is the card it served. */}
+                      {line.measured === false ? (
+                        /* 11 and not 12: a ring encloses its ink where a tick and a
+                           cross are two strokes, so the same nominal size renders a
+                           heavier mark and the third state reads as a badge among ten
+                           line glyphs. */
+                        <CircleHelp
+                          size={11}
+                          strokeWidth={1.75}
+                          aria-hidden
+                          className="mt-0.5 shrink-0 text-warn"
+                        />
+                      ) : line.available ? (
                         <Check size={12} aria-hidden className="mt-0.5 shrink-0 text-ok" />
                       ) : (
                         <X size={12} aria-hidden className="mt-0.5 shrink-0 text-muted" />
                       )}
                       <span className={line.available ? 'text-text-strong' : 'text-muted'}>
                         <span className="sr-only">
-                          {line.available
-                            ? i18nT('pages.developer.agentBackendTab.card_available')
-                            : i18nT('pages.developer.agentBackendTab.card_not_available')}
+                          {line.measured === false
+                            ? i18nT('pages.developer.agentBackendTab.card_not_measured')
+                            : line.available
+                              ? i18nT('pages.developer.agentBackendTab.card_available')
+                              : i18nT('pages.developer.agentBackendTab.card_not_available')}
                         </span>
                         {CAPABILITY_LABEL[line.id]}
+                        {line.measured === false && unmeasuredReason(line.unmeasured_reason) && (
+                          /* Its OWN line, dimmer and smaller, indented to the label
+                             column by sitting inside the label's span. Inline it fused
+                             with the label instead -- two blind readers of the rendered
+                             card both read "The /compact command works No live run has
+                             measured this yet" as one clause, which states the opposite
+                             of what the row means. A block also gives the longest text
+                             on the card somewhere to wrap to that is not the glyph
+                             column. */
+                          <span className="mb-0.5 block max-w-[44ch] text-[10px] leading-snug opacity-80">
+                            {unmeasuredReason(line.unmeasured_reason)}
+                          </span>
+                        )}
                       </span>
                     </li>
                   ))}

@@ -139,7 +139,7 @@ to a set's consumers:
 
 | Bucket | What it means | Where |
 |---|---|---|
-| user-facing | Switching harness changes what the user can DO, and the absence is a LOSS: a control disappears, a command is refused, tools are missing from a session. | `USER_FACING_LINES`, rendered available / not available |
+| user-facing | Switching harness changes what the user can DO, and the absence is a LOSS: a control disappears, a command is refused, tools are missing from a session. | `USER_FACING_LINES`, rendered available / not available / not measured |
 | security | It moves a confinement or credential boundary: which layer confines the agent, whether Crew hands its own credential to the child, how an unclassifiable approval is answered. | `SECURITY_LINES`, stated only when it HOLDS, rendered OUTSIDE every disclosure |
 | operator | It says where something LIVES: whose disk holds the transcript, which side supplies the model list, which channel carries a command. | `OPERATOR_LINES`, stated only when it HOLDS |
 | off-card | The only difference is which code path runs, OR the card cannot honestly project the membership. Two tests: if the membership were wrong, would the user see a missing feature or a BUG? A defect is not a capability. And can this card establish the fact at all? A version-gated membership cannot be marked available by a projection that holds no version. | `OFF_CARD_SETS`, with the reason per set |
@@ -157,10 +157,32 @@ and claims nothing about a harness that carries its own. If your harness has an
 equivalent mechanism under another name, say so in the set's comment: that is what
 decides whether its line is a loss or a note.
 
-**The card is two-level on purpose.** A `frozenset` carries one bit, so "does it
-differently" and "nobody measured it" cannot be told apart from "cannot", and a
-graded level would have to be authored per harness per capability. The one
-genuinely graded fact is Stage 4's routing, rendered from `Routing`'s own five
+**The card has three levels, and a projection can only derive two of them.** A
+`frozenset` carries one bit, so available / not available is the whole of what
+membership answers: "does it differently" and "cannot" reach the card as the same
+absence. The third level is NOT MEASURED, and it is DECLARED rather than derived —
+`DECLARED_UNMEASURED` in `backend_cards.py` names a harness, a line and a reason, for
+the cells where Crew has no answer yet instead of a negative one.
+
+Admissibility is narrow and `test_backend_cards` enforces it, because a table that
+grew freely would be the per-harness prose the card exists to remove:
+
+- an entry is allowed only where the deciding set's OWN comment says the gap is
+  evidence — "unclassified", "no driven capture". The test reads that comment;
+- "a decision is missing" does not qualify. codex has no member dispatch because
+  nobody decided to mount session control into its threads, so the feature does not
+  work and the cross is the true mark. Unmeasured is for an unknown ANSWER;
+- an entry may not name a MEMBER of the deciding set, so a declaration can soften a
+  negative and never overrule a measured capability;
+- `available` stays false on the wire for an unmeasured line, so a consumer reading
+  that field alone is never handed a promise, and the panel counts the line as
+  neither half of "supports N of M".
+
+So: if your set's comment declines a capability for want of a measurement, add the
+cell with its reason. If it declines because the harness cannot, leave the cross —
+telling those two apart is the entire reason the third level exists.
+
+The one genuinely graded fact is Stage 4's routing, rendered from `Routing`'s own five
 mechanisms — and it, like the security notes, is never hidden behind a disclosure.
 
 ## Stage 3 — the spawn path

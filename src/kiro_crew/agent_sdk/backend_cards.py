@@ -10,18 +10,56 @@ file: a harness that joins a set gains its line, and a harness this build has
 never heard of renders a complete card the moment its id is in
 ``ACP_BACKENDS_KNOWN``.
 
-Two levels, not four
---------------------
-A card line is AVAILABLE or NOT AVAILABLE, and that is the honest ceiling. A
-``frozenset`` carries one bit -- in, or out -- so three states a graded card would
-want to tell apart are indistinguishable in the source data: cannot do it, does it
-differently, and nobody has measured it. ``ACP_BACKENDS_MEMBER_DISPATCH`` is the
-case that proves it: codex is a non-member because, in the set's own words, "what
-is missing is a DECISION, not a mechanism", while opencode is a non-member on the
-same words and KAS is a member on a captured mount. A projection cannot tell a
-deliberate no from an unmeasured one, so a graded level would have to be authored
-per harness per capability -- the per-harness prose this projection exists to
-remove.
+Three levels, and the third one is DECLARED rather than projected
+----------------------------------------------------------------
+A card line is AVAILABLE, NOT AVAILABLE, or NOT MEASURED. The first two are the
+projection, and a ``frozenset`` is why they are only two: it carries one bit -- in,
+or out -- so nothing about a non-member is legible in the source data, and three
+reasons a reader wants told apart collapse into one absence: cannot do it, does it
+differently, and nobody has measured it. ``ACP_BACKENDS_MEMBER_DISPATCH`` shows the
+collapse: codex is a non-member because, in the set's own words, "what is missing is
+a DECISION, not a mechanism", opencode is a non-member on the same words, and KAS is
+a member on a captured mount.
+
+The third level is NOT derived from the sets, because it is not in them. It is
+:data:`DECLARED_UNMEASURED`, a per-harness per-line table carrying a reason per
+entry, and it is the one thing in this module authored per harness. That is a
+deliberate exception to the rule the rest of the file keeps, taken for the one fact
+the rule cannot reach: "nobody has driven this yet" is a statement about Crew's own
+EVIDENCE rather than about the harness, it exists today only as prose in a set's
+comment, and no bit anywhere carries it. So the alternative to declaring it is not
+deriving it: it is a two-level card, where ``ACP_BACKENDS_COMPACT`` excludes pi and
+goose for want of a driven capture ("both are unclassified", in the set's own words)
+and that exclusion wears the same mark as a harness with no compaction surface at
+all. Those two answers are not one answer, and a reader of two levels cannot see
+which cell a measurement would pay for.
+
+Five things keep the exception from growing into the per-harness table this
+projection exists to remove:
+
+* an entry is admissible ONLY where the deciding set's own comment in ``backends.py``
+  says the gap is evidence. ``test_backend_cards`` reads that comment and fails an
+  entry the vocabulary does not support, so the table cannot drift away from the
+  prose and the threshold is a gate rather than a convention to remember;
+* "a decision is missing" is not this state. codex and opencode have no member
+  dispatch because nobody decided to mount session control into their threads, so
+  the feature does not work today and NOT AVAILABLE is the true mark. Unmeasured is
+  for a line whose answer is unknown, never for one whose answer is no;
+* an entry may not contradict the projection. A member has demonstrated the
+  capability, so :func:`_card_lines` applies an entry only to a line that is already
+  not available, and a test fails an entry that names a member rather than letting a
+  table overrule a membership;
+* it is fail-closed on the wire and counts as neither on the card: ``available`` stays
+  a bool and answers False for an unmeasured line, so a consumer reading that field
+  alone -- anything predating ``measured`` -- gets the honest not-available answer and
+  never a promise;
+* a new harness still costs no edit here. Every line of every harness this table does
+  not name is measured, so onboarding one renders a complete card exactly as before.
+
+``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` is the near miss worth naming, and it stays
+off-card: its answer is KNOWN and version-gated per process, so a pre-session
+projection that holds no version cannot answer it in any of the three levels.
+Unmeasured would say nobody looked, and somebody did.
 
 The ONE fact that is genuinely graded already carries its own grade:
 :class:`~kiro_crew.agent_sdk.backends.Routing` names five mechanisms and one
@@ -411,6 +449,76 @@ MEMBERSHIP_FLOOR_SET = "ACP_BACKENDS_KNOWN"
 #: reading no agent spec of Crew's. A test holds both lines to reading THIS set.
 KIRO_FAMILY_MARKER_SET = "ACP_BACKENDS_KIRO_SLASH_COMMANDS"
 
+#: A capability the harness's own source says it serves, which no live run has
+#: confirmed -- the evidence CLASS the deciding set holds its members to.
+#:
+#: The panel keys a label off this code, which is why it is a code and not the
+#: sentence: the prose on the entry below is English source commentary, and the
+#: reader's wording belongs in the locale catalogs like every other card string.
+REASON_NO_DRIVEN_CAPTURE = "no_driven_capture"
+
+
+@dataclass(frozen=True)
+class UnmeasuredLine:
+    """Why one harness's one line has no answer yet, and who says so."""
+
+    #: The machine reason code the panel translates. One of the ``REASON_*`` above.
+    reason: str
+
+    #: The ``ACP_BACKENDS_*`` set whose own comment establishes the gap. Named as a
+    #: string for the reasons the module docstring gives, and read by the test that
+    #: holds every entry to that comment.
+    declared_by: str
+
+    #: What that comment says, short enough to check against it. Not sent on the
+    #: wire: it is the admissibility evidence for the entry, for a reader here.
+    citation: str
+
+
+#: The cells where Crew has no ANSWER, declared per harness with a reason each.
+#:
+#: Keyed by (harness constant NAME, card line id). The harness is named rather than
+#: valued for the same two reasons the sets are: ``ACP_BACKEND_KIRO`` is the empty
+#: string so a literal id is illegible, and a renamed constant raises here instead of
+#: quietly reading as a harness nobody has.
+#:
+#: Both entries rest on the same words in ``ACP_BACKENDS_COMPACT``: pi and goose each
+#: dispatch ``/compact`` before any model turn in their own source, neither could be
+#: driven where that was written (pi answers ``Authentication required``, goose
+#: ``Failed to resolve provider: GOOSE_PROVIDER``), and the set asks for the bar
+#: opencode met -- a live session whose ``usage_update.used`` was seen to fall. Until
+#: then Crew declines their ``/compact`` with ``COMPACT_ARM_UNCLASSIFIED``, which
+#: promises nothing, and this is the card saying the same thing rather than reporting
+#: a limit of the harness.
+#:
+#: USER-FACING lines only, which is not an omission: the security and operator notes
+#: are stated only when they HOLD, so an unmeasured one is already absent rather than
+#: crossed out, and a third level would have nothing to correct.
+DECLARED_UNMEASURED: Mapping[Tuple[str, str], UnmeasuredLine] = {
+    ("ACP_BACKEND_PI", LINE_MANUAL_COMPACT): UnmeasuredLine(
+        reason=REASON_NO_DRIVEN_CAPTURE,
+        declared_by="ACP_BACKENDS_COMPACT",
+        citation=(
+            "pi-acp 0.0.33 intercepts /compact in prompt() and awaits "
+            "session.proc.compact(...), so the source says inline. What it has no "
+            "driven capture of is the context actually shrinking, and it could not be "
+            "driven where the set was written -- it answers Authentication required. "
+            "Until then it is unclassified"
+        ),
+    ),
+    ("ACP_BACKEND_GOOSE", LINE_MANUAL_COMPACT): UnmeasuredLine(
+        reason=REASON_NO_DRIVEN_CAPTURE,
+        declared_by="ACP_BACKENDS_COMPACT",
+        citation=(
+            "goose 1.50.1 routes /compact through Agent::reply -> execute_command -> "
+            'handle_compact_command and its own command_starts_turn("/compact") is '
+            "false, so the source says inline. It has no driven capture either, and "
+            "could not be driven where the set was written -- it answers Failed to "
+            "resolve provider: GOOSE_PROVIDER. Until then it is unclassified"
+        ),
+    ),
+}
+
 
 @dataclass(frozen=True)
 class CardLine:
@@ -418,6 +526,17 @@ class CardLine:
 
     id: str
     available: bool
+
+    #: Whether an answer EXISTS for this harness on this line. False only where
+    #: :data:`DECLARED_UNMEASURED` says so, never inferred: a plain non-member is
+    #: measured, and its absence is a real absence.
+    #:
+    #: :attr:`available` is False whenever this is False, so the pair has no state
+    #: that reads as a promise and a consumer of the bool alone is not misled.
+    measured: bool = True
+
+    #: The reason code for an unmeasured line, ``""`` otherwise.
+    unmeasured_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -430,7 +549,8 @@ class BackendCard:
     #: The policy-facing spelling, which is also the panel's name fallback.
     policy_id: str
 
-    #: Every user-facing line, in server order, available or not.
+    #: Every user-facing line, in server order, available or not -- or, for the
+    #: cells :data:`DECLARED_UNMEASURED` names, not measured.
     capabilities: Tuple[CardLine, ...]
 
     #: The ids of the SECURITY notes that hold, in server order. Rendered beside
@@ -513,13 +633,60 @@ def _holds(backend: str, spec: _LineSpec) -> bool:
     return False
 
 
+def _unmeasured_lines(backend: str) -> Dict[str, UnmeasuredLine]:
+    """The declared-unmeasured entries that apply to *backend*, by line id.
+
+    A dict built per call and indexed by harness id, rather than a comparison
+    against one: the projection may not test WHICH harness it is describing (a test
+    reads this file's AST for exactly that), and an index answers the question
+    without the shape that would make the next harness an edit here.
+
+    Each harness NAME is resolved through the vocabulary module on every call, as
+    :func:`_membership` resolves a set name and for the same two reasons -- a
+    renamed constant raises rather than silently naming nobody, and a test that
+    injects a synthetic harness by patching the defining module is followed.
+    """
+    by_backend: Dict[str, Dict[str, UnmeasuredLine]] = {}
+    for (harness_name, line_id), entry in DECLARED_UNMEASURED.items():
+        by_backend.setdefault(getattr(backends, harness_name), {})[line_id] = entry
+    return by_backend.get(backend, {})
+
+
+def _card_lines(backend: str) -> Tuple[CardLine, ...]:
+    """Every user-facing line for *backend*, in server order.
+
+    Membership decides first and the declared table only ever SOFTENS a negative:
+    an entry reaches a line that is already not available, so a harness that has
+    demonstrated the capability keeps its available mark whatever the table says.
+    That ordering is what stops a stale entry from withdrawing a real capability;
+    the entry being stale at all is separately a test failure.
+    """
+    declared = _unmeasured_lines(backend)
+    produced = []
+    for spec in USER_FACING_LINES:
+        available = _holds(backend, spec)
+        entry = None if available else declared.get(spec.id)
+        produced.append(
+            CardLine(
+                id=spec.id,
+                available=available,
+                measured=entry is None,
+                unmeasured_reason="" if entry is None else entry.reason,
+            )
+        )
+    return tuple(produced)
+
+
 def card_for(backend: str) -> BackendCard:
     """The card for *backend*, complete for any id -- known to this build or not.
 
     Total: no raise, no I/O, no dependence on a live session. An id outside every
     set answers False on every capability line and ``unverified`` on tool
     approval, which is the fail-closed reading of "this build establishes nothing
-    about it" rather than an absent case.
+    about it" rather than an absent case. It is also MEASURED on every line, which
+    is the same reading: an id nothing has been declared about has no evidence gap
+    recorded either, and unmeasured is a claim about Crew's own measurements rather
+    than a synonym for "unknown harness".
 
     Every field but one is a pure read of frozen membership.
     :attr:`BackendCard.offered_by_build` is not: it reads the selectable registry,
@@ -529,9 +696,7 @@ def card_for(backend: str) -> BackendCard:
     return BackendCard(
         backend=backend,
         policy_id=_policy_id(backend),
-        capabilities=tuple(
-            CardLine(id=spec.id, available=_holds(backend, spec)) for spec in USER_FACING_LINES
-        ),
+        capabilities=_card_lines(backend),
         security_notes=tuple(spec.id for spec in SECURITY_LINES if _holds(backend, spec)),
         operator_notes=tuple(spec.id for spec in OPERATOR_LINES if _holds(backend, spec)),
         tool_approval=backends.routing_for(backend).value,
@@ -552,7 +717,18 @@ def card_payload(backend: str) -> Dict[str, object]:
     card = card_for(backend)
     return {
         "capabilities": [
-            {"id": line.id, "available": line.available} for line in card.capabilities
+            {
+                "id": line.id,
+                # Still a BOOL, and still first. An unmeasured line answers False
+                # here, so a reader that predates the two fields beside it -- an
+                # older panel against a newer gateway -- gets the fail-closed
+                # not-available answer rather than inheriting a third state it has
+                # no way to render.
+                "available": line.available,
+                "measured": line.measured,
+                "unmeasured_reason": line.unmeasured_reason,
+            }
+            for line in card.capabilities
         ],
         "security_notes": list(card.security_notes),
         "operator_notes": list(card.operator_notes),
