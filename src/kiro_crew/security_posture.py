@@ -1689,6 +1689,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py, cron.py) are the covered surfaces.
         "dashboard/handlers/_shared.py",
+        # Applies the memory scrubber as a COMPARISON on the write path, never on
+        # the way out: `_require_editable_record` refuses a whole-value edit whose
+        # stored source does not survive the scrub unchanged, because the browser
+        # drafts from the display form and writing that back would replace the
+        # record's content with it. Nothing here is emitted -- the response this
+        # guard protects is served by `dashboard/handlers/memory_edit.py`, the
+        # registered sink for the records surface.
+        "memory_edit.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
         # no output of its own -- the registered sinks are the modules that call

@@ -340,14 +340,16 @@ SPLIT_SECRET_SCOPE = "repos/ghp_ABCDEFGHIJKLMNOPQRST\x1b[0mUVWXYZabcdefghij1234"
 
 
 async def test_control_split_credential_scope_is_withheld_from_the_list(tmp_path) -> None:
-    """An escape sequence inside the fragment splits the credential so the
-    redactor passes it whole; a renderer that strips controls would put it back
-    together. Any control character in the selector withholds the row."""
+    """An escape sequence inside the fragment splits the credential. The scrubber removes
+    the control character, and the sequence's printable bytes stay as content, so the
+    token is still split and no consumer can rejoin it. The selector guard is independent
+    of that: any control character in the selector withholds the row, which is what keeps
+    a raw stored scope off the response."""
     from kiro_crew.dashboard.handlers._shared import _redact_memory_field
 
-    assert (
-        _redact_memory_field(SPLIT_SECRET_SCOPE) == SPLIT_SECRET_SCOPE
-    ), "fixture must pass the redactor"
+    scrubbed = _redact_memory_field(SPLIT_SECRET_SCOPE)
+    assert "\x1b" not in scrubbed, "the scrubber removes the control character"
+    assert SECRET_SCOPE not in scrubbed, "the contiguous credential is not recoverable"
     assert cron._lesson_scope_selector(SPLIT_SECRET_SCOPE) is None
     assert cron._lesson_scope_selector("src/\x07pkg") is None
     assert cron._lesson_scope_selector("src/pkg") == "src/pkg"

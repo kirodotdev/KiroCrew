@@ -306,6 +306,88 @@ def _replace(value: Any, pattern: re.Pattern, replacement: str) -> Any:
     return value
 
 
+def _require_editable_record(store: Any, before: dict, *, episode: bool) -> None:
+    """Refuse a whole-value replacement when the content behind it cannot be shown exactly.
+
+    A ``set`` replaces the record's value with text the browser drafted, and the browser
+    drafts from what the records API returned. That response is display-safe: a credential
+    is a tag, and a payload this scan cannot certify is a marker. Accepting the draft back
+    writes the display form into the store, so the original content is gone and the loss
+    shows nowhere, because every surface reads through the same scrub.
+
+    The test is whether the stored source survives the scrub unchanged. When it does, the
+    draft and the source are the same text and the write is faithful. When it does not, the
+    draft is a view, and a view is not a value. The whole-document editor holds the same
+    bar, so the two editors agree on which content is read-only.
+
+    A PENDING PROPOSAL is a second source the same draft can come from. Reviewing one offers
+    to load it into the editor, and that offer is built from the history response, which is
+    scrubbed like every other. So a proposal the scrub transformed is a view too, and
+    accepting it would store the view while the record's own value -- possibly clean, and so
+    passing the test above -- says nothing about it. The proposals this bar reads are the
+    ones the resolution bookkeeping already reads: pending against this record's revision.
+
+    ``replace`` needs no such bar: it rewrites the stored value server side and only the
+    matched span changes, so display text never reaches the store.
+    """
+    # circular import: the handler package reaches this module, so importing the shared
+    # scrubber at module scope would close the loop. Deferred to the one call that needs it.
+    from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+
+    source = before["text"] if episode else before["value_json"]
+    if _redact_memory_field(source) != source:
+        raise MemoryEditError(
+            "Sensitive values are hidden in this record, so its content is read-only. "
+            "Use find and replace to change it.",
+            "memory_record_redacted",
+            409,
+        )
+    metadata = before.get("metadata") or {}
+    record_id = metadata.get("record_id")
+    if not record_id:
+        return
+    rows = store.db.execute(
+        "SELECT after_json FROM memory_revisions WHERE record_id = ? AND status = 'conflict' "
+        "AND base_revision = ?",
+        (record_id, metadata.get("revision", 0)),
+    ).fetchall()
+    for row in rows:
+        proposed = row["after_json"]
+        if proposed and _redact_memory_field(proposed) != proposed:
+            raise MemoryEditError(
+                "A pending proposal on this record hides sensitive values, so it cannot be "
+                "accepted as text. Use find and replace to change the record.",
+                "memory_proposal_redacted",
+                409,
+            )
+
+
+def _is_shown_form(before: dict, new_value: object, *, episode: bool) -> bool:
+    """Whether the submitted value is the stored value's display form, unchanged.
+
+    Keeping the current value is offered as a way to close a pending proposal, and the
+    browser spells it by submitting the record body it was shown. On a record the scrub
+    rewrites, that body is the display form, so the submission is neither an edit nor a
+    faithful copy: the user asked for no change at all.
+
+    Answering yes here means the write carries no content, so the caller leaves the stored
+    value alone -- which both preserves it and lets the resolution bookkeeping close the
+    conflict. On a record shown exactly the display form IS the stored form, so a yes there
+    says only that the submission is unchanged, which the caller's own equality check below
+    would conclude anyway.
+    """
+    from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+
+    source = before["text"] if episode else before["value_json"]
+    shown = _redact_memory_field(source)
+    if episode:
+        return new_value == shown
+    try:
+        return _json(new_value) == _json(json.loads(shown))
+    except ValueError:
+        return False
+
+
 def _after(store: Any, before: dict, operation: dict) -> dict | None:
     from kiro_crew.vector_memory import _contains_injection
 
@@ -334,6 +416,9 @@ def _after(store: Any, before: dict, operation: dict) -> dict | None:
             raise MemoryEditError(
                 "Identity, scope and provenance cannot be changed in the content editor."
             )
+        if _is_shown_form(before, new_value, episode=episode):
+            return after
+        _require_editable_record(store, before, episode=episode)
     else:
         pattern = re.compile(re.escape(operation["find"]), 0 if operation["match_case"] else re.I)
         new_value = _replace(value, pattern, operation["replacement"])
