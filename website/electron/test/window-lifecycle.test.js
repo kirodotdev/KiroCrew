@@ -302,6 +302,39 @@ describe("window lifecycle source contracts", () => {
     );
   });
 
+  it("hands keyboard focus from a hidden or released browser view back to the dashboard view", () => {
+    // A BaseWindow routes keystrokes to exactly one child view. The manager
+    // decides WHEN to hand focus back (browser-view.test.js); this pins that
+    // the window wires the hand-back to the dashboard view, and that a window
+    // re-activation asks every panel to heal a hidden-yet-focused view. Without
+    // the first, every dashboard text input goes deaf after a modal opens over
+    // the panel; without the second, the platform can put focus back onto the
+    // hidden view when the window is re-activated.
+    const setupStart = SOURCE.indexOf("function setupWindowContents");
+    const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
+    assert.notEqual(setupStart, -1);
+    assert.notEqual(setupEnd, -1);
+    const setup = SOURCE.slice(setupStart, setupEnd);
+
+    const manager = setup.match(/createBrowserViewManager\(\{([\s\S]*?)\n      \}\);/);
+    assert.ok(manager, "browser view manager wiring missing");
+    assert.match(
+      manager[1],
+      /focusHost:\s*\(\)\s*=>\s*\{[\s\S]*?view\.webContents\.focus\(\)/,
+      "focusHost must give the DASHBOARD view (the window's `view`) keyboard focus",
+    );
+    assert.match(
+      manager[1],
+      /focusHost:[\s\S]*?!view\.webContents\.isDestroyed\(\)[\s\S]*?view\.webContents\.focus\(\)/,
+      "focusHost must not touch a dashboard WebContents that is already gone",
+    );
+    assert.match(
+      setup,
+      /win\.on\("focus",\s*\(\)\s*=>\s*\{\s*for \(const entry of browserPanels\.values\(\)\) entry\.manager\.reclaimFocus\(\);/,
+      "window re-activation must ask every panel to reclaim focus from a hidden view",
+    );
+  });
+
   it("keeps immediate fullscreen bounds updates plus bounded settle passes", () => {
     assert.match(
       SOURCE,

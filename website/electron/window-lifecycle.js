@@ -511,6 +511,15 @@ function createWindowLifecycle(options) {
           },
         }),
         getContentBounds: () => win.getContentBounds(),
+        // Keyboard focus belongs to exactly one child view of the BaseWindow.
+        // When the embedded page holds it as its view is hidden or released,
+        // the dashboard view takes it back — otherwise every text input in the
+        // dashboard stays deaf while pointer events keep working.
+        focusHost: () => {
+          if (!win.isDestroyed() && !view.webContents.isDestroyed()) {
+            view.webContents.focus();
+          }
+        },
         addView: (child) => win.contentView.addChildView(child),
         removeView: (child) => win.contentView.removeChildView(child),
         // Chrome the embedded page needs but the module must not import Electron
@@ -839,6 +848,13 @@ function createWindowLifecycle(options) {
     // Native themeSource is process-global, so a focused connection window must
     // refresh it from its own dashboard before native chrome is painted.
     win.on("focus", () => syncNativeTheme(view, win));
+    // On re-activation the platform re-resolves which child view receives
+    // keystrokes and may pick a hidden browser view again; each panel heals
+    // that by handing focus back to the dashboard view (see browser-view.js
+    // header note 3). A visible or unfocused panel is left alone.
+    win.on("focus", () => {
+      for (const entry of browserPanels.values()) entry.manager.reclaimFocus();
+    });
 
     // Same-origin windows remain in-app. Cross-origin web URLs and the audited
     // custom-scheme allowlist go to the OS; every other target fails closed.

@@ -9,6 +9,7 @@ const {
   deriveScale,
   scaleRect,
   computeVisible,
+  viewHoldsFocus,
   createBrowserViewManager,
 } = require("../browser-view");
 
@@ -147,18 +148,23 @@ test("an INACTIVE panel is hidden (its tab is not the visible one)", () => {
 
 function harness(content = { width: 1280, height: 860 }) {
   const box = { content };
+  // Ordered trace of every side effect, so tests can assert sequence (the
+  // focus hand-back must land AFTER the hide/detach, not before).
+  const log = [];
   const view = {
     bounds: [],
     visible: [],
     setBounds(b) { this.bounds.push(b); },
-    setVisible(v) { this.visible.push(v); },
+    setVisible(v) { this.visible.push(v); log.push(["setVisible", v]); },
     webContents: {
       loaded: [],
       closed: false,
+      focused: false,
       handlers: {},
       openHandler: null,
       loadURL(u) { this.loaded.push(u); },
-      close() { this.closed = true; },
+      close() { this.closed = true; log.push(["close"]); },
+      isFocused() { return this.focused; },
       getTitle() { return "Example"; },
       setWindowOpenHandler(fn) { this.openHandler = fn; },
       on(name, fn) { this.handlers[name] = fn; },
@@ -166,14 +172,16 @@ function harness(content = { width: 1280, height: 860 }) {
   };
   const attached = [];
   const events = [];
+  const focusHost = [];
   const mgr = createBrowserViewManager({
     createView: () => view,
     getContentBounds: () => box.content,
     addView: (v) => attached.push(v),
-    removeView: () => attached.pop(),
+    removeView: () => { attached.pop(); log.push(["removeView"]); },
     onEvent: (n, p) => events.push([n, p]),
+    focusHost: () => { focusHost.push(Date.now()); log.push(["focusHost"]); },
   });
-  return { mgr, view, attached, events, box };
+  return { mgr, view, attached, events, box, focusHost, log };
 }
 
 test("manager: view is created lazily on first open", () => {
@@ -341,4 +349,235 @@ test("onCreate fires once with the view so the host can attach chrome", () => {
   mgr.navigate("https://example.com/other");
   assert.strictEqual(created.length, 1, "only on creation, not per navigation");
   assert.strictEqual(created[0], view);
+});
+
+// ── keyboard focus hand-back ──
+//
+// A BaseWindow routes keystrokes to exactly one child view. Hiding or detaching
+// the embedded view while it holds focus leaves every dashboard text input
+// deaf (pointer events still hit-test onto the dashboard, so it LOOKS alive).
+// Every path that takes the view off screen must hand focus to the host when,
+// and only when, the view held it.
+
+const RECT = { x: 820, y: 60, width: 460, height: 800 };
+
+/** An open, visible panel whose page holds keyboard focus (the user clicked
+ *  or typed in it). */
+function focusedPanel() {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  assert.strictEqual(h.mgr.getState().visible, true, "precondition: visible");
+  h.view.webContents.focused = true;
+  h.log.length = 0;
+  return h;
+}
+
+test("focus: viewHoldsFocus answers only a real boolean true from isFocused", () => {
+  assert.strictEqual(viewHoldsFocus(null), false);
+  assert.strictEqual(viewHoldsFocus({}), false, "no webContents");
+  assert.strictEqual(viewHoldsFocus({ webContents: {} }), false, "no isFocused (older Electron)");
+  assert.strictEqual(viewHoldsFocus({ webContents: { isFocused: () => { throw new Error("destroyed"); } } }), false);
+  assert.strictEqual(viewHoldsFocus({ webContents: { isFocused: () => 1 } }), false, "truthy but not boolean");
+  assert.strictEqual(viewHoldsFocus({ webContents: { isFocused: () => false } }), false);
+  assert.strictEqual(viewHoldsFocus({ webContents: { isFocused: () => true } }), true);
+});
+
+test("focus: an overlay hiding a focused view hands focus to the host, after the hide", () => {
+  const h = focusedPanel();
+  h.mgr.setOverlayActive(true);
+  assert.strictEqual(h.mgr.getState().visible, false);
+  assert.strictEqual(h.focusHost.length, 1, "handed back exactly once");
+  assert.deepStrictEqual(h.log, [["setVisible", false], ["focusHost"]], "hide first, then hand back");
+});
+
+test("focus: the tab going inactive with a focused view hands focus to the host", () => {
+  const h = focusedPanel();
+  h.mgr.setInactive(true);
+  assert.strictEqual(h.mgr.getState().visible, false);
+  assert.strictEqual(h.mgr.getState().open, true, "page kept alive");
+  assert.strictEqual(h.focusHost.length, 1);
+  assert.deepStrictEqual(h.log, [["setVisible", false], ["focusHost"]]);
+});
+
+test("focus: the panel collapsing (no drawable rect) with a focused view hands focus back", () => {
+  const h = focusedPanel();
+  h.mgr.setPanelBounds({ x: 820, y: 60, width: 0, height: 800 });
+  assert.strictEqual(h.mgr.getState().visible, false);
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: a window resize that leaves no drawable rect hands focus back", () => {
+  const h = focusedPanel();
+  h.box.content = { width: 800, height: 600 }; // the panel's x=820 is now off-window
+  h.mgr.refreshBounds();
+  assert.strictEqual(h.mgr.getState().visible, false);
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: close() with a focused view hands focus back, after detach and teardown", () => {
+  const h = focusedPanel();
+  h.mgr.close();
+  assert.strictEqual(h.mgr._view(), null);
+  assert.strictEqual(h.focusHost.length, 1);
+  assert.deepStrictEqual(h.log, [["removeView"], ["close"], ["focusHost"]]);
+});
+
+test("focus: on an Electron without setVisible, the detach path hands focus back too", () => {
+  const h = focusedPanel();
+  delete h.view.setVisible;
+  h.mgr.setOverlayActive(true);
+  assert.strictEqual(h.attached.length, 0, "detached");
+  assert.deepStrictEqual(h.log, [["removeView"], ["focusHost"]]);
+});
+
+test("focus: NOT handed back when the view did not hold focus", () => {
+  // Focusing the host when the page did not have focus could yank focus off a
+  // modal prompt window the user is typing into.
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  assert.strictEqual(h.view.webContents.focused, false, "precondition: unfocused");
+  h.mgr.setOverlayActive(true);
+  h.mgr.setOverlayActive(false);
+  h.mgr.setInactive(true);
+  h.mgr.setInactive(false);
+  h.mgr.setPanelBounds({ x: 0, y: 0, width: 0, height: 0 });
+  h.mgr.setPanelBounds(RECT);
+  h.mgr.close();
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: NOT handed back while the view stays visible", () => {
+  const h = focusedPanel();
+  h.mgr.setPanelBounds({ ...RECT, width: 400 }); // bounds churn, still visible
+  h.mgr.setOverlayActive(false); // already clear
+  h.mgr.setInactive(false); // already active
+  h.mgr.refreshBounds();
+  h.mgr.navigate("https://example.com/other");
+  assert.strictEqual(h.mgr.getState().visible, true);
+  assert.strictEqual(h.focusHost.length, 0, "the user is in the page; leave focus there");
+});
+
+test("focus: NOT handed back on first open before any rect is known", () => {
+  // A freshly created view is hidden until the renderer reports a rect; it
+  // cannot have been clicked yet, and isFocused says so.
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  assert.strictEqual(h.mgr.getState().visible, false);
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: a view whose webContents lacks isFocused never triggers a hand-back and never throws", () => {
+  const h = harness();
+  delete h.view.webContents.isFocused;
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  assert.doesNotThrow(() => {
+    h.mgr.setOverlayActive(true);
+    h.mgr.setInactive(true);
+    h.mgr.close();
+  });
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: a hand-back that throws does not undo the hide", () => {
+  const h = focusedPanel();
+  const view = h.view;
+  const mgr = createBrowserViewManager({
+    createView: () => view,
+    getContentBounds: () => h.box.content,
+    addView: () => {},
+    removeView: () => {},
+    focusHost: () => { throw new Error("host tearing down"); },
+  });
+  mgr.open("https://example.com/");
+  mgr.setPanelBounds(RECT);
+  assert.doesNotThrow(() => mgr.setOverlayActive(true));
+  assert.strictEqual(mgr.getState().visible, false);
+  assert.strictEqual(view.visible.at(-1), false, "the view is hidden regardless");
+  assert.doesNotThrow(() => mgr.close());
+  assert.strictEqual(mgr._view(), null);
+});
+
+test("focus: the hand-back is asked on EVERY hide, so a view found hidden-yet-focused later is healed", () => {
+  // The platform may hand focus back to a hidden view on its own (window
+  // re-activation); the next bounds report while still hidden must heal it
+  // rather than only reacting on the visible→hidden edge.
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  h.mgr.setInactive(true); // hidden, unfocused: no hand-back
+  assert.strictEqual(h.focusHost.length, 0);
+  h.view.webContents.focused = true; // focus landed on the hidden view
+  h.mgr.setPanelBounds({ ...RECT, width: 420 }); // any later report while hidden
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: the hand-back also runs when the hide order is inactive → overlay (still one per hide)", () => {
+  const h = focusedPanel();
+  h.mgr.setInactive(true);
+  assert.strictEqual(h.focusHost.length, 1);
+  h.view.webContents.focused = false; // the host took focus as asked
+  h.mgr.setOverlayActive(true); // a second reason to stay hidden
+  assert.strictEqual(h.focusHost.length, 1, "nothing to reclaim any more");
+});
+
+// reclaimFocus(): the window-activation belt-and-braces.
+
+test("focus: reclaimFocus heals a hidden view that holds focus and reports it", () => {
+  const h = focusedPanel();
+  h.view.webContents.focused = false;
+  h.mgr.setOverlayActive(true); // hidden, unfocused at this point
+  assert.strictEqual(h.focusHost.length, 0);
+  h.view.webContents.focused = true; // re-activation picked the hidden view
+  assert.strictEqual(h.mgr.reclaimFocus(), true);
+  assert.strictEqual(h.focusHost.length, 1);
+});
+
+test("focus: reclaimFocus leaves a VISIBLE focused view alone", () => {
+  const h = focusedPanel();
+  assert.strictEqual(h.mgr.reclaimFocus(), false);
+  assert.strictEqual(h.focusHost.length, 0, "the user is in the page");
+});
+
+test("focus: reclaimFocus leaves a hidden UNFOCUSED view alone", () => {
+  const h = harness();
+  h.mgr.open("https://example.com/");
+  h.mgr.setPanelBounds(RECT);
+  h.mgr.setInactive(true);
+  assert.strictEqual(h.mgr.reclaimFocus(), false);
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: reclaimFocus is a no-op with no view (never opened, or closed)", () => {
+  const h = harness();
+  assert.strictEqual(h.mgr.reclaimFocus(), false);
+  h.mgr.open("https://example.com/");
+  h.mgr.close();
+  h.focusHost.length = 0;
+  assert.strictEqual(h.mgr.reclaimFocus(), false);
+  assert.strictEqual(h.focusHost.length, 0);
+});
+
+test("focus: a manager built without focusHost still hides and closes", () => {
+  const view = {
+    visible: [],
+    setBounds() {}, setVisible(v) { this.visible.push(v); },
+    webContents: {
+      loadURL() {}, close() {}, getTitle: () => "", setWindowOpenHandler() {}, on() {},
+      isFocused: () => true,
+    },
+  };
+  const mgr = createBrowserViewManager({
+    createView: () => view,
+    getContentBounds: () => ({ width: 1280, height: 860 }),
+    addView: () => {},
+    removeView: () => {},
+  });
+  mgr.open("https://example.com/");
+  mgr.setPanelBounds(RECT);
+  assert.doesNotThrow(() => mgr.setOverlayActive(true));
+  assert.strictEqual(view.visible.at(-1), false);
+  assert.doesNotThrow(() => mgr.close());
 });
