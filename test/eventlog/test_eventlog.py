@@ -14,8 +14,8 @@ from kiro_crew.crew_log.store import crew_log_path
 from kiro_crew.eventlog import types
 from kiro_crew.eventlog.log import LogCorrupt, MemberLog
 from kiro_crew.eventlog.members_projections import all_units
-from kiro_crew.eventlog.projection import ProjectionRegistry
 from kiro_crew.eventlog.service import MemberEventLogService
+from kiro_crew.projection import ProjectionRegistry
 
 
 # ---------------------------------------------------------------------------
