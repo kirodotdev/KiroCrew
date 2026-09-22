@@ -15,8 +15,9 @@ stopped request.
 
 `voice_reply.resolve_system_tts()` returns `(engine, binary)` for the host:
 `say` on macOS, `sapi` (Windows PowerShell 5.1 driving `System.Speech`) on
-Windows, `espeak-ng` on everything else when it is installed. Resolution goes
-through `platform_compat.trusted_system_bin`, not `PATH`, so a shim in an
+Windows, and `espeak-ng` on other platforms, with the legacy `espeak` binary
+accepted as a fallback under the same engine identity. Resolution goes through
+`platform_compat.trusted_system_bin`, not `PATH`, so a shim in an
 agent-writable directory cannot be handed LLM text. Linux is the one platform
 where the answer can be `None` — a stock Ubuntu Desktop ships the espeak-ng
 library and data but not the CLI — and that is reported as unavailable rather
@@ -412,13 +413,15 @@ spawning the AWS CLI. It returns no audio when consent is absent, which lets its
 callers retain their text response rather than spending through an unattended
 path.
 
-`_synthesize_polly()`, `_synthesize_piper()`, and `streaming_piper_reply()` run their commands through
-`wrap_argv_async(..., _prepare=wrap_argv)` and catch
-`SandboxUnavailableError` separately from provider failures. They log the
-sandbox error kind and its own message, then **re-raise**. The distinction is
-load-bearing because only the sandbox layer can distinguish a missing backend
-from transient pressure or an existing outer sandbox, and therefore provides the
-applicable remedy.
+`_synthesize_polly()` and `streaming_piper_reply()` run their commands through
+`wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_piper()` instead delegates
+to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the
+credential-scrubbed child environment. Those chokepoints catch
+`SandboxUnavailableError` separately from provider failures, log the sandbox
+error kind and its own message, then **re-raise**. The distinction is load-bearing
+because only the sandbox layer can distinguish a missing backend from transient
+pressure or an existing outer sandbox, and therefore provides the applicable
+remedy.
 
 Re-raising rather than returning `None` is what lets that remedy reach a person.
 A refusal collapsed into the generic "no audio" result is indistinguishable from

@@ -8,17 +8,20 @@ One command is the whole offline browser gate. It boots a real gateway wired to 
 packaged fake model backend, then shells the in-tree Playwright suite at it. No
 model, no credentials, no network, no cost.
 
-The Linux CI job enables unprivileged user namespaces and requires
-`unshare --mount --map-root-user true` to succeed before the suite. A failed
-precondition fails the job. This is the ordinary host-sandbox preflight;
-member memory uses canonical application routing and does not require a
-memory-specific namespace or OS confidentiality boundary.
-For the disposable gateway only (`KIROCREW_E2E_EPHEMERAL=1`), authenticated browser
-setup enables `agent.sandbox=auto` through the owner API and reapplies the same
-`agent.acp_backend` value. That field's existing refresh rebuilds the provider
-factory that captured the minimal fixture's sandbox-off setting at startup.
-Both writes must succeed before scenarios run; the model backend remains the
-packaged fake executable and the shared minimal seed is unchanged.
+The main browser job is Linux-only: it uses the CodeBuild fleet where eligible
+and otherwise falls back to `ubuntu-latest`. It cannot rely on an unprivileged
+user namespace (CodeBuild refuses `unshare(CLONE_NEWUSER)`, and this job does not
+alter the hosted runner's namespace policy). Its disposable fake-backend gateway
+alone seeds `agent.sandbox_allow_unsandboxed_exec=true`; authenticated browser setup
+then sets `agent.sandbox=auto` through the owner API and reapplies the existing
+`agent.acp_backend` value so the provider factory refreshes. Both owner-API writes
+must succeed before scenarios run, and the model backend remains the packaged fake
+executable.
+
+The real private-workflow MCP test runs separately in the
+`e2e-private-namespace` job on `ubuntu-latest`. That job enables unprivileged user
+namespaces, requires `unshare --mount --map-root-user true` to succeed, and fails
+if either the precondition or the test fails.
 
 `setup.py::E2eTestCommand` is the entry point (registered under `cmdclass` as
 `test_e2e`). It runs exactly two pytest files:
@@ -180,15 +183,15 @@ silent darkening is no guard.
 with `--group dev`, runs `npm ci` and `npm run build` in `website/`, stages
 `website/dist` into `src/kiro_crew/static/dist` so the specs render the real
 bundled dashboard rather than a 404, installs Chromium, resolves the i18n base,
-requires the real private-workflow MCP test to pass, then runs
-`python scripts/ci_e2e_parallel.py`. That CI-only helper overlaps the unchanged
+then runs `python scripts/ci_e2e_parallel.py`. The separate
+`e2e-private-namespace` job owns the real private-workflow MCP test and does not
+serialize the browser job. The CI-only helper overlaps the unchanged
 `python setup.py test_e2e` command, dedicated Memory UI pytest command and
 `npm --prefix website run i18n:render`. All three outcomes are awaited; no
-failure cancels or hides another lane. The prerequisite and job verdict remain
-mandatory, with the same 25-minute job ceiling. This removes the serial
-head+base render gate from the critical path: on run 34803496478 it took 487
-seconds before the private prerequisite, leaving only 616 seconds for the two
-E2E lanes before the job timed out.
+failure cancels or hides another lane. All three helper outcomes remain mandatory,
+with the same 25-minute browser-job ceiling. The private namespace coverage is a
+separate mandatory CI job instead of a serial prerequisite, so neither it nor the
+head+base render gate consumes the browser lane's critical path.
 
 The staged production bundle, Python packages, Node modules and Chromium
 install remain read-only inputs. i18n builds its own `website/dist-dev` and a
@@ -230,9 +233,10 @@ The job's ceiling is `timeout-minutes: 25`, and the browser install is the step
 that historically consumed it. It carries three constraints, all in service of
 leaving the specs enough of that budget to actually run:
 
-- **`~/.cache/ms-playwright` is cached**, keyed on the exact `@playwright/test`
-  version read out of `website/package-lock.json`. The key has no restore-key
-  prefix on purpose: a near-miss would hand the job a Chromium revision that
+- **`${RUNNER_TEMP}/ms-playwright` is cached**, keyed on the exact `@playwright/test`
+  version read out of `website/package-lock.json`. `PLAYWRIGHT_BROWSERS_PATH`
+  points both setup and the non-root test steps at that directory. The key has no
+  restore-key prefix on purpose: a near-miss would hand the job a Chromium revision that
   `@playwright/test` does not expect.
 - **`--with-deps` is not used.** It runs `apt-get update` first, and when the
   runner's default mirror answers `Ign:` apt falls back and stalls — measured at
@@ -330,15 +334,16 @@ turn that into a second, misleading failure.
 `website/playwright/memory-embedding-evidence.spec.ts` photographs five
 Memory-tab states that describe the WHOLE gateway (its `config.json`, its
 download manager, which stores are open), so the shared gateway above cannot
-hold them without changing what the other 230 specs see. Every test is tagged
+hold them without changing what the shared suite sees. Every test is tagged
 `@memory-evidence`, `playwright.config.ts` excludes that tag unless
 `PLAYWRIGHT_RUN_MEMORY_EVIDENCE=1`, and the shared run never sets it: the spec
 is dark there by design, and `--list` under the shared run shows zero of its
 tests. `test/e2e/test_memory_ui_evidence.py` is what runs it, as one lane of the
 `Run E2E and dedicated memory UI evidence in parallel` step of the same `e2e`
-job, alongside `setup.py test_e2e` after the real private-MCP prerequisite has
-passed. A red browser lane does not leave the evidence un-captured: both lanes
-finish and either failure fails the job; nothing is `continue-on-error`.
+job, alongside `setup.py test_e2e`. The real private-workflow MCP coverage runs
+independently in `e2e-private-namespace`. A red browser lane does not leave the
+evidence un-captured: both lanes finish and either failure fails the job; nothing
+is `continue-on-error`.
 
 Each scenario boots its own `spawn_feature_gateway(fixture="minimal")`,
 prepares the state through production surfaces only, waits until
@@ -539,14 +544,18 @@ cross-member isolation, persisted/cancellable backup staging, and the empty
 member's exact conversation binding across reload. Desktop and
 390px captures accompany the first flow. Their write guard requires
 `KIROCREW_E2E_EPHEMERAL=1`, which the isolated gateway harness sets; it must never
-be set for an operator gateway. The strict reporter enforces the executed-test floor and refuses skips or flaky retries. The current run must pass the preceding i18n render gate before these browser scenarios count as executed evidence.
+be set for an operator gateway. The strict reporter enforces the executed-test
+floor and refuses skips or flaky retries. The same `e2e` job must also pass its
+parallel i18n render lane before the job is green; the render lane does not
+precede these browser scenarios.
 
 ## The cross-OS gateway boot matrix
 
-Everything above is `ubuntu-latest`. `test/e2e/test_gateway_boot_matrix.py` is the
-one asset that boots a real gateway on **macOS and Windows too**, and `ci.yml`'s
+The browser and private-namespace lanes above are Linux-only.
+`test/e2e/test_gateway_boot_matrix.py` is the one asset that boots a real gateway
+on **macOS and Windows too**, and `ci.yml`'s
 `e2e-boot-matrix` job is what runs it: `fail-fast: false`,
-`needs: [await-fast-gate]`, 20 minutes, and `strategy.matrix.os` of `ubuntu-latest`
+`needs: [changes, await-fast-gate]`, 20 minutes, and `strategy.matrix.os` of `ubuntu-latest`
 and `windows-latest` on a pull request, plus `macos-15` on the push-to-main path.
 The mac leg is event-conditional for the queue, not the runtime: it waited ~200
 minutes for a `macos-15` runner on every pull request and was the only leg that did,
@@ -799,8 +808,8 @@ part of the required `CI` verdict.
 
 A second E2E lane, orthogonal to the browser gate above. `test/e2e/scenarios/`
 boots ONE real service-managed pod through the shipped `kirocrew pod` verbs and
-drives five user-visible flows against it: a setting saved across a gateway
-restart, a cron firing, one agent turn with a tool call, the host service
+drives six scenario tests across five user-visible flows: a setting saved across
+a gateway restart, a cron firing, one agent turn with a tool call, the host service
 definition rendering inside a pod's environment, and the built wheel installing
 into a clean venv. The recipes are in
 [../guides/worktree-verification-recipes.md](../guides/worktree-verification-recipes.md).

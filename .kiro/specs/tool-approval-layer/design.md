@@ -1,5 +1,7 @@
 # Design — Human-in-the-Loop Tool-Approval Layer
 
+Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard approval components; typed `ToolPreviewFrame` previews remain unimplemented because the App Builder Kit dependency did not ship.
+
 ## Overview
 
 The approval layer is the seam between an autonomous agent and any consequential action.

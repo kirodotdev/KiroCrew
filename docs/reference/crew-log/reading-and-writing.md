@@ -12,9 +12,7 @@ Every name here is from `kiro_crew.crew_log`. Each refusal names a code from
 
 The subagent-aware repair on this page -- the `child_gone` predicate on `CrewLog.open`
 and `repair_interrupted_turn`, and the `approval/decided` and `subagent/failed`
-closers -- lands with #11185. On a build without it, `open` and
-`repair_interrupted_turn` take no `child_gone` argument and repair writes the
-`tool/completed` and `turn/completed` closers only.
+closers -- is present in this build. It was introduced by #11185.
 
 | Call | Signature | Refuses with |
 |---|---|---|
@@ -53,8 +51,8 @@ Read-only helpers at module level: `crew_log_root(kind)`, `crew_log_dir(kind, un
 
 ### `iter_from`
 
-`iter_from(seq=1, *, known=None) -> Iterator[Entry]` yields every entry from `seq`
-onward, oldest first, across segments.
+`iter_from(seq=1, *, known=None, strict_seq=True) -> Iterator[Entry]` yields every
+entry from `seq` onward, oldest first, across segments.
 
 `known` is the whole point of the call. It declares the types this reader
 understands, and it changes what happens when the reader meets one it does not:
@@ -70,6 +68,12 @@ meaning of every entry after it, so a reader that folds state must not be handed
 partial history that looks complete. `ignorable` is the writer's promise that
 nothing later depends on this line having been read, which is what lets an older
 reader keep folding a file a newer writer extended.
+
+With the default `strict_seq=True`, every walked entry must advance beyond the
+previous one. A duplicate or backward `seq` raises
+[`bad_data`](errors.md#bad_data); a forward gap inside one segment remains tolerated
+because it can be a damaged line the low-level reader skipped. Rendering-only callers
+may pass `strict_seq=False`, but a state fold must keep the default.
 
 Crossing segments can also refuse: [`bad_segment`](errors.md#bad_segment) for a
 segment whose header or declared first `seq` does not match, and
@@ -94,7 +98,7 @@ first with the anchor last.
 
 ### Resolving a `ref`
 
-`resolve(ref) -> Resolution` follows a citation. A same-unit ref resolves against
+`resolve(ref: Ref | dict) -> Resolution` follows a citation. A same-unit ref resolves against
 the open handle; anything else opens the cited unit. The result is a `Resolution`
 carrying a `status` and a tuple of `entries`, with `.ok` true only for `ok`.
 
@@ -120,18 +124,18 @@ that is checked when the `ref` is constructed, raising
 
 A kind owns a set of `type` domains, matched by prefix so a new action under an
 owned domain needs no registration. Writing a type the kind does not own is
-[`event_type_not_owned`](errors.md#event_type_not_owned). The session kind's
-domains are on [session-types.md](session-types.md); the crew kind's are on
-[crew-types.md](crew-types.md).
+[`event_type_not_owned`](errors.md#event_type_not_owned). The session kind's domains are on [session-types.md](session-types.md); the crew
+kind's are on [crew-types.md](crew-types.md); and the member kind's closed vocabulary
+is canonical in [member-event-log.md](../../system-specs/modules/member-event-log.md).
 
 ### Guest namespacing
 
 A guest writer is one whose `src` carries its own name — `crew:<name>` or
 `app:<name>`. That name is its permission: an `app:<name>` writer may write only
-`app:<name>/…` types, and only into a crew log. Writing outside its own
-namespace is [`namespace_violation`](errors.md#namespace_violation). An `src` that
-is neither a known fixed emitter nor a well-formed namespaced one is
-[`bad_src`](errors.md#bad_src).
+`app:<name>/…` types, into a `crew` or `member` log; a `crew:<name>` source is
+accepted only by a crew log. Session logs accept no guest source. Writing outside a
+guest's namespace is [`namespace_violation`](errors.md#namespace_violation), and an
+`src` that the selected kind does not accept is [`bad_src`](errors.md#bad_src).
 
 ### Ownership
 
@@ -153,10 +157,12 @@ timeout would let a second writer start appending to a file the first one may st
 be writing.
 
 When another **process** owns the crew log, an append raises
-[`already_owned`](errors.md#already_owned) and writes nothing. This is a hard
-refusal, not a retry hint: ownership is held for the life of the owning process, so
-every later entry for that unit would queue behind the same wait. A caller reports
-the loss instead.
+[`already_owned`](errors.md#already_owned) and writes nothing. Ownership lasts for
+the handle lifetime, not necessarily the process lifetime. The session emitter's
+handles can be long-lived, so it reports the loss rather than retrying; the
+member-event adapter deliberately releases its short-lived handle after each append
+and applies a bounded wait for its known multi-writer case. A generic caller must not
+invent a retry policy from the error alone.
 
 ### `append`
 
@@ -167,9 +173,11 @@ JSON object of serializable values ([`bad_data`](errors.md#bad_data)); the type 
 be well formed and owned, and the `src` acceptable
 ([`bad_type`](errors.md#bad_type), [`bad_src`](errors.md#bad_src),
 [`event_type_not_owned`](errors.md#event_type_not_owned),
-[`namespace_violation`](errors.md#namespace_violation)); a `thread` must name an
+[`namespace_violation`](errors.md#namespace_violation)); a declared type's payload
+must match its field schema ([`bad_data_field`](errors.md#bad_data_field)); a `ref`
+must be representable ([`bad_ref`](errors.md#bad_ref)); a `thread` must name an
 existing, earlier, readable entry in this same file
-([`bad_thread`](errors.md#bad_thread)); the serialized line must fit the ceiling
+([`bad_thread`](errors.md#bad_thread)); and the serialized line must fit the ceiling
 ([`entry_too_large`](errors.md#entry_too_large)).
 
 Then ownership is claimed and the tail is re-scanned under the unit's `.lock`.
@@ -181,9 +189,9 @@ always means the line is on disk and fsynced.
 ### `append_many`
 
 `append_many(items, *, src, cite=None) -> list[Entry]` writes a group in one write
-and one fsync. An empty list returns an empty list. Every item's `data` and the
-ownership are validated up front, and each serialized line must fit the ceiling
-individually.
+and one fsync. An empty list returns an empty list. Every item's `data`, ownership,
+and declared payload fields are validated up front, and each serialized line must
+fit the ceiling individually.
 
 `cite` is what makes an oversize body atomic. It is called **inside the lock** with
 the seqs just allocated, and whatever dict it returns is appended last — so the

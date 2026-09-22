@@ -3,10 +3,11 @@
 The single reference for how a Kiro Crew release is cut, what CI does at each
 step, where the artifacts land, and how to verify one.
 
-Ownership boundary: [CONTRIBUTING.md](../../CONTRIBUTING.md) → "Releasing New
-Versions" owns the **human** process (cutting a release branch, numbering RCs,
-promoting, back-merging, bumping the in-code version) and the exact git
-commands. This file documents what the **pipeline** does once a tag exists.
+Ownership boundary: this file owns the whole release process — the **human**
+steps (cutting a release branch, numbering RCs, promoting, back-merging, bumping
+the in-code version) together with their exact git commands, and what the
+**pipeline** does once a tag exists. [CONTRIBUTING.md](../../CONTRIBUTING.md) →
+"Releasing New Versions" only points here.
 macOS signing mechanics and notary-credential rotation live in
 [signing-runbook.md](signing-runbook.md); desktop packaging lives in
 [desktop-app.md](desktop-app.md); the PR-time quality gates live in
@@ -33,19 +34,21 @@ deciding to promote, and merging back are human steps the pipeline knows nothing
 about, which is why there is no cut/promote/rollback workflow (see "Deliberately
 not built").
 
-## Stable release: a fresh build at the bare version, never a byte republish
+## Stable release: a fresh build by default, with explicit byte reuse
 
-A stable release must ship bytes whose own embedded version is a bare `X.Y.Z`,
-with no prerelease suffix anywhere in the artifact, its filename, or the feed.
-That is what rules out republishing the candidate's bytes: they were stamped
-from the prerelease tag, and nothing downstream can re-stamp them without
-invalidating the recorded digests and the macOS signatures. So a bare tag
-rebuilds from the commit the candidate cleared, rather than reusing what the
-candidate produced. The mechanism:
+The ordinary stable path must ship bytes whose own embedded version is a bare
+`X.Y.Z`, with no prerelease suffix in the artifact, its filename, or the feed.
+That rules out republishing candidate bytes by default: they were stamped from
+the prerelease tag, and nothing downstream can re-stamp them without invalidating
+the recorded digests and macOS signatures. A bare tag therefore rebuilds from
+the commit the candidate cleared. The explicit byte-reuse escape hatch below is
+the documented exception and preserves the candidate's prerelease stamp. The
+mechanism:
 
 - **A successful prerelease run clears the candidate commit.** After every
-  publish lane succeeds, `record-promotion` assembles the exact wheel/sdist,
-  AppImage, notarized zip/DMG, and the attested OCI manifest digest into a
+  publish lane succeeds, `record-promotion` assembles the wheel/sdist, all six
+  Linux artifacts, notarized zip/DMG, the optional Windows installer pair, and
+  the attested OCI manifest digest into a
   `stable-promotion-<x.y.z>` GitHub artifact (90-day retention) whose manifest
   (`scripts/release_promotion.py create`) carries per-file SHA-256/SHA-512/size
   plus the source SHA, tag, run id, and versions. Its primary role is evidence
@@ -158,9 +161,11 @@ candidate produced. The mechanism:
 
 ### Runbook: promoting an RC to stable
 
-The constraint that shapes the whole timeline: **promotion is byte-for-byte, so
-anything a stable user will see must already be in the RC that gets promoted** —
-there is no build step at stable-tag time to add it.
+The constraint that shapes the whole timeline: **the stable tag must name the
+exact commit that already shipped successfully on insider**. The default path
+rebuilds that commit at the bare version; the `STABLE_PROMOTE_BYTES` escape hatch
+republishes the candidate's exact bytes instead. Neither mode may add unsoaked
+code.
 
 1. **Before the RC is cut — bake the fix in.**
    - *Version drop PR*: merge the PR that changes `__version__` from
@@ -171,9 +176,10 @@ there is no build step at stable-tag time to add it.
      section, not here. The checklist in step 2 below verifies it landed.
    - *CHANGELOG*: the release branch already carries `## [X.Y.Z] - <date>` (no
      `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
-   - *Version display*: the base-version fold above must be merged to `main`
-     and cherry-picked to `release/X.Y` **before the RC is cut**, or stable will
-     show the RC stamp.
+   - *Version display*: keep the base-version fold above on `main` and
+     `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
+     bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
+     hatch still depend on the display contract.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; no `### Contributors` (the GitHub Release
@@ -186,11 +192,11 @@ there is no build step at stable-tag time to add it.
    `test_stable_version_display.py` + the `version_display` tests — a stamped
    stable build must show `X.Y.Z` on the version chip, the Settings footer, the
    available-update line, AND the update popup); no existing bare
-   `vX.Y.Z` tag. Then tag `vX.Y.Z-insider.N`.
+   `vX.Y.Z` tag. Then tag `vX.Y.Z-rc.N`.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
    change to the release branch between soak and release** — stable is rebuilt
    from this commit, so a commit that lands after the soak ships code nobody ran.
-4. **Release (bare tag).** Confirm the `vX.Y.Z-insider.N` run at the target
+4. **Release (bare tag).** Confirm the `vX.Y.Z-rc.N` run at the target
    commit is SUCCESS — `stable-gate` requires it, so a candidate whose run was
    cancelled or failed cannot be released. Push a bare `vX.Y.Z` tag on that
    commit. The build lanes RUN: stable is rebuilt from this commit with `X.Y.Z`
@@ -223,11 +229,12 @@ concurrency group, and their version derivation.
 | Workflow | Kind | Role |
 |---|---|---|
 | `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build` with `cancel-in-progress: true`. |
-| `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes the exact files/OCI digest to stable without building. Then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
+| `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
+| `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. |
@@ -263,29 +270,35 @@ hostnames means future protective policy on the byte surface can never touch the
 availability-critical feed path.
 
 ```
-cli/<channel>/<version>/kirocrew-<version>-py3-none-any.whl   immutable
-cli/<channel>/<version>/SHA256SUMS                            immutable
-cli/<channel>/<version>/cli-manifest.json                     immutable
-desktop/<channel>/<version>/KiroCrew.zip                      immutable
-desktop/<channel>/<version>/KiroCrew.dmg                      immutable
-desktop/<channel>/<version>/KiroCrew-x86_64.AppImage          immutable
-desktop/<channel>/<version>/KiroCrew-aarch64.AppImage         immutable
-desktop/<channel>/<version>/KiroCrew-x86_64.deb               immutable
-desktop/<channel>/<version>/KiroCrew-aarch64.deb              immutable
-desktop/<channel>/<version>/KiroCrew-x86_64.rpm               immutable
-desktop/<channel>/<version>/KiroCrew-aarch64.rpm              immutable
-desktop/<channel>/latest/KiroCrew.dmg                         pointer, max-age=300
-desktop/<channel>/latest/KiroCrew-x86_64.AppImage             pointer, max-age=300
-desktop/<channel>/latest/KiroCrew-aarch64.AppImage            pointer, max-age=300
-desktop/<channel>/latest/KiroCrew-<arch>.deb                  pointer, max-age=300
-desktop/<channel>/latest/KiroCrew-<arch>.rpm                  pointer, max-age=300
-feed/<channel>/latest-mac.yml                                 pointer, max-age=300
-feed/<channel>/latest-mac.json                                pointer, max-age=300 (legacy bridge)
-feed/<channel>/latest-linux.yml                               pointer, max-age=300  (x64)
-feed/<channel>/latest-linux-arm64.yml                         pointer, max-age=300  (arm64)
-feed/<channel>/latest-cli.json                                pointer, no-cache
-feed/<channel>/simple/  +  feed/<channel>/simple/kirocrew/    pointer, no-cache
-cli.sh                                                        pointer, no-cache (only root object)
+cli/<channel>/<version>/kirocrew-<version>-py3-none-any.whl  immutable
+cli/<channel>/<version>/SHA256SUMS                           immutable
+cli/<channel>/<version>/cli-manifest.json                    immutable
+desktop/<channel>/<version>/KiroCrew.zip                     immutable
+desktop/<channel>/<version>/KiroCrew.dmg                     immutable
+desktop/<channel>/<version>/KiroCrew-x86_64.AppImage         immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.AppImage        immutable
+desktop/<channel>/<version>/KiroCrew-x86_64.deb              immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.deb             immutable
+desktop/<channel>/<version>/KiroCrew-x86_64.rpm              immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.rpm             immutable
+desktop/<channel>/<version>/KiroCrew-Setup.exe               immutable
+desktop/<channel>/<version>/KiroCrew-Setup.exe.blockmap      immutable
+desktop/<channel>/latest/KiroCrew.dmg                        pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-x86_64.AppImage            pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-aarch64.AppImage           pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-<arch>.deb                 pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-<arch>.rpm                 pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-Setup.exe                   pointer, max-age=300
+feed/<channel>/latest-mac.yml                                pointer, max-age=300
+feed/<channel>/latest-mac.json                               pointer, max-age=300 (legacy bridge)
+feed/<channel>/latest-linux.yml                              pointer, max-age=300 (x64 AppImage)
+feed/<channel>/latest-linux-arm64.yml                        pointer, max-age=300 (arm64 AppImage)
+feed/<channel>/{deb,rpm}/latest-linux.yml                    pointer, max-age=300 (x64 package)
+feed/<channel>/{deb,rpm}/latest-linux-arm64.yml              pointer, max-age=300 (arm64 package)
+feed/<channel>/latest.yml                                    pointer, max-age=300 (Windows)
+feed/<channel>/latest-cli.json                               pointer, no-cache
+feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
+cli.sh                                                       pointer, no-cache (only root object)
 ```
 
 Every public URL is exactly one of two classes, and the class decides the cache
@@ -341,14 +354,17 @@ and authenticate with a token carrying `read:packages`.
 
 ### GitHub Releases
 
-`release.yml`'s `github-release` job attaches the wheel, the sdist, the
-AppImage, and the two gated macOS artifacts, renamed
+`release.yml`'s `github-release` job attaches the wheel, sdist, all six Linux
+artifacts, the available Windows installer, per-build symbols manifests, and the
+two gated macOS artifacts renamed
 `KiroCrew-<version>-universal-mac.zip` and `KiroCrew-<version>-universal.dmg`.
 It accepts macOS bytes **only** from the exact name-bound artifact the notarize
 job attached after the Gatekeeper gate, and re-validates them structurally
 before publishing (ZIP CRC plus exactly one top-level `.app`; DMG `koly` UDIF
 trailer). The unsigned electron-builder zip and DMG are inter-job handoffs and
-never become release assets. Windows `Setup.exe` is not attached. The release is
+never become release assets. Windows remains optional: when present, exactly one
+installer is attached as `KiroCrew-<version>-Setup-x64.exe`; its blockmap stays
+on the update feed path rather than becoming a human download. The release is
 marked `prerelease` when the channel is insider, and notes are generated.
 
 `github-release` and `record-stable-promotion` are the two jobs that need
@@ -368,8 +384,9 @@ same set `record-promotion` requires, and
 keeps the two from drifting into two different definitions of "published".
 
 What this does and does not buy: nothing in the workflow can un-publish an OCI
-tag or an npm version, so the boundary withholds the **announcement**, not the
-bytes. A partial run leaves the already-published lanes in place and no release
+tag or an immutable versioned CDN object, so the boundary withholds the
+**announcement**, not the bytes. A partial run leaves the already-published
+lanes in place and no release
 page; a rerun after the failing lane is fixed reaches `github-release` again with
 the same immutable artifacts, which is what makes the retry deterministic rather
 than a second, differently-composed release. `build-windows` stays outside the
@@ -460,15 +477,18 @@ triggers. Nothing about it is caller-specific: the trigger files carry only
 version derivation and `uses:` calls.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
-   the wheel, sdist, and every Linux artifact (not the mac zip or DMG, whose bytes are not
-   final yet), uploads everything to `pre-signed/`, extracts the `.app` from the
+   the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
+   final yet; each Linux publish lane also attests its own artifact), uploads
+   everything to `pre-signed/`, extracts the `.app` from the
    `*-mac.zip`, and submits it to CDSigner with a manifest generated at sign
    time from the actual bundle contents by
    `packaging/signing/generate-manifest.py`. `packaging/signing/sign.sh` polls
    every 30s with a 15-minute ceiling. `awscurl` is installed **before** AWS
    credentials are configured, so a drifted release of it can never observe the
    signing credentials.
-2. **notarize** (macos-15). `notarytool submit --wait`, `stapler staple`, then a
+2. **notarize** (macos-15). `packaging/signing/notarize.sh` submits and polls
+   within a 30-minute budget, retrying transient status errors; `stapler staple`
+   then runs before a
    fail-closed `spctl --assess` that must report `Notarized Developer ID`. On an
    `Invalid` verdict the itemized Apple log is printed. The branded
    electron-builder DMG is then converted to a writable layout template; its
@@ -491,9 +511,9 @@ version derivation and `uses:` calls.
    then the human `latest/KiroCrew.dmg` alias. Separate from notarize so a
    transient S3 failure retries as a two-minute ubuntu job instead of repeating
    two Apple submissions, and so the expensive macOS runner never burns minutes
-   on uploads. Its `if:` starts with `success()`, which is required: a custom
-   job-level `if` replaces the implicit success check, and without it the job
-   would run after a failed or skipped notarize.
+   on uploads. Its custom `if:` uses `always()` and checks the dependency result
+   explicitly: an ordinary publish requires successful notarization, while the
+   byte-reuse path requires that sign/notarize was intentionally skipped.
 
 Linux publishing is deliberately not in this workflow: the AppImage takes no
 part in the macOS trust chain, so `publish-linux.yml` is its own lane. Linux has
@@ -514,30 +534,29 @@ what makes the tolerated 412 safe: a same-version re-run whose artifact differs
 byte-for-byte would otherwise leave the old object published while the feed
 described the new one, and every client would refuse to install.
 
-Ordering **across** runs is protected only by the trigger workflows'
-`concurrency` groups (nightly cancels an in-flight older run, release queues),
-not by a version comparison at write time, which would itself be a
-read-then-write race.
+Ordering **across** runs has two layers: the trigger workflows' `concurrency`
+groups (nightly cancels an in-flight older run, release queues), plus
+`scripts/check_feed_advance.py` before each mutable pointer write. The guard
+compares the candidate with both the live CDN feed and repository tags; older
+runs still publish immutable versioned assets but do not move feeds or aliases.
 
 ## Version stamping
 
 The in-code `__version__` in `src/kiro_crew/__init__.py` is the source of truth
 for non-tag builds. A tagged release overrides all three manifests at build
-time. See CONTRIBUTING.md → "Bumping the in-code version" for the three files
-and why the base must stay a bare `X.Y.Z`.
+time. [Runbook: promoting an RC to stable](#runbook-promoting-an-rc-to-stable)
+names the three files and why the base must stay a bare `X.Y.Z`.
 
 | Channel | Desktop / semver stamp | CLI wheel (PEP 440) |
 |---------|------------------------|---------------------|
 | nightly | `0.2.0-nightly.20260708t061155` | `0.2.0.dev20260708061155` |
 | insider | `0.2.0-rc.1` | `0.2.0rc1` |
-| stable | retains the promoted candidate's stamp (`0.2.0-rc.N`) | retains `0.2.0rcN` |
+| stable | `0.2.0` | `0.2.0` |
 
-A bare stable tag does not stamp or build: it verifies the selected candidate's
-recorded manifest and reuses its embedded version and byte digests unchanged,
-because re-stamping would change (and invalidate) the tested, signed bytes. The
-bare `X.Y.Z` names the git tag, the GitHub Release, and the stable channel
-paths — the release identity — while the artifacts keep the candidate's
-embedded prerelease version.
+A bare stable tag rebuilds the cleared commit and stamps the bare version by
+default. If `vars.STABLE_PROMOTE_BYTES` names that exact base, the build jobs are
+skipped and the recorded candidate artifacts are reused unchanged; only that
+escape hatch retains the candidate's `0.2.0-rc.N` / `0.2.0rcN` stamps.
 
 Two stamps exist because the consumers disagree: Squirrel and electron-builder
 need semver, the wheel needs PEP 440. `nightly.yml` reads the clock **once** and
@@ -585,7 +604,7 @@ manipulates — the final byte stamp is decided by the tag, not this value.
 
 - **On an insider release branch, `__version__` carries the RC suffix, and the
   tag matches.** The branch reads as what it is: `__version__ = "X.Y.Z-rc.N"`,
-  tags `vX.Y.Z-insider.N`. Do not leave a release branch declaring a bare
+  tags `vX.Y.Z-rc.N`. Do not leave a release branch declaring a bare
   `X.Y.Z` while it is still cutting RCs. All three version files
   (`src/kiro_crew/__init__.py`, `pyproject.toml`,
   `website/electron/package.json`) use the **same dual-valid spelling**
@@ -594,13 +613,14 @@ manipulates — the final byte stamp is decided by the tag, not this value.
   `packaging/build-desktop.sh` feeds `__version__` verbatim to
   electron-builder, which requires SemVer.
 - **Promoting an insider line to stable is a three-step sequence:**
-  1. **Drop the RC in a PR** — change `__version__` from `X.Y.ZrcN` to the bare
+  1. **Drop the RC in a PR** — change `__version__` from `X.Y.Z-rc.N` to the bare
      `X.Y.Z`. This is the release commit; it also sets the base the stable
      display folds to (`_display_version`, see "Client auto-update").
-  2. **Cut one more RC tag** (`vX.Y.Z-insider.<N+1>`) on that commit and let it
+  2. **Cut one more RC tag** (`vX.Y.Z-rc.<N+1>`) on that commit and let it
      soak. This bare-`__version__` commit is the promotion candidate.
-  3. **Tag the bare `vX.Y.Z`** on the same commit to promote — promotion
-     republishes the soaked candidate's exact bytes (see "Stable promotion").
+  3. **Tag the bare `vX.Y.Z`** on the same commit. Stable rebuilds that
+     cleared commit under the bare stamp by default; set `STABLE_PROMOTE_BYTES`
+     only when exact-byte reuse is worth retaining the RC stamp.
 - **`main` (nightly) is always one MINOR ahead of the active insider line.**
   While `release/0.4` stabilizes on insider at `0.4.x`, `main`'s `__version__`
   is already `0.5.0`. The release branch owns the version being shipped; `main`
@@ -608,14 +628,12 @@ manipulates — the final byte stamp is decided by the tag, not this value.
   shipping line, so a nightly user is never offered what looks like a downgrade
   to an RC.
 
-**Why the display still folds even after step 1.** The build stamps the version
-FROM THE TAG, and the desktop's embedded version MUST equal the feed version or
-the auto-updater's compare gate breaks (see "Client auto-update"). So the
-promotion candidate's *bytes* still carry the RC/insider stamp (`0.4.0rcN` /
-`0.4.0-insider.N`) even though the branch declares a bare `__version__`. The
-bare declaration sets the source-of-truth and the fold's base; `_display_version`
-is what actually shows a stable user `0.4.0`. The two are complementary, not
-alternatives.
+**Why the display still folds even after step 1.** The candidate build stamps
+from its RC tag, so its desktop and wheel bytes still carry `0.4.0-rc.N` and
+`0.4.0rcN` even though the branch declares bare `0.4.0`. An ordinary stable
+rebuild replaces those stamps with the bare version. The fold remains required
+for insider display, legacy promoted installs, and the `STABLE_PROMOTE_BYTES`
+path, where the candidate bytes are reused and cannot be re-stamped.
 
 ## CLI channel and the signed manifest
 
@@ -650,8 +668,8 @@ signed with a non-exportable RSA KMS key:
   "schema": "kirocrew-cli-artifact-manifest-v1",
   "sha256": "<wheel digest>",
   "signature": "<base64 RSA signature over canonical JSON without this field>",
-  "version": "0.2.0",
-  "wheel_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl"
+  "version": "0.2.0rc1",
+  "wheel_url": "https://download.crew.kiro.dev/cli/insider/0.2.0rc1/kirocrew-0.2.0rc1-py3-none-any.whl"
 }
 ```
 
@@ -751,25 +769,12 @@ Rules for setting the floor:
 
 ### Installing and switching channels
 
-```bash
-# install, or move to another channel
-curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
-```
-
-The installer resolves the channel feed, verifies it as described above,
-installs with `pipx` when available (otherwise a managed venv beside the data
-home), and records the channel in `~/.kiro/crew/channel`. Default channel is
-`stable`; `KIROCREW_CHANNEL` overrides it, and `--version` pins an exact wheel
-through the immutable `cli/<channel>/<version>/cli-manifest.json` instead of the
-mutable feed. This download path is separate from the source install
-(`install.sh`, a git clone plus `pip install -e .`), which is what `kirocrew
-update` refreshes: that command needs a git checkout at
-`KIROCREW_PROJECT_DIR` and runs `git fetch` plus `git reset --hard` (checking a
-governance source pin on the remote URL first, so the fleet, not the human at the
-terminal, decides which remote a host may take code from), then rebuilds the
-frontend, reinstalls with `pip install -e .`, and re-runs
-`setup --agent-only`. The dashboard's `POST /api/update` performs the equivalent
-and restarts the gateway; neither path consumes the channel feed.
+The user-facing install commands, channel persistence, exact-version pinning,
+managed interpreter/venv layout, and source-update behavior live in the canonical
+[install guide](../guides/install.md). For release engineering, the distinction is
+that a channel install reads the mutable signed feed, while `--version` resolves
+the immutable `cli/<channel>/<version>/cli-manifest.json`; source-checkout updates
+do not consume either channel feed.
 
 ## Client auto-update
 
@@ -948,8 +953,9 @@ installer compresses its own already-signed executables.
 `publish-windows.yml` then publishes that installer on **every desktop channel --
 nightly, insider and stable**, following the same contract as `publish-linux.yml`:
 an immutable versioned key, then the feed, then the mutable `latest/` alias.
-Nightly and insider publish a fresh signed build; stable republishes the verified
-promotion bundle's installer (see the stable note below).
+Nightly and insider publish a fresh signed build. Stable publishes a fresh
+bare-version build by default; only `STABLE_PROMOTE_BYTES` republishes the
+verified candidate bundle's installer.
 
     desktop/<channel>/<version>/KiroCrew-Setup.exe            immutable
     desktop/<channel>/<version>/KiroCrew-Setup.exe.blockmap   immutable
@@ -991,24 +997,14 @@ Three things about this lane are deliberate rather than incidental:
   the same run already published, while a sustained failure still must. Asking the Actions API what this run uploaded needs `actions: read`,
   which the reusable workflow and both caller jobs grant; without it the probe
   403s and, because it fails closed, the lane aborts rather than publishing.
-- **Stable publishes by promotion, and the Windows role is optional.** Stable
-  does not rebuild: it republishes the bundle `scripts/release_promotion.py`
-  verified byte for byte. Windows contributes two roles to that bundle,
-  `windows_installer` and `windows_blockmap`, and both are **optional** rather
-  than required. Optional is the whole point: a required role would make a stable
-  release depend on a successful Windows build, which is the coupling `soft_fail`
-  exists to prevent, so a candidate recorded from a run whose Windows build failed
-  simply carries no installer and the other platforms still ship. The two travel
-  as a pair, because an installer promoted without its blockmap still updates and
-  merely turns every client's update into a full download instead of a
-  differential one -- a silent degradation, which is exactly the kind that has to
-  be made impossible rather than documented.
-
-  In promote mode the lane verifies the whole bundle before it looks at the
-  installer, and re-verifies the attestation this same workflow produced at
-  insider time instead of minting a second one (a fresh attestation over
-  republished bytes would testify only that stable's own run held the file, which
-  is equally true of tampered bytes).
+- **Stable follows the selected release mode.** The default stable rebuild
+  publishes its fresh bare-version installer. In `STABLE_PROMOTE_BYTES` mode the
+  lane instead verifies and republishes the candidate bundle byte for byte, and
+  re-verifies the insider-time attestation instead of minting a new one. Windows
+  contributes `windows_installer` and `windows_blockmap` to that bundle as an
+  **optional pair**: a candidate whose Windows build failed can still promote the
+  other platforms, while a half-present pair is dropped rather than silently
+  degrading every update to a full download.
 
   `record-promotion` therefore **waits on** `build-windows` without **requiring**
   it. Waiting is mandatory: assembling before the installer artifact exists would
@@ -1023,10 +1019,12 @@ carries neither the version nor electron-builder's spaces. The blockmap must
 travel with the installer or electron-updater silently falls back to a full
 download for every update.
 
-Linux arm64 is no longer open: `build-desktop.yml` builds it on `ubuntu-22.04-arm`
-and `release.yml`/`nightly.yml` each call `publish-linux.yml` twice, once per arch.
-The arches are separate JOBS rather than a matrix so a failure on one cannot
-cancel or skip the other. A new platform lane
+Linux arm64 is no longer open: `build-desktop.yml` builds it on `ubuntu-22.04-arm`,
+and `release.yml`/`nightly.yml` each call `publish-linux.yml` six times, once per
+(format, arch) pair. The publish jobs stay separate and visible. Nightly passes
+`soft_fail_arm64: true`, so an arm64 build failure leaves x64 publishing; release
+keeps the aggregate build coupled because every Linux role is required in a
+complete promotion record. A new platform lane
 needs: a matrix entry with a stable `{os}-{arch}` id; two artifact roles (a
 first-install installer and an update archive the platform updater consumes,
 both from the standard desktop packaging path); artifacts carrying the stamped
@@ -1096,6 +1094,11 @@ curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-aarch64.AppImage" | head -1
 curl -fsS  "$PTR/feed/$CH/latest-mac.yml"
 curl -fsS  "$PTR/feed/$CH/latest-linux.yml"
 curl -fsS  "$PTR/feed/$CH/latest-linux-arm64.yml"
+curl -fsS  "$PTR/feed/$CH/deb/latest-linux.yml"
+curl -fsS  "$PTR/feed/$CH/deb/latest-linux-arm64.yml"
+curl -fsS  "$PTR/feed/$CH/rpm/latest-linux.yml"
+curl -fsS  "$PTR/feed/$CH/rpm/latest-linux-arm64.yml"
+curl -fsS  "$PTR/feed/$CH/latest.yml"
 curl -fsS  "$PTR/feed/$CH/latest-cli.json" > /tmp/feed.json
 curl -fsS  "$PTR/feed/$CH/simple/kirocrew/" | head -5
 
@@ -1133,7 +1136,9 @@ PTR=https://updates.crew.kiro.dev
 BYTES=https://download.crew.kiro.dev
 
 # 1. Every feed advertises the BARE version -- no rc/insider suffix anywhere.
-for f in latest-cli.json latest-mac.yml latest-linux.yml latest-linux-arm64.yml latest.yml; do
+for f in latest-cli.json latest-mac.yml latest-linux.yml latest-linux-arm64.yml \
+         deb/latest-linux.yml deb/latest-linux-arm64.yml \
+         rpm/latest-linux.yml rpm/latest-linux-arm64.yml latest.yml; do
   printf '%-22s ' "$f"
   curl -fsS "$PTR/feed/$CH/$f" | grep -oE "\"?version\"?:? *\"?[0-9][^\",]*" | head -1
 done
@@ -1161,7 +1166,8 @@ gh api "repos/kirodotdev/KiroCrew/releases/tags/v$V" --jq '.assets[].name' \
 What each check is really for:
 
 - **The feeds** are what a running client reads, so a suffix here is what makes a
-  stable install describe itself as a prerelease. All five must agree.
+  stable install describe itself as a prerelease. Every platform/format feed
+  must agree.
 - **The embedded wheel version** is the one surface a byte-reuse promotion can
   never fix, which is why stable rebuilds by default. Verify it from the wheel
   itself: a clean filename around RC-stamped metadata is exactly the v0.4.0
@@ -1192,19 +1198,18 @@ rather than replacing them — so the published body is always
 `CHANGELOG section + whatever GitHub generates`. Nobody has to write a mistake
 for one to appear.
 
-- **No commit list.** `generate_release_notes: true` appends a
+- **Remove the generated commit list.** `generate_release_notes: true` appends a
   `## What's Changed` line per commit since the previous tag. On v0.5.0 that was
   **746 lines for 922 commits** — 65% of the body, and it pushed the whole thing
   to 125,219 characters, past GitHub's 125,000-character ceiling, so the body was
-  published TRUNCATED mid-word. The page already links "N commits to main since
-  this release", and the reader-facing summary is the CHANGELOG section. Strip it.
+  published truncated mid-word. The page already links "N commits to main since
+  this release", and the reader-facing summary is the CHANGELOG section. The
+  workflow still requests generated notes to retain GitHub's native contributor
+  block, so trim the generated commit block from the release page after publication.
 - **No contributors list.** The page renders GitHub's own contributor block from
-  the tag range, natively, whatever the body says. The CHANGELOG section is
-  *required* to end with `### Contributors` (it ships inside the wheel and feeds
-  the dashboard's Releases page, where no such block exists) — so copying that
-  section into the body duplicates the list immediately above GitHub's own. This
-  duplicated on v0.3.0 and again on v0.5.0; the rule is about the BODY, and it
-  does not relax the CHANGELOG's requirement.
+  the tag range. New CHANGELOG sections also omit `### Contributors`; the extractor
+  still drops that subsection from older sections so a historical release body
+  cannot duplicate GitHub's native list.
 - **No hard-wrapped paragraphs.** GitHub renders issue / PR / release bodies with
   GFM line breaks ON, so a newline inside a paragraph becomes a real `<br>`.
   CHANGELOG prose is wrapped at ~76 columns, and copied in verbatim it renders as
@@ -1294,5 +1299,4 @@ here. None of them exists, and the omissions are decisions, not gaps.
 | A feed Lambda writing the channel pointer on an S3 PUT event | A PUT event cannot express "and signature verification passed". CI writes the feed synchronously, after the Gatekeeper gate. No Lambda is deployed. |
 | `latest-mac.json` as the *primary* feed, with CloudFront Function query routing (`?channel=X&platform=Y`) | Static electron-updater channel files fetched directly, with client-side version compare. The `latest-mac.json` that exists is a legacy bridge, not a routing scheme. |
 | A `beta` channel or path segment | The channel is `insider` everywhere, including the storage prefix. `cli.sh` must never remap it: a remapped prefix was never published and surfaces as an opaque CDN 403. |
-| A forced minimum version floor | Not built. A feed-served floor that force-triggers the update flow for a critical patch remains open. |
 | A fixed promote cadence | Insider bakes until judged stable. There is no calendar commitment. |

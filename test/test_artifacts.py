@@ -209,6 +209,12 @@ class TestCreateValidation:
         with pytest.raises(ArtifactValidationError):
             store.create(name="x", content="a", tags=["bad tag with spaces"])
 
+    @pytest.mark.parametrize("tag", ["cr\n", "a" * 64 + "\n"])
+    def test_trailing_newline_tag_is_rejected(self, store: ArtifactStore, tag: str) -> None:
+        """A raw HTTP/store tag cannot use ``$``'s before-newline match."""
+        with pytest.raises(ArtifactValidationError):
+            store.create(name="x", content="a", tags=[tag])
+
     def test_dedupes_tags(self, store: ArtifactStore) -> None:
         art = store.create(name="x", content="a", tags=["a", "b", "a"])
         assert art.tags == ["a", "b"]

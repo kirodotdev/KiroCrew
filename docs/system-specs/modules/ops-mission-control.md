@@ -159,7 +159,7 @@ not that git resolves them for you. Two things make it work:
 Measured end to end: two divergent ledgers → real `git merge` → conflicted file → 4 raw
 entries read as **3**, shared lesson collapsed with both fingerprints preserved.
 
-#### 2a. Record format version (`LedgerEntry.v`, `LEDGER_RECORD_V1 = 1`)
+### 2a. Record format version (`LedgerEntry.v`, `LEDGER_RECORD_V1 = 1`)
 
 `ledger.jsonl` is the one artifact that **leaves the machine**: `ledger_sync` git-pushes it
 and teammates on *different Kiro Crew builds* pull it, so an older instance can be handed a
@@ -269,7 +269,7 @@ misleading rows.
 each one HALF of the bar, so neither answers "how much of this ledger would an agent
 propose without checking" — showing only those two overstated the ledger's authority.
 
-### 2a. The sync loop, and where it is driven from
+### 2c. The sync loop, and where it is driven from
 
 The daily `ledger-hygiene` pass (`POST /ledger/hygiene`) is the only caller of the git
 transport and the vector index. Order is load-bearing: **pull → hygiene → index → push**.
@@ -869,8 +869,8 @@ treating garbage as false silently disables a detection the operator believes is
 and treating it as true silently enables one they never asked for. `_FALSY` is
 therefore listed explicitly rather than inferred as "not truthy".
 
-`INSUFFICIENT_DATA` is the CloudWatch equivalent of a *table freshness*
-checks — a pipeline that silently stopped running looks healthy when you only watch
+`INSUFFICIENT_DATA` is the CloudWatch equivalent of a *table-freshness*
+check — a pipeline that silently stopped running looks healthy when you only watch
 `ALARM`. It stays opt-in (noisy on accounts with idle resources), but the provider
 `detail` now says so, because an opt-in nobody is told about is one nobody uses.
 
@@ -2486,17 +2486,13 @@ upstream of this app:
   the user was the one turn they could not answer. Fixed in #5487: the approval
   row (preview + buttons) now renders in both disclosure states. Pinned by
   `website/src/test/collapsibleToolGroupApproval.test.tsx`.
-- A **failed** approval rendered as "Approved". `submitDecision` optimistically flips the
-  card and relies on the promise `onApprove` returns to reject so its catch can roll that
-  back — but `ChatEmbed.handleApprove` called `approveMutation.mutate()`, which returns
-  `void` and swallows the rejection. So on a failed POST the card claimed success, the
-  buttons vanished, and the agent stayed parked on a decision that never reached it: silent
-  every time, with no way to retry. **This rollback wiring is NOT in the tree**: `ChatEmbed`
-  still calls `approveMutation.mutate(...)` and `ChatMessageListProps.onApprove` is typed
-  `=> void`, so the rejection dies at the type boundary and the rollback cannot fire on the
-  one mount that renders the row. The fix (return `mutateAsync`, widen the prop type to
-  `void | Promise<unknown>`, pin with a rejecting-handler test) is tracked separately —
-  see #5524.
+- A **failed** approval used to render as "Approved". `submitDecision` optimistically
+  flips the card and relies on the promise returned by `onApprove` to reject so its catch
+  can restore the buttons. `ChatEmbed` now returns `approveMutation.mutateAsync(...)`, and
+  `ChatMessageListProps.onApprove` requires `Promise<unknown>`, so a failed POST reaches
+  that rollback instead of leaving the agent parked behind an undelivered decision. Pinned
+  through the real message-list and tool-group chain by
+  `website/src/test/ChatEmbed.approvalRollback.test.tsx`.
 
 Layout: the embed scrolls via `h-full` + an inner `flex-1 overflow-y-auto`, so an
 ancestor MUST bound its height (`IncidentChat` owns a fixed-height flex column with
@@ -2707,8 +2703,8 @@ deep link: the page selects an incident from React state and reads no query para
 silent until an operator flips the toggle. Not a credential, so it lives in plain
 `config.json` alongside the Slack channel id.
 
-**Redacted at the producer, both passes**, matching `store.write_log` and
-`registry.gather_evidence` rather than `slack_out` (which runs core only). Measured, not
+**Redacted at the producer, both passes**, matching `store.write_log`,
+`registry.gather_evidence`, and `slack_out._safe`. Measured, not
 assumed: core `security.redact` leaves `401 from https://api.datadoghq.com?api_key=<hex>`
 untouched and `secrets.redact_tokens` catches it. `DashboardState._deliver_note` also
 redacts centrally, so this is belt-and-braces — and it is what earns the row in
@@ -2798,13 +2794,11 @@ nobody reads is the noise this app exists to avoid — so `sops/handover.md` shi
 
 ## Crons (manifest-declared)
 
-**`rotation-check` ships ENABLED; the other three ship paused.** This is a cold-start
-requirement, not an inconsistency. `dispatch` is armed by the `on_shift` tier, and the
-only thing that arms that tier is the rotation-check cron — and **nothing flips a
-manifest `enabled: false`**. Ship rotation-check paused too and a user enables the app,
-configures CloudWatch, and it never fires: the store listing's "the on-shift tier arms
-and disarms itself" was impossible. Found by asking what a stranger's install actually
-does, not by reading code.
+**`rotation-check` and `ledger-hygiene` ship ENABLED; `dispatch` and `reconcile`
+ship paused.** Only `on_shift` jobs may ship paused because `/rotation/arm` only changes
+that tier. `rotation-check` must start live to arm it; otherwise a user can enable the app
+and configure CloudWatch while dispatch never starts. `ledger-hygiene` starts live and
+is primary-gated by its route instead of by cron arming.
 
 Safe to arm because its SOP's **step 0** exits with no output when no provider reports
 `configured: true`, so a fresh install pays nothing for a 5-minute poller. Both halves
@@ -2904,9 +2898,10 @@ looking through.
 This app is portable, and the three places that could break it are pinned by tests rather
 than left to review:
 
-- **Resource limits come from the shim wrappers, not a raw `preexec_fn`.** Both
-  external-binary spawns (`git` for ledger sync, `gh` for the rotation login) route
-  through `create_subprocess_limited` / `run_limited`, which deliver the resource caps
+- **Resource limits come from the shim wrappers, not a raw `preexec_fn`.** All three
+  external-binary spawn paths (`git` for ledger sync and `gh` for the rotation login or
+  GitHub Issues) route through `create_subprocess_limited` / `run_limited`, which deliver
+  the resource caps
   after `exec` via the spawn shim and fall back to `resource_limit_preexec()` only on a
   host with no usable shim. That fallback returns `None` off POSIX, which is what makes
   the spawns portable — `preexec_fn` is unsupported on Windows and passing *any*
@@ -3198,7 +3193,7 @@ line-anchored so a genuinely internal reference in that file is still caught.
 
 ## Tests
 
-`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 647 tests:
+`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 1,077 test methods across 22 files:
 
 - `test_models.py` — fingerprint stability, normalization fallbacks, transition
   grammar, mode algebra
@@ -3223,8 +3218,8 @@ line-anchored so a genuinely internal reference in that file is still caught.
   the MAX rather than the incoming value.
 - `test_config_routes.py` — **secret field refused on the config route**, unknown
   field/provider refused, merge preserves untouched fields, invalid mode refused,
-  and manifest-cron assertions (all four present, all paused, all silent and
-  stateless, exactly one schedule each)
+  and manifest-cron assertions (all four present, only `on_shift` jobs paused,
+  all silent and stateless, exactly one schedule each)
 
 Frontend: `website/src/test/opsMissionControl.test.ts` (route registration, panel-parity
 assertions read from the .tsx source, and the pure helpers `describeSourceHealth` /

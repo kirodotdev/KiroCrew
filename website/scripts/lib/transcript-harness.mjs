@@ -34,6 +34,8 @@ import { json, makeFixedApi, handleBootRoute } from './boot-api.mjs'
  *   record the session to a webm in `dir`; `close()` then returns the file's
  *   path. Needed for anything a still cannot carry — an entrance animation, a
  *   transition, a multi-step gesture.
+ * @param {string} [opts.dist]          built SPA to serve; defaults to website/dist.
+ *   A before/after pair points two runs at two builds of the same page.
  * @returns {Promise<{browser: import('playwright').Browser, page: import('playwright').Page, base: string, ws: () => import('playwright').WebSocketRoute | null, load: (theme?: string, waitFor?: {selector?: string, settle?: number}) => Promise<void>, close: () => Promise<string | null>}>}
  */
 export async function openTranscriptHarness({
@@ -45,8 +47,9 @@ export async function openTranscriptHarness({
   deviceScaleFactor = 2,
   hasTouch = false,
   recordVideo = undefined,
+  dist = undefined,
 }) {
-  const { srv, base } = await serveDist()
+  const { srv, base } = await serveDist(dist)
   const browser = await chromium.launch()
   const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch, ...(recordVideo ? { recordVideo } : {}) })
   const page = await context.newPage()

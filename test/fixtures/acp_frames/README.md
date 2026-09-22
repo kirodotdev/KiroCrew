@@ -153,20 +153,18 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-Five of the six backends carry a live capture reaching all seven required
-Four of the six backends carry a live capture reaching all seven required
-classes. `codex/` carries a live capture of four of them beside a synthesized
-file holding the other three, because a corpus is judged per directory and a
+Six of the eight backends cover all seven required classes with live frames.
+`codex/` carries a live capture of four of them beside a synthesized file
+holding the other three, because a corpus is judged per directory and a
 four-class file cannot satisfy the seven-class gate on its own; its row says what
 stopped the rest. `deepseek/` carries live captures reaching six beside a
 synthesized `session/request_permission`, because that harness produced no such
 frame in any capture -- a fact about the harness, recorded in
 `deepseek/README.md` and in the host contract, not a gap in the recording.
-Stated plainly because it
-bounds what the corpus proves: a synthesized fixture locks the dispatch layer's
-behaviour against refactoring, which is what it was built for, and it does
-**not** prove that the backend really emits those shapes. Only a live file
-carries that second proof.
+Stated plainly because it bounds what the corpus proves: a synthesized fixture
+locks the dispatch layer's behaviour against refactoring, which is what it was
+built for, and it does **not** prove that the backend really emits those shapes.
+Only a live file carries that second proof.
 
 ### The rule
 
@@ -196,14 +194,17 @@ The recording host's installed-agent inventory is cut back to product-defined
 entries. Not cosmetic: `kiro`'s `session/new` response lists 44 host agents by
 name and description.
 
-The recording ACCOUNT's model entitlements go the same way, keeping only the
-product's routing entry (`auto`, `default`) with its description emptied, because
-that description names the model the entry resolves to. `models.availableModels`
-and the `model` `configOption` are that payload, and they are the sharper case:
-the entries carry internal-only markers, unreleased codenames, internal fleet
-names and rate multipliers. A served-model name anywhere else in a frame goes too
-— including a local model you supplied yourself — so a capture names no model at
-all.
+The recording account's model entitlements must be reduced to the minimum shape
+the parser needs, with descriptions emptied when they reveal the model a routing
+entry resolves to. `models.availableModels` and the `model` `configOption` are the
+sharpest payloads: entries can carry internal-only markers, unreleased codenames,
+internal fleet names, and rate multipliers. A served-model name elsewhere in a
+frame must be removed too, including a local model supplied for the capture.
+
+Some Codex, OpenCode, and Pi captures predate that floor and still carry local
+provider or model identifiers and catalog entries. They are remediation debt,
+not precedent: re-capture those files through a reduction step rather than
+editing a live frame in place.
 
 Neither inventory can be avoided by re-recording against a throwaway home,
 because relocating `HOME` moves kiro-cli's credential store with it, so a
@@ -222,8 +223,9 @@ has never seen, so it is not a safety net — the review step below is.
 | `kas/` | `kas` | **live** | `session.jsonl`: a slice of one KAS 0.63.3 turn through `kiro-cli acp --agent-engine v3 --auth-method cli`, the production relay spawn, reaching all seven classes. Its initialize response carries no `agentInfo`, which is why KAS is named in `_BACKENDS_WITHOUT_AGENT_VERSION`. `steering.jsonl` stays synthesized: a mid-turn steer needs a second prompt sent while the first is still running, which the one-shot capture does not do. |
 | `claude/` | `claude` | **live** | `session.jsonl`: a slice of one `@agentclientprotocol/claude-agent-acp` 0.76.0 turn reaching all seven classes, the adapter delegating to the host `claude` executable. Two shapes here differ from what was assumed: it advertises `loadSession: true`, and its `session/request_permission` params carry no `sessionId` and name the tool under `name`. |
 | `codex/` | `codex` | **live** + synthesized | `session-live.jsonl` is a capture off `codex-acp` 1.11.0 reaching four classes: the initialize response with `agentInfo.version`, the `session/new` response with a `sessionId` and its `configOptions`, `agent_message_chunk`, and the `stopReason` response, plus the `_auth/status_update` the adapter sends before `session/new` and the `session_info_update` frames carrying `_meta.codex`. The three tool classes (`tool_call`, `tool_call_update`, `session/request_permission`) stay in the synthesized `session.jsonl`, because reaching them needs a model that emits a tool call and this host has none it can drive. Its configured provider is `amazon-bedrock` reading a host AWS profile, and that turn ends `stream disconnected before completion: failed to load AWS credentials: the credentials provider was not properly configured` — the recording shell cannot read `~/.aws`, and the Codex wrapper cannot mint a config either (`failed to create temporary file for AWS config: Permission denied (os error 13)`). Repointed at the built-in `ollama` provider it authenticates and runs a full turn against a local 3B model, and that model answers a shell request in prose: it writes a `Preamble:` and a fabricated `Command Output:` block containing the expected text instead of calling a tool. So the three tool shapes follow the parsers in `src/kiro_crew/acp/_dispatch.py`. |
-| `opencode/` | `opencode` | **live** | Five captures off `opencode acp` 1.18.30 driving a local Ollama model, all seven required classes reached live, plus a `session/load` result (`session-load-live.jsonl`: replayed conversation, `configOptions`, no `modes`). `session-live.jsonl`: the initialize response, the `session/new` response, an `agent_message_chunk` turn, a `usage_update` and the `stopReason` response, verbatim and in order. `tool-call-live.jsonl`: a `tool_call` and two `tool_call_update` frames from a call the harness rejected against its own argument schema. `permission-request-live.jsonl`: `tool_call`, the `session/request_permission` frame OpenCode sent with `permission: ask` in force, and the `tool_call_update` frames through `completed` with the command's real output. `mcp-directive-call-live.jsonl`: an MCP tool call -- a `kirocrew-core` stdio element on the `session/new` array exposing `monitor_start` -- carrying opencode's own tool naming (`title` = `kirocrew-core_monitor_start`, ONE underscore, no `_meta.kiro`), `rawInput` empty on the `tool_call` and complete on the refinement, and the tool's result text with its directive marker intact. Slices of longer turns, with the home directory redacted to `~`. |
+| `opencode/` | `opencode` | **live** | Six captures off `opencode acp` 1.18.30 driving a local Ollama model, all seven required classes reached live, plus a `session/load` result (`session-load-live.jsonl`: replayed conversation, `configOptions`, no `modes`). `session-live.jsonl`: the initialize response, the `session/new` response, an `agent_message_chunk` turn, a `usage_update` and the `stopReason` response, verbatim and in order. `tool-call-live.jsonl`: a `tool_call` and two `tool_call_update` frames from a call the harness rejected against its own argument schema. `permission-request-live.jsonl`: `tool_call`, the `session/request_permission` frame OpenCode sent with `permission: ask` in force, and the `tool_call_update` frames through `completed` with the command's real output. `mcp-directive-call-live.jsonl`: an MCP tool call -- a `kirocrew-core` stdio element on the `session/new` array exposing `monitor_start` -- carrying opencode's own tool naming (`title` = `kirocrew-core_monitor_start`, ONE underscore, no `_meta.kiro`), `rawInput` empty on the `tool_call` and complete on the refinement, and the tool's result text with its directive marker intact. `compact-live.jsonl`: an ordinary turn followed by a manual `/compact` turn whose usage falls and whose terminal `stopReason` is the only completion signal; no compaction-status frame follows. Slices of longer turns, with the home directory redacted to `~`. |
 | `pi/` | `pi` | **live** | Three captures off `pi-acp` 0.0.33 spawning `pi` 0.85.1 driving a local Ollama model, all seven required classes reached live. `session-live.jsonl`: initialize, `session/new` (a `model` select of `provider/model` ids, a `thought_level` select, `modes`), `available_commands_update`, a `tool_call` + two `tool_call_update` frames for a read pi rejected against its own schema, the chunk and the `stopReason` result. `permission-request-live.jsonl`: the `session/request_permission` pi-acp forwards from Kiro Crew's gate extension (pi has no gate of its own; the frame's `toolCall` describes the confirm DIALOG and the real call rides in its message as a JSON envelope), then the updates through `completed`. `session-load-live.jsonl`: a `session/load` from a second process, replayed conversation, and a result that carries `modes`. |
+| `goose/` | `goose` | **live** | Five captures off `goose acp` 1.50.1, with all seven required classes reached live. `handshake-live.jsonl` records initialization, session creation, absent-session load, and listing; `turn-live.jsonl` records a builtin tool permission round trip; `mcp-stdio-mount-live.jsonl` proves a stdio MCP round trip; `mcp-stdio-dropped-live.jsonl` records an unstartable element being dropped without failing session creation; `session-load-live.jsonl` records mode persistence across processes. |
 | `deepseek/` | `deepseek` | **live**, except one frame | Four captures off `dsh --profile acp` 0.0.1 driving a locally served model. `handshake-live.jsonl`: the initialize response, a `session/new` response, the `session/load` **rejection** (`-32601`, the observation `ACP_BACKENDS_RESUME_WITHOUT_LOAD` rests on) and the `session/list` result. `turn-live.jsonl`: one real turn end to end -- `usage_update`, `tool_call`, `tool_call_update`, `agent_message_chunk` and the `stopReason` response. `mcp-stdio-mount-live.jsonl`: a stdio MCP mount completing a ROUND TRIP -- a broker-stub-shaped element pointing at a real server, then the `tool_call` and result for `mcp__crew-probe__crew_probe_echo` -- which is the observation `ACP_BACKENDS_SESSION_MCP_ARRAY` membership rests on. `mcp-stdio-rollback-live.jsonl`: the same element with an unstartable command, which fails `session/new` WHOLE rather than being dropped. `permission-request-synthesized.jsonl` is the exception and is labelled `synthesized`: four live captures across this harness's confined and read-only postures produced no permission request, because its sandbox decides a tool call itself and the permission frame carries only a model-initiated escalation. Host data pruned under a sweep that refuses to finish if any survives; see `deepseek/README.md`. |
 
 Replacing any row with a live capture is a strict improvement and needs no

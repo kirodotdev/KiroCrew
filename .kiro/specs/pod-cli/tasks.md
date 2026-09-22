@@ -1,5 +1,7 @@
 # `kirocrew pod` — Implementation tasks
 
+Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`.
+
 ## 1. Package scaffold
 - [ ] 1.1 Create `src/kiro_crew/pod/` package.
 - [ ] 1.2 `config.py` — `PodConfig` dataclass + `KIROCREW_POD_*` env resolution;

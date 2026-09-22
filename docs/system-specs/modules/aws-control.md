@@ -313,7 +313,8 @@ says whether the rows were compared against the drive, because an absent
 `objectMissing` otherwise reads as "the object is there" on a render where the
 drive was never read. WHY the check did not run is logged rather than sent — the
 reason is a backend-authored English sentence and the console is rendered in
-thirteen locales, so it shows a translated "not checked" line gated on `checked`,
+12 production locales plus the development pseudolocale, so it shows a
+translated "not checked" line gated on `checked`,
 the same resolution the Library's `remoteError` reaches.
 `storage.list_object_keys` raises rather than degrading to an empty set, and
 per-row `storage.object_exists` is deliberately not used — it answers `rc == 0`,
@@ -1206,8 +1207,9 @@ profiles, reconnect guidance, drive status/list/download/preview/search, costs,
 library, backup status, share metadata, and rendered IAM policy. Its mutations
 are profile registration and unregistration; drive bootstrap, upload, delete,
 move, folder create/delete, and share; share-ledger removal; library push and
-library removal; backup run, nightly toggle, and staged restore; and renaming
-this install (local, display only -- see "Several installs, one drive").
+library removal; backup run, the snapshot and sessions nightly toggles,
+retention-count updates, and staged restore; and renaming this install (local,
+display only -- see "Several installs, one drive").
 
 Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
 profile registration, library push, library removal, share creation, and backup

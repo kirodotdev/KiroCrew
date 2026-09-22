@@ -13,7 +13,7 @@ signal pattern. See "Autonomy" below.
 1. Enable the app (App Store → Discover → Ops Mission Control).
 2. **Settings → Providers** → turn on a source. AWS CloudWatch needs no credential — it
    uses your ambient AWS profile chain and stores no key.
-3. Wait one heartbeat, or press **Check now**.
+3. Wait one heartbeat, or press **Poll & claim**.
 
 If nothing happens, the board and the dispatch response both say why. "Quiet" and
 "nothing is watching" are different states and the app never conflates them.
@@ -53,12 +53,13 @@ are safe to close unread; a stranger's first install cannot.
 ## Credentials
 
 - **AWS** uses your ambient credential chain. No key is ever stored.
-- **Other providers'** tokens go to a keystone file the agent cannot read or overwrite
-  (it is on Kiro Crew's sensitive-path floor). The API never returns a stored secret —
-  only whether a field is set.
-- That file lives outside the app's folder, which is what makes it unreachable to the
-  agent. It therefore **survives uninstalling the app** — use Revoke in Settings first
-  if you want a credential gone.
+- **Other providers'** tokens use a keystone-protected secret backend. The default
+  backend is an owner-only file the agent cannot read or overwrite (it is on Kiro Crew's
+  sensitive-path floor). The API never returns a stored secret — only whether a field is
+  set.
+- With the default backend, that file lives outside the app's folder, which is what makes
+  it unreachable to the agent. It therefore **survives uninstalling the app** — use
+  Revoke in Settings first if you want a credential gone.
 
 ## Slack
 
@@ -82,10 +83,10 @@ what you already know instead of re-deriving it. Matching uses two keys:
   Alertmanager fingerprint, a Datadog monitor id, a CloudWatch alarm name. A hit here is
   *exact*: the system that owns the grouping says this is the same failure.
 - **A shape fingerprint** otherwise — a normalized signal shape that strips timestamps,
-  ids, and bare numbers so a recurrence matches its ancestor.
+  ids, and digits so a recurrence matches its ancestor.
 
 Exact matches rank above shape matches, and the investigation brief says which kind it
-found. That distinction matters: because the shape hash strips every bare number, a
+found. That distinction matters: because the shape hash strips every digit, a
 "4xx rate above 5" alarm and a "5xx rate above 1" alarm on one resource hash identically,
 so a shape match means *looks like this*, not *is this*.
 
@@ -98,13 +99,15 @@ that overstates itself does harm.
 `verified` and `high` alone were not enough because both are hand-settable: an entry could
 claim them having never been applied to anything. And the record moves DOWN as well as up —
 when an action this app took is followed by the signal still firing, every entry it cited
-gets a `miss_count`, the nightly hygiene pass demotes one confidence step, and the board
-and the handover digest both say the fix was tried and did not hold. A fix that failed is
-never deleted (it may still work sometimes) but it stops being presented as the answer.
+gets a `miss_count`. Any miss immediately removes the entry from the fast path; the nightly
+hygiene pass also demotes confidence one step once misses reach at least half its uses. The
+board and handover digest both say the fix was tried and did not hold. A fix that failed is
+never deleted (it may still work sometimes), but it stops being presented as the answer.
 
 That downward path only means anything because actions are **verified**: after this app
-resolves or silences something, the next heartbeat re-reads the signal and records whether
-it actually cleared. A provider's 2xx means "your request arrived", not "it worked" — and a
+resolves or silences something, a later heartbeat re-reads the signal when verification is
+due (after provider propagation or the silence window) and records whether it actually
+cleared. A provider's 2xx means "your request arrived", not "it worked" — and a
 recheck against a source that did not answer records "could not check", never "it worked".
 
 ## Extending it: the companion contract
@@ -168,7 +171,8 @@ backend/
   slack_out.py            the Slack pin board
   notify_out.py           local desktop notifications (no credential, no inbound URL)
   secrets.py              keystone credential store
-  providers/              cloudwatch, pagerduty, datadog, github_issues, webhook, noop
+  providers/              cloudwatch, pagerduty, incidentio, datadog, github_issues,
+                          webhook, schedule_file, noop
 tests/                    unit + contract tests
 ```
 

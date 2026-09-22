@@ -79,7 +79,7 @@ admission again, including when rollback failure closes an uncertain connection.
 
 ## Data Home Location
 
-KiroCrew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
+Kiro Crew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
 Kiro-family apps share a single directory a user can secure. `config_dir()`
 (in `kiro_crew/config/paths.py`, re-exported from `kiro_crew/config/loader.py`)
 is the single accessor and resolves to:
@@ -100,13 +100,13 @@ virtual environment (`venv`/`.venv`/`venvs`), since that may be the running
 interpreter.
 
 **Repository-controlled uninstall contract.** Every uninstall path owned by this
-repository preserves the KiroCrew data home by default. `kirocrew service
+repository preserves the Kiro Crew data home by default. `kirocrew service
 uninstall` removes only its service definition; the Python/npm packages define
 no uninstall lifecycle hook; and the desktop shell's generated NSIS uninstaller
 removes only installed program state: its install directory, shortcuts,
 channel-scoped updater cache, and any legacy “start with Windows” registry entry
 (`deleteAppDataOnUninstall` stays false), without
-resolving or removing the KiroCrew home. App Kit uninstall also preserves the
+resolving or removing the Kiro Crew home. App Kit uninstall also preserves the
 app's `data/` subtree unless the dedicated `purge_data=true` API action (CLI
 `--purge-data`, or an explicit dashboard choice) is supplied. The API checks
 for the literal boolean `true`; absent, legacy, or malformed values fail closed
@@ -114,7 +114,7 @@ to preservation. A whole-home purge is never coupled to uninstall.
 
 **Uninstaller consideration (external dependency).** Because the data home now
 lives under `~/.kiro/`, a hypothetical Kiro-family uninstaller that removes
-`~/.kiro/` would also remove `~/.kiro/crew` and take KiroCrew's data — config,
+`~/.kiro/` would also remove `~/.kiro/crew` and take Kiro Crew's data — config,
 credentials, memory DB, session history, and the SEL audit chain — with it. This
 is a persisted-data one-way door, and — unlike when an archived rollback copy
 existed — there is now no `~/.kirocrew.archived` fallback for ANY install
@@ -142,18 +142,18 @@ eliminate, the one-way-door risk above; the release gate still stands.
 > **Release gate (UNINSTALLER-EXCLUDE-CREW).** This is a pre-release,
 > human-sign-off dependency, NOT a code change in this repo: the code cannot
 > constrain another product's uninstaller. Before the first release that ships
-> data under `~/.kiro/`, the KiroCrew product owner MUST confirm the
+> data under `~/.kiro/`, the Kiro Crew product owner MUST confirm the
 > Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because
 > there is no `~/.kirocrew.archived` fallback for any install, so a
 > `~/.kiro/`-wide wipe would be unrecoverable total data loss. Until confirmed,
 > the placement decision is acknowledged-but-owned here under this name so it is
 > not lost. **Tracked as release-blocking in
-> [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355)** (label
-> `release-blocker`); the sign-off must be recorded there and the issue closed
+> [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355)**; the sign-off
+> must be recorded there and the issue closed
 > before tagging the first release containing this change.
 
 **Paths are resolved per call, never captured at import.** Because
-`config_dir()` re-reads `$KIROCREW_HOME` on every call and the migration above
+`config_dir()` re-reads `$KIROCREW_HOME` on every call and resolution/maintenance
 is deliberately lazy, the resolved value is only correct at the moment it is
 needed. Modules therefore MUST NOT bind a path factory result to a module-level
 constant:
@@ -233,15 +233,16 @@ Resolution order:
 |----------|------|
 | macOS | `/Volumes/workplace/kirocrew-workspace` (falls back to `~/workplace/kirocrew-workspace` if `/Volumes/workplace` doesn't exist) |
 | Linux | `~/workplace/kirocrew-workspace` |
+| Windows | `~/workplace/kirocrew-workspace` |
 
 Each session/task gets an isolated subdirectory under this root via `_session_work_dir(key)`:
 - Chat sessions: `kirocrew-workspace/cli_chat`, `kirocrew-workspace/{thread_ts}`
 - Background: `kirocrew-workspace/_bg`
 - Cron: `kirocrew-workspace/cron_{job_id}`
 - TaskRunner: `kirocrew-workspace/taskrunner_main`
-- Background session: `kirocrew-workspace/_bg`
 
-The parent directory is created on first call if it doesn't exist.
+The selected root is created on first call and realpath-normalized before session
+subdirectories are derived.
 
 ## Project Directory Resolution
 
@@ -698,7 +699,7 @@ deep-merged on top of `config.json` at load time and is never touched by
 `kirocrew setup` or package upgrades.
 
 Resolution order:
-1. Load `config.json` (managed by KiroCrew, may be regenerated on upgrade)
+1. Load `config.json` (managed by Kiro Crew, may be regenerated on upgrade)
 2. Deep-merge `config.local.json` on top (user-owned, never touched by setup/migration)
 3. Return merged result
 
@@ -1325,8 +1326,8 @@ typed an explicit command and sees the result on stdout. Pinned by
 ### `config_dir() -> Path`
 Returns `~/.kiro/crew/` (nested under kiro-cli's `~/.kiro/` base). Overridden by
 `KIROCREW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`,
-`/etc`). On the default (non-override) path, a pre-move `~/.kirocrew` is migrated
-once into `~/.kiro/crew` — see "Data Home Location & Migration" above.
+`/etc`). It creates the selected home and, on the default path, refreshes the
+recovery breadcrumb; it never reads or migrates a leftover `~/.kirocrew` tree.
 
 ### `config_path() -> Path`
 Returns `~/.kiro/crew/config.json` (or `$KIROCREW_HOME/config.json` if overridden).
@@ -1448,14 +1449,14 @@ multi-member batch spanning layers commits one overlay delta atomically.
 Public capability versions are random identifiers tied to the saved internal
 materialization digest, never the digest of secret-bearing source bytes.
 
-KiroCrew tracks two pieces of per-agent state that are **not** part of the
+Kiro Crew tracks two pieces of per-agent state that are **not** part of the
 kiro-cli agent schema: `model_managed` (whether an agent's `model` tracks the
 shipped default or is a frozen user pick) and `cc_model` (a per-agent Claude
 Code model). kiro-cli validates `~/.kiro/agents/*.json` with serde
 `deny_unknown_fields` and rejects the *entire* spec on any unknown key, then
 silently falls back to the default agent (`--agent <name>` resolves to default
 with only a stderr "no agent with name X found" line). To keep every spec
-schema-valid, this state lives in a KiroCrew-owned sidecar
+schema-valid, this state lives in a Kiro Crew-owned sidecar
 `~/.kiro/crew/agent_model_state.json` (honoring `KIROCREW_HOME`), keyed by agent
 name:
 
@@ -1495,7 +1496,7 @@ name:
   `migrate_agent_specs()`, and `_refresh_dynamic_fields()` — so none of them
   can drift from the other three.
 
-Note: KiroCrew is KiroACP (kiro-cli) only — the deleted `claude_code` provider
+Note: Kiro Crew uses KiroACP (kiro-cli) only — the deleted `claude_code` provider
 was the sole reader of spec `cc_model`, so `cc_model` is now dead config. The
 lite/heartbeat installers still write it to the sidecar (harmless bookkeeping)
 purely to keep the kiro spec schema-clean; nothing in the fork resolves it.
@@ -1843,10 +1844,12 @@ class AgentConfig:
     sandbox: str = "auto"          # default "auto" (namespace on Linux, seatbelt on macOS; delegates to kiro-cli's internal sandbox on macOS when enabled); "off" skips Kiro Crew's sandbox
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
-    yolo: bool = False             # permanent YOLO mode (skip tool approval); tracked via _yolo_from_config flag
-    max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time: 0 (auto) or [3, 64] — a fixed pin of 1/2 is raised to 3
-    subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
+    dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
+    yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
+    max_subagents: int = 0         # 0 = auto-size from host memory and learned per-agent cost; fixed pins load in [3, 64]
+    subagent_auto_max: int = 32    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 1000  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
+    subagent_timeout_secs: int = 10800  # per-subagent wall-clock timeout; 0 uses the default; load-time clamped to 60..86400
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
@@ -1885,7 +1888,8 @@ class SessionConfig:
 
 @dataclass
 class TaskRunnerConfig:
-    max_parallel_steps: int = 2    # max concurrent step sessions in parallel groups
+    max_parallel_steps: int = 0    # 0 = auto; a positive value only lowers the host-safe cap
+    workspace_dir: str = ""       # empty = per-run workspace; otherwise the validated absolute target directory
 
 @dataclass
 class MemoryConfig:
@@ -1909,7 +1913,7 @@ class KnowledgeConfig:
 
 @dataclass
 class ChannelConfig:
-    activation: str = "mention"    # "always", "mention", "observe", or "off"
+    activation: str = "mention"    # "always", "mention", "observe", "review", or "off"
     agent: str = ""                # per-channel agent override (empty = use default)
 
 @dataclass
@@ -1939,6 +1943,7 @@ class ComputerUseConfig:
     attach_screenshot: bool = True      # default for the `screenshot` tool param
     screenshot_max_px: int = 1280       # longest-edge downscale (NOT browse's 1920 — the tree is the primary channel)
     screenshot_jpeg_quality: int = 55   # JPEG quality (NOT browse's 70); 1280/q55 measured at ~8.3K tokens vs 41K for a raw PNG
+    cursor_motion: bool = False         # macOS-only cosmetic overlay; draws a fake cursor and grants no capability
 
 @dataclass
 class MessagingConfig:
@@ -2621,7 +2626,7 @@ newer import marker remains a cache only and continues to yield to server state.
 
 Foreign settings are never deep-merged into `config.json`. The importer applies
 only its explicit non-security settings allowlist, preserves every existing
-KiroCrew value on collision, and reports unsupported or secret-bearing source
+Kiro Crew value on collision, and reports unsupported or secret-bearing source
 settings without copying them. Foreign credentials, security policy,
 approval/sandbox settings, agent/runtime state, hooks, and arbitrary unknown
 config sections cannot enter configuration through this path.
@@ -2640,10 +2645,12 @@ Returns the effective config for a channel:
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `KIROCREW_HOME` | Override config/data directory | `~/.kiro/crew` |
-| `KIROCREW_PORT` | Override dashboard port (dev mode — run dev + prod side by side) | `5476` |
+| `KIROCREW_PORT` | Operator-selected dashboard port; also persisted by service install | `5476` |
+| `KIROCREW_BOUND_PORT` | Gateway-observed bound port exported to child processes after listen | Unset before bind |
+| `KIROCREW_BIND` | Explicit IP bind-address override for containers/orchestrators | `127.0.0.1` in the public build |
+| `KIROCREW_CORS_ORIGINS` | Comma-separated additional browser origins accepted by CSRF/WebSocket checks | Empty |
 | `KIROCREW_WORKSPACE` | Override workspace root directory | Platform-dependent |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
-```
 
 ## Config File Format
 
@@ -2690,7 +2697,12 @@ Returns the effective config for a channel:
 }
 ```
 
-The `dashboard.url` field controls where the dashboard is reachable. From it, the system derives the port to bind on, the bind address (`0.0.0.0` for non-loopback hosts, `127.0.0.1` otherwise), and the allowed origins for CSRF/WebSocket checks. When omitted, defaults to `localhost:5476`.
+The `dashboard.url` field supplies the browser-facing/reverse-proxy origin and,
+when present, a candidate port; its origin is added to the CSRF/WebSocket allowlist.
+It does **not** widen the TCP bind in the public build, which remains
+`127.0.0.1` unless the operator explicitly sets `KIROCREW_BIND` to an IP address
+(for example inside a container). When omitted, the dashboard defaults to
+`localhost:5476`.
 
 A **malformed** `dashboard.url` (e.g. an unterminated IPv6 literal `http://[::1` or a non-numeric port `http://host:notaport`) does **not** abort startup: `parse_dashboard_url` degrades to the defaults (`""` host, port `5476`) and logs a warning, so a single typo in the config can never take the gateway down on boot. `KIROCREW_PORT` still overrides the port regardless.
 
@@ -2715,7 +2727,10 @@ When `agent.model` is `"auto"` (default):
 2. `config_package_dir()/defaults.json` → `model` field (bundled `src/kiro_crew/config/defaults.json`)
 3. Falls back to `DEFAULT_MODEL` (passed through to provider)
 
-## Error Handling
+## Load-time Error Handling
+
+These rules apply to `KiroCrewConfig.load()`; mutation helpers fail closed on a
+corrupt existing document as described above.
 
 - Missing file → defaults
 - Invalid JSON → defaults (warning logged)

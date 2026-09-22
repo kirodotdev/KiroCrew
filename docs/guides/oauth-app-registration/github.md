@@ -45,15 +45,26 @@ A GitHub OAuth App has no scope settings in the console. Scopes are requested at
 
 The remote MCP server publishes the scopes it understands in its protected-resource metadata (`https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/`): `repo`, `read:org`, `read:user`, `user:email`, `read:packages`, `write:packages`, `read:project`, `project`, `gist`, `notifications`. The tool reference in the server's README lists `repo` as the "OAuth Challenge Scope" for almost every tool, including read-only ones such as `get_file_contents`.
 
-For read-mostly use, the practical minimum is:
+The shipped Connections entry requests these scopes from
+`connections/registry.json`:
 
 | Scope | Why |
 |-------|-----|
-| `repo` | Any access to private repositories, including reading files, issues and pull requests. GitHub's OAuth scopes are coarse: `repo` also grants write. There is no read-only OAuth scope for private repositories. |
+| `public_repo` | Access to public repositories. It is still read and write; GitHub has no read-only OAuth scope for repository content. |
 | `read:org` | Organization and team membership lookups. |
-| `read:user` | Resolving the signed-in user (the `context` toolset). |
+| `read:user` | Resolving the signed-in user. |
 
-To keep the agent read-only despite the write-capable `repo` scope, point Kiro Crew at the read-only server URL `https://api.githubcopilot.com/mcp/readonly` (or send the `X-MCP-Readonly: true` header). GitHub documents: "Add `/readonly` to the end of any URL to restrict the tools in the toolset to only those that enable read access." Single toolsets have the same shape, for example `https://api.githubcopilot.com/mcp/x/issues/readonly`. Kiro Crew's documentation does not state which scopes its GitHub connector requests; check the consent screen the first time you connect.
+That scope set does **not** grant private-repository access. Private repositories
+need the coarser `repo` scope, which also grants write access; the current
+Connections card does not offer a scope editor.
+
+GitHub offers a read-only MCP endpoint at
+[`https://api.githubcopilot.com/mcp/readonly`](https://api.githubcopilot.com/mcp/readonly)
+(or the `X-MCP-Readonly: true` header). The shipped Connections entry uses the
+full `https://api.githubcopilot.com/mcp/` endpoint. A custom read-only entry is a
+separate MCP-server configuration, not a change to this card. Single toolsets
+have the same shape, for example
+[`https://api.githubcopilot.com/mcp/x/issues/readonly`](https://api.githubcopilot.com/mcp/x/issues/readonly).
 
 ## 4. Review and publishing requirements
 
@@ -92,7 +103,7 @@ Revoking: the user opens **Settings → Applications → Authorized OAuth Apps**
 
 ## Known limits
 
-- No read-only scope for private repositories: `repo` is read and write. Use the `/readonly` server URL to constrain tools.
+- No read-only scope for repositories: both `public_repo` and `repo` permit writes. The `/readonly` endpoint constrains tools, but using it requires a separate custom MCP entry because the Connections card uses the full endpoint.
 - `client_secret` is required at token exchange ("Required" in GitHub's table) even when PKCE is used; the app is a confidential client, so the secret must live on the gateway.
 - Expiring tokens: with the default setting, access tokens last 8 hours and refresh tokens 6 months without use. If Kiro Crew is not run for six months, the user must reconnect.
 - GitHub limits a user/app/scope combination to ten live tokens and ten new tokens per hour; repeated reconnects can hit this.

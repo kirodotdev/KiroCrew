@@ -1,19 +1,25 @@
-# Getting Started with KiroCrew Apps
+# Getting Started with Kiro Crew Apps
 
-Build, install, and run your first KiroCrew app in 5 minutes.
+Build, install, and run your first Kiro Crew app in 5 minutes.
 
 ## Prerequisites
 
-- KiroCrew installed and running (`kirocrew gateway`)
+- Kiro Crew installed and running (`kirocrew gateway`)
 - Node.js 22+ (24 LTS recommended) (for apps with UI)
 
 ## 1. Create an App Directory
 
-Create a new directory with an `app.json` manifest:
+Use the CLI scaffold so the manifest, opaque 512×512 placeholder icon, agent,
+skill, and UI build files agree with the current schema:
+
+```bash
+kirocrew app init my-dashboard --ui
+```
 
 ```
 my-dashboard/
 ├── app.json                 ← App manifest (required)
+├── assets/icon.png          ← Replace the generated store icon before publishing
 ├── agents/
 │   └── sample-agent.json    ← Agent definition
 ├── skills/
@@ -38,8 +44,9 @@ Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) f
   "name": "my-dashboard",
   "version": "0.1.0",
   "displayName": "My Dashboard",
-  "description": "A KiroCrew app: My Dashboard",
+  "description": "A Kiro Crew app: My Dashboard",
   "author": "yourname",
+  "iconPath": "assets/icon.png",
   "agents": ["agents/sample-agent.json"],
   "skills": ["skills/sample-skill"],
   "ui": {
@@ -51,6 +58,10 @@ Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) f
         "icon": "Package"
       }
     ]
+  },
+  "permissions": {
+    "api": ["/api/status"],
+    "events": ["notification"]
   }
 }
 ```
@@ -132,34 +143,30 @@ This produces `dist/index.mjs` — the ESM bundle loaded by the dashboard.
 
 ## 4. Install and Enable
 
-Install via the KiroCrew dashboard REST API or the App Store UI:
+Install and enable with the CLI:
 
 ```bash
-# Via curl (REST API)
-curl -X POST http://localhost:5476/api/apps/install \
-  -H 'Content-Type: application/json' \
-  -d '{"source": "/path/to/my-dashboard"}'
-
-curl -X POST http://localhost:5476/api/apps/my-dashboard/enable
+kirocrew app install /absolute/path/to/my-dashboard
+kirocrew app enable my-dashboard
 ```
 
-Or open the KiroCrew dashboard → App Store → install from local path.
-
-Your app now appears in the KiroCrew dashboard sidebar.
+The REST routes require dashboard or app authentication, so do not replace these
+commands with a bare `curl`. You can also open the Kiro Crew dashboard → App Store
+and install from a local path. The enabled app then appears in the sidebar.
 
 ## 5. Iterate
 
 During development:
 
-1. Edit `ui/src/App.tsx`
-2. Run `cd ui && npm run build`
-3. Update the installed app:
-   ```bash
-   curl -X POST http://localhost:5476/api/apps/my-dashboard/update
-   ```
-4. Refresh the dashboard — changes are live
+1. Edit `ui/src/App.tsx`.
+2. Run `cd ui && npm run build`.
+3. Use the installed app's **Update** action in the authenticated App Store UI.
+4. Refresh the dashboard.
 
-Agent and skill changes take effect on the next agent invocation (no rebuild needed).
+For UI live reload, follow [App Dev Mode](api-reference.md#app-dev-mode-live-reload).
+Agent and skill changes take effect on the next agent invocation (no UI rebuild needed),
+but the installed copy still has to be updated unless the relevant source directory
+is linked through the documented dev-mode workflow.
 
 ## App SDK Hooks
 
@@ -171,7 +178,7 @@ Available in `@kirocrew/app-sdk`:
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
 | `useAppInfo()` | App metadata (name, version, permissions, `active`) |
-| `useNavigate()` | Navigate to KiroCrew routes |
+| `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft |
@@ -287,10 +294,11 @@ undeclared paths throws an error.
 
 ## Python Client
 
-For Python apps, CLI tools, or services that need to talk to KiroCrew Gateway:
+For Python apps, CLI tools, or services that need to talk to the Kiro Crew Gateway,
+install the source-only package from a Kiro Crew checkout:
 
 ```bash
-pip install kirocrew-client
+python -m pip install -e /path/to/KiroCrew/packages/kirocrew-client-py
 ```
 
 ```python
@@ -318,14 +326,16 @@ async def main():
 asyncio.run(main())
 ```
 
-The `kirocrew-client` package is async (uses `aiohttp`) and standalone — no
-dependency on the KiroCrew main package. It covers the full Gateway API surface.
+The source-only `kirocrew-client` package is async (uses `aiohttp`) and
+standalone, with no dependency on the Kiro Crew main package. It is not published
+to PyPI or included in the main wheel, covers only part of the REST API, and has
+no WebSocket client. See the method table before depending on a wrapper.
 
 See [API Reference](api-reference.md) for the full method list.
 
 ## Publishing Your App
 
 Once your app works locally, publish it to the App Store registry so other
-KiroCrew users can install it with one click.
+Kiro Crew users can install it with one click.
 
 See [Publishing Guide](publishing-guide.md) for the full workflow.

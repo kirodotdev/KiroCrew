@@ -94,7 +94,7 @@ as missing, never inferred as ready, and is a stop condition for the first round
 |---|---|---|
 | Active rules of engagement | `scripts/ledger.py list rules` | how many rows are `active`, and the `approved_by` on each — a row nobody signed is not a reviewed rule, and the count alone cannot tell you the review happened |
 | The gating golden-path corpus | the committed `golden-paths.json` beside the skill | the rows `scripts/verify_fix.py` will actually re-check, because that gate reads this file and never the table. `scripts/ledger.py list golden-paths` reports the table, which is import and dedupe state — a count there is not a corpus a fix is judged against |
-| The five scripts | the skill's `scripts/` directory | all five present and readable; an absent one is `UNKNOWN` and never permission |
+| The six scripts | the skill's `scripts/` directory | all six present and readable; an absent one is `UNKNOWN` and never permission |
 | Scope answered from the ledger | one `scripts/scope_check.py` call | NO fallback warning on stderr, AND a verdict that is not `UNKNOWN`. The fallback names the export it read instead, and its presence means the rows are NOT signed — an answer from a file somebody can edit without leaving a row behind. Silence alone is not the ready reading: an unreadable database, and a ledger whose every rule has been revoked, both answer `UNKNOWN` with no warning at all |
 
 Report the four as four readings, each with the number or the name you read. An

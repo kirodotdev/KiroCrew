@@ -25,7 +25,8 @@
      - Product-shape change (a changed default, what a loop/monitor/agent/command
        does by default, a removed or replaced user-facing capability): link the
        RFC under docs/request-for-change/ that records the decision. It must
-       already be on main with a non-draft status; an RFC shipped in this PR, or
+       already be on main with status `accepted`, `in-progress`, `partial`, or
+       `implemented`; an RFC shipped in this PR, or
        whose status this PR flips, does not count. Without one the First
        Principles lane BLOCKs until a maintainer records the decision with
        `/ai-review override first-principles <head-sha>: <reason>` (same-repo
@@ -57,7 +58,12 @@
 ## Screenshots / video
 
 <!-- MANDATORY for any user-visible UI change (new/changed panels, components,
-     layouts, themes); delete this section otherwise.
+     layouts, themes).
+
+     For a watched frontend path with no rendered delta, keep this section and
+     use the `no-visual-delta` marker with a `Why no screenshot` justification;
+     maintainers may instead apply the `no-screenshots` label. Delete this
+     section only when the diff does not touch a user-visible frontend surface.
 
      - Show each affected surface in its meaningful variants (e.g. desktop vs
        browser, empty vs populated, light vs dark).
@@ -102,7 +108,7 @@
 
 ## Checklist
 
-- [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|refactor|perf|test|chore|ci|build|revert: ...`)
+- [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`)
 <!-- If your branch goes stale, REBASE it. Plain-clicking the "Update branch"
      button on the PR page, or merging the base branch in, adds a merge commit,
      which counts toward the limit above and will fail PR Hygiene on a PR that

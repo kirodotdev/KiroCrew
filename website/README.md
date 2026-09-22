@@ -1,4 +1,4 @@
-# KiroCrew Website
+# Kiro Crew Website
 
 React + TypeScript + Vite single-page app for the Kiro Crew dashboard. Built assets
 are emitted to `dist/` and copied into the Python package at

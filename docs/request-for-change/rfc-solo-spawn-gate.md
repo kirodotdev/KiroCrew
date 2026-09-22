@@ -1,10 +1,10 @@
 ---
 title: Solo-Spawn Gate — a one-task sub-agent has to say why
-status: in-progress
+status: implemented
 author: iamwhatever
 created: 2026-09-18
-last-audited: 2026-09-18
-audited-at: 3865d68b5
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr: 11848
 implementation-prs: [11710]
 tracking-issues: []
@@ -13,12 +13,12 @@ superseded-by: []
 ---
 # RFC: Solo-Spawn Gate — a one-task sub-agent has to say why
 
-- Status: in-progress. Nothing of this design is on main; the whole design ships
-  as one PR, [#11710](https://github.com/kirodotdev/KiroCrew/pull/11710). This
-  document is the record of the decision that PR implements; the shipped
-  contract is owned by
+- Status: implemented. The two-host gate, roster comparison and `spawn.solo`
+  audit ship in `src/kiro_crew/solo_spawn.py`, `mcp_tools/spawn.py` and
+  `dashboard/handlers/messaging.py`. The current contract is owned by
   [`../system-specs/modules/subagent.md`](../system-specs/modules/subagent.md)
-  § "The solo gate" once that PR merges.
+  § "The solo gate"; its five-reason vocabulary supersedes the narrower
+  two-reason vocabulary recorded below.
 - Author: iamwhatever
 - Created: 2026-09-18
 - Related: `test/test_spawn_single_task_gate.py` (the earlier, advisory form of

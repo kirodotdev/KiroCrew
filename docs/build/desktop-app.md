@@ -13,27 +13,28 @@ build is driven by [`packaging/build-desktop.sh`](../../packaging/build-desktop.
 ## What `make desktop` produces
 
 ```bash
-make desktop               # macOS: ONE universal DMG (arm64 + x86_64) · Linux: AppImage + deb + rpm
-UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG (local iteration)
+make desktop               # macOS: universal DMG + update ZIP · Linux: AppImage + deb + rpm
+UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG + ZIP (local iteration)
 ```
 
 Output lands in **`website/electron/dist/`**:
 
 | Command | Platform | Artifact |
 |---------|----------|----------|
-| `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` |
-| `UNIVERSAL=0 make desktop` | macOS | `KiroCrew-<version>-arm64.dmg` (Apple Silicon host) or `KiroCrew-<version>.dmg` (Intel host) |
+| `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` plus `KiroCrew-<version>-universal-mac.zip` |
+| `UNIVERSAL=0 make desktop` | macOS | Host-arch DMG plus the matching `*-mac.zip` update archive |
 | `make desktop` | Linux | `KiroCrew-*.AppImage`, `*.deb`, `*.rpm` (host arch) |
 
 The electron-builder configuration lives in
 [`website/electron/package.json`](../../website/electron/package.json):
 
-- **appId:** `dev.kirocrew.desktop`
+- **appId:** `com.amazon.kiro.crew`
 - **productName:** `KiroCrew`
 - macOS display name: `Kiro Crew` via `CFBundleDisplayName`; `CFBundleName`
   remains aligned with `productName` because Electron uses it to locate the
   `KiroCrew Helper` app bundles during startup
-- mac target: `dmg` (category `public.app-category.developer-tools`). The DMG
+- mac targets: `dmg` and `zip` (category
+  `public.app-category.developer-tools`). The DMG
   uses a 660×420 logical-size branded drag-to-Applications background, packaged
   as a multi-resolution TIFF with 660×420 (1×) and 1320×840 (2×) representations
   for Retina displays. The background is a flat light purple carrying the opening
@@ -70,8 +71,10 @@ The electron-builder configuration lives in
 
 ### macOS default — one universal DMG for both arches
 
-On macOS, `make desktop` produces a single `KiroCrew-<version>-universal.dmg`
-running **natively** on both Apple Silicon and Intel Macs. It needs only
+On macOS, `make desktop` produces a `KiroCrew-<version>-universal.dmg` for
+first install and a matching `KiroCrew-<version>-universal-mac.zip` for the
+update/signing handoff. Both run **natively** on Apple Silicon and Intel Macs.
+It needs only
 **one Apple-Silicon machine** — no Intel host, no second build. (It requires
 an Apple-Silicon host with Rosetta 2; the script fails fast with instructions
 otherwise, and `UNIVERSAL=0` is the opt-out.)
@@ -88,8 +91,8 @@ an Intel Mac where the universal build cannot run. Per-arch targets:
 
 | Target | Build host | Produces |
 |--------|-----------|----------|
-| macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` |
-| macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` |
+| macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` + matching `*-mac.zip` |
+| macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` + matching `*-mac.zip` |
 | Linux x86_64 | x86_64 Linux | x86_64 `.AppImage`, `.deb`, `.rpm` |
 | Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage`, `.deb`, `.rpm` |
 
@@ -207,7 +210,7 @@ hdiutil detach "/Volumes/KiroCrew $V-universal"
 post-gates, plus a resolver-agreement gate asserting `find-bin.js` resolves
 the arch-suffixed launcher.)
 
-**CI:** the `macos-14` (Apple Silicon) entry in `build-desktop.yml` runs
+**CI:** the `macos-15` (Apple Silicon) entry in `build-desktop.yml` runs
 `make desktop` (universal by default on macOS — GitHub's arm64 macOS runners
 include Rosetta 2)
 and uploads a single `unsigned-build-darwin-universal` artifact. Everything
@@ -264,7 +267,7 @@ pipeline end-to-end:
 3. pip-install kiro_crew + deps into the bundled interpreter
 4. Stage the dashboard into the package's static dir
 5. Prune caches/tests/unused stdlib to shrink bundle
-6. Package with electron-builder                      → website/electron/dist/ (DMG / AppImage / NSIS)
+6. Package with electron-builder                      → website/electron/dist/ (DMG/ZIP, AppImage/deb/rpm, or NSIS)
 ```
 
 On macOS (universal by default) the pipeline repeats steps 2–5 once per
@@ -592,8 +595,10 @@ unit-testable without mocking globals.
   A clean install never creates the legacy directory.
 - Honors the **`KIROCREW_PORT`** env var for the dashboard port (default `5476`,
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
-- Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
-  bundled `agents/` and `skills/` are discovered.
+- Sets `KIROCREW_PROJECT_DIR` to the packaged tree that contains `agents/` and
+  `skills/`. POSIX builds use the Electron app's parent; Windows probes one and
+  two levels above the Electron sources and takes the first tree carrying both
+  directories.
 - On every desktop platform, pins `PYTHONUTF8=1` and
   `PYTHONIOENCODING=utf-8:backslashreplace` at the Electron-to-Gateway spawn
   boundary. This applies before CPython constructs redirected stdout/stderr and
@@ -602,11 +607,13 @@ unit-testable without mocking globals.
   and stale-asset re-exec, and Electron liveness respawn all use the same UTF-8
   contract instead of falling back to the Windows ANSI code page or an
   incompatible inherited POSIX encoding override.
-- Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
-  probes supported Kiro CLI locations independently — including the Windows
-  per-user install at `%LOCALAPPDATA%\Kiro-Cli` — so desktop launches find
-  user-local installations without mutating the shell environment or requiring
-  the already-running gateway to inherit an installer-updated `PATH`.
+- Leaves the inherited child `PATH` unchanged on Linux and Windows. A
+  GUI-launched macOS app appends only the user launchd domain's additions, after
+  the inherited entries, so an existing resolution cannot be shadowed. The
+  gateway prerequisite service also probes supported Kiro CLI locations
+  independently — including the Windows per-user install at
+  `%LOCALAPPDATA%\Kiro-Cli` — so an already-running gateway does not depend on
+  inheriting an installer-updated `PATH`.
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close; the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
@@ -1006,7 +1013,7 @@ The desktop app can also connect to a gateway running on a **remote** host (e.g.
 an always-on server) over an SSH tunnel, fetching a fresh token via
 `ssh <host> kirocrew token` on each launch instead of starting a local backend.
 See [`website/electron/README.md`](../../website/electron/README.md) and
-[remote-desktop-setup.md](../guides/remote-and-mobile.md) for setup.
+[remote-and-mobile.md](../guides/remote-and-mobile.md) for setup.
 
 ## See also
 

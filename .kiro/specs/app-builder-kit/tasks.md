@@ -1,5 +1,7 @@
 # Implementation Plan — Kiro Crew App Builder Kit
 
+Status: historical; none of the proposed `website/src/kit/` tasks shipped.
+
 - [ ] 0. Define the tool-part encoding contract + producer (PREREQUISITE — do this first)
   - Specify the `tool-view` fenced JSON block carried in agent message text: `{"tool":"<name>","schemaVersion":1,"data":{...}}`, riding the existing markdown/`<mcwidget>` transport with NO backend wire-format change
   - Parse it in `components/ContentRenderer.tsx`; on a registered-tool + schema match, hand off to the typed component, else fall through to the existing `<mcwidget>` / `ToolInputPreview` render

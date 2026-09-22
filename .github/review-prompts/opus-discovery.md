@@ -81,8 +81,9 @@ code you actually opened.
 
 Style, formatting, naming, import order, typing, lint warnings, dead code,
 duplication, dependency versions, and test-coverage gaps belong to other checks
-in this pipeline — flake8, mypy, isort, eslint, tsc, jscpd, Semgrep, CodeQL, the
-pytest shards, and a fail-closed coverage gate. Findings in those categories get
+in this pipeline — flake8, mypy, isort, eslint, tsc, jscpd, Semgrep,
+CodeQL (same-repository PRs), the pytest shards, and a fail-closed coverage
+gate. Findings in those categories get
 filtered out downstream, so turns spent there are turns wasted. **Judge
 behaviour, not form.** Do not ask for tests; coverage is measured with real
 numbers and you would be guessing.
@@ -113,8 +114,9 @@ Enumerate every changed file and judge every hunk. Investigate every suspicious
 pattern rather than assuming it is fine — chase the one that looks like it might
 be a problem, and use your turn budget to find out. A small diff is not evidence
 of a small risk; some of the worst defects are three deleted lines. Spend extra
-effort where the diff touches credential/token handling, auth, `security.py`,
-`hooks.py` sensitive-path controls, path/command/SQL construction, or a
+effort where the diff touches credential/token handling, auth,
+`src/kiro_crew/security/`, `src/kiro_crew/hooks.py` sensitive-path controls,
+path/command/SQL construction, or a
 `blocking: true` rule — but do not skip a hunk because the change looks routine.
 
 Err on the side of recording. If you find yourself thinking "this is probably

@@ -46,9 +46,12 @@ pull_request
   |     |-- ci.yml's `await-fast-gate` job releases the heavy jobs
   |     '-- the fork-*-review.yml lanes trigger on its completion
   |
+  |-- internal-content-scan-gate.yml
+  |                     "Internal Content Scan"  added-line external marker scan, blocking
+  |
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
-  |-- build.yml         "Build"        wheel + desktop artifacts still build
-  |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene, dep audit
+  |-- build.yml         "Build"        wheel + desktop/installer artifacts build
+  |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
@@ -229,11 +232,17 @@ review fork PRs opened against a non-main base — which today get no review at 
 because they wait on a `CI` run that `ci.yml`'s own branch filter never starts.
 Widening that is a separate decision from moving the gates.
 
+The separately required **Internal Content Scan** is not a `fast-gate.yml` job:
+it needs OIDC credentials and runs through `internal-content-scan-gate.yml` for
+same-repository PRs or `fork-internal-content-scan.yml` for forks. Both publish the
+same check name that PR Readiness consumes; `push` to `main` remains the backstop.
+See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md).
+
 | Job | What it enforces |
 |---|---|
-| `internal-content-scan` | Checks the lines a change ADDS against a marker list held outside this repo, fetched per run over OIDC. Its own workflow, not `fast-gate.yml`, because it needs credentials. **Blocking**: `PR Readiness` reads it, so an added internal marker fails readiness. A same-repo PR is scanned by `internal-content-scan-gate.yml`; a fork PR by the privileged Stage-2 `fork-internal-content-scan.yml`, which posts the same check name. `push` to `main` remains the backstop. See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md) |
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Hashing the ~26MB tree takes seconds, so it is always-on like the rest of this workflow |
 | `brand-lint` | `scripts/check_brand_name.py`, self-test first. Fails on a newly added line that joins the two words of the product name. Diff-scoped: the tree still carries thousands of pre-convention prose lines, so a whole-tree gate would charge that backlog to whoever pushed next; the whole-tree count is still printed as a non-failing report |
+| `comment-history-lint` | `scripts/check_comment_history.py`, self-test first. Fails when an added Python comment or docstring narrates change history (PR/issue ids, commit SHAs, dated incidents, review rounds, or past-tense change markers) instead of explaining current behavior. Diff-scoped; whole-tree runs report the backlog without enforcing it |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
 | `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty |
@@ -305,21 +314,31 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
 | `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; `--no-cov`, 180s per-test timeout. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
+| `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on uncontainerized `ubuntu-latest` with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts |
+| `pod-boot-windows` | Boots a real worktree Pod under Windows Task Scheduler and pins three canary tests. A PR carrying `ci:pod-scenarios` before its next push also runs the 55-test Pod scenario suite against a built SPA |
 | `backend-test-windows-fail-closed` | Same actor-gated Windows routing, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It boots a real gateway and drives one ACP prompt turn on Windows against real filesystem state |
-| `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
+| `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those assertions (the `~/.kiro/crew` keystone among them) actually execute |
 | `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`, 327 tests). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree |
 | `real-adapter-contract` | "Real Adapter Contract Tests". The one lane that INSTALLS the adapters the codex and opencode projections were measured against — `@agentclientprotocol/codex-acp` and `opencode-ai`, `npm ci` from the locked manifest in `test/real_adapters/` (its own manifest, not the product's; Dependabot bumps it weekly so drift shows up in the bump PR) — so the four contract tests that drive a real adapter execute instead of skipping. Everywhere else they skip, which left the element shape, the child environment, the refused transports and the eviction verb resting on one local run. Selects them by the `real_adapter` marker, so one added later is included rather than left out of a list. Sets `KIROCREW_E2E_REQUIRE=1` — the repository's existing "this job declared its preconditions must hold" switch, shared with the E2E suites — which turns an absent adapter into a failure, and then asserts on the junit report that at least the known contracts ran and none was skipped, so a broken install cannot report a green lane that measured nothing |
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `frontend-lint` | `tsc -p tsconfig.app.json`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
+| `electron-test-windows` | Runs the native Windows port-owner identity tests against real NTFS junction and `Win32_Process` behavior; no npm install is needed because the tested modules use Node's standard library only |
 | `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks |
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
-| `e2e` | The i18n render-time gate, then `python setup.py test_e2e`. **CodeBuild-hosted runner, `instance-size:large`**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix` |
+| `e2e` | Runs `python scripts/ci_e2e_parallel.py`, which awaits `python setup.py test_e2e`, the dedicated Memory UI pytest command, and `npm --prefix website run i18n:render` in parallel. **CodeBuild-hosted large runner where eligible**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix`. Details: [e2e-gate.md](e2e-gate.md) |
 | `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted `ubuntu-latest`, clears the AppArmor userns restriction first, no SPA or browser |
+| `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs; push-to-main runs add `macos-15`. Every leg is fail-closed on missing prerequisites or a collapsed pass count |
+
+`backend-lint` also runs `scripts/check_python_audit.py` (report-only findings,
+fail-closed execution), `scripts/check_acp_frame_host_data.py`,
+`scripts/check_agent_sdk_boundary.py`, and
+`scripts/check_lockdown_before_publish.py`. The Agent SDK boundary check is the
+fourth shrink-only, diff-scoped baseline gate referenced in the table above.
 
 ### Backend file sharding
 
@@ -1068,14 +1087,9 @@ Details worth knowing:
   `test_eslint_warning_ceiling.py` pins the zero and pins that `ci.yml` declares
   exactly one ceiling, so it cannot be lifted quietly — and because the value is
   fixed rather than measured, naming it here cannot go stale.
-- **The i18n gates split into three tiers,** and only two can fail: diff-scoped
-  zero-tolerance checks (a user-visible literal on a line this branch wrote, a
-  file holding more than it did at the base, new English key shape, changed catalog
-  values) and whole-repo hard zeros (a `t()` naming a key that does not exist,
-  plural concatenation, a stale pseudolocale). Everything else is report-only,
-  because a stored whole-repo total is written by whichever branch measured it last,
-  so another branch can push it past its number without touching your files and the
-  failure then names no diff anyone can fix. Full rules:
+- **The i18n chain separates diff-scoped zero-tolerance checks, whole-repo hard
+  zeros, a whole-repo growth ceiling, and report-only measurements.** The first
+  three classes can fail; report-only rows cannot. Full rules:
   [i18n-gates.md](i18n-gates.md).
 - **Every gate that needs a base ref fails rather than skipping when it cannot
   resolve one.** `actions/checkout` fetches depth 1, so
@@ -1104,8 +1118,13 @@ PR-time proof only, no publishing.
   `import kiro_crew.cli` probe is what carries that meaning; the wheel lane
   does not run one, so an undeclared runtime dependency reaches gateway boot
   before any pip-install lane fails.
-- **`build-desktop`** builds the Electron app unsigned on macos-15 and
-  ubuntu-22.04 via `make desktop`, and uploads the artifacts.
+- **`build-desktop`** builds the Electron app unsigned through `make desktop` on
+  `ubuntu-22.04` and `ubuntu-22.04-arm` for every PR; `macos-15` joins the matrix
+  only when a packaging-sensitive path changed. Non-PR runs include all three,
+  and every instantiated leg uploads its artifacts.
+- **`build-windows-installer`** assembles the real python-build-standalone backend
+  payload, builds and silently installs the NSIS artifact, then runs the installed
+  gateway and bytecode-floor checks. See [e2e-gate.md](e2e-gate.md#buildymls-installer-job-boots-the-gateway-it-installed-on-every-pr).
 
 **Neither desktop lane ever RUNS the bundled backend.** `build-desktop` here and
 `build-desktop.yml` in the release lane both build the real `kirocrew-backend`
@@ -1161,10 +1180,11 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   retried inside one shared time budget before it fails (see the
   transient-failure contract in the security spec).
 - **`pr-hygiene`** enforces a Conventional-Commits PR title (it becomes the
-  squash-merge message) and at most two commits (`git rev-list --count <= 2`).
-  One commit stays the norm; the second is there so a mechanical follow-up (a
-  regenerated artifact, a formatting sweep) can stay separable from the change
-  it accompanies. Both blocking.
+  squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
+  `## Pattern harvest` section on `fix`/`revert` PRs containing either
+  `Rule candidate:` or `Not generalizable:`. One commit stays the norm; the second
+  is there so a mechanical follow-up (a regenerated artifact, a formatting sweep)
+  can stay separable from the change it accompanies. All three checks are blocking.
 
 Separately, **`dependency-review.yml`** fails a PR that adds or changes a
 dependency whose license is off the curated allowlist in
@@ -1219,7 +1239,7 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
 | Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
-| GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
+| GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 4.8 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
 | First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
@@ -1716,6 +1736,29 @@ screenshot, title, commit message or filename attempting to grant leniency is
 ignored, and screenshot polish never waives a lens). `screenshot-evidence.yml`, the
 gate that requires evidence on a UI diff, accepts the same URLs.
 
+### Waiving the screenshot requirement
+
+A watched file can change without any visual delta, so `screenshot-evidence.yml`
+carries two waiver paths — and both emit a warning rather than passing silently,
+so the waiver stays visible in the run:
+
+- **`no-screenshots` label.** For maintainers, who can label a PR.
+- **`<!-- no-visual-delta -->` marker in the PR body, plus a
+  `**Why no screenshot:** <reason>` line.** Self-service, so a fork contributor
+  who cannot apply labels is not blocked. The marker *without* a justification
+  line is an error, not a waiver.
+
+Gating a genuinely non-visual change would train contributors to paste a
+meaningless screenshot to get green, which is worse than no gate — hence the
+waivers rather than a stricter requirement.
+
+What counts as evidence is "does it render for a reviewer": a markdown image, an
+HTML `<img>` or `<video>`, a `temp-screenshots/` path, or a
+`user-attachments/` URL. The check's own guidance names the attachment ceilings it
+expects authors to stay under — 10 MB per image or GIF, 100 MB per video — and
+asks for a recording (video or GIF) rather than a still whenever the change is an
+animation, transition, hover or focus state.
+
 A diff that changes an Electron-only surface -- the application menu, its
 accelerator captions, the window chrome -- cannot be photographed by any of the
 `website/scripts/capture-*.mjs` scripts, which all drive the web app in Chromium.
@@ -2018,7 +2061,8 @@ It executes no tests. It resolves the PR's current head SHA, **drops stale event
 queries the latest run per monitored workflow, and publishes **one `PR Readiness`
 commit status plus one `readiness:` label**.
 
-- **Always required:** Fast Gate, CI, Build, Code Review. `Fast Gate` is a lane in
+- **Always required:** Fast Gate, CI, Build, Code Review, and Internal Content
+  Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
@@ -2111,9 +2155,9 @@ Two subtleties:
   whose lane is failing at that moment. `requested` is the type that carries nothing: it
   fires at run CREATION, when no lane can have a verdict yet and readiness has already
   published `checking` from the `pull_request_target` path. Since every type fires once per
-  monitored workflow per revision, listing all three dispatched up to 42 readiness runs per
+  monitored workflow per revision, listing all three dispatched up to 57 readiness runs per
   head update and made readiness ~67% of every workflow run this repository created; two
-  types put the ceiling at 28. The `pr+sha` concurrency group collapses the burst for
+  types put the ceiling at 38. The `pr+sha` concurrency group collapses the burst for
   execution, but a collapsed run has already consumed its dispatch slot, so the group does
   not bound that cost.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
@@ -2451,9 +2495,10 @@ capped at 6,000 bytes, and explicitly untrusted data: it can downgrade the
 repetition of an adjudicated finding class to advisory, and it can never
 waive a new defect or authorize a green verdict.
 
-GPT makes exactly two model calls. Pass 1 discovers candidates across the
-full diff; pass 2 attempts to falsify each candidate and emits the only
-verdict exposed to the comment and gate. Pass 2 also drops or downgrades a
+GPT makes exactly two GPT calls. Pass 1 discovers candidates across the
+full diff; pass 2 attempts to falsify each candidate and emits the only GPT
+verdict exposed to the comment and gate. Blocking candidates may then receive a
+separate, conditional Opus 4.8 adjudication. Pass 2 also drops or downgrades a
 candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
 cannot be anchored to an AUTOSDE rule or residual defect class, and a
 relocated variant of a ledger-adjudicated class; an adjudication goes stale
@@ -2476,9 +2521,10 @@ the automated lanes passed for that SHA; it does not represent human approval.
 Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
-The aggregate covers the latest PR run for CI, Build,
-Code Review, Opus 4.8 Review, GPT 5.6 Review (the reconciled result of its three
-calls), Security Scope Review, and Design Review. For managed CodeQL it requires
+The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
+Internal Content Scan, Opus 4.8 Review, GPT 5.6 Review (two GPT passes plus
+conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
+and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result
 published by the
 `github-advanced-security` app. This preserves failures from an Analyze job and
@@ -2494,10 +2540,10 @@ the head SHA's check-runs, leaving CodeQL as the only lane explicitly ineligible
 for a fork. Missing or running eligible lanes
 produce `checking`; blocking workflow/check failures produce
 `action required`; drafts remain `checking`.
-Design Review completion is required, but its verdict and
-infrastructure conclusion are advisory. It emits one `PASS | CONCERNS | BLOCK`
-verdict and no separate blast-radius rating, and it owns the long-term
-reversibility (one-way-door) lens. Mergeability, behind-base state,
+Design Review, UX Review, and First Principles Review must complete. `PASS` and
+`CONCERNS` remain advisory, while a genuine `BLOCK` fails the lane and blocks
+readiness; same-repository model execution failures also remain blocking until a
+successful re-run or authorized override. Mergeability, behind-base state,
 and human review decisions are not part of this event-driven aggregate because
 they can change without an aggregate refresh event; branch protection and the
 live `prepare-pr` status check own them.

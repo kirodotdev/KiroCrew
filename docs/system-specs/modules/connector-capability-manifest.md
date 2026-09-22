@@ -15,8 +15,11 @@ entry must have, and the order the campaign's provider streams unlock in. It
 does not implement `src/kiro_crew/connections/**` (see
 [connections.md](connections.md) for that subsystem's shipped behavior) and
 does not implement `src/kiro_crew/knowledge/connectors/**` (see
-[knowledge.md](knowledge.md)). A future round implements against this spec.
-When that implementation changes what this spec documents, the owning-spec
+[knowledge.md](knowledge.md)). Current provider slices under
+`src/kiro_crew/connections/control_plane/` and
+`src/kiro_crew/connections/vendors/` implement portions of this contract; the
+manifest validator, discovery runner, and live conformance runner remain later
+rounds. When an implementation changes what this spec documents, the owning-spec
 rule applies exactly as it does everywhere else in this tree: the spec is
 updated in the same commit as the code, the same way `connections.md` is
 updated when `connections/` changes. Nothing here freezes the schema —
@@ -109,11 +112,12 @@ way to say "this entry reached `code_complete` and then got stuck" without
 requiring an implementer to guess whether `status: blocked` erased prior
 progress: it did not, `last_reached_status` says exactly where it stopped.
 
-Every entry produced by this campaign's current round (the W00-S1 slice, and
-the evidence catalog it draws on) has `status: planned` and
-`last_reached_status: planned`: nothing has begun implementation yet. A
-future round moves entries along the ladder; it does not invent new rungs
-without a scoped revision of this spec.
+This document ships no concrete manifest entries, so it assigns no current
+status to the provider slices already present in the tree. When the
+entry-population round creates an entry, `status` and `last_reached_status` must
+reflect the code and evidence that exist then; `planned` is valid only where
+implementation has not begun. A later round moves entries along the ladder; it
+does not invent new rungs without a scoped revision of this spec.
 
 **A conjunction of required fields proves an entry's CURRENT claim is
 internally consistent with its evidence — it does not, by itself, prove

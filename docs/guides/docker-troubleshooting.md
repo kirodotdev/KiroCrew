@@ -208,13 +208,15 @@ consent · `--privileged`) are documented once in
 Start there — this section exists only to get you from the symptom to that
 table.
 
-The short version: the sandbox needs `unshare(CLONE_NEWUSER)` and
-`unshare(CLONE_NEWNS)`, which Docker's default seccomp profile blocks, so
-the probe fails closed and agent execution stays disabled until you choose.
-Prefer [Option A — the shipped seccomp profile](docker.md#option-a--kiro-crew-seccomp-profile-recommended);
+The short version: the sandbox needs `unshare(CLONE_NEWUSER)`,
+`unshare(CLONE_NEWNS)`, and a private mount namespace. Whether those calls work
+inside a container depends on the runtime's seccomp and AppArmor profiles;
+hardened profiles commonly block one of them. The startup probe is the source
+of truth and fails closed when no backend works. Prefer
+[Option A — the shipped seccomp profile](docker.md#option-a--kiro-crew-seccomp-profile-recommended);
 fall back to [Option B](docker.md#option-b--explicit-unsandboxed-consent)
-only where you cannot set seccomp at all (managed Kubernetes, some Docker
-Desktop setups).
+only where you cannot set seccomp or AppArmor policy at all (managed
+Kubernetes, some Docker Desktop setups).
 
 ### `KIROCREW_ALLOW_UNSANDBOXED=1` had no effect
 
@@ -413,21 +415,26 @@ there, being Python's and Debian's own).
 
 ### Agent skill not found
 
-Skills are files, not packages: the built-in set is synced from the wheel to
-`~/.kiro/crew/skills/` at startup, and there is no install command to run.
-List what the container actually has:
+Skills are directories containing `SKILL.md`. The built-in set is synced from
+the wheel to `~/.kiro/crew/skills/` at startup. List what the container actually
+has:
 
 ```bash
 docker exec kirocrew ls /home/kirocrew/.kiro/crew/skills
 ```
 
-To add your own, write it into that directory and restart:
+For a registry skill, use **Settings → Skills → Discover**; installation is a
+human-only dashboard action. For your own local skill, copy its directory into
+the global skill tree and restore uid 1000 ownership:
 
 ```bash
 docker cp ./my-skill kirocrew:/home/kirocrew/.kiro/crew/skills/my-skill
 docker exec -u 0 kirocrew chown -R kirocrew:kirocrew /home/kirocrew/.kiro/crew/skills/my-skill
-docker restart kirocrew
 ```
+
+The skills catalog reads current on-disk state, so the copied skill appears
+without a gateway restart. Start a new chat to have its context assembled with
+the new skill.
 
 ---
 
@@ -438,9 +445,10 @@ OOM killer terminates the container.
 
 ### Cap the container
 
-Each active chat session can spawn subagents, so peak usage scales with how
-many sessions are running at once. There is no setting that caps that count
-— bound the container instead:
+Active chats and concurrent subagents both consume memory. Subagent fan-out is
+bounded by `agent.max_subagents` (or the auto-sized ceiling when it is `0`), but
+there is no single setting that caps the number of open chat sessions. Keep a
+container-level limit as the final guard:
 
 ```yaml
 # compose.yaml
@@ -483,15 +491,19 @@ step fail once the bytes have all arrived, so a download that was nearly done
 is discarded and starts over from zero. Only a `.tmp` file that has not been
 written to for an hour is genuinely stranded.
 
-Do not clear the directory itself either — the models re-download on next use,
-and on a metered or slow link that is a multi-GB round trip for nothing.
+Do not clear the directory itself either — the default model (about 610 MB)
+re-downloads on next use, which is a substantial round trip on a metered or
+slow link.
 
 ### Reduce memory pressure
 
-- Avoid mounting very large repositories as context — the agent indexes
-  them into memory.
-- Close chat sessions you are not using; each one that is running is a
-  live agent process, and that count is what peak memory tracks.
+- Set `agent.max_subagents` to a conservative explicit ceiling (minimum `3`)
+  when auto-sizing is too aggressive for the container; the adaptive controller
+  may reduce live concurrency below that ceiling.
+- Avoid running several large-context chats and fan-out jobs at once.
+- Close chat sessions you are not using. Some harnesses share a backend process,
+  but every live session retains context and runtime state, and other session
+  shapes still own a dedicated process.
 
 Embeddings cannot be traded away here: they are always-on and there is no
 config knob to disable them (`embedding_provider` is coerced to `llama_cpp`
@@ -505,8 +517,8 @@ not a provider swap.
 ## 9. Channel bot never authenticates
 
 **Symptoms:** the dashboard works, but a Slack / Discord / Telegram / WeCom /
-WeChat / Webex bot never comes online — and the gateway's own process
-environment has no trace of the token you passed in.
+Weixin / Webex / Microsoft Teams / Feishu bot never comes online — and the
+gateway's own process environment has no trace of the token you passed in.
 
 ### The variable is gone from the environ by design
 
@@ -539,7 +551,7 @@ docker exec kirocrew sh -c '
 ```
 
 The keys moved this way are `CREDENTIAL_KEYS` — the Slack, Discord, Telegram,
-WeCom, Webex, Microsoft, WeChat, Feishu, Jira, Azure DevOps and Bitbucket
+WeCom, Webex, Microsoft Teams, Weixin, Feishu, Jira, Azure DevOps and Bitbucket
 credentials plus `KIROCREW_OWNER_ID` and `KIRO_API_KEY` — and any per-host
 `JIRA_TOKEN_<hex>`.
 

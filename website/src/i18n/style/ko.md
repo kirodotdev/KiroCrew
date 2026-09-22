@@ -56,10 +56,9 @@ digits, no leading/trailing or doubled space).
 ### §1.1 Hangul-only
 
 **No 한자 and no kana.** Korean UI copy is written in Hangul; a CJK ideograph or a
-kana character in `ko.json` is either an untranslated Japanese value or a
-Chinese one, not a stylistic choice. This is the one rule that makes the
-Japanese-source translation pipeline safe to run — it fails on a leaked source
-value rather than shipping it.
+kana character in `ko.json` is a leaked cross-locale value, not a stylistic choice. The
+current translation driver sources every locale from English shards, and this guard makes
+source leakage fail before it ships.
 
 Checked by `koStyle.test.ts`.
 
@@ -141,16 +140,17 @@ and the 표기법 disagree, this table is the decision.
 | present (attending) | 참석 | 선물 |
 | open (a free slot) | 빈 시간 | 열기 |
 
-The 외래어 spellings are checked unconditionally by `koStyle.test.ts`; the last
-three are checked only where the **English** carries the cue, so a legitimate
-`열기` ("Open a file") is never caught.
+The 외래어 spellings are checked unconditionally by `koStyle.test.ts`; `write access`
+and `present` are checked only where the **English** carries the cue. The `open` /
+free-slot row is review-only, so a legitimate `열기` ("Open a file") is never caught.
 
 ---
 
 ## §3 Do not translate
 
-Product names stay in Latin script. The list is in `glossary.json` under `dnt`:
-`KiroCrew` / `Kiro Crew`, `Kiro`, `Slack`, `Discord`, `MCP`, `GitHub`, `Playwright`, etc.
+Product names stay in Latin script. The canonical list in `glossary.json` includes
+`KiroCrew`, `Kiro`, `Slack`, `Discord`, `MCP`, `GitHub`, `Playwright`, and others. The
+prose brand `Kiro Crew` also remains unchanged.
 
 Also stays in English: AWS service names, key legends (Enter, Shift, ⌘),
 `main`/`origin`/`HEAD`, paths, filenames, config keys, and `cron` (the syntax —
@@ -239,6 +239,7 @@ copy must not add fragments: one key per sentence.
 | placeholder 조사 written in both forms | `koStyle.test.ts` |
 | a fragment never opens with a 조사 | `koStyle.test.ts` |
 | 외래어 표기법 spellings | `koStyle.test.ts` |
+| `write access` and `present` use their context-specific terms | `koStyle.test.ts` |
 | no 한다체 ending, no 이중 피동 | `koStyle.test.ts` |
 | destructive confirmations end in `~하시겠습니까?` | `koStyle.test.ts` |
 | balanced brackets and quotes, incl. mixed width | `qa.test.ts` |
@@ -248,5 +249,5 @@ copy must not add fragments: one key per sentence.
 | correct CLDR plural categories (1: other) | `catalogParity.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 
-Everything in §2 beyond the checked list, §3 and the rest of §4 is review-only —
-the judgements a human has to make.
+Everything in §2 beyond the checked list (including the `open` row), §3 and the rest
+of §4 is review-only — the judgements a human has to make.

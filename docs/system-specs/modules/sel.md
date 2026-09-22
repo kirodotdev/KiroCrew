@@ -2,11 +2,14 @@
 
 ## Overview
 
-Immutable, tamper-evident audit trail for all tool invocations, MCP calls, and dashboard API mutations. Implements transactional event logging per Amazon Security Event Logging Standard.
+Append-only, tamper-evident audit trail for tool invocations, MCP calls, and dashboard API mutations. Implements transactional event logging per Amazon Security Event Logging Standard.
 
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
-Storage: `~/.kiro/crew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
+Storage: the live append-only log is `~/.kiro/crew/security_events.jsonl`.
+At the size ceiling it rotates into `~/.kiro/crew/security_events.d/`; each
+closed segment is an independent HMAC-SHA256 chain and the new live log starts
+with a `sel_rotation` boundary event.
 
 Member executions use the ordinary audit destination. Memory ownership does not
 create separate diagnostic chains or OS-isolated log directories. The shared MCP
@@ -24,13 +27,13 @@ Each entry records:
 |-------|-------------|
 | `event_id` | Unique 16-char hex identifier |
 | `timestamp` | ISO 8601 UTC |
-| `event_type` | `tool_invocation`, `api_access`, `config_bounds_clamped`, `governance_decision`, `governance_degraded`, `output_anomaly` (the model's own output needed a repair at persist time; the row records the occurrence, nothing is blocked) |
+| `event_type` | Stable event-family string chosen by the emitter. Common values include `tool_invocation`, `api_access`, `config_bounds_clamped`, `governance_decision`, `governance_degraded`, `output_anomaly`, `deny_event`, `push_allowed`, and `sel_rotation`; consumers must not treat this list as exhaustive. |
 | `caller_identity` | Session key (e.g. `dashboard:abc`, `cron:xyz`, `subagent:123`). API-access events from mixed-internal endpoints that validate `X-Internal-Caller` (the chat folder writes) carry the internal caller's declared **component name** here — e.g. `kirocrew-dashboard`, or `unknown-internal` for an authenticated internal caller that declared no recognized name (a defined, warned state, not log corruption); `source` stays in the interface vocabulary (`mcp`) for those events |
 | `agent` | Agent name (`kirocrew`, custom agent name) |
-| `source` | Interface: `slack`, `dashboard`, `cli`, `cron`, `subagent`, `taskrunner`, `mcp`, `background`, `acp` (ACP-transport events, e.g. `tool_interrupted`), `token_auth` / `refresh_tokens` (dashboard auth), `host` (the `_host` sentinel — an in-process host action like app activation / workspace admission), `unknown` (empty/unrecognized session key, which must NOT be mis-tagged `slack`). This is a closed interface vocabulary — component attribution does not extend it; see `caller` below |
+| `source` | Emitting surface label. Session-key-derived values come from `_infer_source()` and the authoritative `audit_sources()` tuple (dashboard, cron, background, heartbeat, CLI, supported messaging channels, and so on). Specialized emitters also use fixed subsystem labels such as `mcp`, `acp`, `token_auth`, `refresh_tokens`, and `app`; the dataclass does not enforce one closed enum. |
 | `operation` | Tool name or `METHOD /api/path`; for `output_anomaly`, the repair that ran (`options_footer_glued_text`: text the model wrote on the line of its own `[OPTIONS:]` footer was moved to its own line and labelled as the assistant's) |
 | `tool_kind` | Tool category (`execute_bash`, `fs_write`, `mcp_core`, `mcp_cron`, etc.) |
-| `outcome` | `invoked`, `auto_approved`, `auto_approve_declined` (a name-based auto-approve was withheld by the name-grant check and the request took the surface's normal path — see `name_grant.log_decline`), `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded` (a governance chokepoint failed OPEN), `one_shot_completed` (a one-shot cron consumed by its own completion — an automated removal, not an operator delete), `labelled` (an `output_anomaly` whose text was kept verbatim and marked as the assistant's own) |
+| `outcome` | Emitter-defined result vocabulary (for example `invoked`, `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded`, `one_shot_completed`, or `labelled`). Callers that expose this field externally must document the values they emit; the core dataclass does not enforce a closed enum. |
 | `resources` | Affected resources summary (redacted, then truncated to 500 chars — see `metadata`) |
 | `downstream_service` | MCP server name if applicable (`kirocrew-core`, `kirocrew-cron`, `internal-mcp`) |
 | `request_id` | ACP permission request ID |
@@ -39,7 +42,7 @@ Each entry records:
 | `entry_hash` | HMAC-SHA256 of this entry |
 | `metadata` | Additional context (approval reason, step index, etc.). Free-form string values are **redacted at write time**: the writer applies `security.redact` (credential + exfiltration-URL passes) to string values at any nesting depth before the entry is hashed and persisted, so caller-supplied text (a search query, a document title) never lands a secret on disk. Keys and non-string values pass through; the caller's dict is never mutated (the writer redacts a copy). The same write-time pass covers the free-form top-level strings `operation` / `resources` / `error` (an exception message can quote a command body or URL); identity-shaped fields (`caller_identity`, `agent`, `source`, `downstream_service`, `request_id`) are constrained vocabularies and stay verbatim. `outcome` is NOT in the writer's set for the same reason, but `log_api_access` scrubs it at the helper: it reads as a vocabulary and is one for in-tree callers, while an installed app reaches that helper through `ctx.audit`, so the value can be caller text. The pass is the identity function on every in-tree spelling, so no existing row changes. Where a `log_*` helper CLIPS a field to 500 chars it redacts first and clips second: clipping first can cut a credential in half, and the surviving prefix matches no full-token grammar, so the writer's pass could not recover it. The HMAC chain signs the redacted bytes |
 
-The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `operation=config.load`, `caller_identity=config_loader`) is emitted by `config/loader.py`'s `_log_config_clamp_event` when an out-of-range security-bounded knob (`agent.subagent_auto_max` / `agent.max_subagents` / `agent.subagent_max_turns` / `session.pool_size`) is clamped to its API-enforced ceiling at load time, recording `metadata` `{file_value, clamped_to, min, max}`. Best-effort: a SEL failure never makes config loading raise.
+The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `operation=config.load`, `caller_identity=config_loader`) is emitted by `config/loader.py`'s `_log_config_clamp_event` whenever `_clamp_security_bounds()` changes an out-of-range field from the authoritative `_SECURITY_BOUNDED_FIELDS` table or one of its sentinel-aware follow-up checks. It records `metadata` `{file_value, clamped_to, min, max}`. Best-effort: a SEL failure never makes config loading raise.
 
 ## Integrity
 
@@ -140,10 +143,13 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 
 ## CLI
 
+```text
+kirocrew security events [-n LIMIT] [--since AGE_OR_TIME] [--until AGE_OR_TIME]
+kirocrew security verify
 ```
-kirocrew security events [-n 20]   # Show recent events
-kirocrew security verify            # Verify HMAC chain integrity
-```
+
+`events` defaults to 20 rows. `--since` and `--until` accept relative ages such
+as `30m`, `2h`, and `7d`, or ISO 8601 dates/timestamps.
 
 ## Thread Safety
 

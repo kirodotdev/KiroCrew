@@ -18,7 +18,7 @@ the one case where a write may have left residue, see
 
 | Code | Path | Trigger |
 |---|---|---|
-| [`bad_kind`](#bad_kind) | both | Requested kind is neither `crew` nor `session`. |
+| [`bad_kind`](#bad_kind) | both | Requested kind is not `crew`, `session`, or `member`. |
 | [`invalid_id`](#invalid_id) | both | Unit id is empty, holds a separator or NUL, or escapes its root. |
 | [`bad_root`](#bad_root) | both | A kind's root under `crew-log` is a link or resolves outside the data home. |
 | [`already_exists`](#already_exists) | create | `create` was asked for a crew log whose file is already there. |
@@ -29,7 +29,8 @@ the one case where a write may have left residue, see
 | [`unsupported_version`](#unsupported_version) | read | The header names a format version this build does not read. |
 | [`bad_type`](#bad_type) | write | `type` is not spelled `domain/action`. |
 | [`bad_src`](#bad_src) | write | `src` is neither a fixed emitter nor a well-formed namespaced one. |
-| [`bad_data`](#bad_data) | write | `data` is not a JSON object, or holds something unserializable. |
+| [`bad_data`](#bad_data) | both | `data` is not a JSON object, a citation callback is malformed, or a strict read finds a duplicate/backward `seq`. |
+| [`bad_data_field`](#bad_data_field) | write | A declared entry type's payload has a missing, unknown, wrongly typed, or closed-enum field. |
 | [`event_type_not_owned`](#event_type_not_owned) | write | This kind does not own that `type` domain. |
 | [`namespace_violation`](#namespace_violation) | write | A guest wrote outside its own namespace. |
 | [`bad_thread`](#bad_thread) | write | `thread` names no existing earlier entry in this file. |
@@ -43,7 +44,7 @@ the one case where a write may have left residue, see
 
 ### `bad_kind`
 
-The requested kind is neither `crew` nor `session`.
+The requested kind is not one of `crew`, `session`, or `member`.
 
 **Caller action** — A programming error. Fix the call; there is no runtime recovery.
 
@@ -95,10 +96,12 @@ Another process owns writes to this unit's crew log, so this one appended nothin
 Distinct from every shape code: the entry was well formed and the file is healthy,
 this process is simply not the writer.
 
-**Caller action** — **Report the loss; do not retry.** Ownership is held for the life
-of the owning process, so every later entry for that unit would queue behind the same
-wait. In the session emitter this is one of the paths that ends in a
-[`write/dropped`](session-types.md#writedropped) marker.
+**Caller action** — Follow the caller's ownership contract. The session emitter
+reports the loss and does not retry because its handle may be long-lived; this is one
+of the paths that ends in a [`write/dropped`](session-types.md#writedropped) marker.
+The member-event adapter instead uses short-lived handles and performs its own bounded
+wait, as specified in [member-event-log.md](../../system-specs/modules/member-event-log.md).
+A generic caller must not retry without such a bounded, externally justified contract.
 
 ## Header
 
@@ -153,13 +156,26 @@ is exactly one level deep and no action can smuggle a second domain behind it.
 
 ### `bad_data`
 
-`data` is not a JSON object, or holds something not JSON-serializable. Also raised on
-field `cite` when an `append_many` citation callback returns something other than a
-dict.
+On the write path, `data` is not a JSON object or holds something not
+JSON-serializable. It is also raised on field `cite` when an `append_many` citation
+callback returns something other than a dict. On the read path, `iter_from` with
+`strict_seq=True` raises it on field `seq` when a committed entry repeats or moves
+backward.
 
-**Caller action** — Fix the call. This is the code a per-type payload validator
-reports through, so it may also mean a payload that is a valid object but does not
-match its type's contract.
+**Caller action** — Fix a write call, or treat a non-advancing stored sequence as
+file damage. A forward gap inside one segment remains tolerated because it can be an
+unreadable line the reader deliberately skipped.
+
+### `bad_data_field`
+
+A declared entry type's `data` object is structurally wrong: a required field is
+absent, a value has the wrong JSON type, an undeclared key is present, or a value is
+outside a closed enum. `field` names the full path, such as `data.tokens.input`.
+Undeclared crew types and app guest namespaces have no per-field declaration and do
+not raise this code.
+
+**Caller action** — Fix the producer to match the declaration in
+`kiro_crew.crew_log.entry_types`. The refusal happens before any byte is written.
 
 ### `event_type_not_owned`
 

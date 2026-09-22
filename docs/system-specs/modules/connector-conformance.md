@@ -107,9 +107,9 @@ this document argues for elsewhere.
       "id": "credential-custody",
       "obligation": "Credential custody: a ConformanceRun binds to an authorized account/tenant via account_binding_ref and never carries a raw credential",
       "owner": "kiro-cli owns the OAuth chain and token custody; Kiro Crew holds no connection credential",
-      "concrete_dependency": "Custody anchor is merged connections.md, its credential-boundary section: kiro-cli owns the OAuth mint/status/ownership path, the runner never holds a credential, and account_binding_ref is 'never a raw credential' per the manifest — this custody property is established today by that merged section. Separately, the concrete interface that resolves account_binding_ref to an authorized binding is not yet in the merged tree (it is sequenced under W01); this slice does NOT assume it, and reports a missing binding-resolution interface as a named gap rather than inventing one",
-      "later_integration_step": "W01 (shared control plane: binding/auth/policy), per the W00->W01 DAG edge",
-      "current_state": "boundary_defined_in_merged_connections_md; binding_interface_pending_W01"
+      "concrete_dependency": "Custody anchor is merged connections.md, its credential-boundary section: kiro-cli owns the OAuth mint/status/ownership path, the runner never holds a credential, and account_binding_ref is 'never a raw credential' per the manifest — this custody property is established today by that merged section. W01's landed OperationContext now carries binding_ref as the typed, credential-free reference. The concrete runtime interface that resolves that reference to an authorized binding inside kiro-cli is still absent; this slice does NOT assume it and reports the missing resolution path as a named gap rather than inventing one",
+      "later_integration_step": "Post-W01 runtime integration resolves binding_ref inside kiro-cli without exposing credential bytes",
+      "current_state": "boundary_defined_in_merged_connections_md; typed_binding_reference_landed_in_control_plane; credential_resolution_pending"
     },
     {
       "id": "live-run-dependency",
@@ -153,8 +153,9 @@ this document argues for elsewhere.
 ```
 
 Nothing in the JSON above reads as discharged by this slice: rows 1–5 are
-enforced by the W00-S2 validator (not yet merged), row 6's binding interface is
-pending W01, and row 7 is pending W15. The denominator of required conformance
+enforced by the W00-S2 validator (not yet merged), row 6's typed binding
+reference has landed in W01 while credential resolution remains pending, and row
+7 is pending W15. The denominator of required conformance
 work is unchanged by this document — it is made visible, not reduced.
 
 ## Pending contract item (owned by the campaign-contract owner)

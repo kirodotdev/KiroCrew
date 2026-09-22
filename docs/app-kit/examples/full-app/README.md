@@ -1,19 +1,20 @@
-# Oncall Watchtower — Full-Featured Example
+# Oncall Watchtower — Full Example Source
 
-Demonstrates all KiroCrew app capabilities: UI page, agent, skill, cron job,
-real-time events, and nav badge.
+Illustrates a Kiro Crew UI page, agent, skill, five-minute cron declaration,
+real-time event subscription, and navigation badge.
 
-## Install
+This directory is a source fixture, not a directly runnable app. Its `ui/`
+directory contains only `src/App.tsx`: there is no `package.json`, Vite config,
+compiled `dist/index.mjs`, or backend for the component's `/api/tickets` call.
+
+## Use as a reference
+
+Start from a complete scaffold, then port the UI component, agent, skill, and
+manifest fields you need:
 
 ```bash
-cd full-app/ui && npm install && npm run build
-kirocrew app install ./full-app
-kirocrew app enable oncall-watchtower
+kirocrew app init oncall-watchtower --ui --cron
 ```
 
-## Features
-
-- Dashboard page with ticket table and stat cards
-- Background agent that checks tickets every 5 minutes
-- Real-time notification handling
-- Sidebar badge showing urgent ticket count
+Add an app backend that serves `/api/tickets`, build the UI, and follow the
+install and enable steps in [Getting Started](../../getting-started.md).

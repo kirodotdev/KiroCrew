@@ -20,7 +20,7 @@ driver of that substrate. TaskRunner is another, stricter product layer: it uses
 the common substrate but keeps its planning, approval, retry, test,
 git/worktree, replan, persistence, and cleanup semantics.
 
-The subsystem lives in `src/kiro_crew/workflows/` (13 modules). This file is the
+The subsystem lives in `src/kiro_crew/workflows/` (14 modules, including `__init__.py`). This file is the
 **frozen contract** those modules cite: `workflows/__init__.py` declares the `ctx`
 Protocol and the event vocabulary and points here, `events.py` says the per-type
 `data` field table lives here, and `validate.py` says never to relax a check here
@@ -603,8 +603,8 @@ objects (in particular never the `asyncio.Task`).
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
-ancestry, and the driving `task`. Statuses: `running`, `finished`, `failed`,
-`cancelled`.
+ancestry, and the driving `task`. Statuses: `running`, `paused`, `finished`,
+`failed`, `cancelled`; `running` and `paused` are active states.
 
 Two distinct serializations:
 
@@ -751,9 +751,10 @@ Properties that matter:
 
 - **Atomic writes:** temp file plus `os.replace`, then `chmod 0o600`, so a crash
   mid-write cannot corrupt a run file.
-- **Redaction before disk:** every string in the record passes through
-  `redact_exfiltration_urls` then `redact_credentials`, recursively. Defense in
-  depth; the HTTP and chat surfaces redact again on the way out.
+- **Redaction before disk:** every string **value** in the record passes through
+  `redact_exfiltration_urls` then `redact_credentials`, recursively. Mapping keys
+  are retained as-is by `WorkflowRunStore`; the HTTP and chat response redactors
+  independently cover both keys and values on the way out.
 - **Injective paths:** a `run_id` is sanitized to alphanumerics plus `_`/`-` so a
   malformed id cannot traverse out of the runs dir. Because sanitizing is lossy,
   when it changes the id a 12-hex-char sha256 prefix of the original is appended,
@@ -831,9 +832,11 @@ mutation remain on the owning loop. This is startup-only on an unpublished
 registry, never concurrent with live runs or host reopen. Cancellation (including
 repeated cancellation) drains the owned load before propagating, leaving no late
 writer to race a subsequent initialization. The synchronous constructor and
-`load_persisted()` remain available for standalone callers. Both paths retain the
-store's best-effort failure semantics: awaiting I/O does not certify a successful
-write when the store itself reports failure only through debug logging.
+`load_persisted()` remain available for standalone callers. Inventory failures
+propagate. Snapshot-save failures raised by the store are converted by the registry
+into the run's sanitized persistence-health error, so awaiting the I/O drains the
+attempt but does not by itself certify durable success; store deletion remains
+best-effort.
 
 ### Reusable definition library
 
@@ -1008,10 +1011,10 @@ multiple snapshots behind an active write, superseded intermediate snapshots are
 discarded and the newest snapshot is written last; deletion uses the same queue
 so an in-flight checkpoint cannot resurrect a removed run.
 
-Run ids are `wf_NNNNNN` from a per-process monotonic counter, deliberately with no
-time or random component so they stay resume-stable. On startup, after rehydrating
-persisted runs, the counter continues past the highest persisted sequence so new
-ids cannot collide with restored ones.
+Run ids are durable monotonic `wf_NNNNNN` values allocated by
+`workflow_memory.allocate_run_id()`. The service's recovered sequence is only a
+lower bound; the cross-process, fsync-backed high-water allocator is authoritative.
+See [Atomic run identity allocation](#atomic-run-identity-allocation).
 
 ### Authoring
 
@@ -1300,7 +1303,8 @@ and `agent_finished` each already carry a `ts`.
 
 ### MCP tools
 
-`mcp_core.py` exposes eight tools that forward to the routes above:
+`mcp_tools/workflows.py` exposes eight tools that forward through the shared MCP
+HTTP helpers to the routes above:
 `workflow_author`, `workflow_run` (takes `source`, `intent`, or an exact saved
 `workflow` reference, plus `input`, `name`, `args`, `budget_total`),
 `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
@@ -1327,7 +1331,9 @@ exact saved runs; its Runs view owns common history and explicit promotion.
 
 The `workflows` builtin app (`apps/builtins/workflows/`) is `defaultEnabled:
 false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over its
-own stdlib HTTP server.
+own stdlib HTTP server. Its `/run` endpoint uses the deterministic `_stub_agent`;
+real agent orchestration runs through the gateway service and the MCP/HTTP surfaces
+above.
 
 `/examples` serves the scripts in [`examples/workflows/`](examples/workflows/),
 which `server.py::_examples_dir()` locates by walking up from the module toward the

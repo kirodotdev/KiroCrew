@@ -147,7 +147,9 @@ Execution model:
 - Every script is wrapped as `/bin/bash -c "set -euo pipefail\n<script>"`, so an
   unset variable or any failing command in a pipeline aborts the script. Write
   scripts assuming bash, and prefer `bash script.sh` over `source script.sh` so
-  the intent is explicit.
+  the intent is explicit. Native Windows hosts without `/bin/bash` report the
+  lifecycle hook as failed; avoid these hooks or document that prerequisite for
+  an app that claims Windows support.
 - Scripts run sandboxed with a minimal environment (no gateway secrets) plus
   `NONINTERACTIVE=1`, with `cwd` set to the app directory, under a cgroup
   ceiling, in their own process group so a timeout kills the whole tree. They
@@ -260,12 +262,12 @@ unreachable on exactly the hosts that need it to explain how to get the desktop 
 # Build the UI bundle if the app has one
 cd my-app/ui && npm install && npm run build && cd ..
 
-curl -X POST http://localhost:5476/api/apps/install \
-  -H 'Content-Type: application/json' \
-  -d '{"source": "./my-app"}'
-
-curl -X POST http://localhost:5476/api/apps/my-app/enable
+kirocrew app install /absolute/path/to/my-app
+kirocrew app enable my-app
 ```
+
+The REST routes require dashboard or app authentication; a bare `curl` request
+is not an equivalent local-install command.
 
 The dashboard's Sources menu on the Apps page can install from a local path too.
 
@@ -277,22 +279,12 @@ Verify:
 4. If it ships agents, ask one to do something from chat.
 5. If it ships crons, confirm they appear on the Schedule page.
 
-Debug:
+Debug the installed record with `kirocrew app info my-app`; the install command
+reports manifest validation errors directly and names the offending field.
 
-```bash
-curl http://localhost:5476/api/apps | python3 -m json.tool
-curl http://localhost:5476/api/apps/my-app/manifest | python3 -m json.tool
-```
-
-Manifest validation errors are returned by the install call itself, so a
-rejected install names the offending field.
-
-Iterate:
-
-```bash
-cd ui && npm run build && cd ..
-curl -X POST http://localhost:5476/api/apps/my-app/update
-```
+To iterate, rebuild the UI and use the installed app's **Update** action in the
+authenticated App Store UI. The update REST route is available to authenticated
+clients, but not to a bare `curl` request.
 
 For a tighter loop, turn on dev mode (`kirocrew app dev my-app`, or `POST
 /api/apps/my-app/dev`): UI files are then served with `Cache-Control: no-store`
@@ -572,7 +564,7 @@ installed one.
 - [ ] No `..` or absolute paths in `agents`, `skills`, `sops`, `ui.entry`,
       `ui.pages[].entryPoint`, `backend.entryPoint`
 - [ ] `permissions` are minimal, and each one is actually used
-- [ ] Icon committed, square, 256x256 or larger
+- [ ] Icon committed, square, opaque, and 512x512
 - [ ] At least one screenshot and one hero image committed
 - [ ] `description` is plain text and reads well truncated to two lines
 - [ ] `tags` are lowercase and land the app in the right category

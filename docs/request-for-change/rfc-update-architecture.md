@@ -1,10 +1,10 @@
 ---
 title: Update Architecture (install-shape capability contract)
-status: draft
+status: partial
 author: zezhexu
 created: 2026-07-31
-last-audited: 2026-08-06
-audited-at: 8861f89e
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr: 1003
 implementation-prs: [1734]
 tracking-issues: []
@@ -13,14 +13,13 @@ superseded-by: []
 ---
 # RFC: Update Architecture (install-shape capability contract)
 
-- Status: draft — **Phase 1 is now partly implemented.** PR #1734 (merged,
-  `8861f89e`) shipped the install-shape → behavior derivation for the *check* path
-  and the SPA surfaces that read it. What that PR closed, and what it did not, is
-  itemized under **Implementation status** below; the phase list further down has
-  been amended to match. Adjacent in-flight under a **different** design: PR #999
-  (`feat/emergency-release-controls`, open) adds a feed-served minimum version +
-  mandatory-update modal for the desktop lane only, without the capability
-  contract.
+- Status: partial — the backend capability contract
+  (`platform/update_capability.py`), managed-venv wheel engine
+  (`platform/wheel_engine.py`) and host-local dashboard approval step-up
+  (`platform/update_stepup.py`) ship. The source-tree automatic apply and legacy
+  `auto_update` surfaces remain, while the Phase 3 `state` / `progress` and
+  shared drain-and-restart contract are still open. The implementation-status
+  sections below preserve earlier audit snapshots; current code is authoritative.
 - Correction to the reference below: KiroCrew ships **five** distribution shapes, not the set implied — `beacon.py:155` lists `{dmg, appimage, wheel, source, docker}`.
 - Author: zezhexu
 - Created: 2026-07-31

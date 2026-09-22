@@ -1,35 +1,48 @@
 ## Browser Module
 
-Website browsing through `playwright-cli`, the Playwright agent CLI. An agent
-drives a browser by running shell commands; Kiro Crew owns the install flow, the
-snapshot directory, and the dashboard surface that displays and hands over a live
-session.
+Website browsing has two agent paths. In the desktop app, the `browser` MCP
+tool drives the Browser panel's native embedded Chromium view. When no native
+panel serves the session, or `dashboard.use_builtin_browser` is off, the tool
+directs the agent to the `playwright-cli` shell path. Kiro Crew owns the CLI
+install flow, snapshot directory, command bus, and dashboard surfaces.
 
 ### Architecture
 
-The browser is a **shell capability, not a tool namespace.** Each browser action
-is one `playwright-cli` invocation on the agent's ordinary command path, so there
-is no MCP server to register, no tool schemas re-sent per request, and no
-per-message browse marker. The agent decides per task whether a browser is
-warranted or whether `web_fetch` answers the question.
+The native path is a **single MCP tool, not a Playwright tool namespace.** Its
+`op` enum exposes `navigate`, `snapshot`, `click`, `type`, `press_key`, `hover`,
+`select_option`, `screenshot`, `wait_for`, `back`, and `console`. The MCP shim
+posts one bounded command to the gateway's in-memory bus; Electron long-polls the
+bus, runs the operation in the panel it owns, and posts the result. A missing
+panel fails fast to the CLI fallback. The agent still decides per task whether a
+browser is warranted or whether `web_fetch` answers the question.
 
 ```
-agent turn ──shell──▶ playwright-cli <verb> …
-                          │
-                          ├─▶ stdout: page URL, page title, path to a snapshot YAML
-                          └─▶ disk:   .../page-<timestamp>.yml   (the accessibility tree)
-
-agent reads the YAML with its own file tools ONLY when it needs the tree
+agent turn ──MCP browser(op, args)──▶ gateway command bus ──▶ Electron native view
+     │                                      │
+     │                                      └─ no panel / built-in disabled
+     └─shell fallback──▶ playwright-cli <verb> …
+                              │
+                              ├─▶ stdout: page URL, title, snapshot YAML path
+                              └─▶ disk:   .../page-<timestamp>.yml
 ```
 
-The gateway itself runs exactly two kinds of CLI command, neither of them on an
-agent's behalf: the `show` dashboard it supervises ([Dashboard
+The native route is session-bound. The MCP shim sends the namespaced session key
+in the authenticated request header and the bare slot key in the body, matching
+the panel registration. The gateway bounds queues to 32 commands per session,
+uses 15-second operation timeouts (60 seconds for `navigate` and `wait_for`), and
+expires panel liveness after 30 seconds without a drain or result. The three
+internal routes are `/api/browser/command`, `/api/browser/command-drain`, and
+`/api/browser/command-result`; all require internal-secret authentication and do
+not accept dashboard-cookie callers.
+
+The gateway also runs exactly two kinds of CLI command, neither on an agent's
+behalf: the `show` dashboard it supervises ([Dashboard
 integration](#dashboard-integration)), and the browsing verb behind the Browser
 panel's address bar ([Address bar launcher](#address-bar-launcher)), which a
-HUMAN triggers by pressing Enter in an authenticated dashboard. Everything an
-agent does with a browser still goes through its shell.
+HUMAN triggers by pressing Enter in an authenticated dashboard. Agent CLI
+fallback actions still go through the ordinary shell approval path.
 
-**The stdout line is the contract.** Every command prints the resulting page URL,
+**The CLI stdout line is the contract.** Every CLI command prints the resulting page URL,
 the page title, and a filesystem path to a snapshot YAML. Roughly 250 characters
 of stdout carry a complete action result, and the accessibility tree stays on
 disk until the agent decides it needs it. This is why no compression layer
@@ -80,10 +93,12 @@ ladder. A dashboard session must receive an interactive command grant, a
 trusted-command pattern, or an explicit trust/auto-approve mode before the
 command runs without a prompt.
 
-There is no separate capability toggle or flag file because the CLI exposes no
-capability gating of its own: once an approved shell turn runs the binary, all of
-its verbs are reachable. That limitation does not turn binary presence into
-consent for automatic execution.
+The CLI exposes no capability toggle of its own: once an approved shell turn
+runs the binary, all of its verbs are reachable. `dashboard.use_builtin_browser`
+(default `true`) selects the native MCP path in the desktop app; turning it off
+routes allowed browsing to the CLI and does not override the governance
+`capabilities.browse` denial. That limitation does not turn binary presence into
+consent for automatic CLI execution.
 
 #### Approval boundary
 
@@ -94,10 +109,16 @@ withholds writes to the whole prefix. Gateway code never consumes that PATH. A
 shim planted in `~/.local/bin`, the project, the workspace, or another writable
 PATH directory is diagnosed once at WARNING and ignored.
 
-The first agent command prompts under normal mode. The operator can approve once,
+The first CLI command prompts under normal mode. The operator can approve once,
 trust the command pattern for the session, or deliberately enable wider
 auto-approval. The last two choices are ordinary audited trust decisions and
-remain subject to the deny and governance gates.
+remain subject to the deny and governance gates. The native `browser` tool has a
+separate bounded surface: governance is checked before dispatch, and `navigate`
+auto-drives only public HTTP(S) targets. Literal loopback, private, link-local,
+reserved, alternate-encoded IP, non-ASCII host, parser-differential, and non-HTTP
+forms are refused and directed to the approval-gated CLI path; DNS names are not
+resolved, so public-name-to-private-address rebinding remains an accepted
+residual.
 
 ### Install flow
 
@@ -795,6 +816,7 @@ rather than showing the browser's own connection-refused page.
 | Capability availability | Vetted absolute launcher identity only: `<data-home>/playwright-cli` first, then fixed system locations whose direct launcher, Node and package-entry hierarchies the gateway user cannot write. The managed prefix is on the sensitive-path floor and `_CREW_READONLY_LEAVES`, so agent file tools cannot read or replace it and every agent sandbox can execute but not modify it. Linux precreation requires the launcher leaf itself to be a real directory before and after the create race; a resolving symlink is refused because a bind mount would follow its target and leave the name replaceable. PATH, `~/.local/bin`, project and workspace candidates are ignored. On every OS gateway-owned calls use an attributed direct pair: managed `gateway-node`/`node.exe` plus contained `playwright-cli.js`, or a fixed-system Node and package entry whose complete hierarchies are non-writable. POSIX shebangs, PATH Node, and Windows batch files never receive gateway request data. See [Capability model](#capability-model) for why availability is not approval |
 | Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
 | Address bar launcher (`POST /api/browser/open`) | Owner-only (cookie/token), on no internal-path list, and the handler refuses an internal-secret caller outright, so an agent cannot use it to skip the shell approval ladder. The URL is re-validated (`http`/`https`, host, and no secret-bearing userinfo, query, or fragment — argv is world-readable) before it is the one free argv element; the session name is derived hex; no sandbox flag is ever added and no config written — the operator's `PLAYWRIGHT_MCP_CONFIG` is inherited as-is. Only sessions this gateway opened are closed at shutdown, never `close-all`/`kill-all`. **Accepted residual:** a token carried in the URL *path* still reaches argv for the life of the CLI process; paths stay allowed because refusing them refuses most ordinary pages. The residual closes when the CLI takes the URL outside argv — #9854 tracks that switch and its version floor |
+| Native `browser` MCP tool | The tool is always advertised but re-checks the vetted CLI availability and `capabilities.browse` governance at call time. It dispatches one enum-bounded operation to the calling slot's Electron panel through internal-secret-only routes. `dashboard.use_builtin_browser=false`, an unresolved session, a missing panel, HTTP 404/503, or a transport miss returns CLI fallback guidance; governance denial never falls back. `navigate` accepts only public HTTP(S) targets as described above. Arguments are scalar or lists of scalars, result text is credential/exfiltration-URL redacted and capped, and screenshot data is not inlined into the model response. **Accepted residual:** the lenient session resolver can map a subagent process to its parent slot, so a subagent tool call may drive the parent's native panel; this stays same-user/same-machine and public-navigation-only |
 | Agent reach into a `panel-` session | **Accepted residual.** A `panel-` browser can hold logins the human typed into it, and an agent drives the same CLI through its shell. What separates the populations is structural but not an enforcement boundary: an agent process runs under its own generated `PWTEST_DAEMON_SESSION_DIR`/`PWTEST_SOCKETS_DIR` namespace (see [Generated session reachability](#generated-session-reachability)), so a bare `playwright-cli -s=panel-… goto` from an agent shell resolves no session and its `list` does not show one; reaching the human's browser takes a command that also names the CLI's default registry and the gateway's socket root, both readable by a same-user process. The control on that command is the ordinary shell approval ladder, exactly as for every other `playwright-cli` invocation; the reserved prefix and the `web-browse` skill's rule are the conventions on top. An enforced isolation would be a per-population credential on the daemon socket, which the CLI does not offer |
 | Reveal | One JSON line to the `show` dashboard's own singleton socket under the gateway-owned socket root both children run with, only when the installed bundle carries that layout, after a successful launch; fails closed when there is no listener. `show -s=<name>` (no port) is never run, since with a stale socket it launches a Chromium app window on the host |
 | Saved state files | Owner-only permissions; they hold live session credentials |
@@ -957,5 +979,6 @@ absent) and 16 (browser download blocked).
   opening a page so the user can see it.
 - [web-verify](../../../src/kiro_crew/builtin_skills/web-verify/SKILL.md) for
   screenshotting a front-end change as evidence.
-- [mcp](../../architecture/mcp.md) for why browsing is deliberately not an MCP
-  server.
+- [mcp](../../architecture/mcp.md) for MCP registration, transport, and trust
+  boundaries. The `browser` tool is a thin native-panel command proxy; the
+  Playwright fallback remains a shell capability.

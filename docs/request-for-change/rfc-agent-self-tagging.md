@@ -3,8 +3,8 @@ title: Agent self-tagging on the board — governed self-tagging via a protected
 status: partial
 author: jeeshofone
 created: 2026-09-16
-last-audited: 2026-09-17
-audited-at: 780e75e2d
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr: null
 implementation-prs: [7779]
 tracking-issues: [7774]
@@ -24,8 +24,9 @@ owns the judgment of *when* to move; a fixed backend authorization layer owns
 never inferred. The reversible-once-shipped decision this document exists to
 record is the **default grant shape** — which tags are agent-writable out of the
 box, and why a fresh install and an upgrade differ. It is a design of record for
-what ships in [#7779](https://github.com/kirodotdev/KiroCrew/pull/7779); nothing
-here is on main.
+v1, which is on main via [#7779](https://github.com/kirodotdev/KiroCrew/pull/7779);
+the tag-manager policy UI, provenance-required minting, and broader v2 scope
+remain open.
 
 ## Summary
 

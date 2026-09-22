@@ -88,10 +88,10 @@ Then:
 
 ### Step 5. Configure Kiro Crew
 
-Run the interactive setup, which prompts for both tokens:
+Run the Slack-specific interactive setup, which prompts for both tokens:
 
 ```bash
-kirocrew setup
+kirocrew setup --slack
 ```
 
 Paste your App Token (`xapp-...`), Bot Token (`xoxb-...`), and your Slack Member ID when prompted.
@@ -104,7 +104,7 @@ To find your Slack Member ID: open your workspace in Slack → click your profil
 
 ```bash
 kirocrew doctor    # verify tokens and config
-kirocrew gateway   # start KiroCrew
+kirocrew gateway   # start Kiro Crew
 ```
 
 Open your workspace in Slack, find your app in the Apps section, and send it a DM. The app only lives in the workspace where you installed it.
@@ -192,8 +192,8 @@ and configure that token only in the integration that consumes it.
 | Field | Value |
 |-------|-------|
 | Command | `/kirocrew` |
-| Short Description | Dashboard access, allowlist, and channel tracking |
-| Usage Hint | `dashboard [duration] \| @user \| #channel` |
+| Short Description | Dashboard access, agent, session, and channel controls |
+| Usage Hint | `dashboard [duration] \| agent [name] \| sessions \| #channel` |
 
 The command name you choose here must match the `slack.command` value in `~/.kiro/crew/config.json` (default: `kirocrew`):
 
@@ -233,7 +233,7 @@ the session Resume / End buttons.
 
 ### Step 10. Configure Kiro Crew
 
-Same as [Path A, Step 5](#step-5-configure-kirocrew).
+Same as [Path A, Step 5](#step-5-configure-kiro-crew).
 
 ### Step 11. Verify & Run
 
@@ -249,7 +249,7 @@ tokens from an older installation.
 
 ### Manual Token Configuration
 
-If you prefer to configure tokens manually instead of using `kirocrew setup`:
+If you prefer to configure tokens manually instead of using `kirocrew setup --slack`:
 
 ```bash
 mkdir -p ~/.kiro/crew
@@ -322,7 +322,7 @@ To install your app in a different Slack workspace, export the manifest and recr
 1. Export your app manifest: **App Config → App Manifest → Copy to Clipboard** (YAML)
 2. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**
 3. Select the new workspace and paste the YAML
-4. Re-generate the App Token (Socket Mode) and Bot Token, then re-run `kirocrew setup` with the new tokens and your Member ID for that workspace
+4. Re-generate the App Token (Socket Mode) and Bot Token, then re-run `kirocrew setup --slack` with the new tokens and your Member ID for that workspace
 
 ---
 
@@ -350,13 +350,19 @@ instead of a link.
 ### How It Works
 
 1. Link must be clicked within **5 minutes** (after that the URL expires)
-2. On first click: token is bound to your IP, and a session cookie is set
-   (`mc_token_<port>`, HttpOnly, SameSite=Lax, `Secure` only over HTTPS). The
-   cookie is keyed by the port your **browser** connects to, not the port the
-   gateway listens on, because browsers do not isolate cookies by port and two
-   tunnelled instances would otherwise overwrite each other's session
-3. Subsequent visits use the cookie, so there is no need to re-click the link
-4. Session cookie lasts for the requested duration (default 1h, cap 20h)
+2. On first click: token is bound to your peer and an access cookie plus a
+   refresh cookie are set (`mc_token_<port>` and `mc_refresh_<port>`, both
+   HttpOnly and SameSite=Lax; `Secure` only over HTTPS). The cookies are keyed
+   by the port your **browser** connects to, not the port the gateway listens on,
+   because browsers do not isolate cookies by port and two tunnelled instances
+   would otherwise overwrite each other's session. Behind a same-host tunnel,
+   the ordinary peer pin sees the tunnel's loopback address; see
+   [Named HTTPS tunnel (phone)](remote-and-mobile.md#named-https-tunnel-phone)
+   for that boundary
+3. Subsequent visits use the cookies, so there is no need to re-click the link
+4. The access cookie lasts for the requested duration (default 1h, cap 20h).
+   Successful refreshes rotate both cookies and extend a 30-day sliding idle
+   window; see [Session duration](remote-and-mobile.md#session-duration)
 5. **Every** request needs a valid token or cookie, including requests that
    arrive on loopback. Loopback is not an exemption: a local port forwarder
    (`socat`, `ssh -R`, a helper script) makes remote traffic appear to come from
@@ -445,8 +451,8 @@ The slash command name is configurable via `slack.command` in config (default: `
 | `/<command> agent` | Show agent selector dropdown |
 | `/<command> agent <name>` | Switch to a named agent |
 | `/<command> voice` | Configure TTS voice settings |
-| `/<command> config` | Manage users and channels (owner-only) |
-| `/<command> users` | Manage allowed users |
+| `/<command> config` | Manage tracked channels (owner-only; multi-user access is disabled) |
+| `/<command> users` | Report that multi-user access is disabled |
 | `/<command> channels` | Open channel management modal |
 | `/<command> sessions` | List recent sessions with resume buttons |
 | `/<command> status` | Show runtime stats |
@@ -482,8 +488,8 @@ Available in DMs or @mentions.
 | Command | Purpose |
 |---------|---------|
 | `status` | Show runtime stats summary |
-| `spawn <task>` | Run a subagent (blocking) |
-| `bg <task>` | Run a subagent (fire-and-forget) |
+| `spawn <task>` | Start a background subagent |
+| `bg <task>` | Alias for `spawn <task>` |
 | `spawn list` | List active subagents |
 | `cron list` | List cron jobs |
 | `cron remove <id>` | Remove a cron job |
@@ -530,7 +536,7 @@ to end just one browser's session, sign out in that browser
 | App created in wrong workspace | Delete the app on api.slack.com, then recreate it in the correct workspace |
 | No events received | Verify Socket Mode is ON, events are subscribed, App Home Chat Tab is enabled. Reinstall app after changes |
 | Home tab is blank | Add `app_home_opened` event, enable Home Tab, reinstall app |
-| `missing_scope` error | Add the scope in OAuth & Permissions, reinstall app, re-run `kirocrew setup` |
+| `missing_scope` error | Add the scope in OAuth & Permissions, reinstall app, re-run `kirocrew setup --slack` |
 | Bot doesn't respond | Check `kirocrew doctor` output. Ensure gateway is running (`kirocrew gateway`) |
 | Install needs approval | Your workspace restricts app installs, so a workspace admin must approve, or use a workspace you own |
 | Dashboard shows 403 | Token expired, IP changed, or the link was opened more than 5 minutes after it was issued. Run `!dashboard` for a new link |

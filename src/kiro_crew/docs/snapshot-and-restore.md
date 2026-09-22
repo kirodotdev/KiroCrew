@@ -4,8 +4,9 @@
 portable `.tar.gz`, and `kirocrew restore` unpacks it, on this machine or a
 different one. Use it before an upgrade you are unsure about, to move your setup
 to a new laptop, or to merge the memory from two machines you have been using in
-parallel. Snapshots are **not** automatic: nothing takes one for you, so if you
-want a routine backup, schedule the command yourself.
+parallel. Core snapshots are **not** automatic: unless you configure the AWS
+Control app's nightly off-host backup, nothing takes one for you. For a routine
+local backup, schedule the command yourself.
 
 ## Quick Start
 

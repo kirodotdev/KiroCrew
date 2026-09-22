@@ -56,10 +56,10 @@ taskrunner.py        (orchestrator)
 
 | Module | Class/Functions | Responsibility |
 |--------|----------------|----------------|
-| `task_models.py` | `TaskStatus`, `Task`, `WorkingMemory`, `Project`, `NotifyCallback`, constants | Shared data types and configuration constants |
+| `task_models.py` | `TaskStatus`, `Task`, `WorkingMemory`, `Project`, constants | Shared data types and configuration constants |
 | `task_planner.py` | `decompose()`, `parse_tasks()`, `normalize_cross_group_deps()`, `group_parallel_tasks()`, `plan_to_chat_context()`, `update_plan_tasks()`, `auto_name()` | LLM spec decomposition, task parsing, dependency normalization, parallel grouping, plan-to-chat formatting |
 | `task_executor.py` | `execute_task()`, `build_task_prompt()`, `self_review()`, `run_tests()`, `check_context()` | Task execution with retry/recovery budgets, prompt building, context compaction, test running, self-review |
-| `task_reporter.py` | `notify()`, `build_status()`, `save_progress()`, `load_checkpoint()`, `build_resume_context()`, `format_completion_summary()` | Notifications, status reporting, TASK_PROGRESS.md checkpointing, resume context |
+| `task_reporter.py` | `NotifyCallback`, `notify()`, `build_status()`, `save_progress()`, `load_checkpoint()`, `build_resume_context()`, `format_completion_summary()` | Notification contract, status reporting, TASK_PROGRESS.md checkpointing, resume context |
 | `taskrunner.py` | `TaskRunner` | Orchestrator — owns run lifecycle, `_try_replan`, watchdog, run persistence (`_persist_runs`/`_load_runs`); delegates decomposition/execution/reporting to the helper modules |
 
 ### Workflow substrate attachment
@@ -247,7 +247,7 @@ class TaskRunner:
         global_timeout: float = 0.0,
         token_budget: int = DEFAULT_TOKEN_BUDGET,
         on_approval: Callable[[Task], Awaitable[bool]] | None = None,
-        max_parallel_steps: int | None = None,  # None/0 -> host-safe ceiling
+        max_parallel_steps: int | None = None,  # None/0 -> memory-sized host ceiling
         workspace_dir: str = "",
         workflow_service: WorkflowRunPublisher | None = None,
     ) -> None: ...
@@ -256,9 +256,11 @@ class TaskRunner:
     # task_executor.execute_task()/self_review(), task_reporter.build_status()
 
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
-    async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False) -> Project
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "") -> str
-    def cancel(self, task_id: str | None = None) -> None  # None = cancel all
+    async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None) -> Project
+    async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, input_content: str | None = None) -> Project
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None) -> str
+    def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None  # None = cancel all
+    def pause(self, task_id: str) -> None
     def status(self) -> dict
 
     @property
@@ -308,11 +310,11 @@ likewise decomposed deterministically. Any other spec is decomposed by the LLM.
 Deny-by-default governs the invalid case, and it is keyed on whether anyone is
 watching. When an **unattended** run's `.yaml`/`.yml` spec is not workflow-shaped —
 `source` in `_UNATTENDED_SOURCES` = `{"cron", "mcp"}` — the run fails and is never
-retried through the LLM decomposer. **Attended** sources (`chat`, `dashboard`, and
-unsourced CLI runs) fall back to the LLM decomposer, because an operator is present to
-read the plan and both of those surfaces always supply a source, so a truthiness gate
-would have removed a path that worked before the rule. The SEL `decompose_yaml` `error`
-event is recorded either way.
+retried through the LLM decomposer. Every other source — including `chat`,
+`dashboard`, `file`/CLI, and an unsourced run — falls back to the LLM decomposer because
+it is not in the unattended set. Testing the two explicit unattended values rather than
+source truthiness preserves the existing attended paths. The SEL `decompose_yaml`
+`error` event is recorded either way.
 
 "Not workflow-shaped" includes a document YAML cannot parse at all. `decompose_yaml`
 raises `ValueError` for every rejected spec, its own shape checks and a `yaml.YAMLError`
@@ -327,8 +329,10 @@ unsourced runs), so a denial is attributed to the surface that started the run.
 
 ### Data Types
 
-Named `TaskStatus`/`Task`/`Project` in `task_models.py`; `StepStatus`/`Step`/`TaskRun`
-remain as back-compat aliases exported from `taskrunner.py`.
+Named `TaskStatus`/`Task`/`Project` live in `task_models.py`; `StepStatus`/`Step`/`TaskRun`
+remain as back-compat aliases exported from `taskrunner.py`. The excerpt below shows the
+execution-critical fields, not the complete dataclass constructors; the source also
+carries execution identity, source/UI metadata, estimates, timestamps, and git state.
 
 ```python
 class TaskStatus(Enum):
@@ -354,7 +358,7 @@ class Project:
     tasks: list[Task]
     started_at: float
     finished_at: float
-    status: str  # pending, planned, running, completed, failed, cancelled
+    status: str  # pending/planning/planned/running/pausing/cancelling/paused/completed/failed/cancelled
     current_task: int
     error: str
     tokens_used: int
@@ -366,7 +370,7 @@ class Project:
     branch_name: str       # git branch for task (e.g. kirocrew/task/{task_id})
     base_branch: str       # original branch before task started
     commit_hashes: list[str]  # per-step commit SHAs
-    worktree_path: str     # git worktree path (empty if git init)
+    worktree_path: str     # git worktree path (empty for a non-git folder)
     repo_root: str         # original repo root (for worktree cleanup)
     auto_approve: bool = False  # per-run trust: auto-approve tool permission requests
                                 # (deny-lists + force_approval gates still apply)
@@ -610,9 +614,10 @@ The limit is `self._max_parallel_steps`, computed in `__init__` as
 `min(taskrunner.max_parallel_steps, compute_max_subagents(cfg))` and re-derived
 at every run entry (see *Live config* below):
 
-- `compute_max_subagents` is the **host-safe ceiling** (derived from
-  `agent.subagent_auto_max`, clamped to host memory/CPU headroom). It exists to
-  prevent OOM, so it is always the upper bound.
+- `compute_max_subagents` is the **host-safe ceiling**: available memory and the
+  learned/configured per-agent memory cost size the result, then
+  `agent.subagent_auto_max` caps it. CPU is deliberately not a sizing term; the
+  adaptive controller reacts to live pressure instead.
 - A positive `taskrunner.max_parallel_steps` may only **lower** it (intentional
   throttling for cost / rate limits). `0` or unset means "use the ceiling".
 - An explicit knob value can therefore never raise concurrency above the
@@ -658,15 +663,15 @@ semaphore and the host-safe ceiling are the only throttling mechanisms.
 
 ## Runs Persistence
 
-Finished runs saved to `{work_dir}/runs.json` as JSON array.
-Loaded on `__init__` — survives gateway restarts.
+Persistent, non-cron runs are snapshotted throughout their lifecycle to
+`{work_dir}/runs.json` and loaded by `__init__`. Admission, plan/task edits,
+progress, terminal transitions, and deletion all await the fsync-backed snapshot
+path. See [Task snapshot persistence](#task-snapshot-persistence) for the full
+record, privacy exclusions, failure handling, and ordering contract.
 
-- Persisted on: task completion, task delete
-- Each run stores: task_id, spec_path, status, timestamps, error, tokens, replans, and bounded step results.
-- Delete via `DELETE /api/taskrunner/{task_id}` removes from memory and disk
-- A plan's default work directory is provisional until the plan is accepted. A
-  failed attempt removes that taskrunner-owned directory; an explicit caller
-  workspace is never removed.
+A plan's default work directory is provisional until the plan is accepted. A
+failed attempt removes that taskrunner-owned directory; an explicit caller
+workspace is never removed.
 
 ## Access Paths
 
@@ -696,11 +701,11 @@ Loaded on `__init__` — survives gateway restarts.
 | POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a new chat slot for manual review |
 | GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
 | GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
-| POST | `/api/taskrunner/refine` | Refine user input → task spec (SSE stream) |
+| POST | `/api/taskrunner/refine` | Start background user-input → task-spec refinement; progress arrives via `refine` WS events or GET polling |
 | GET | `/api/taskrunner/refine` | Refine status |
 | POST | `/api/taskrunner/refine/cancel` | Cancel refine |
-| POST | `/api/taskrunner/refine/answer` | Answer clarifying question during refine |
-| POST | `/api/reveal` | Reveal file path in Finder (`open -R` macOS, `xdg-open` Linux) |
+| POST | `/api/taskrunner/refine/answer` | Legacy answer hook; current refine never enters a question wait, so ordinary calls return 409 |
+| POST | `/api/reveal` | Reveal a path in the host file manager for a direct-local caller; remote or launcher-less cases return a clipboard-copy fallback |
 
 ### Status Response
 
@@ -735,11 +740,11 @@ Loaded on `__init__` — survives gateway restarts.
 
 ## Execution Limits
 
-`task_models.py` owns retry, recovery, replan, total-task, timeout, token-budget, progress-file, and session-prefix constants; `TaskRunner` owns the concurrent-run fallback and persistence filename. `task_executor.execute_task()`, `TaskRunner._try_replan()`, `TaskRunner._watchdog()`, and `task_executor.run_tests()` consume those bounds. `test_scenarios_v2_logic.py` pins retry exhaustion and `test_taskrunner.py::test_replan_blocked_by_step_limit` pins the total-task boundary, so documentation names the enforcement seams instead of copying tunables.
+`task_models.py` owns retry, recovery, replan, total-task, timeout, token-budget, progress-file, and session-prefix constants; `TaskRunner` owns the concurrent-run fallback and persistence filename. `task_executor.execute_task()`, `TaskRunner._try_replan()`, `TaskRunner._watchdog_loop()`, and `task_executor.run_tests()` consume those bounds. `test_scenarios_v2_logic.py` pins retry exhaustion and `test_taskrunner.py::test_replan_blocked_by_step_limit` pins the total-task boundary, so documentation names the enforcement seams instead of copying tunables.
 
 ## Notifications
 
-All notifications prefixed with `[spec_name]` via `_notify(title, body, run=run)`.
+Notifications with a run are prefixed with `[run.name]`, falling back to the spec path stem, via `_notify(title, body, run=run)`.
 
 | Event | Title | Body |
 |-------|-------|------|
@@ -750,10 +755,10 @@ All notifications prefixed with `[spec_name]` via `_notify(title, body, run=run)
 | Task completed | ✅ Task completed | Steps passed/failed, elapsed, tokens, work dir, full step list |
 | Task error | ❌ Task error | Exception message |
 | Stall warning | ⚠️ Task may be stalled | Minutes since last activity |
-| Session reset | 🔧 Watchdog: cancelling stalled step | Minutes + resetting |
-| Process died | 💀 Step N: process died | Recovery count |
+| Session reset | 🔧 Watchdog: cancelling stalled task | Minutes + resetting |
+| Process died | 💀 Task N: process died | Recovery count |
 | Lesson learned | 📝 Lesson learned | Rule text |
-| Replan started | 🔄 Re-planning (N/2) | Failed step title + error |
+| Replan started | 🔄 Re-planning (attempt N/2) | Failed step title + error |
 | Revised plan | 📋 Revised plan | New step count + titles |
 | Possible loop | ⚠️ Possible loop | Same error repeated Nx |
 | Token budget | 💰 Token budget exceeded | Usage vs budget |
@@ -795,15 +800,16 @@ mismatch from one raised inside the sink's own body.
 
 ## Git Coordination
 
-Each task runs on an isolated git branch via `git_coord.py`:
+A task rooted in an existing git repository runs on an isolated branch via
+`git_coord.py`; a non-git folder runs in place without initializing a repository:
 
-- **Existing repo**: `git worktree add` creates isolated working directory; user's checkout untouched
-- **No repo**: `git init` in work_dir, then `git checkout -b kirocrew/task/{task_id}`
-- **Per-step commits**: `git add -A && git commit` after each passed step
-- **Revert on failure**: `git reset --hard HEAD~1` when review fails (before retry)
-- **State summary**: `git log --oneline` + `git diff --stat` injected into step prompts
-- **Review diff**: `git diff HEAD~1` fed to independent review session
-- **Finalize**: worktree cleaned up on task completion
+- **Existing repo**: `git worktree add` creates an isolated working directory; the user's checkout stays untouched.
+- **Non-git folder**: `git_enabled` becomes false; no repository, branch, commit, revert, or git-diff review is created.
+- **Per-step commits (git runs)**: `git add -A && git commit` after each passed step.
+- **Revert on failure (git runs)**: `git reset --hard HEAD~1` when review fails, before retry.
+- **State summary**: `git log --oneline` + `git diff --stat` is injected when git coordination is active.
+- **Review diff**: `git diff HEAD~1` feeds the independent review session; non-git runs use the generic review prompt.
+- **Finalize**: an owned worktree is cleaned up when the run exits.
 - **Resume recovery**: a retry — and a restart of a run that already had a
   worktree — validates the saved worktree's path, repository,
   and branch before dispatching more steps. A lost worktree is recreated from
@@ -818,8 +824,8 @@ Each task runs on an isolated git branch via `git_coord.py`:
   that cannot be deleted is logged and left on disk beside the recreated
   worktree rather than failing the retry.
 
-Git init failure on a run's first initialisation is non-fatal — the task
-continues without git coordination. A resumed run (retry or restart of a run
+Git discovery or first-run worktree initialization failure is non-fatal — the
+task continues without git coordination. A resumed run (retry or restart of a run
 that already had a worktree) whose worktree is lost and cannot be recreated
 fails closed instead of continuing without git isolation. This governs
 `fresh=True` restarts too: `fresh` resets task results, not git identity, so a
@@ -833,7 +839,7 @@ finalizer removes the worktree.
 
 ## Cycle Detection
 
-Tracks consecutive identical errors within `_execute_step`:
+`task_executor.execute_task()` tracks consecutive identical errors:
 
 - 2nd identical error → ⚠️ warning notification
 - 3rd identical error → step FAILED with "Loop detected" message
@@ -844,7 +850,7 @@ Applies to both exception errors and test failure outputs.
 
 ## Step Prompt Context
 
-`_build_step_prompt` assembles context for each step (async):
+`task_executor.build_task_prompt()` assembles context for each step (async):
 
 1. **Role prompt** — autonomous execution agent identity + git branch awareness
 2. **Git context** (if available) — `git_coord.get_state_summary()` (log + diff stat)
@@ -874,7 +880,7 @@ Two-layer approval during step execution:
 
 ### Per-run auto-approve (trust) toggle
 
-`Project.auto_approve` is a per-run trust flag (default `False`). It is opt-in
+`Project.auto_approve` is a per-run trust-intent flag (default `False`); the live authorization is the scoped `SafetyOverride` grant described below. The intent is opt-in
 at execute time via the dashboard (`auto_approve` in the execute/start request
 body) and threaded through `execute_plan()`, `run()`, and `start_background()`.
 
@@ -895,7 +901,8 @@ The mid-stream context-overflow check still runs before final approval.
 
 ### Provenance gate & fail-closed audit (`_gate_auto_approve`)
 
-Every launch endpoint (`/start`, `/execute`) routes the requested `auto_approve`
+Both dashboard launch handlers (`POST /api/taskrunner` and
+`POST /api/taskrunner/{task_id}/execute`) route the requested `auto_approve`
 through the shared async `_gate_auto_approve()` provenance gate before honoring
 it. Per-run trust is a human-at-the-dashboard decision, so a grant is honored
 ONLY for a dashboard-context request (`request["app"] == ""`); an app/proxy
@@ -992,17 +999,18 @@ only job is to produce a better-written spec from the user's input.
 
 ## Dashboard UI (Projects Page)
 
-Left/right split layout: 260px sidebar + detail/compose area.
+The page uses a left run rail plus a detail/compose area. The rail defaults to
+260px, is resizable from 220–460px, and can collapse to a 48px strip.
 
-- **Sidebar** (visible when runs exist): compact project cards with status icon, name, progress bar, cancel/delete buttons. "＋ New Project" button at top.
-- **Compose area** (no project selected): ✨ Compose | 📄 From Spec tabs, shared `AgentSelector`
-- **Compose mode**: textarea + "✨ Refine into Spec" + "📋 Plan" buttons, `PlanningBanner` with cancel
-- **From Spec mode**: textarea + file upload (`<input type="file">`) + "▶ Run" + "📋 Plan" buttons
-- **Project detail** (`ProjectDetailPage`): Idea/Tasks tab bar
-  - **Idea tab**: read-only spec content + "✏️ Edit in Chat" button
-  - **Tasks tab**: DAG/Phased view toggle with `DagView` and `PhasedView` components
-- **Action buttons**: Execute/Chat/Discard (planned), ■ Cancel (running), ↻ Restart/⏰ Schedule (completed/failed)
-- **WS-driven updates**: `push_refresh("taskrunner")` on every notification, 3s auto-refresh polling
+- **Run rail**: always present; compact run cards show status, name, progress, live auto-approve state, and cancel/delete controls. The top action starts a new task.
+- **Compose area** (no run selected): **Compose**, **From Spec**, and **From YAML** modes share `AgentSelector` and an optional workspace override.
+- **Compose mode**: task text, **Refine into Spec**, **Plan**, per-run auto-approve, and **Run** controls; planning has a cancellable `PlanningBanner`.
+- **From Spec / From YAML**: editable text plus file upload, **Run**, and **Plan**. YAML mode states that a workflow-shaped document bypasses the LLM decomposer.
+- **Project detail** (`ProjectDetailPage`): Idea/Tasks tab bar.
+  - **Idea tab**: read-only spec content + **Edit in Chat**.
+  - **Tasks tab**: DAG/Phased view toggle with `DagView` and `PhasedView`.
+- **Run actions**: planned runs offer Execute/Chat/Discard; running runs offer Pause/Cancel; paused runs offer Resume; terminal runs offer the applicable Chat/Restart/Schedule actions.
+- **Updates**: `push_refresh("taskrunner")` on notifications plus 3s polling.
 
 ### Task snapshot persistence
 

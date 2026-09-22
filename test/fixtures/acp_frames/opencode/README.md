@@ -1,6 +1,6 @@
 # OpenCode frame corpus
 
-Five files, all live. Read `../README.md` first for what a fixture is and what
+Six files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -63,12 +63,11 @@ That spelling resolved to no directive tool at all before the fix:
 `mcp__<server>__<tool>` (Claude), and `match_tool` splits only on a run of two or
 more underscores -- so every #755 tool answered and none applied.
 
-Two things it does *not* pin. Crew does not itself send this backend an MCP array
-today (`agent-host-contract.md` §5), so the element here is the capture harness's,
-not shipping code's -- what is observed is how OpenCode NAMES a mounted Crew server,
-which is the premise the fix rests on. And it was observed on 1.18.30 only; the
-naming rule is `sanitize(server) + "_" + sanitize(tool)` in that release's bundle,
-and nothing in this repository pins it across upgrades.
+The capture pins how OpenCode names a mounted Crew server. Shipping code now
+sends this backend its MCP array through `ACP_BACKENDS_SESSION_MCP_ARRAY`, using
+the same element shape; `agent-host-contract.md` §5 describes that production
+path. The remaining boundary is version-specific: this naming rule was observed
+on 1.18.30, and nothing in this repository pins it across adapter upgrades.
 
 ## What the compaction capture establishes
 

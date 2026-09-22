@@ -9,7 +9,7 @@ vi.mock('mermaid', () => ({
 }))
 
 import mermaid from 'mermaid'
-import MarkdownRenderer from '../components/MarkdownRenderer'
+import MarkdownRenderer, { MERMAID_FONTS_READY_CAP_MS } from '../components/MarkdownRenderer'
 
 const MERMAID_MD = '```mermaid\ngraph TD;A-->B\n```'
 // Two lines so the icon-lint gate (a line-anchored regex aimed at JSX inline
@@ -41,6 +41,9 @@ const HIDDEN_SVG =
  *    size, once layout ran -- this is the probe the block reads.
  *  - a ResizeObserver stays silent while the box is absent and fires when it
  *    comes back -- a controllable stub stands in for it here.
+ *
+ * The second describe pins the OTHER precondition of a trustworthy measurement:
+ * the web fonts. See `installFakeFonts` below.
  */
 
 type RoCallback = (entries: ResizeObserverEntry[], observer: ResizeObserver) => void
@@ -264,6 +267,258 @@ describe('MermaidBlock waits for a box before drawing', () => {
     // A late notification after teardown draws nothing.
     boxless.delete(host)
     fireResize(host)
+    await flush()
+    expect(mermaid.render).not.toHaveBeenCalled()
+  })
+})
+
+// What mermaid returns when it measured in the FALLBACK face: a narrower
+// viewBox than the loaded face needs. Same two-line construction as above.
+const NARROW_SVG =
+  '<svg ' +
+  'viewBox="0 0 200 120" aria-roledescription="flowchart-v2"><g class="nodes"></g></svg>'
+
+type FontsEvent = 'loading' | 'loadingdone' | 'loadingerror'
+
+/** Mirrors `MERMAID_FONTS_READY_CAP_MS`, and is pinned equal to it in the case
+ *  that advances the clock by it, so the two cannot drift apart silently. */
+const FONTS_READY_CAP_MS = 2500
+
+/** A controllable stand-in for `document.fonts`, which happy-dom does not
+ *  implement (every case above therefore ran with it ABSENT and pins that the
+ *  block draws at once when there is nothing to wait for). `ready` is a fresh
+ *  pending promise for as long as a load is in flight and a settled one
+ *  otherwise, and the three status events fire on the listeners the block
+ *  registers -- the parts of the FontFaceSet contract the block reads. */
+function installFakeFonts(initial: 'loading' | 'loaded') {
+  const listeners: Record<FontsEvent, Set<() => void>> = {
+    loading: new Set(), loadingdone: new Set(), loadingerror: new Set(),
+  }
+  let resolveReady: () => void = () => {}
+  const fire = (type: FontsEvent) => { for (const cb of Array.from(listeners[type])) cb() }
+  const fake = {
+    status: 'loaded' as 'loading' | 'loaded',
+    ready: Promise.resolve(),
+    addEventListener(type: FontsEvent, cb: () => void) { listeners[type].add(cb) },
+    removeEventListener(type: FontsEvent, cb: () => void) { listeners[type].delete(cb) },
+    /** A face begins to load: `ready` goes pending, as the platform's does. */
+    startLoading() {
+      fake.status = 'loading'
+      fake.ready = new Promise<void>(resolve => { resolveReady = resolve })
+      fire('loading')
+    },
+    /** The pending load lands: `ready` settles and `loadingdone` fires. */
+    finishLoading() {
+      fake.status = 'loaded'
+      resolveReady()
+      fire('loadingdone')
+    },
+    listenerCount(type: FontsEvent) { return listeners[type].size },
+  }
+  if (initial === 'loading') fake.startLoading()
+  Object.defineProperty(document, 'fonts', { configurable: true, value: fake })
+  return fake
+}
+
+describe('MermaidBlock waits for the web fonts before measuring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(mermaid.render).mockResolvedValue({ svg: RENDERED_SVG } as never)
+    installLayoutStubs()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RealResizeObserver
+    Element.prototype.getClientRects = realGetClientRects
+    // Back to the environment's own shape: no `document.fonts` at all.
+    Reflect.deleteProperty(document, 'fonts')
+  })
+
+  it('does not call mermaid.render while a web font is still loading, and draws once the fonts are ready', async () => {
+    // The failure this pins (#12480): the body face is swap-loaded, so a
+    // diagram drawn while it is still in flight has every label MEASURED in the
+    // fallback face and then PAINTED in the loaded one -- boxes sized for the
+    // narrower glyphs, text clipped at the right edge. The block must hold the
+    // measurement until `document.fonts.ready` settles.
+    const fonts = installFakeFonts('loading')
+    const { container } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    const host = hostOf(container)
+    expect(host.getClientRects().length).toBeGreaterThan(0)
+
+    await flush()
+    expect(mermaid.render).not.toHaveBeenCalled()
+    expect(host.querySelector('svg')).toBeNull()
+
+    act(() => fonts.finishLoading())
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 240 120')
+    // The watch outlives the draw: a face can still be declared late.
+    expect(fonts.listenerCount('loadingdone')).toBe(1)
+  })
+
+  it('draws in the fallback face once the wait on `ready` reaches the cap, and redraws once when the face lands late', async () => {
+    // A font file whose packets are DROPPED (not refused: a refusal fails fast
+    // and settles `ready`) keeps its FontFace pending for the browser's network
+    // timeout, tens of seconds or more. Uncapped, every diagram on that cold
+    // load shows nothing for the whole window, where drawing at once showed
+    // clipped but readable labels. So the wait is capped: past it the diagram is
+    // drawn in the fallback face, and the late `loadingdone` buys the one
+    // redraw that the stylesheet-late case above already proves yields the
+    // correct final frame. The fake's `ready` never settles on its own here.
+    vi.useFakeTimers()
+    try {
+      const fonts = installFakeFonts('loading')
+      const { container } = render(<MarkdownRenderer content={MERMAID_MD} />)
+      const host = hostOf(container)
+      vi.mocked(mermaid.render).mockResolvedValueOnce({ svg: NARROW_SVG } as never)
+
+      // Just short of the cap the measurement is still held.
+      await act(async () => { await vi.advanceTimersByTimeAsync(FONTS_READY_CAP_MS - 1) })
+      expect(mermaid.render).not.toHaveBeenCalled()
+      expect(host.querySelector('svg')).toBeNull()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+      expect(
+        mermaid.render,
+        `a font load that never settles must not hold the diagram past the ${FONTS_READY_CAP_MS} ms cap: mermaid.render was still not called`,
+      ).toHaveBeenCalledTimes(1)
+      expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 200 120')
+      // The load left pending is the one the gate gave up on: it buys no
+      // immediate second attempt, and the watch stays armed for its arrival.
+      expect(fonts.listenerCount('loadingdone')).toBe(1)
+      expect(MERMAID_FONTS_READY_CAP_MS).toBe(FONTS_READY_CAP_MS)
+
+      // The face lands, late: one redraw in the loaded face, and the watch is spent.
+      await act(async () => { fonts.finishLoading(); await vi.advanceTimersByTimeAsync(0) })
+      expect(mermaid.render).toHaveBeenCalledTimes(2)
+      expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 240 120')
+      expect(fonts.listenerCount('loadingdone')).toBe(0)
+
+      // Neither another face nor another cap's worth of waiting buys a third draw.
+      await act(async () => {
+        fonts.startLoading()
+        fonts.finishLoading()
+        await vi.advanceTimersByTimeAsync(FONTS_READY_CAP_MS * 2)
+      })
+      expect(mermaid.render).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+      // A failure here leaves the NARROW once-value unconsumed, and
+      // `vi.clearAllMocks()` keeps once-queues; drop it so the case fails alone.
+      vi.mocked(mermaid.render).mockReset()
+    }
+  })
+
+  it('redraws once when a face lands after the diagram was drawn, then lets the watch go', async () => {
+    // The swap-loaded stylesheet is itself the late arrival: the dashboard is
+    // served from a local gateway, the font origin is the slow one. When the
+    // diagram renders no face is declared, so `ready` is settled and nothing is
+    // pending -- the measurement is honest for the fallback face -- and the
+    // stylesheet then lands, the face loads, and `swap` repaints the labels in
+    // a face the boxes were never measured in. The first `loadingdone` after
+    // the draw is the signal, and it buys exactly one redraw.
+    const fonts = installFakeFonts('loaded')
+    const { container } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    const host = hostOf(container)
+    vi.mocked(mermaid.render).mockResolvedValueOnce({ svg: NARROW_SVG } as never)
+
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 200 120')
+
+    act(() => { fonts.startLoading(); fonts.finishLoading() })
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 240 120')
+    expect(fonts.listenerCount('loadingdone')).toBe(0)
+
+    // A second late face is not a second redraw.
+    act(() => { fonts.startLoading(); fonts.finishLoading() })
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases the font watch when unmounted after a draw, and a late face redraws nothing', async () => {
+    const fonts = installFakeFonts('loaded')
+    const { unmount } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(1)
+    expect(fonts.listenerCount('loadingdone')).toBe(1)
+    unmount()
+    expect(fonts.listenerCount('loadingdone')).toBe(0)
+    act(() => { fonts.startLoading(); fonts.finishLoading() })
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards an SVG measured while a face landed mid-render and draws once more', async () => {
+    // `ready` settles when no load is PENDING, and a face whose unicode-range is
+    // first exercised by the diagram's own glyphs starts loading only once
+    // mermaid lays the label out -- inside render(). Its arrival mid-render
+    // means the measurement may predate it, so that SVG is discarded and the
+    // diagram drawn again, exactly as a box lost mid-render is handled.
+    const fonts = installFakeFonts('loaded')
+    const { container } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    const host = hostOf(container)
+    vi.mocked(mermaid.render).mockImplementationOnce(async () => {
+      fonts.startLoading()
+      fonts.finishLoading()
+      return { svg: NARROW_SVG } as never
+    })
+
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 240 120')
+    // The mid-render listener is released after each attempt.
+    expect(fonts.listenerCount('loadingdone')).toBe(0)
+  })
+
+  it('waits for a load still pending when render finishes, draws once more, and never a third time', async () => {
+    const fonts = installFakeFonts('loaded')
+    const { container } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    const host = hostOf(container)
+    vi.mocked(mermaid.render)
+      // First attempt: a load STARTS during render and is still in flight when
+      // render() resolves, so the SVG it returns was measured too early.
+      .mockImplementationOnce(async () => {
+        fonts.startLoading()
+        return { svg: NARROW_SVG } as never
+      })
+      // Second attempt: yet another load starts. The result must STAND -- the
+      // fonts re-render is bounded to one, or a face that keeps loading (or a
+      // set that never settles) would redraw the diagram forever.
+      .mockImplementationOnce(async () => {
+        fonts.startLoading()
+        return { svg: RENDERED_SVG } as never
+      })
+
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(1)
+    // Nothing is installed while the second attempt waits on `ready`...
+    expect(host.querySelector('svg')).toBeNull()
+
+    act(() => fonts.finishLoading())
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 240 120')
+
+    // ...and the load the second attempt left pending does not buy a third.
+    act(() => fonts.finishLoading())
+    await flush()
+    await flush()
+    expect(mermaid.render).toHaveBeenCalledTimes(2)
+    expect(fonts.listenerCount('loadingdone')).toBe(0)
+  })
+
+  it('draws nothing when unmounted while waiting for the fonts', async () => {
+    const fonts = installFakeFonts('loading')
+    const { unmount } = render(<MarkdownRenderer content={MERMAID_MD} />)
+    await flush()
+    expect(mermaid.render).not.toHaveBeenCalled()
+    unmount()
+    act(() => fonts.finishLoading())
     await flush()
     expect(mermaid.render).not.toHaveBeenCalled()
   })

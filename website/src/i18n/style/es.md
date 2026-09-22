@@ -32,8 +32,8 @@ Standard Latin spacing rules. No special handling required.
 
 ## 3. Do not translate
 
-Product names stay as-is. The list is in `glossary.json` under `dnt`. Do not translate or
-adapt: `KiroCrew` / `Kiro Crew`, `MCP`, `Slack`, `GitHub`, etc.
+Product names stay as-is. The canonical list in `glossary.json` includes `KiroCrew`,
+`MCP`, `Slack`, `GitHub`, and others. The prose brand `Kiro Crew` also remains unchanged.
 
 Checked by `glossary.test.ts`.
 
@@ -53,14 +53,16 @@ Checked by `glossary.test.ts`.
 
 ## 5. Plurals
 
-CLDR defines **2 plural categories** for Spanish:
+The current runtime's CLDR data defines **3 plural categories** for Spanish:
 
 | category | condition | example |
 |---|---|---|
-| one | n = 1 | `{{count}} archivo` |
-| other | everything else | `{{count}} archivos` |
+| one | n = 1 | `1 archivo` |
+| many | exact millions selected by `Intl.PluralRules('es')` | `1,000,000 archivos` |
+| other | everything else | `2 archivos` |
 
-Straightforward. Checked by `catalogParity.test.ts`.
+`many` normally uses the same wording as `other`, but its `_many` key is still required.
+Checked by `catalogParity.test.ts`, which reads `Intl.PluralRules` at runtime.
 
 ---
 
@@ -70,9 +72,8 @@ Spanish has masculine/feminine grammatical gender. For UI strings addressing an
 unknown-gender user:
 
 - **Prefer masculine as the grammatical default** (`Conectado`, not `Conectado/a`).
-- Use inclusive reformulations where natural: `Se guardó la configuración` (impersonal)
-  instead of `Has guardado…` (gendered verb agreement in compound tenses is masculine by
-  default anyway).
+- Use inclusive reformulations where natural: `La conexión está activa` instead of
+  `Estás conectado/a`.
 - **Do not use** `@` or `x` endings (`todxs`, `usuari@s`) — they are not screen-reader
   accessible and are not recognized by RAE.
 
@@ -83,7 +84,9 @@ unknown-gender user:
 | rule | gate |
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
-| correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| correct CLDR plural categories (3) | `catalogParity.test.ts` |
+| inverted marks on translated questions and exclamations | `esStyle.test.ts` |
+| no `usted` address | `esStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

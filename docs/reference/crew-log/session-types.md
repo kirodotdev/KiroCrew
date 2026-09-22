@@ -16,12 +16,9 @@ pairing, fields, invariants, example, reader hint, since.
 
 ## Summary
 
-The **Emitter** column says which build writes the type. `live` means an emitter
-writes it today. `#11185` means the type and its shape are settled and its emitter
-lands with that pull request: on a build without it the entry is never written, so a
-reader needs no handling for it yet, and each such subsection says the same thing in
-its **Since** line. A type this kind owns with no emitter anywhere is under
-[Removed types](#removed-types) instead of here.
+The **Emitter** column says whether this build writes the type. Every row below is
+`live`. A type this kind owns with no producing site is kept under
+[Removed types](#removed-types) instead of being presented as live API.
 
 | Type | One line | Emitter | `src` | Pairing |
 |---|---|---|---|---|
@@ -83,6 +80,9 @@ entry's write is the point the interrupted-turn repair runs.
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
 | `class` | object | when the gateway could read the slot's memory mode | What kind of session this log belongs to: `memory` (the slot's memory mode, required inside the object), `app` (the app that owns it, when one does), `channel` (`true` when its conversation is published to a messaging channel), `workspace` (the workspace it belongs to). | |
 | `previous` | object | | `{sid}` — the crew log the SAME slot was writing before this one. Present only on a crew log that was just created while the slot already had one, and only when that crew log's own header names this slot. Absent on the slot's first crew log, on every re-attach, when the gateway could not name the predecessor, and when the named crew log's header does not name this slot or cannot be read. | |
+| `parent` | object | when `session_create` made this session | The creating session, recorded on the child. | |
+| `parent.slot` | string | required inside `parent` | The creating session's slot key. | |
+| `parent.sid` | string | optional | The creator's ACP session id frozen at mint time; absent when no live handle was available or the retained id was unusable. | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
 *starting* model rides here rather than in a `model/selected` entry, which records
@@ -119,6 +119,11 @@ read an absent field on an older entry as *unknown*, which is the same misreadin
 
 `previous` never names this same session: a re-attach is the same crew log, and a
 self-edge would make a chain walker revisit the crew log it started from.
+
+`parent` is different from `previous`: it records who dispatched this session, not
+which crew log the same slot used before. It is absent for a person's own tab, a
+fork, and a `spawn_run` subagent. The edge is written on the child because the child
+learns its ACP session id only when it first runs.
 
 The chain walker is `crew_log/session_tree.fold_slot_chain`
 (`crew-log-projection.md` subsection 6.1). It walks this edge newest crew log
@@ -1132,12 +1137,10 @@ entries. Read `state`, `mergeability`, `review_decision` and the `checks` bucket
 
 ## Removed types
 
-These nine are owned by the `session` kind in the format and have no emitter in any
-open change, so they are removed rather than kept as unwritten declarations. That is
-the line between this table and an `#11185` row in the summary: a type here has no
-writer to wait for, while an `#11185` row has one on the way. `message/steered` sits
-here even though its emitter function exists, because nothing calls it. A reader needs
-no handling for anything in this table.
+These nine are owned by the `session` kind in the format and have no producing
+site, so they are removed rather than kept as unwritten declarations.
+`message/steered` sits here even though its emitter function exists, because nothing
+calls it. A reader needs no handling for anything in this table.
 
 | Type | Why it is removed |
 |---|---|

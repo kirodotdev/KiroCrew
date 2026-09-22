@@ -3,7 +3,7 @@
 A desktop pet companion: an always-on-top animated character plus a chat panel,
 a watch list, an appearance gallery, and an autonomous "owner loop" that plans
 moves/moods, checks watched items, and delivers notifications. The pet windows
-render only in the KiroCrew desktop (Electron) shell; the dashboard page is a
+render only in the Kiro Crew desktop (Electron) shell; the dashboard page is a
 browser-visible status/watch/plan surface.
 
 `defaultEnabled: false` and `platform.requiresDesktopApp: true` — it appears in

@@ -153,7 +153,7 @@ Transport capabilities: streaming and reactions are disabled; editing, inbound a
 
 ## Verifying
 
-- The dashboard **Settings → Teams** badge reports whether the channel connected:
+- The dashboard **Settings → Messaging Channels → Microsoft Teams** badge reports whether the channel connected:
   it turns green once the outbound app credentials validate, and turns red with a
   reason if a later send fails (a delivered message clears it again).
 - The status endpoint is `GET /api/teams/config`.

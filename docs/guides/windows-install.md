@@ -1,15 +1,15 @@
 # Installing & Testing Kiro Crew on Windows
 
-Kiro Crew runs **natively on Windows** as a Python **source install**.
-The cross-platform process / signal / file-lock / metrics behavior is routed
-through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
-the same code path also runs on Windows.
+Kiro Crew runs **natively on Windows** through the desktop installer or a
+supported Python **source install**. The cross-platform process / signal /
+file-lock / metrics behavior is routed through `kiro_crew.platform_compat`, so
+macOS + Linux behavior is unchanged and the same code path also runs on Windows.
 
-Existing Memory V1 members remain usable on native Windows. New members require
-private Memory V2, so creation and explicit V1-to-V2 setup refuse before writing
-private files on a native Windows gateway. Use a WSL/Linux gateway with Crew's
-namespace sandbox and a supported member backend for those operations. Viewing
-and managing an already-owned V2 store remains available from the owner dashboard.
+Existing Memory V1 members remain usable on native Windows. New Crew Members
+automatically receive private Memory V2 stores there as on the other supported
+platforms; provisioning uses owner-only NTFS permissions, and SQLite's native
+file handles provide the Windows protection where POSIX uses a shared store-use
+lock.
 
 ## Desktop installer
 
@@ -188,7 +188,7 @@ The source install below remains the fully supported path.
 | **Git for Windows** | clone the repo | https://git-scm.com/download/win |
 | **kiro-cli** | the default agent backend (ACP); install and sign in separately | https://kiro.dev/cli/ |
 | **Python 3.12-3.13** | the venv runtime. `python_requires` is `>=3.12` and 3.13 is in the supported range, but **3.12 is the tested Windows runtime** (it is what the Windows CI shard runs, and numpy 1.x ships no 3.13 Windows wheel) | https://python.org (install user-scoped), or `winget install Python.Python.3.12` |
-| **Node.js** (optional) | builds the full React dashboard; without it the gateway serves the prebuilt bundle | `winget install OpenJS.NodeJS.LTS` |
+| **Node.js 22.12+** | required by `make.ps1 build` to build and stage the React dashboard; installed desktop/wheel artifacts already contain the bundle | `winget install OpenJS.NodeJS.LTS` |
 
 No admin is required — everything installs user-scoped under `%USERPROFILE%`.
 

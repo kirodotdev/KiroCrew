@@ -1,5 +1,7 @@
 # Implementation Plan: Subagent Session Cleanup
 
+Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks.
+
 ## Overview
 
 Implement provider-agnostic session file cleanup for subagent sessions. The implementation proceeds bottom-up: path safety utility → provider interface → provider implementations → SessionManager integration → SubagentManager integration → persistence tracking → startup sweep → tombstone pruning enhancement.

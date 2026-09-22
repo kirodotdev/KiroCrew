@@ -4,11 +4,11 @@
 has no upstream source, so a re-fetch of the `kiro-cli/` mirror must leave it
 alone. It is marked as a named exception in [the Reference index](../README.md).
 
-A crew log is one append-only JSONL file per unit. A writer adds lines to the end
-and never rewrites a line already there, so the file — not a context window, not
-a summary — is the authority for what happened to that unit. Every line after the
-first carries a writer-assigned `seq` that is contiguous from 1 within the file,
-so a reader folds the lines in `seq` order and gets exactly one reading of the
+A crew log is one append-only history per unit, stored as one or more JSONL
+segments. A writer adds lines to the active segment and never rewrites a committed
+line, so the log — not a context window, not a summary — is the authority for what
+happened to that unit. Every entry after a segment header carries a writer-assigned
+`seq`, so a reader folds the segments in `seq` order and gets one reading of the
 unit's history.
 
 These pages say WHAT the format is. For WHY it is shaped this way, read
@@ -25,6 +25,7 @@ and frame that serve them, read
 | [envelope.md](envelope.md) | File layout, header fields, the eight common entry fields, `ref` and `thread`. Kind-independent. |
 | [session-types.md](session-types.md) | Every session log entry type, one subsection each, with fields and an example. |
 | [crew-types.md](crew-types.md) | The crew's log's type families and the two dispatch contracts. |
+| [member-event-log](../../system-specs/modules/member-event-log.md) | The canonical `member`-kind vocabulary, projections, migration, and multi-writer adapter. |
 | [reading-and-writing.md](reading-and-writing.md) | Reader API, writer rules, ownership, and the fail-soft emitter. |
 | [errors.md](errors.md) | Every `CrewLogError` code, its trigger, and what a caller does about it. |
 | [reading-from-an-agent.md](reading-from-an-agent.md) | The read-only `kirocrew-crew-log` MCP server: its three tools, their caps and codes, who may read what, and the one-line agent-spec grant. |
@@ -48,6 +49,10 @@ covers it.
 **the crew's log** — a `crew`-kind crew log. Same envelope, different type domains, and
 the place `thread` and guest-namespaced types are used.
 [crew-types.md](crew-types.md) covers it.
+
+**the member's log** — a `member`-kind crew log keyed by a member slug. It uses
+the same storage and envelope, while the [member event log specification](../../system-specs/modules/member-event-log.md)
+owns its event vocabulary and projections.
 
 **entry** — one line after the header: an envelope plus a type-specific `data`
 object.
@@ -149,9 +154,10 @@ unit's history or forge a line into its own. The crew log's own code opens the f
 directly and is unaffected.
 
 **Session emission is off by default.** The session emitter is inert unless
-`KIROCREW_CREW_LOG` is truthy. With the flag unset no crew log directory is
-created and no emit path reaches storage.
+`KIROCREW_CREW_LOG` is truthy. With the flag unset it creates no `session` unit and
+no session emit path reaches storage. The `member` event log is independent of
+that flag and continues to use the same store.
 
-**The format is PRE-RELEASE.** Shapes may change while the flag is off by default.
-Do not build a stored artifact that assumes a field will keep its name or its
-presence rule until the flag ships on.
+**The session vocabulary is PRE-RELEASE.** Its shapes may change while session
+emission remains off by default. The shipped member-log contract is canonical in
+[member-event-log.md](../../system-specs/modules/member-event-log.md).

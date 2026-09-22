@@ -1,5 +1,7 @@
 # Design Document: Builtin App Migration
 
+Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard migration components.
+
 ## Overview
 
 This feature implements a graceful two-phase migration mechanism for KiroCrew builtin apps being extracted to standalone packages. The design ensures users never experience a sudden loss of functionality — they receive advance warnings (Phase 1) and helpful guidance (Phase 2) throughout the transition.

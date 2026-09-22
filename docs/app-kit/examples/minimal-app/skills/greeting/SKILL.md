@@ -5,7 +5,7 @@ always: false
 
 # Greeting Skill
 
-Help new users get oriented with KiroCrew.
+Help new users get oriented with Kiro Crew.
 
 ## Key Commands
 

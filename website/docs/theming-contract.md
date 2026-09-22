@@ -11,9 +11,9 @@ end-to-end subsystem (install pipeline, validation, routes, security model).
 ## The rule for contributors
 
 **Pack manifest versioning:** every `theme.json` MUST declare
-`"formatVersion": 1` (integer). KiroCrew rejects packs with a missing value or
+`"formatVersion": 1` (integer). Kiro Crew rejects packs with a missing value or
 an unknown major with an explicit "this pack requires a newer version of
-KiroCrew" error. Author against the current major; breaking manifest changes
+Kiro Crew" error. Author against the current major; breaking manifest changes
 bump it.
 
 **Every new UI element MUST be themable at least at the color layer.** Style it
@@ -146,12 +146,13 @@ that mode actually renders. Where a mode NAME travels beside the palette, keep
 both in one memoized value so they cannot be read independently
 (`McpAppFrame`'s `themeSnapshot`).
 
-Six sites still key on the three-dep spelling and are **not** fixed here — find
+Seven sites still key on the three-dep spelling and are **not** fixed here — find
 them with `grep -rn '\[theme, colorTheme, themeVersion\]' src/`, which lists
 `components/WidgetFrame.tsx`, `components/ArtifactBody.tsx`,
-`components/library/ArtifactThumbs.tsx`, `pages/ArtifactDetailPage.tsx` and
-`pages/RemoteArtifactDetailPage.tsx`, plus `hooks/useSessionPalette.ts` (a
-`useLayoutEffect` on `[themeMode, colorTheme, themeVersion]`, same ordering). A
+`components/library/ArtifactThumbs.tsx`, `pages/ArtifactDetailPage.tsx`,
+`pages/RemoteArtifactDetailPage.tsx`, and `pages/members/CrewWebview.tsx`, plus
+`hooks/useSessionPalette.ts` (a `useLayoutEffect` on
+`[themeMode, colorTheme, themeVersion]`, same ordering). A
 grep rather than line numbers on purpose: a cited line goes stale silently, and
 the dep array IS the defect, so the pattern is the honest locator. Each takes an
 extra early read that the `themeVersion` re-read then corrects, and none pairs a

@@ -17,20 +17,23 @@ may write them, and the fact that `thread` and `ref` are actually used.
 
 ## The layering rule
 
-There is one base envelope, then two disjoint sets of types on top of it. A type
-belongs to exactly one kind, and the kind of the crew log decides whether a type may
-be written to it at all. Writing a crew-owned type into a session's log is refused
+There is one base envelope, then one kind-owned type set for each of `crew`,
+`session`, and `member`. This page covers the crew set; the
+[member event log specification](../../system-specs/modules/member-event-log.md)
+owns the member vocabulary. The kind of a crew log decides whether a built-in type
+may be written to it. Writing a crew-owned type into a session's log is refused
 with [`event_type_not_owned`](errors.md#event_type_not_owned), and the reverse is
 refused the same way.
 
 The crew kind owns eight `type` domains: `member`, `activity`, `slot`, `patrol`,
 `message`, `crew`, `item`, `memory`.
 
-Two overlaps between the kinds are deliberate rather than accidental. The
-`message` domain exists in **both** kinds, carrying different `data` in each:
-ownership answers "does this kind have such events", and a crew and a session both
-do. And `ref` **crosses** kinds — a crew entry citing a span of a session's file is
-the one intended cross-kind pointer.
+The overlaps between kinds are deliberate rather than accidental. The `message`
+domain exists in both the crew and session kinds, carrying different `data`; the
+`member`, `activity`, `slot`, and `patrol` domains exist in both the crew and member
+kinds. Ownership answers "does this kind have such events", not "is this domain
+globally unique". A `ref` may cite any crew log kind; `crew/report` specifically
+uses it to cite the relevant span of a session log.
 
 A type name never carries the writer's identity. Who wrote a line is `src`, not
 part of `type`, so a dispatch written by one crew and a dispatch written by another
@@ -47,7 +50,7 @@ A crew entry is written by one of:
 | `patrol` | A patrol pass. |
 | `gateway` | The gateway itself. |
 | `crew:<name>` | A named crew, writing into its own crew log. |
-| `app:<name>` | A named app, writing only its own `app:<name>/…` types, and only into a crew log. |
+| `app:<name>` | A named app, writing only its own `app:<name>/…` types. The member kind also accepts this guest form under the same namespace rule. |
 
 `dashboard` and `patrol` are crew-side values: a session entry is written with
 `gateway` or `acp` and nothing else.

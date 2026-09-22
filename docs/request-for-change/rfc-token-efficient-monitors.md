@@ -1,10 +1,10 @@
 ---
 title: Token-efficient monitors — probe first, wake on change
-status: in-progress
+status: implemented
 author: kseam
 created: 2026-08-22
-last-audited: 2026-09-03
-audited-at: 904da553781c4e376df1df98598068b6e0391cf3
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: [5180, 5181, 5182, 5183, 5184, 5185, 5186, 5305]
 tracking-issues: []
@@ -13,6 +13,12 @@ superseded-by: []
 ---
 
 # Token-efficient monitors — probe first, wake on change
+
+- Status: implemented. The durable controller, four pull-request provider
+  adapters, `monitor_watch` / `monitor_update` / `monitor_stop`, dashboard
+  controls and the babysit migration all ship. Current behaviour is owned by
+  [`../system-specs/modules/monitor-architecture.md`](../system-specs/modules/monitor-architecture.md)
+  and the implementation under `src/kiro_crew/monitoring/`.
 
 ## Summary
 

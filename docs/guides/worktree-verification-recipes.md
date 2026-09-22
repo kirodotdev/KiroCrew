@@ -10,25 +10,22 @@ The pod lifecycle, packaged scenarios, diagnostic commands, and pod-e2e harness
 are on `main` today:
 
 - `kirocrew pod scenarios [--json]`
-- `kirocrew pod up/down/ls/status/logs/prune`
+- `kirocrew pod up/down/ls/status/logs/prune/api`
 - `src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-e2e.sh`
 
-`kirocrew pod api` is not on `main` yet. It arrives with PR #8218. This guide is
-sequenced after #8218: do not merge it first, and update recipes 1 and 3 in the
-same review round if #8218's interface changes. Recipes that use `pod api`
-deliberately fail their preflight until that command is installed:
+`kirocrew pod api` prints a stable JSON object with `name`, `method`, `path`,
+`status`, `ok`, and `body`. It permits `GET` and `HEAD` by default; `POST`,
+`PUT`, `PATCH`, and `DELETE` require `--allow-write`. It mints the selected
+pod's dashboard token internally, so do not add a `token` query parameter. If an
+older installed CLI lacks the verb, update that installation before using these
+recipes:
 
 ```bash
 kirocrew pod --help | grep -qw api || {
-  echo "This recipe requires kirocrew pod api from PR #8218" >&2
+  echo "This recipe requires a current Kiro Crew installation with pod api" >&2
   exit 1
 }
 ```
-
-`pod api` prints a stable JSON object with `name`, `method`, `path`, `status`,
-`ok`, and `body`. It permits `GET` and `HEAD` by default; `POST`, `PUT`, `PATCH`,
-and `DELETE` require `--allow-write`. It mints the selected pod's dashboard token
-internally, so do not add a `token` query parameter.
 
 The packaged scenarios are the agent's **native seeding vocabulary**:
 `kirocrew pod scenarios` prints each name plus its description, and that listing
@@ -81,7 +78,7 @@ PATH_TO_ASSERT=/api/crons
 
 kirocrew pod scenarios
 kirocrew pod --help | grep -qw api || {
-  echo "This recipe requires kirocrew pod api from PR #8218" >&2
+  echo "This recipe requires a current Kiro Crew installation with pod api" >&2
   exit 1
 }
 
@@ -159,7 +156,7 @@ unrelated frame is not proof.
 
 The recipe above photographs the web app. Electron draws the application menu,
 the menu popups and the native frame outside any web page, so neither a pod nor
-any of the ~546 `website/scripts/capture-*.mjs` scripts can reach them. Use
+the browser-only `website/scripts/capture-*.mjs` scripts can reach them. Use
 `website/scripts/capture-electron-shell.mjs` for those: it launches real Electron
 through Playwright's `_electron` driver and grabs an X screen, so the menu
 frame lands in the picture.
@@ -226,18 +223,17 @@ The create response returns the new session key as `body.target`. Send returns
 `body.started`; read returns `body.running`, `body.next_since`, and
 `body.messages`.
 
-**This recipe is not executable through PR #8218 as currently implemented.**
+**This recipe is not executable through `pod api` as currently implemented.**
 The session-control routes require a validated `X-Internal-Secret` and identify
-the caller from `X-Session-Key`. PR #8218's `pod api` sends only a dashboard
-query token and has no caller-session option. A live probe returns HTTP 403 with
+the caller from `X-Session-Key`. `pod api` sends a dashboard query token and has
+no caller-session option. A live probe returns HTTP 403 with
 `code: internal_secret_required`; even adding internal authentication alone
 would leave create without a caller workspace. Do not claim that an agent was
 driven through `pod api` until both requirements have a supported interface.
 
 The intended trace below records the exact routes and bodies, but the first
-request is expected to fail under the current #8218 implementation. It is kept
-here as the acceptance trace for closing that compatibility gap, not as a green
-recipe:
+request is expected to fail under the current implementation. It is kept here as
+the acceptance trace for closing that compatibility gap, not as a green recipe:
 
 ```bash
 set -euo pipefail

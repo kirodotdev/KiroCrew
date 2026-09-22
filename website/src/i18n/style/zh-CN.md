@@ -41,9 +41,9 @@ Authorities cited:
 - **Parentheses** never mix styles within one value — a half-width opener
   married to a full-width closer renders as `(…）`. Both halves belong in the
   same key.
-- **Quotes** are curly `" "`. Corner brackets `「 」` are not used. A quoted
+- **Quotes** are curly `“ ”`. Corner brackets `「 」` are not used. A quoted
   English UI label keeps its English inside Chinese quotes:
-  `请使用"From Spec"标签页`.
+  `请使用“From Spec”标签页`.
 - **CJK ↔ Latin spacing**: one ASCII space between a CJK character and an
   adjacent Latin letter, digit or `$`-prefixed number — `MCP 服务器`, `第 3 轮`.
   No space between CJK and full-width punctuation, and none between two CJK
@@ -103,8 +103,9 @@ a reviewer should check consistency but context may require variation.
 
 ## §3 Do not translate
 
-Product names stay in Latin script. The list is in `glossary.json` under `dnt`:
-`KiroCrew` / `Kiro Crew`, `Kiro`, `Slack`, `Discord`, `MCP`, `GitHub`, `Playwright`, etc.
+Product names stay in Latin script. The canonical list in `glossary.json` includes
+`KiroCrew`, `Kiro`, `Slack`, `Discord`, `MCP`, `GitHub`, `Playwright`, and others. The
+prose brand `Kiro Crew` also remains unchanged.
 
 Also stays in English: AWS service names, key legends (Enter, Shift, ⌘),
 `main`/`origin`/`HEAD`, paths, filenames, config keys, and `cron` (the syntax —
@@ -161,7 +162,11 @@ sentence. New copy must not add fragments: one key per sentence.
 | no leading/trailing space, no doubled space | `qa.test.ts` |
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (1: other) | `catalogParity.test.ts` |
+| no unreachable plural suffixes | `zhStyle.test.ts` |
+| selected terminology mappings | `zhStyle.test.ts` |
+| CJK punctuation, ellipsis, no corner brackets and mixed parentheses | `zhStyle.test.ts` |
+| no 您, 这将, doubled particles or three-的 clauses | `zhStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 
-Everything in §1 (beyond what QA catches), §2 and §4 is review-only — the
-judgements a human has to make.
+The parts of §1, §2 and §4 not named above remain review-only — the judgements a
+human has to make.

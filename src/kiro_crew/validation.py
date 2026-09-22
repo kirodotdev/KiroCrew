@@ -1746,7 +1746,7 @@ WORKFLOW_RERUN_SCHEMA = ToolSchema(
 
 # Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE.
 _ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
-_ARTIFACT_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}$")
+_ARTIFACT_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}\Z")
 _ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|webapp)$")
 
 # Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char

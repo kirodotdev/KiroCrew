@@ -40,7 +40,7 @@ from types import ModuleType
 
 import pytest
 
-from kiro_crew import cloud
+from kiro_crew import artifacts, cloud, validation
 from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
 from kiro_crew.cloud import config as cloud_config
@@ -61,6 +61,8 @@ _VALIDATORS = (
     pytest.param(gitops.GIT_URL_RE, "https://example.com/group/paper.git", id="git-url-url-form"),
     pytest.param(gitops.GIT_URL_RE, "git@example.com:group/paper.git", id="git-url-scp-form"),
     pytest.param(store.PROJECT_NAME_RE, "paper", id="project-name"),
+    pytest.param(artifacts._TAG_RE, "artifact-tag", id="artifact-store-tag"),
+    pytest.param(validation._ARTIFACT_TAG_RE, "artifact-tag", id="artifact-mcp-tag"),
     pytest.param(cloud_config._TAG_RE, "my-crew-1", id="cloud-config-tag"),
     pytest.param(ec2._TAG_RE, "my-crew-1", id="cloud-ec2-tag"),
     pytest.param(ec2._REGION_RE, "us-east-1", id="cloud-ec2-region"),

@@ -16,9 +16,9 @@ which `src` values are allowed, which [session-types.md](session-types.md) and
 <data home>/crew-log/members/<store name>/log.jsonl
 ```
 
-`crew-log` is one shared root for both kinds, which is what lets a single fence
-entry cover every unit kind at once. Under it, `crews/` holds crew units and
-`sessions/` holds session units.
+`crew-log` is one shared root for all three kinds, which is what lets a single
+fence entry cover every unit kind at once. Under it, `crews/` holds crew units,
+`sessions/` holds session units, and `members/` holds member units.
 
 `<store name>` is not the raw unit id. It is a readable-prefix-plus-digest fold of
 it (`session_ledger._store_name`), because a unit id may legitimately carry a colon
@@ -50,17 +50,23 @@ above 1 is a pruned front and is read without complaint.
 `type` on the header line is the kind, and `createdAt` is epoch milliseconds.
 `version` is the header schema version, `1`.
 
-Common to both kinds:
+Common to all three kinds:
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `type` | string | required | The unit kind this file belongs to. | `crew`, `session` |
+| `type` | string | required | The unit kind this file belongs to. | `crew`, `session`, `member` |
 | `version` | int | required | Header schema version. A file declaring a version this build does not read is refused with [`unsupported_version`](errors.md#unsupported_version). | `1` |
 | `id` | string | required | The raw unit id. Must match the id the reader opened. | |
 | `createdAt` | int | required | Epoch milliseconds the unit's crew log was created. | |
 
 A **crew** header carries nothing beyond those four: a crew's identity is its id,
 and every fact about it is an entry rather than a header field.
+
+A **member** header may add one field:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | optional | The member's display name for a cold reader. Later `member/config` entries may supersede it; absence leaves the slug in `id` as the identity. |
 
 A **session** header adds the facts fixed for the session's whole life:
 
@@ -102,17 +108,19 @@ present, then `data` last.
 | `type` | string | required | `domain/action`, partitioned on the first slash. The action may not itself contain a slash, so a namespace is exactly one level deep. A guest form `app:<name>/<action>` exists for crew logs. | |
 | `seq` | int ≥ 1 | required | Writer-assigned under the unit's lock, contiguous from 1 after the header. | |
 | `time` | int | required | Writer-assigned epoch milliseconds. | |
-| `src` | string | required | Which emitter wrote the line. | `gateway`, `acp`, `dashboard`, `patrol`, or `session:<id>` / `crew:<name>` / `app:<name>` |
+| `src` | string | required | Which emitter wrote the line. | `gateway`, `acp`, `dashboard`, `patrol`, or `crew:<name>` / `app:<name>` |
 | `thread` | int ≥ 1 | optional | The `seq` of an earlier entry in this same file, used as a grouping key. Refused if it names no earlier readable entry ([`bad_thread`](errors.md#bad_thread)). Session emitters never set it. | |
 | `ref` | object | optional | A citation into another or the same crew log. | |
 | `ignorable` | `true` | optional | The writer's promise that a reader may skip this line when it does not know the type. Only a literal `true` is written; the key is absent otherwise. | `true` |
 | `data` | object | required | The type-specific payload. Must be a JSON object holding JSON-serializable values ([`bad_data`](errors.md#bad_data)). | |
 
 `src` names either a whole subsystem carrying no instance id (`gateway`, `acp`,
-`dashboard`, `patrol`) or one instance (`session:<id>`, `crew:<name>`,
-`app:<name>`). Session entries are written with `gateway` or `acp` and nothing
-else; the values a crew entry may carry are on
-[crew-types.md](crew-types.md#allowed-src).
+`dashboard`, `patrol`) or one instance (`crew:<name>`, `app:<name>`). Session
+entries are written with `gateway` or `acp` and nothing else; the values a crew
+entry may carry are on [crew-types.md](crew-types.md#allowed-src). Member entries
+use `gateway`, `dashboard`, or `patrol`, while an app contribution uses its matching
+`app:<name>` source and type namespace; see the
+[member event log specification](../../system-specs/modules/member-event-log.md).
 
 `ignorable` is what lets an older reader keep folding a newer writer's file. It is
 a claim about *dependency*, not importance: setting it says nothing later in the
@@ -140,7 +148,7 @@ to, and a reader resolves the pointer when it wants them.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `unit` | string | required | The kind of crew log being cited. | `crew`, `session` |
+| `unit` | string | required | The kind of crew log being cited. | `crew`, `session`, `member` |
 | `id` | string | required | The cited unit's raw id. | |
 | `from` | int ≥ 1 | required | First cited `seq`. | |
 | `to` | int ≥ `from` | optional | Last cited `seq`. Absent cites the single line at `from`. | |

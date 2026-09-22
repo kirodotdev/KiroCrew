@@ -13,10 +13,11 @@ specifies the converter, not the mapping.
 ## 1. What it is for
 
 Two claims needed proving before Kiro Crew accepts foreign plugin contributions:
-that the extension points we already have can receive them, and that receiving
-them does not require running foreign code. A converter proves both. It reads
-JSON and copies files; the emitted app is an ordinary Kiro Crew app with no trace
-of the source runtime and nothing to supervise.
+that the extension points we already have can receive them, and that conversion
+does not require running foreign code. A converter proves both. It reads JSON
+and copies files; the converter itself has no foreign runtime to supervise. The
+emitted app is an ordinary Kiro Crew app, so a mapped MCP server can be launched
+after installation under the normal app lifecycle.
 
 It is deliberately not an adapter. A package's in-process code -- tools, hook
 callbacks, services -- is not converted and cannot be: that half needs a process
@@ -165,12 +166,14 @@ package-relative one emits the first and reports the second.
 
 ## 4. The two safety properties
 
-**No foreign code runs.** Conversion opens JSON files and copies bytes. Nothing
-in the package is imported, evaluated, or spawned -- at conversion time or after.
-A hook's `command` string is data. Pinned by
+**No foreign code runs during conversion.** Conversion opens JSON files and
+copies bytes. Nothing in the package is imported, evaluated, or spawned while
+the converter runs. After installation, mapped MCP server commands follow the
+ordinary app lifecycle; package-relative programs are refused by §3.1. A hook's
+`command` string remains data. Pinned by
 `TestUnmappedKinds::test_conversion_runs_no_command_from_the_package`, which
 gives the package a hook that would create a sentinel file and asserts the file
-does not exist.
+does not exist during conversion.
 
 **A linked source root is refused before anything probes it.** A probe resolves the
 path, so on Windows a junction whose target is a UNC share makes the OS authenticate

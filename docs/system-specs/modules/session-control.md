@@ -10,8 +10,9 @@ has spent an hour on a PR cannot tell whether the session watching the build has
 finished, and today the only way to find out is for the human to switch tabs and
 look. Session control lets the session ask directly.
 
-Five MCP tools on `kirocrew-dashboard`, five strict-internal routes, one config
-switch. Every route is on `_STRICT_INTERNAL_API_PATHS`; an unlisted one is
+Five MCP tools on `kirocrew-dashboard`, five strict-internal routes, and two
+config switches: `agent.session_control` plus the member-dispatch bypass ceiling.
+Every route is on `_STRICT_INTERNAL_API_PATHS`; an unlisted one is
 unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
@@ -658,8 +659,9 @@ reclassification together. The same reasoning is why
 `/api/computer-use/frame` re-asserts it.
 
 The config read fails **closed**: `KiroCrewConfig.load()` raising resolves to
-disabled, which is also the field's own default, so neither a malformed unrelated
-section nor a missing setting can produce cross-session reach.
+disabled even though the field's declared default is enabled, so neither a
+malformed unrelated section nor an unreadable setting can produce cross-session
+reach.
 
 ## The wait → read poll loop
 

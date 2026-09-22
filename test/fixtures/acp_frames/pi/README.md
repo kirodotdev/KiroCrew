@@ -9,9 +9,10 @@ the corpus does and does not prove.
 | `permission-request-live.jsonl` | live | `tool_call`, `tool_call_update`, the `session/request_permission` the adapter forwarded from Kiro Crew's gate extension, the updates through `completed`, and the result |
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` / `tool_call` updates and the load result, which carries `configOptions`, `models` and `modes` |
 
-Captured off `pi-acp` 0.0.33 spawning `pi` 0.85.1, driving a local Ollama model
-(`llama3.2:3b`) named in pi's own `models.json`, agent-to-client lines verbatim. The
-working directory in the frames is a scratch project, not a home directory.
+Captured off `pi-acp` 0.0.33 spawning `pi` 0.85.1 and driving a locally
+served model configured in pi's own `models.json`, with agent-to-client lines
+verbatim. The working directory in the frames is a scratch project, not a home
+directory.
 
 ## What the permission capture establishes
 

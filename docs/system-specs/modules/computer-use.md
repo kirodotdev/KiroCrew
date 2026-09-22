@@ -40,7 +40,7 @@ about to land. Cursor Motion is **not** the pointer and is deliberately invisibl
 > Prior art: the tool surface and the per-turn element-index discipline are
 > modelled on the open-source `open-codex-computer-use` MCP contract (MIT),
 > which we probed to validate the shape. No code is derived from it — the driver,
-> the compression pipeline and the security floors are all KiroCrew's own.
+> the compression pipeline and the security floors are all Kiro Crew's own.
 
 ---
 
@@ -55,14 +55,14 @@ kiro-cli
        │
        ▼  GATEWAY PROCESS
      dashboard/handlers/computer_use.py
-       └─ computer_use/service.py  ── the ONE dispatch chokepoint
-            1. enable_state.is_enabled()                  keystone primary enable
-            2. computer_use/policy.py::check_app           target policy (self + operator lists)
-            3. index freshness (TTL) + fingerprint re-walk
-            4. policy.check_input_target                   secure field / text scan
-            5. computer_use/gate.py::require_computer_use  SEL audit (no decision)
-            6. ComputerUseBackend  ──►  macos_driver → macos_ffi (ctypes)
-            7. re-snapshot, policy.redact_result
+       └─ computer_use/tools.py  ── the ONE dispatch chokepoint
+            1. MCP_COMPUTER_SCHEMAS validation
+            2. enable_state.is_enabled()                  keystone primary enable
+            3. OS identity + cached element/pointer-shape resolution
+            4. gate.require_computer_use / require_pointer_move  SEL audit (no decision)
+            5. policy.check_app                           target policy
+            6. index freshness/fingerprint + policy.check_input_target
+            7. service.py → ComputerUseBackend → driver; re-snapshot + redact
 ```
 
 ### Why the stdio process is a thin shim and the work happens in the gateway
@@ -134,10 +134,10 @@ re-applies them. Pinned by
 
 Three reasons the split is worth the extra hop, none of them governance:
 
-* **the native work must not run in the shim.** A ctypes fault is not catchable in
-  Python. In the gateway it is contained by the driver's `_guarded` seam and the
-  bounded `subprocess_executor` pool; in a short-lived stdio child it would take the
-  child down mid-call with no result to relay;
+* **the native work is centralized in the gateway.** Driver exceptions are
+  converted at the `_guarded` seam, and the bounded `subprocess_executor` thread pool
+  keeps a wedged application off the event loop. Neither mechanism contains a native
+  process crash: a ctypes fault can terminate the gateway (see [Known limitations](#known-limitations));
 * **the snapshot cache has to be shared.** Element indices only mean anything
   against the walk that produced them, and that cache (`index.SnapshotIndex`) lives
   in the gateway. A per-shim cache would make every follow-up action refuse;
@@ -358,7 +358,7 @@ mandatory, not tidiness: an unregistered tool's arguments pass RAW through
 stdio loop and kills the server.
 
 `computer_list_apps` and `computer_get_state` are the observation tools;
-`computer_end_turn` is control-plane (it drops KiroCrew's *own* cached snapshots
+`computer_end_turn` is control-plane (it drops Kiro Crew's *own* cached snapshots
 and touches no other application, so it is neither observe nor mutate). The
 class labels above are the code-owned `governance._CU_ACTION_CLASSES` table —
 see [governance.md](governance.md).
@@ -530,15 +530,16 @@ inject arbitrary frames into every owner window's live view. See
 
 **`GET /api/computer-use/config`** returns `{enabled, supported, platform, reason,
 max_tree_nodes, max_tree_depth, text_limit, attach_screenshot, screenshot_max_px,
-screenshot_jpeg_quality, allowed_apps,
-extra_denied_apps, permissions{accessibility,
+screenshot_jpeg_quality, cursor_motion, cursor_motion_supported, allowed_apps,
+extra_denied_apps, policy_error, permissions{accessibility,
 screen_recording, responsible_hint}, limits{field: [min, max]}}`.
 
 - `permissions` comes from shelling `kirocrew computer doctor --json`
   (`asyncio.create_subprocess_exec`, fixed argv, 5s timeout, one
   `test_spawn_audit.BENIGN_SPAWNS` entry). Degrades to `unknown` on timeout,
-  non-zero exit or unparseable output, and reports `unsupported` off macOS without
-  spawning at all. A timed-out child is killed — the panel polls every 5s while a
+  non-zero exit or unparseable output, and reports `unsupported` when the current
+  platform has no probe; macOS and Windows both probe. A timed-out child is killed —
+  the panel polls every 5s while a
   grant is outstanding, so leaking one per poll would pile up.
 - `limits` publishes the server's own ceilings so the panel's number inputs bound
   themselves rather than re-spelling them in TypeScript.
@@ -570,8 +571,8 @@ key `disabled` on. Both belonged to the governance model that was removed by pro
 decision, and the prose outlived the code — there is no `status=409` in the module at
 all. Do not re-document either without re-implementing it.
 
-A corrupt keystone or `config.json` is `500` and is left byte-identical rather than
-clobbered (`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation
+On `PUT`, a corrupt keystone or `config.json` is `500` and is left byte-identical
+rather than clobbered (`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation
 SEL-audits the decision (`enabled=…`, changed field names) — never the app patterns
 themselves, and the app-token refusal is audited too.
 
@@ -580,10 +581,12 @@ and returns `{"text": …}` with a 200 for BOTH success and refusal, because a
 computer-use refusal is a tool result (`"Error: …"`, which the SEL layer classifies
 as failed) rather than a transport failure the model cannot reason about. Only a
 malformed request gets a 4xx. The identity fields are not an authorization claim
-this handler trusts — the shim resolved them strictly, and the fail-closed gate
-treats an empty `session_key` as unattended and denies; the handler never infers
-one. The dispatch runs in a worker thread (accessibility calls block for tens of
-milliseconds).
+this handler trusts. The shim uses a strictly resolved key when available; otherwise
+it sends an `unresolved:<pid>[#<nonce>]` namespace in the body and no
+`X-Session-Key` header. Unresolved calls proceed because unattended surfaces are
+supported; the value scopes the audit and `SnapshotIndex`, not authorization. The
+handler never infers an identity. The dispatch runs in a worker thread
+(accessibility calls block for tens of milliseconds).
 
 ---
 
@@ -598,22 +601,25 @@ denylist. Those are **gone**; this section is the honest replacement.
 ### The dispatch chokepoint, in order
 
 `tools.py::_dispatch` is still the single funnel every tool passes through, and the
-order still matters, but there are only four steps left:
+order still matters:
 
-1. **Schema validation** — `validation.MCP_COMPUTER_SCHEMAS`. An unregistered tool
-   is refused before anything else, because unvalidated arguments reaching a handler
-   would escape the stdio loop and kill the server.
-2. **The keystone primary enable** — `enable_state.is_enabled()`. One read serves
-   both the enable test and the operator's target lists, so a hand-edited file
-   cannot be observed in two states within one dispatch.
-3. **OS identity resolution** — the window list only. The app the driver *resolved*
-   is what gets audited, never the agent-supplied `app` string.
-4. **The target policy** — `policy.check_app` (the one retained denylist entry plus
-   the operator's own allow/deny lists) and `policy.check_input_target` (the
-   secure-field refusal).
+1. **Schema validation** — `validation.MCP_COMPUTER_SCHEMAS`.
+2. **The keystone primary enable** — `enable_state.is_enabled()`; the same read also
+   supplies the operator's target lists.
+3. **OS identity, cached-element lookup, and pointer-request shaping** — window-list
+   resolution first, then an in-memory element lookup and concrete click method.
+4. **Audit-only gates** — `gate.require_computer_use` for every call and
+   `gate.require_pointer_move` only for a named real-pointer gesture.
+5. **The target policy** — `policy.check_app`, including the built-in self-window
+   refusal and the operator's allow/deny lists.
+6. **Freshness and input checks** — deferred missing/expired-state errors,
+   fingerprint verification against a fresh walk, then `policy.check_input_target`
+   for secure fields and sensitive text.
+7. **Driver and egress** — perform the operation, re-snapshot after mutations, apply
+   the observation shim, and redact model-facing text.
 
-`gate.require_computer_use` still sits at step 4's boundary and still has the same
-signature, but it now only **audits**: there is no governance decision left to make.
+`gate.require_computer_use` keeps the same signature at step 4, but it now only
+**audits**: there is no governance decision left to make.
 Keeping the call (rather than deleting it) is what keeps the audit trail complete
 and gives a downstream edition one place to reintroduce a decision.
 
@@ -622,7 +628,7 @@ and gives a downstream edition one place to reintroduce a decision.
 | Refusal | Where | Why it survived |
 |---|---|---|
 | Feature off | `enable_state` + `tools` step 2 | The keystone is on `security._SENSITIVE_HOME_DIRS`, so the agent can neither read nor write it. This is the whole security model now. |
-| KiroCrew's own window | `policy.check_app` | Driving our own Settings UI would let the agent click the enable above — a self-escalation loop that would make the keystone pointless. Matched on bundle id, process name **and window title** — see below. |
+| Kiro Crew's own window | `policy.check_app` | Driving our own Settings UI would let the agent click the enable above — a self-escalation loop that would make the keystone pointless. Matched on bundle id, process name **and window title** — see below. |
 | Password fields | `policy.check_input_target` + `render` + `capture_macos` | A privacy floor, not a policy knob: the value is never read, never rendered, and a window holding one is never photographed. |
 | Operator's own app lists | `policy.check_app` | `allowed_apps` / `extra_denied_apps` on the keystone. The operator's choice, not a shipped ceiling. |
 | Stale / drifted element index | `index` + `service.verify_fingerprint` | Correctness, not authorization — acting on a stale index clicks the wrong control. |
@@ -1362,8 +1368,9 @@ list position — position and index are not interchangeable.
 
 ## The ctypes layer: four findings from running real code
 
-All native work is confined to `macos_ffi.py`. `import ctypes` is a top-level
-import statement (AUTOSDE `top-level-imports`), but **no `CDLL`/`find_library`
+All in-gateway macOS native work is confined to `macos_ffi.py`; the separate
+cursor-overlay child owns its explicitly documented ctypes exception. `import ctypes`
+is a top-level import statement (AUTOSDE `top-level-imports`), but **no `CDLL`/`find_library`
 runs at module scope** — the four frameworks (CoreFoundation,
 ApplicationServices, CoreGraphics, ImageIO) load inside `_frameworks()`, cached
 in a module global, raising `ComputerUseUnsupported` off macOS. A module-level
@@ -1392,7 +1399,7 @@ exception.
 `kAXErrorCannotComplete = -25204` for every attribute read. Setting
 `AXManualAccessibility = kCFBooleanTrue` on the app element and waiting ~2s
 unlocked **1431 nodes in 0.07s**. Without this, Slack, VS Code, Obsidian and
-KiroCrew's own desktop app appear permanently empty. Order of operations:
+Kiro Crew's own desktop app appear permanently empty. Order of operations:
 create the app element, immediately
 `AXUIElementSetMessagingTimeout(app_elem, AX_MESSAGING_TIMEOUT_SECS)` —
 mandatory, because ctypes releases the GIL around the C call and a genuinely hung
@@ -1491,38 +1498,14 @@ pinned by `test_computer_use_snapshot.py::TestASuppressedScreenshotAlwaysSaysSoW
 including one case through the real `dispatch_tool` path, because neither is visible
 to a `render_tree` unit test on its own.
 
-**Every refusal is audited, including the pre-gate ones.** The gate audits its own
-denials and `_audit_allowed` records permitted calls, which left a hole between
-them: a schema `ValidationError`, an unknown tool, a bad `click_method`, a stale
-index, an unparseable key and the paste refusal all return through `_refusal`
-*without* reaching the gate, so nothing was recorded (reviewer finding). An audit
-trail with a gap at "malformed or refused attempts" is the wrong shape for this
-surface — a burst of them is exactly the signal an investigation wants. There are two audited exits and no third: `_refusal`
-for text that can quote the desktop (it also traverses the observation ceiling and
-the redaction pass), and `_static_refusal` for this package's own static prose about
-the caller's request — an unregistered tool, the feature being disabled, a missing
-`element_index`, a coordinate form under a targets ceiling, a malformed pointer
-request, a governance denial. The second helper exists because six of those sites
-returned `f"{ERROR_PREFIX}{…}"` inline and so were still unaudited after the first
-fix; an AST test now asserts no other function in the module builds that string, so
-a seventh cannot be added unaudited. Both emit a `refused` `log_tool_invocation`
-with the tool name and **no resources**: the refusal text can quote a window title and this event fires before
-the observation ceiling has been applied to it, so the audit line carries the fact,
-never the desktop detail ("redacted credentials" is a weaker guarantee than "never
-included").
-
-**Paste is refused outright.** `computer_press_key` rejects any Command+V or
-Control+V chord (`keymap.is_paste_shortcut`, keyed on the RESOLVED keycode+flags so
-`command+V` / `super+v` / `meta+v` / `cmd+shift+v` cannot spell around it). The
-clipboard is out of band: KiroCrew never reads it, so nothing can classify what it
-holds, and a paste into an ordinary readable field puts that content into the tree
-the very next snapshot returns. The secure-target refusal cannot help here — the
-*destination* is not a secure field, and the credential arrives from outside every
-channel that gets inspected — so the disclosure is "whatever the operator last
-copied", which is routinely a password from a password manager's copy button.
-Typing known text stays available and is the pointer the refusal gives: the content
-of `computer_type_text` is inspectable, so the sensitive-text scan can actually run
-on it.
+**Every refusal is audited, including exits before the audit-only gate.** There are
+two audited exits and no third: `_refusal` handles failures that can quote the
+desktop (stale indices, target-policy and driver failures) and applies the observation
+shim plus redaction; `_static_refusal` handles package-owned prose about the caller's
+request (an unknown tool, a disabled feature, a missing `element_index`, or a malformed
+pointer request). Both emit a `refused` `log_tool_invocation` with the tool name and
+**no resources**, so the audit line records the attempt but never copies desktop text.
+An AST test asserts no other function in the module constructs the `Error: ` prefix.
 
 **Keyboard input refuses when the target will not take focus.** Both keyboard
 tools require `element_index` precisely so the addressed element can be inspected
@@ -1798,7 +1781,7 @@ touch them. They sit with `_SENSITIVE_HOME_DIRS` and the AKIA redaction:
   it replaces every quoted fragment with `<redacted:policy>`, keeping only the
   actionable "call `computer_get_state` again" half. Without this, provoking a drift
   would be the one path around both the redaction pass and the observation ceiling.
-  Refusals that are 100% KiroCrew's own static prose (the primary-enable refusal, the
+  Refusals that are 100% Kiro Crew's own static prose (the primary-enable refusal, the
   generic governance denials, the "pass an `element_index`" hint) skip it by
   construction: no desktop text to leak, and redaction could only mangle them.
 - **Per-call SEL audit** — every permitted call emits `log_tool_invocation`, every
@@ -2402,9 +2385,9 @@ tools would let a model launder one per-call gate decision into many.
 | Reference surface | Why not |
 |---|---|
 | ~~`sky_click` (a fifth `click_method`)~~ | **Now ported** — see "`sky_click` — the private path, and why it IS shipped" above. Kept in this table as a pointer, because the reasoning that once excluded it (do not depend on private ABI) still governs how it is contained: quarantined in `macos_skylight.py`, never reachable from `auto`, and fully degrading when a symbol is missing. |
-| `install-codex-mcp`, `install-claude-mcp`, `install-gemini-mcp`, `install-opencode-mcp`, `install-codex-plugin` | N/A by design. KiroCrew **self-registers**: `kirocrew-computer` is a managed server in `agent.py:_MANAGED_MCP_SERVERS`, auto-written into the agent config and refreshed while preserving user customizations. There is no external host to install into, so an install verb would have nothing to do. |
+| `install-codex-mcp`, `install-claude-mcp`, `install-gemini-mcp`, `install-opencode-mcp`, `install-codex-plugin` | N/A by design. Kiro Crew **self-registers**: `kirocrew-computer` is a managed server in `agent.py:_MANAGED_MCP_SERVERS`, auto-written into the agent config and refreshed while preserving user customizations. There is no external host to install into, so an install verb would have nothing to do. |
 | `snapshot <app>` | covered by `apps` + `computer_get_state`, and a CLI spelling of an LLM-facing capability is exactly what the MCP-first rule asks us not to add. |
-| `turn-ended [--previous-notify]` (a host notify hook) | same intent, different shape: `computer_end_turn` is an MCP tool, so the model drops its own snapshot cache rather than relying on a host lifecycle hook KiroCrew does not have. |
+| `turn-ended [--previous-notify]` (a host notify hook) | same intent, different shape: `computer_end_turn` is an MCP tool, so the model drops its own snapshot cache rather than relying on a host lifecycle hook Kiro Crew does not have. |
 
 ---
 
@@ -2428,7 +2411,7 @@ ONLY one, and the consequences should be stated rather than discovered:
 * once the operator enables the feature, prompt injection that reaches the agent
   reaches the desktop. There is no per-app, per-action or per-surface ceiling left
   to contain it;
-* the one structural defence is that the agent cannot drive KiroCrew's own window
+* the one structural defence is that the agent cannot drive Kiro Crew's own window
   (`policy.check_app`), so it cannot click the enable itself. If that entry is ever
   removed, the keystone stops meaning anything. It matches THREE signals, and the
   third is load-bearing: the dashboard is also reachable as a **browser tab**, where
@@ -2490,10 +2473,10 @@ computer use.
   desktop automation by construction, not as the default of a tunable model.
 - **Element-index addressing is inherently racy** — see the honest limit under
   [Index lifecycle](#index-lifecycle-and-its-honest-limit).
-- **A ctypes fault ends computer use for the rest of the kiro-cli session.**
-  kiro-cli caches `tools/list` once per session. Mitigation is prevention (the
-  argtypes tripwire test), not recovery; a per-call fork was considered and
-  rejected as disproportionate.
+- **A ctypes fault can terminate the gateway process.** Computer-use native calls
+  run in gateway worker threads, so `_guarded` and the bounded executor contain
+  Python failures and stalls, not a native process crash. Mitigation is prevention
+  (the argtypes tripwire tests); the service supervisor may restart a managed gateway.
 
 ### Enabling restarts the chat sessions (on purpose)
 
@@ -2585,13 +2568,14 @@ unexplained session reset reads as a crash. Pinned by
 |---|---|
 | `computer_use/types.py` | Every constant + frozen dataclass; dependency-free and platform-free |
 | `computer_use/keymap.py` | The platform-free spec grammar (`parse_spec()` → `KeySpec`, `KEY_ALIASES` / `MODIFIER_ALIASES` and their canonicalizers) over macOS's Carbon keycodes + CG flag masks (`parse_key()`) |
-| `computer_use/policy.py` | The one retained app refusal (KiroCrew's own window) + the operator's allow/deny lists, secure-target + text refusals, the click-target/method/button refusals + `resolve_click_method`, `redact_result` |
+| `computer_use/policy.py` | The one retained app refusal (Kiro Crew's own window) + the operator's allow/deny lists, secure-target + text refusals, the click-target/method/button refusals + `resolve_click_method`, `redact_result` |
 | `computer_use/render.py` | Tree/app-list rendering, `fingerprint`, secure placeholder |
 | `computer_use/index.py` | `SnapshotIndex`: TTL, cap, `resolve`, `end_turn`, drift message |
 | `computer_use/enable_state.py` | The keystone primary enable + the operator's app allow/deny lists (read fail-soft to off) |
 | `computer_use/backend.py` | `ComputerUseBackend` ABC, `UnsupportedBackend`, registry, the one platform branch |
 | `computer_use/gate.py` | The SEL audit of every call and every real-pointer gesture, plus the pass-through shims (`apply_observation_ceiling`, `permitted_observation_channels`) the renderers still route through |
-| `computer_use/service.py` | The single dispatch chokepoint (`act()`), synchronous |
+| `computer_use/tools.py` | The single in-gateway dispatch chokepoint: validation, enable, audit, target/freshness/input checks, driver dispatch and response shaping |
+| `computer_use/service.py` | Blocking snapshot/index/screenshot orchestration over the active backend; no policy decisions |
 | `computer_use/windows_driver.py` | `WindowsBackend`: observation + all seven input verbs — the UIA pattern ladder, pointer confinement, verified focus, and the closed `perform_action` vocabulary |
 | `computer_use/windows_ffi.py` | The ONLY module touching Windows-native code: the UIA COM client, the one vtable-slot table, VARIANT/BSTR marshalling, the fail-closed secure read, the bounded walk, the DPI scope, `window_render_scale`, window enumeration |
 | `computer_use/apps_windows.py` | Window-list app enumeration keyed on the top-level HWND (a pid fronts many apps), the transient-popup filter, `find_window_for` (the launch verb's non-raising lookup) + `hwnd_owns_point`, the confinement predicate |
@@ -2600,7 +2584,7 @@ unexplained session reset reads as a crash. Pinned by
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
 | `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
-| `computer_use/macos_ffi.py` | The ONLY module touching ctypes: `_FN_SPECS`, structs, binder, CF hygiene, key/scroll/mouse event synthesis |
+| `computer_use/macos_ffi.py` | The only in-gateway macOS module touching ctypes: `_FN_SPECS`, structs, binder, CF hygiene, key/scroll/mouse event synthesis |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
 | `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |

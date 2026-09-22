@@ -246,7 +246,8 @@ wrong.
 
 ## Built-in app copy comes from Python, and is localised without touching it
 
-An app's `displayName`, `description`, `highlights[]` and `ui.pages[0].label` live in
+An app's `displayName`, `description`, `highlights[]`, `useCases[]`,
+`configuration[]`, and `ui.pages[0].label` live in
 `src/kiro_crew/apps/builtins/<app>/app.json` on the **Python** side, and the App Store
 components interpolate them raw. So they were English in every locale, and the nav rail
 read `Papyrus` while that app's own page header was translated.
@@ -254,7 +255,7 @@ read `Papyrus` while that app's own page header was translated.
 `src/components/appstore/appManifest.ts` holds `APP_MANIFEST_KEY`: one entry per
 built-in id, mapping each field to a catalog key under `apps.<camelId>.manifest.*`.
 Render through its resolvers — `appDisplayName`, `appDescription`, `appPageLabel`,
-`appHighlights` — never off the raw record.
+`appHighlights`, `appUseCases`, and `appConfiguration` — never off the raw record.
 
 **It is additive on purpose: `app.json` keeps its English.** The obvious design is VS
 Code's, a `%key%` placeholder inside the manifest, and it was rejected because it
@@ -273,9 +274,10 @@ prose, byte for byte.
 
 1. Edit `app.json` (or add the app under `builtins/<dir>/app.json`).
 2. Add the matching keys to `locales/en.json` under `apps.<camelId>.manifest.*`
-   (`display_name`, `description`, `page_label`, `highlight_1..N`) with values
-   **identical** to the manifest.
-3. Add the entry to `APP_MANIFEST_KEY`, one `highlights` key per bullet.
+   (`display_name`, `description`, `page_label`, `highlight_1..N`,
+   `use_case_1..N`, `configuration_1..N`) with values **identical** to the manifest.
+3. Add the entry to `APP_MANIFEST_KEY`, with one key per `highlights`, `useCases`,
+   and `configuration` item.
 4. Translate into the other eleven catalogs — `catalogParity.test.ts` is all-or-nothing.
 5. Run `npm run i18n:check`.
 
@@ -283,13 +285,13 @@ Two traps worth knowing before you debug them:
 
 - **These keys are NOT covered by `[key-refs]`.** The resolvers read
   `i18nT(k.displayName)` off a local, which `check-i18n-keys.mjs` cannot follow — it
-  reports `appManifest.ts: 0 -> 4` under the report-only `[dynamic-keys]`. Key existence
+  reports six call sites for `appManifest.ts` under the report-only `[dynamic-keys]`. Key existence
   is proved by `[manifest-sync]` instead. Do not read a green `[key-refs]` as coverage
   here.
-- **A `highlights` length mismatch is silent by design.** `appHighlights()` falls back to
-  the manifest's full English list rather than truncating, because losing a bullet is
-  worse than showing it untranslated. `[manifest-sync]` fails on the mismatch, and
-  `src/test/appManifest.test.ts` pins the count.
+- **A list-field length mismatch falls back by design.** `appHighlights()`,
+  `appUseCases()`, and `appConfiguration()` return the manifest's full English list
+  rather than truncating it. `src/test/appManifest.test.ts` pins the table lengths;
+  `[manifest-sync]` pins the English catalog counts and values.
 
 Third-party apps are deliberately out of scope: their copy is their author's to
 translate, so they fall through to whatever the manifest supplied. That fallthrough is
@@ -375,7 +377,7 @@ not formatting ones. It joins with `Intl.ListFormat` `type: 'unit'` rather than 
 hardcoded space, because narrow unit lists are space-joined in en/ru/fr,
 comma-joined in de, and joined with NOTHING in zh. `Intl.DurationFormat` would do
 all of this in one call and is deliberately unused: it is `undefined` on the
-Node 20 and Electron baseline.
+Node 22 floor.
 
 `fmtCompact` changes rendered WIDTH per locale (zh abbreviates on 万, de has no
 short form at these magnitudes), so a caller in tight chrome should confirm the

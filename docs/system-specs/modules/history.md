@@ -774,7 +774,8 @@ Do not reintroduce a `memory_mode` condition here without first changing what
 
 ## HistoryConsolidator (`history_consolidation.py`, re-exported by `history.py`)
 
-Background task that fires when unconsolidated count ≥ 10 messages. Uses the
+Background task that fires once a session's message count reaches
+`_CONSOLIDATION_THRESHOLD` (30) messages past its last consolidation offset. Uses the
 persistent background ACP session (kiro-cli long-running session, same as
 cron/heartbeat/lesson extraction) to extract:
 - `history_entry` → appended to today's daily history file
@@ -922,7 +923,7 @@ inner JSONL fallback; only an absent replay requests fallback construction.
 3. Context ≥ configured threshold (`session.autocompact_pct`, default 70%) → compaction via kiro-cli `/compact` (fire-and-forget)
 4. Session expires (30min idle) → provider killed
 5. User returns → new session with history re-injected
-6. After 10+ messages → background consolidation → structured memory updated
+6. After the message count crosses `_CONSOLIDATION_THRESHOLD` (30) past the last offset → background consolidation → structured memory updated
 
 ## Inline Image Attachments (`chat_attachments.py`)
 

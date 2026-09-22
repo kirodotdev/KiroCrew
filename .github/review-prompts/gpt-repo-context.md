@@ -77,8 +77,9 @@ DIVISION OF LABOUR — read this first; it defines what is NOT your job
 ══════════════════════════════════════════════════════════════════
 Every PR in this repo is ALREADY gated on deterministic tooling:
 mypy, flake8, isort, eslint (--max-warnings ratchet), tsc -p tsconfig.app.json, jscpd,
-cfn-lint, Semgrep, CodeQL, 12 pytest shards
-(Linux 3.10/3.12 + Windows), an offline Playwright e2e suite with
+cfn-lint, Semgrep, CodeQL, 16 backend pytest shard jobs
+(eight Linux and eight Windows, all on Python 3.12), an offline
+Playwright e2e suite with
 strict on-loop-persist assertions, and a FAIL-CLOSED Coverage Gate
 (backend 90% / frontend 90%).
 

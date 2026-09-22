@@ -24,7 +24,7 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 > interactive kiro-cli and Kiro IDE session the user runs outside Kiro Crew. If
 > `kirocrew-core` / `kirocrew-cron` ever appear in a provider global, that is
 > leftover state from an older install: clean it from the dashboard MCP panel,
-> or run `kirocrew cli-setup`, which calls the narrowly-scoped
+> or run `kirocrew setup`, whose setup path calls the narrowly scoped
 > `mcp_cleanup.clean_stale_managed_mcp()` helper.
 
 ## Config file hierarchy
@@ -36,8 +36,9 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 | `~/.kiro/crew/mcp.json` | User, via the dashboard MCP panel | specific to Kiro Crew additions and per-server tool disables | Kiro Crew gateway only |
 
 `rebuild_agent_config()` writes exactly **one** file, `~/.kiro/agents/kirocrew.json`.
-There is no second rendered agent file and no agent-file renderer for any other
-provider: Kiro Crew is KiroACP-only.
+There is no second rendered agent file: Kiro Crew's provider is ACP-only, and
+non-kiro ACP harnesses consume projected configuration rather than another Kiro
+agent file.
 
 ### Provider-global scopes come from the platform seam, not the core
 
@@ -142,12 +143,15 @@ app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the three servers the gateway owns end to
-end: `kirocrew-cron`, `kirocrew-core`, `kirocrew-computer`. Each is refreshed on
-every rebuild by `_refresh_dynamic_fields()`, which rewrites `command`/`args`
-from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
-`headers`) left by older builds, and re-pins `env.KIROCREW_HOME` to the home the
-gateway is actually running under while preserving the user's own env keys.
+`agent._MANAGED_MCP_SERVERS` holds the eight servers the gateway owns end to
+end: the always-on `kirocrew-cron` and `kirocrew-core`, the gated
+`kirocrew-computer`, and the opt-in `kirocrew-dashboard`, `kirocrew-work`,
+`kirocrew-crew-log`, `kirocrew-debug` and `kirocrew-panel`. Every emitted or
+explicitly granted entry is refreshed on every rebuild by
+`_refresh_dynamic_fields()`, which rewrites `command`/`args` from the live
+`kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
+older builds, and re-pins `env.KIROCREW_HOME` to the home the gateway is actually
+running under while preserving the user's own env keys.
 User customizations are preserved, with one exception: an `autoApprove` list no
 server spec declares is dropped, because kiro-cli approves those tools locally and
 Crew never sees a permission request for them. Set `mcp.honour_auto_approve` to
@@ -219,7 +223,7 @@ loops, so a keystone flip landing mid-rebuild cannot produce a spec that emits o
 server's entry under the old decision and another's under the new one.
 
 Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
-`"type": "registry"` marker on these three entries — added when
+`"type": "registry"` marker on these managed entries — added when
 `agent.mcp_registry_mode` is declared, and REMOVED when it is not. The marker is
 maintained rather than preserved because it tracks the account the gateway is
 signed in to, not a user preference, and because the client's filter is
@@ -442,7 +446,7 @@ Probes run from `POST /api/mcp/probe`:
   stylistic: from Python 3.14 that method swallows every `OSError` and answers
   `False`, so a permission error or a stalled mount would be indistinguishable
   from "nothing was ever written". This package declares `requires-python >=
-  3.10` with no ceiling, so a build on 3.14 would silently collapse the middle
+  3.12` with no ceiling, so a build on 3.14 would silently collapse the middle
   answer and tell the owner of an authorized server to sign in again — the exact
   harm the three-valued design exists to prevent. Two spellings over the same
   artifacts is how one of them loses that answer, which is why the probe and the
@@ -507,10 +511,11 @@ Probes run from `POST /api/mcp/probe`:
   remedy paragraph warns once per server name
   (`_warn_probe_sandbox_unavailable_once`) and demotes repeats to DEBUG.
   - **A managed server FALLS BACK to its declared tool list when — and only when —
-    the sandbox refuses.** `kirocrew-core` / `-cron` / `-computer` declare their
-    tools statically in this package (`mcp_core._list_tools()` and friends, the very
-    functions the stdio shim answers `tools/list` from), so
-    `_managed_tools_in_process` can serve the listing with no subprocess at all.
+    the sandbox refuses.** Every server in
+    `mcp_discovery._MANAGED_SERVER_TOOL_MODULES` declares its tools statically in
+    this package (the same `_list_tools()` functions the stdio shims answer
+    `tools/list` from), so `_managed_tools_in_process` can serve the listing with
+    no subprocess at all.
     That is what removes the `agent.sandbox_allow_unsandboxed_exec` opt-in for a
     read-only listing on a backendless host.
     - **Fallback, never primary.** When a backend exists the real spawn still runs,
@@ -1182,7 +1187,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 
 | Server | Process | Tools |
 |--------|---------|-------|
-| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
+| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 | `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
@@ -1202,7 +1207,7 @@ is their spec and carries that reasoning.
 The consequence to know before granting: an agent handed the whole server for folder
 organization has the session verbs too. Whether they prompt depends on how the grant
 is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
-glob, so it auto-approves all ten, while naming tools individually leaves the rest
+glob, so it auto-approves all fourteen, while naming tools individually leaves the rest
 to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
 `_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
 form, and they differ from each other on exactly this axis: the member's list
@@ -1306,7 +1311,8 @@ answers `tools/list` from):
 - **Monitor read:** `monitor_inspect` (strict authenticated session
   identity only; no ancestor fallback; reports a structured monitor or a legacy
   timer loop's presence reading, whichever the session holds)
-- **Crew routing:** `select_crew`
+- **Crew routing:** `route_crew`, `select_crew`
+- **Session work ledger:** `session_ledger_read`, `session_ledger_record`
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
 - **Artifacts:** `artifact_list`, `artifact_get`, `artifact_save`,
@@ -1316,13 +1322,16 @@ answers `tools/list` from):
   `artifact_get_comments`, `artifact_post_comment`, `artifact_reply_comment`,
   `artifact_delete_comment`, `artifact_mark_review`, `deploy_artifact`
 - **Knowledge and skills:** `local_knowledge_search`, `knowledge_add_document`,
-  `skill_discover`, `skill_search`, `skill_fetch`,
-  `browse_outline`, `browse_search`. (`knowledge_dedup` and
+  `skill_discover`, `skill_search`, `skill_fetch`. (`knowledge_dedup` and
   `knowledge_list_sources` have CLI twins — see the table above.)
-- **Workflows and hooks:** `workflow_author`, `workflow_list`,
+- **Workflows and hooks:** `workflow_author`, `workflow_run`,
+  `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **Diagnostics:** `resource_status`, `issue_radar_record_investigation`,
-  `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
+- **App bridges:** `issue_radar_record_investigation`,
+  `ops_mission_control_api`, `pod_up`, `pod_down`, `pod_status`, `pod_ls`,
+  `issue_radar_crew_read`, `issue_radar_crew_record`
+- **Browser:** `browser`
+- **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
   fenced identity/token stores, and never the conversation-bearing sources
   (`kiro-chat.log`, session transcripts), each of which is one shared host file
@@ -1394,10 +1403,13 @@ normalization pass rewrites slash-containing keys to kiro-safe aliases: kiro-cli
 splits an agent `@server` reference on `/`, so a slash-containing key is
 mis-parsed as `@server/tool` and exposes none of the server's tools.
 
-**Browsing is deliberately not an MCP server.** The agent drives a browser by
-running `playwright-cli` commands on its ordinary shell path, so no tool schemas
-are re-sent per request and the accessibility tree stays on disk instead of
-entering the model context. See [browser](../system-specs/modules/browser.md).
+**Browsing has one core MCP entry point.** The `browser` tool forwards one
+operation to the dashboard's native Browser panel. It accepts public HTTP(S)
+navigation only; localhost, private, and link-local targets stay on the
+approval-gated `playwright-cli` path. When no native panel is attached, or the
+operator disables it, the tool returns fallback guidance rather than starting a
+second browser. Full CLI snapshots and accessibility trees still stay on disk.
+See [browser](../system-specs/modules/browser.md).
 
 ## What belongs in `kirocrew-core`, and what does not
 

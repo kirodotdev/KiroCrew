@@ -33,12 +33,13 @@ The administrator sets two things on the Kiro profile (Kiro console → Settings
 Shared settings): an MCP on/off toggle, and an **MCP Registry URL** pointing at a
 registry JSON file listing the allow-listed servers.
 
-With a registry URL configured, the client is in **registry access mode**, and
-its filter is *symmetric*:
+With a registry URL configured, the client is in **registry access mode**. The
+filter is symmetric for entries in the agent spec; Kiro CLI 2.6.0 and later can
+also load personal `mcp.json` servers alongside the registry-managed set:
 
-| Access mode | Entries that connect | Entries that are dropped |
+| Access mode | Agent-spec entries that connect | Agent-spec entries that are dropped |
 |---|---|---|
-| registry (a registry URL is set) | only entries carrying `"type": "registry"` that resolve to a catalog entry **of the same name** | everything else |
+| registry (a registry URL is set) | entries carrying `"type": "registry"` that resolve to a catalog entry **of the same name** | ordinary, non-registry entries in the agent spec |
 | non-registry (no registry URL) | ordinary entries | entries carrying `"type": "registry"` |
 
 Two consequences worth internalising:
@@ -83,7 +84,7 @@ Kiro Crew needs three servers, and they must appear in the registry file under
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
-| `kirocrew-computer` | desktop automation (inert unless separately enabled, but still filtered) |
+| `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
 
 The registry file format is a subset of the MCP registry standard's server
 schema. Each entry needs a `packages` entry describing how to launch the server,
@@ -91,7 +92,10 @@ and — because all three Kiro Crew servers live behind one package — a
 `packageArguments` entry naming the subcommand. For a `pypi` package the client
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
-speaking MCP and fails the handshake:
+speaking MCP and fails the handshake. Kiro Crew releases are not published to
+the public Python Package Index; the `pypi` example below therefore requires
+your organisation to mirror the matching `kirocrew` wheel into the Python index
+that `uvx` uses:
 
 ```json
 {
@@ -99,7 +103,7 @@ speaking MCP and fails the handshake:
     {
       "name": "kirocrew-core",
       "description": "Kiro Crew orchestration: subagents, memory, artifacts, monitoring",
-      "version": "0.3.0",
+      "version": "0.8.0",
       "packages": [
         {
           "registryType": "pypi",
@@ -112,7 +116,7 @@ speaking MCP and fails the handshake:
     {
       "name": "kirocrew-cron",
       "description": "Kiro Crew scheduled jobs",
-      "version": "0.3.0",
+      "version": "0.8.0",
       "packages": [
         {
           "registryType": "pypi",
@@ -124,8 +128,8 @@ speaking MCP and fails the handshake:
     },
     {
       "name": "kirocrew-computer",
-      "description": "Kiro Crew desktop automation (macOS, opt-in)",
-      "version": "0.3.0",
+      "description": "Kiro Crew desktop automation (macOS/Windows, opt-in)",
+      "version": "0.8.0",
       "packages": [
         {
           "registryType": "pypi",
@@ -150,10 +154,13 @@ process, reached through subcommands (`kirocrew mcp-core`, `mcp-cron`,
 A registry-type entry hands the launch decision to the catalog: the client
 resolves the package and, when a locally installed server's version differs from
 the registry's, relaunches it at the registry's version. For a `pypi` entry that
-means `uvx` fetching Kiro Crew from PyPI into its own ephemeral environment — so
-the process serving your MCP tools can be a *different* Kiro Crew from the
-gateway serving your dashboard. Your `env` overrides (including `KIROCREW_HOME`)
-do flow through, which keeps the data home aligned, but the code does not.
+means `uvx` fetching Kiro Crew into its own ephemeral environment from its
+configured Python index. Because the project is not on public PyPI, that route
+works only when your organisation mirrors the wheel and version into an index
+visible to `uvx`. The process serving your MCP tools can then still be a
+*different* Kiro Crew from the gateway serving your dashboard. Your `env`
+overrides (including `KIROCREW_HOME`) do flow through, which keeps the data home
+aligned, but the code does not.
 
 Keep the registry `version` in step with your fleet's installed version. If your
 organisation pins Kiro Crew centrally, that pin now governs the MCP side too.
@@ -502,6 +509,6 @@ So you do not plan around capabilities that are not here:
   policy with a `distribution` block filled in, to copy from.
 - [../../src/kiro_crew/docs/troubleshooting.md](../../src/kiro_crew/docs/troubleshooting.md)
   — the user-facing "MCP tools not working" checklist.
-- Kiro's own documentation: `https://kiro.dev/docs/enterprise/governance/mcp/`
-  (administrator setup) and `https://kiro.dev/docs/mcp/registry/` (registry mode
-  and registry-type overrides).
+- Kiro's own documentation: [Enterprise MCP governance](https://kiro.dev/docs/enterprise/governance/mcp/)
+  (administrator setup) and [MCP registry mode](https://kiro.dev/docs/mcp/registry/)
+  (registry mode and registry-type overrides).

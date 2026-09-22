@@ -1,6 +1,6 @@
 ---
 title: Remote Instance on Fargate
-status: in-progress
+status: partial
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07
@@ -14,6 +14,15 @@ superseded-by: []
 ---
 
 # RFC: Remote Instance on Fargate
+
+> **Partly shipped — current behaviour is specified in
+> [`../system-specs/modules/cloud.md`](../system-specs/modules/cloud.md) and
+> [`../system-specs/modules/instances.md`](../system-specs/modules/instances.md).**
+> The single-task Fargate engine, configured provisioner lane, task-lifetime and
+> population bounds, direct turn API, and `fargate` registry/SSM tunnel are on
+> main. The body below predates registry parity and still describes registration,
+> the tunnel, and the relay as deferred; those claims are historical. Phase 2's
+> one-action fan-out and Phase 3's comparative measurements remain unbuilt.
 
 ## Summary
 

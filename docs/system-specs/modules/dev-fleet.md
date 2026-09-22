@@ -3,7 +3,7 @@
 ## Overview
 
 Dev Fleet is a builtin App Store app (`kiro_crew/apps/builtins/dev_fleet/`) for
-managing KiroCrew feature worktrees (git worktrees of the main repo) and their isolated
+managing Kiro Crew feature worktrees (git worktrees of the main repo) and their isolated
 pod test instances. It runs as a managed app backend SUBPROCESS: an aiohttp server on the
 backend-assigned port, reached only through the gateway proxy. Every proxied request
 carries an HMAC signature (`X-KiroCrew-Proxy: <ts>:<hmac>` over
@@ -237,11 +237,11 @@ backend's namespace. See *Make Live → Pointer file*.
 A second, deliberately small pod surface exists for AGENT sessions, served **in the
 gateway process** rather than by the backend subprocess (`agent_pod_api.py`).
 
-Why it is separate rather than a reuse of the proxied routes above: an agent session
-runs behind a sandbox with its own user namespace, so it cannot `connect(2)` the
-systemd user-bus socket that every pod verb needs, and `kirocrew pod up` in an agent
-shell fails with a bare `Permission denied`. The gateway is the process the sandbox
-launcher descends from, so it holds the host bus. The agent reaches these routes the
+Why it is separate rather than a reuse of the proxied routes above: on Linux, an agent
+session runs behind a sandbox with its own user namespace, so it cannot `connect(2)`
+the systemd user-bus socket that pod lifecycle verbs need, and `kirocrew pod up` in
+an agent shell fails with a bare `Permission denied`. The gateway is the process the
+sandbox launcher descends from, so it holds the host bus. The agent reaches these routes the
 way it reaches any tool — an MCP call, then loopback HTTP — with no D-Bus passthrough
 into the sandbox. The proxied `/apps/dev-fleet/api/*` routes cannot serve this: they
 require a dashboard cookie or token, which an agent does not hold, and admitting an
@@ -259,7 +259,8 @@ Contract:
 - **Gated on the app being enabled** (`_require_enabled`), since routes are
   registered at startup and Dev Fleet ships `defaultEnabled: false`.
 - **No operator opt-in and no per-call approval, deliberately.** A pod runs the code
-  in a git worktree an agent can write, started by the user systemd manager, so it
+  in a git worktree an agent can write, started by the per-user service manager
+  (systemd `--user` on Linux or launchd on macOS), so it
   executes outside the agent's sandbox. That reachability is Kiro Crew's DOCUMENTED
   posture rather than something these routes introduce: `security.md`, under "Scoped
   user-bus locator forward", records that sandboxed agent shells legitimately run
@@ -1646,8 +1647,9 @@ All user-visible output passes through `redact_credentials()` and
 The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
 because that is where it genuinely runs: the fleet view, PR status, commit and
 disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
-no systemd in them. Only the pod plane needs Linux; Make Live stages its pointer
-on every platform (only the automatic restart needs a drivable service manager).
+no service-manager dependency in them. The pod plane needs systemd `--user` on
+Linux or launchd on macOS; Windows has no supported pod backend. Make Live stages
+its pointer on every platform (only the automatic restart needs a drivable service manager).
 The app says so in the UI rather than in the manifest — a `highlights` line
 states the pod requirement, and `GET /api/fleet` carries the reason that renders
 as a banner.
@@ -1671,9 +1673,9 @@ things:
 | Flag | Meaning | True when |
 |---|---|---|
 | `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
-| `_POD_AVAILABLE` | pods can actually **run** here | Linux **and** `systemctl` on PATH |
+| `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, or macOS with `launchctl` on PATH |
 
-Conflating the two used to report every worktree as "not built" off Linux, since
+Conflating the two used to report every worktree as "not built" on hosts without a runnable pod backend, since
 the `prov.has_venv` / `prov.has_dist` calls — plain filesystem checks — sat
 behind the pod-runnable gate. Build state is now computed on every platform.
 
@@ -1686,19 +1688,23 @@ offering controls that fail:
 | `pods_unavailable_reason` | the human-readable reason, or `null` when pods are available |
 
 Before this existed, the reason string was computed into `_POD_ERROR` and then
-**never read by anything** — a non-Linux user saw pod controls that silently
-failed with no explanation.
+**never read by anything** — a user on a host without a runnable pod backend saw
+pod controls that silently failed with no explanation.
 
 Per-platform behavior:
 
 - **Linux + systemd `--user`** — everything works.
-- **macOS / Windows / Linux without `systemctl`** — the Fleet view, per-branch PR
-  status, commit counts, disk usage, Provision, Sync (pull main + rebuild),
-  Rebase and Prune all work. The UI shows a notice carrying
+- **macOS + launchd** — pod lifecycle and the non-pod fleet actions work. macOS
+  pods have no enforced memory/CPU ceiling. Automatic Make Live additionally
+  requires the current LaunchAgent restart contract; otherwise it stages the
+  pointer and asks the operator to restart manually.
+- **Windows / macOS without `launchctl` / Linux without `systemctl`** — the Fleet
+  view, per-branch PR status, commit counts, disk usage, Provision, Sync (pull
+  main + rebuild), Rebase and Prune all work. The UI shows a notice carrying
   `pods_unavailable_reason` and hides the actions that cannot work: Spin up /
   Restart / Stop pod, Open, QA + video. Make Live and Provision are **not**
-  hidden — `kirocrew pod provision` does not touch systemd, so building a
-  worktree's venv + dist works anywhere; Make Live stages the pointer on any
+  hidden — `kirocrew pod provision` does not touch a service manager, so building
+  a worktree's venv + dist works anywhere; Make Live stages the pointer on any
   platform and reports `staged_only` when it cannot bounce the gateway itself.
 - **Make Live** — staging (pointer write) works on every platform. Automatic
   restart requires an active systemd `--user` unit or a current macOS

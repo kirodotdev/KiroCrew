@@ -2,7 +2,7 @@
 
 ## Overview
 
-Token authentication for the Kiro Crew dashboard. The owner mints a time-limited, HMAC-SHA256 signed URL from the CLI (`kirocrew token`) or via the `!dashboard` Slack command (currently the only chat channel that mints links). An aiohttp middleware validates the token on every GATED request (query param or cookie fallback) and sets a session cookie on first use. A bypass route returns before validation, and that set is wider than static assets — see the bypass inventory below. The token is pinned to a peer key: the client address by default, or a `ts:node:` / `ts:login:` identity on a Tailscale path (`token_auth.TokenStateManager.bind_peer()`), so the pin is not always an IP. Ordinary loopback requests require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`). Internal routes have separate loopback-plus-`X-Internal-Secret` and mixed-route cookie-authentication branches. SEL coverage of token GENERATION is per caller, not intrinsic to minting: `generate_token()` itself logs only `nonce_evicted`, an eviction side effect, so a caller that does not log leaves its mint unaudited. The gateway's `--json-ready` startup path is that case — it calls `generate_token()` directly with no accompanying generation event.
+Token authentication for the Kiro Crew dashboard. The owner mints a time-limited, HMAC-SHA256 signed URL from the CLI (`kirocrew token`) or via direct-message commands on Slack (`!dashboard` or `/kirocrew dashboard`), Telegram and Webex (`/kirocrew dashboard`), and Teams (`/dashboard`). An aiohttp middleware validates the token on every GATED request (query param or cookie fallback) and sets a session cookie on first use. A bypass route returns before validation, and that set is wider than static assets — see the bypass inventory below. The token is pinned to a peer key: the client address by default, or a `ts:node:` / `ts:login:` identity on a Tailscale path (`token_auth.TokenStateManager.bind_peer()`), so the pin is not always an IP. Ordinary loopback requests require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`). Internal routes have separate loopback-plus-`X-Internal-Secret` and mixed-route cookie-authentication branches. SEL coverage of token GENERATION is per caller, not intrinsic to minting: `generate_token()` itself logs only `nonce_evicted`, an eviction side effect, so a caller that does not log leaves its mint unaudited. The gateway's `--json-ready` startup path is that case — it calls `generate_token()` directly with no accompanying generation event.
 
 `TokenStateManager` bounds concurrently valid link nonces with FIFO eviction, allowing multiple browser tabs and CLI sessions without unbounded link-state growth (`token_auth.TokenStateManager`). All in-memory link-session state is managed by that thread-safe component. Auth is **not** purely in memory: the persistent HMAC signing key `token_signing.key` and persisted revoked access-cookie nonces in `token_revoked_nonces.json` let signed cookies and per-session logouts survive a gateway restart. `POST /api/auth/logout` revokes one access cookie and its refresh chain; `kirocrew logout` advances the persisted revocation generation embedded in both token kinds, ending all established browser sessions and refresh chains (`token_secret`, `RevokedNonceStore`, `revocation_gen.py`).
 
@@ -35,6 +35,9 @@ Rotation-on-use races when a refresh POST is duplicated (network retry / double-
 `POST /api/auth/refresh` is rate-limited per source IP. The per-IP bucket map is bounded two ways: a periodic sweep reclaims stale or empty buckets without evicting a live bucket, and a hard cap fails closed so a previously unseen source IP is denied rather than admitted by evicting a live bucket (`test_tr_u_15g_rate_buckets_hard_capped`). Under a sustained flood or heavy IP churn, a legitimate previously unseen source can be denied refresh; an unconditional sweep runs when insertion is refused to reclaim dead buckets without dropping a live one. Any change to the cap, eviction or sweep behavior, or this availability trade changes this security contract and must update this section in the same commit.
 
 ## Architecture
+
+The sequence below is the Slack implementation. Telegram, Teams and Webex call
+`generate_token()` directly and keep the credential in a direct conversation.
 
 ```mermaid
 sequenceDiagram
@@ -687,7 +690,7 @@ dashboard session; if no other device is signed in, it restores the
 
 | Event | Operation | Outcome | Metadata |
 |-------|-----------|---------|----------|
-| Token generated | `slack.dashboard_token` | `ok` | `ttl=<seconds>` |
+| Messaging link generated | `slack.dashboard_token`, `telegram.dashboard_token`, `teams.dashboard_token`, or `webex.dashboard_token` | `ok` | `ttl=<seconds>` |
 | Request accepted | `dashboard.token_auth` | `ok` | request path |
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |

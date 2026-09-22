@@ -2,8 +2,9 @@
 
 ## Principles
 
-1. Custom exceptions in `acp/client.py` for ACP-protocol errors, and in
-   `acp/session_handle.py` for runtime/transport errors
+1. Custom exceptions in `acp/client.py` for ACP protocol/prompt errors, in
+   `acp/session_handle.py` for runtime/transport errors, and in `acp/runtime.py`
+   for runtime binding and session-start errors
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -25,16 +26,21 @@ AcpError (base, acp/client.py)          — carries `transient`, the retry verdi
 │                            the verdict can never license a replay that
 │                            repeats side effects
 ├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
+├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
+├── PiGateExtensionTampered — the shipped Pi gate extension failed its digest check
 ├── AcpModelUnavailable    — requested model not entitled; non-retryable
 └── AcpPromptBusy          — a prompt is already in flight on this session
 
 AcpRuntimeError (base, acp/session_handle.py)
 ├── AcpRuntimeDead            — the underlying process has died
 ├── AcpRequestTimeout         — a request's response missed its budget
-└── AcpWorkspaceBindingError  — a descriptor-bound runtime cannot serve another
-                                cwd (acp/runtime.py)
+│   └── AcpSessionStartTimeout — `session/new` timed out while a collector owns
+│                                the possible late result (acp/runtime.py)
+└── AcpWorkspaceBindingError  — descriptor-bound runtime cannot serve another cwd
+    └── AcpToolSurfaceBindingError — a shared runtime cannot safely serve the
+                                     requested tool surface (acp/runtime.py)
 ```
 
 `AcpToolGateUnroutable` is a distinct type rather than a transport error because
@@ -62,7 +68,7 @@ instead of the row simply disappearing.
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | Config load | Invalid JSON → log warning, return defaults |
-| Process spawn | `shutil.which` check before spawn; clear error if missing |
+| Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
 ## Dashboard Error Codes

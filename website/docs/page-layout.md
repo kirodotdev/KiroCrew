@@ -323,11 +323,14 @@ Inline within a `Card`, built from the shared primitives:
 
 ## Errors
 
-A dismissible banner above the content:
+Render through the shared notice instead of hand-rolling a banner:
 
 ```tsx
-<div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
+<ErrorNotice message={error} onDismiss={() => setError(null)} askAgent />
 ```
+
+Enable `askAgent` only when navigating away cannot discard an unsaved draft; otherwise
+leave it off and document what must stay in place.
 
 ## Animations
 

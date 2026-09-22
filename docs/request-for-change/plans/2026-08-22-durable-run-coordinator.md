@@ -1,8 +1,8 @@
 # Durable Run Coordinator Implementation Plan
 
-> **Obsolete plan — do not read the checkboxes as in-flight work.** 0 of 53 steps
-> are done and `RunCoordinator` has zero hits in `src/` and `test/`, and none
-> will be executed: its RFC
+> **Obsolete plan — do not read the checkboxes as in-flight work.** 0 of 52
+> checklist steps are done and `RunCoordinator` has zero hits in `src/` and
+> `test/`, and none will be executed: its RFC
 > [`../rfc-durable-run-coordinator.md`](../rfc-durable-run-coordinator.md) is
 > `superseded` by
 > [`../rfc-overload-resilience.md`](../rfc-overload-resilience.md), which ships

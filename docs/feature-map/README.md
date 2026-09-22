@@ -38,10 +38,13 @@ remain truthful; a whitespace or cosmetic edit does not count.
   that gets there. `?tab=` and `?view=` are real query parameters the page
   parses, not shorthand.
 - **Page** is relative to `website/src/`.
-- **Handler** is relative to `src/kiro_crew/dashboard/`. Two areas live outside
-  that root and are written in full.
-- **Endpoints** are 2–4 representative routes, not the complete set. The full
-  table is `src/kiro_crew/dashboard/routes/` plus the direct registrations in
+- **Handler** paths resolve under `src/kiro_crew/`: `handlers/` is under
+  `dashboard/`, other directory prefixes are literal, and `src/` paths are
+  repo-relative. Bare module names resolve by unique basename; a short name after
+  a full path inherits that path's directory. Per-app paths are relative to the
+  app named in the row.
+- **Endpoints** are representative routes, not the complete set. The full table is
+  `src/kiro_crew/dashboard/routes/` plus the direct registrations in
   `dashboard/server.py`; `test/test_dashboard_route_table.py` pins its order.
 - `TODO(verify)` marks a cell nobody has confirmed against code. Fix it or
   leave it; never replace it with a guess.
@@ -241,17 +244,18 @@ Third-party and builtin apps that add their own pages, crons and MCP tools.
 | App detail | One app's manifest, config, permissions, uninstall | `/apps/detail/:name` | `pages/AppDetailPage.tsx` | `src/kiro_crew/apps/routes.py` | `GET /api/apps/{name}`, `GET /api/apps/{name}/manifest`, `GET /api/apps/{name}/config` |
 | Installed app page | An app's own UI, served by the app | `/apps/:name` | `pages/AppPage.tsx` | app-owned | `POST /api/apps/{name}/token`, `POST /api/apps/{name}/open` |
 | App migration | Move an app's data after a packaging change | `/apps/migrate/:name` | `pages/MigrationPage.tsx` | `src/kiro_crew/apps/routes.py` | `DELETE /api/apps/{name}/migrate-cleanup` |
-| Builtin app surfaces | Top-level routes builtin apps claim | `/<app>` via the `/:builtinApp` catch-all | `apps/builtinRegistry.ts` → per-app page | per-app `backend/routes.py` | `POST /api/apps/<app>/...` per app |
+| Builtin app surfaces | Top-level routes builtin apps claim | `/<app>` via the `/:builtinApp/*` catch-all | `apps/builtinRegistry.ts` → per-app page | per-app `backend/routes.py` | `POST /api/apps/<app>/...` per app |
 | Dev Fleet Make Live | Repoint the live gateway at a worktree (stage the cutover, cancel a staged one, restart into it) — runs in the gateway process because the pointer is bind-masked from the sandboxed backend; owner-only, every app token refused | `/dev-fleet` → row → **Make live** / **Cancel staged cutover** / **Restart** | `pages/DevFleetPage.tsx` (`devFleetApi.ts` `postGateway`) | `src/kiro_crew/apps/builtins/dev_fleet/gateway_routes.py`, `live.py`; `src/kiro_crew/service/live_target.py`; the backend reads pointer state back through `pointer_broker.py` | `POST /api/apps/dev-fleet/make-live`, `POST /api/apps/dev-fleet/restart-gateway`; backend-token-only `GET /api/apps/dev-fleet/live-target`, `POST/PUT/DELETE /api/apps/dev-fleet/live-target/removal-lease` |
 | Dev Fleet Switch back | One safe return to the previous checkout after a completed Make Live cutover; the banner is absent while a cutover is only staged | `/dev-fleet` → completed-cutover banner → **Switch back** | `pages/DevFleetPage.tsx` | `src/kiro_crew/apps/builtins/dev_fleet/fleet_state.py`, `gateway_routes.py`, `live.py`; `src/kiro_crew/service/live_target.py` | `GET /apps/dev-fleet/api/fleet`, `POST /api/apps/dev-fleet/make-live` (`undo: true`) |
 | App session controls | A compact per-chat control an app contributes to the composer, handed the active session's identity | Chip in the composer bar of any chat, when an enabled app declares `contributes.sessionControls` — no route of its own | `hooks/useSessionControls.ts`, `components/SessionControlHost.tsx`, `components/ChatInput.tsx` (chips), `pages/ChatPage.tsx` (wiring) | `src/kiro_crew/apps/manifest.py` (declaration + validation); the status route is app-owned | `GET /api/apps`, `GET /api/apps/{name}/{statusPath}` (in-gateway) or `GET /apps/{name}/api/{statusPath}` (process-backed) |
 | App rail run state | The state of an app's own scheduled jobs on its rail icon — running, failed, or succeeded within the last 90s. Derived from the app's crons rather than pushed: the host already owns the in-flight marker, `last_status`, and the `created_by` owner stamp, so an app declares nothing new and cannot set its own mark. A user-paused job contributes nothing, which is the opt-out that works with the app's page closed | Mark on the row of an enabled installed app that OWNS a cron job — whether declared in `contributes.crons` or created at run time through `ctx.cron.add_job()`; no route of its own. Covers builtin and AppHost-routed apps alike: the row carries the app's resolved `name`, so a builtin's bare nav id is not parsed back | `appRunState.ts`, `App.tsx` (`RunStateIndicator` in `NavBadge`) | `src/kiro_crew/dashboard/handlers/cron.py` (`api_crons` serializes the owning `app` and `user_paused`); `src/kiro_crew/apps/cron_sdk.py` (`owner_tag` / `app_owner_name`) | `GET /api/crons` |
 
 `apps/builtinRegistry.ts` is the path→component table for builtin surfaces
-(22 entries: Worlds, Channels, Auto Improvement, Auto Research, AWS Control,
+(23 entries: Worlds, Channels, Auto Improvement, Auto Research, AWS Control,
 File Explorer, Code Review Sage, Workflows, Dev Fleet, Issue Radar, Meetings,
 Papyrus, PPTX Maker, Ops Mission Control, Design Critique, Crew Companion,
-Task Runner, MD Notebook, Mochi, Spec Builder, Personal Shopper, Design Tweak).
+Task Runner, MD Notebook, Mochi, Spec Builder, Personal Shopper, Design Tweak,
+Project Scaffolder).
 Adding a builtin surface means an entry there plus `ui.pages` in the manifest —
 `App.tsx` needs no change, which is why the router-delta half of the freshness
 check cannot see it and the pages-dir half can.
@@ -379,7 +383,7 @@ to Settings > Developer (`pages/settings/FeaturePreviewsSection.tsx`); the old
 | Source-provider review | PR state, checks and review threads in the Changes panel | Chat right panel → **Changes** | `components/PullRequestPanel.tsx`, `components/CommentThreads.tsx` | `handlers/source_providers.py` | `POST /api/source/pull-request`, `.../checks`, `.../status`, `.../resolve` |
 | Crash report notice | Desktop-only banner on the launch after a crash: a count of new own-app crash artifacts, **Show diagnostics** (reveals the crash ledger in the OS file manager) and dismiss | Appears automatically on the next launch after a desktop crash — no navigation | `components/CrashReportNotice.tsx` (mounted app-wide in `App.tsx`) | `website/electron/crash-collector.js`, `website/electron/ipc-registrar.js`, `website/electron/preload.js` (`crashReportsAPI`) | IPC, not HTTP: `crash-reports:get`, `crash-reports:reveal` |
 | Startup feature video | One short clip introducing a new feature, shown once on the launch after it ships and retired permanently by a `seen` or `dismissed` verdict; yields the whole launch to release notes, an update popup or first-run onboarding, and is skipped in incognito/temporary sessions. A clip is always played from disk -- the release folder for a downloaded one, the shipped assets for a built-in one -- and never streamed from the CDN: the browser only plays bytes the gateway downloaded and sha256-checked first, so an uncached hosted clip waits for the next launch. Every offer's files were proved on disk by the request that offered it, so the dialog opens on the `/next` answer alone | Appears by itself at startup, with no navigation, on the first launch where nothing else claimed the screen and the catalog still has an entry this install has not used | `components/StartupVideoModal.tsx`, `components/startupVideoGate.ts` (sequencing policy), mounted app-wide in `App.tsx` | `feature_videos.py`, `feature_videos_manifest.py` (signed hosted catalog), `feature_videos_cache.py` (local clip cache + serving) | `GET /api/feature-videos/next`, `POST /api/feature-videos/feedback`, `GET /feature-videos/<release>/<file>` |
-| Feature-video cache readout | How much of the current release's clips is on disk, which one is downloading, and one control to fetch them all now. Read-only apart from that control; the control is absent when policy forbids downloads, and the whole row is absent on a gateway whose `status` predates the cache fields | `/settings?tab=chat`, in the Messages card beside Feature Tips | `pages/settings/ChatPanel.tsx` | `feature_videos.py`, `feature_videos_cache.py` | `GET /api/feature-videos/status`, `POST /api/feature-videos/fetch-all` |
+| Feature-video cache readout | How much of the current release's clips is on disk, which one is downloading, and one control to fetch them all now. Read-only apart from that control; the control is absent when policy forbids downloads, and the whole row is absent on a gateway whose `status` predates the cache fields | `/settings/chat`, in the Messages card beside Feature Tips | `pages/settings/ChatPanel.tsx` | `feature_videos.py`, `feature_videos_cache.py` | `GET /api/feature-videos/status`, `POST /api/feature-videos/fetch-all` |
 | OpenAI-compatible API | Chat-completions shim for external clients | External clients only | — | `openai_compat.py` | `POST /v1/chat/completions` |
 
 ## Popouts and embeds

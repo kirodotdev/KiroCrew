@@ -4,7 +4,8 @@
 > own voice setup. The surrounding tree's do-not-author rule does not reach it.
 
 Kiro Crew supports hands-free interaction through voice input (speech-to-text)
-and voice output (text-to-speech). Both work in the dashboard and Slack.
+and voice output (text-to-speech). Input works in the dashboard and on supported
+messaging attachments; output works in the dashboard, Slack, and Telegram.
 
 ## Voice Input (Speech-to-Text)
 
@@ -30,11 +31,13 @@ a browser missing any of them falls back to recording the whole utterance with
 `MediaRecorder` and transcribing it on release (WebM/Opus preferred, MP4/OGG
 fallback).
 
-### Slack Voice Memos
+### Messaging Voice Notes
 
-When STT is enabled, voice memos sent in Slack threads are automatically
-transcribed. Kiro Crew processes the audio and responds to the transcribed text
-as if you had typed it.
+When STT is enabled, audio and voice attachments received through Slack, Discord,
+Teams, Telegram, Webex, WeCom, Weixin, and WhatsApp are automatically transcribed
+through the shared attachment path. Kiro Crew responds to the transcribed text as
+if it had been typed. A channel may impose its own attachment-size and media-type
+limits before transcription.
 
 ### Setup
 
@@ -47,17 +50,23 @@ gateway:
 pip install 'pywhispercpp>=1.5,<2'
 ```
 
-Source environments also need a system FFmpeg for WebM, M4A, and ogg/Opus; Kiro
-Crew deliberately does not execute packaged binaries from an agent-writable
-project venv. Desktop installers instead carry and verify their pinned decoder,
-so desktop users never install Homebrew, Winget, Apt, or FFmpeg. Prebuilt
-recognizer wheels cover Apple silicon
-macOS, glibc and musl Linux on x86_64 and arm64, and Windows. An Intel Mac has
-none, so `pip` builds from source there and needs a C++ toolchain plus CMake.
-Settings reports that as its own state, not as a missing extra.
+Compressed input still needs an authenticated FFmpeg decoder for WebM, M4A, and
+ogg/Opus. Desktop releases carry and verify a pinned decoder. A source install
+first checks fixed system locations and, if no usable binary exists, **Settings >
+Voice** offers a one-click download of the pinned `imageio-ffmpeg==0.6.0` artifact
+into `<data home>/models/ffmpeg/`; its SHA-256 is verified before every execution.
+Kiro Crew deliberately does not execute a decoder from an agent-writable project
+venv. Platforms without a pinned artifact must install FFmpeg into one of the
+trusted system locations reported by `kirocrew doctor`.
+
+Prebuilt recognizer wheels cover Apple silicon macOS, glibc and musl Linux on
+x86_64 and arm64, and Windows. An Intel Mac has none, so `pip` builds from source
+there and needs a C++ toolchain plus CMake. Settings reports that as its own state,
+not as a missing extra.
 
 Then open **Settings > Voice**. The Speech-to-Text card reports whether the
-recognizer loaded and names the reason when it did not, and picks the model:
+recognizer and decoder loaded and names the reason when either did not, and it
+lets you pick the model:
 
 | Model | One-time download | Use it when |
 |-------|-------------------|-------------|
@@ -68,9 +77,9 @@ recognizer loaded and names the reason when it did not, and picks the model:
 
 Choose the model and click **Download now**. The download is verified against a
 pinned sha256 digest before it is used and is reused from disk after that.
-Nothing else needs installing by hand: there is no separate transcription
-program, provider-specific runtime, or system FFmpeg dependency. `kirocrew
-doctor` reports the recognizer, model, and bundled decoder.
+Once the recognizer and decoder are available, there is no separate transcription
+program or provider-specific runtime to install. `kirocrew doctor` reports the
+recognizer, model, and resolved decoder.
 
 The other two providers, the full setting list and the retired providers are in
 Kiro Crew's own [configuration reference](../../../../src/kiro_crew/docs/configuration.md).
@@ -107,7 +116,7 @@ default needs nothing installed:
 
 | Provider | What it needs | Notes |
 |---|---|---|
-| `system` (default) | nothing on macOS and Windows | The host's own engine: `say` on macOS, `System.Speech` through Windows PowerShell on Windows, `espeak-ng` on Linux when installed. Linux is the one platform where it can be missing; install `espeak-ng` (about 355 kB) or pick another provider. |
+| `system` (default) | nothing on macOS and Windows | The host's own engine: `say` on macOS, `System.Speech` through Windows PowerShell on Windows, `espeak-ng` (or legacy `espeak`) on Linux/BSD when installed. Linux is the one platform where it can be missing; install `espeak-ng` or pick another provider. |
 | `piper` | the `piper` binary plus a voice model on disk | Best offline quality. `pip install piper-tts` publishes wheels for macOS, Linux and Windows x64. |
 | `polly` | the `aws` CLI, AWS credentials, network | Paid AWS service, and it asks you to confirm the account first. |
 
@@ -161,6 +170,13 @@ The legacy `!voice` inline commands still work but are deprecated:
 
 Voice replies are uploaded to the Slack thread alongside the text response.
 File format depends on the provider (MP3 for Polly, WAV for Piper).
+
+### Telegram Voice Replies
+
+Set `telegram.voice_replies: true` for the default, or use `/voice on` and
+`/voice off` in one conversation to override it. Telegram always receives the
+text answer first; TTS is then delivered silently as a voice/audio message, so a
+synthesis failure never removes the usable text response.
 
 ### Configuration
 
@@ -297,9 +313,10 @@ you can't or don't want to use Amazon Polly.
    }
    ```
 
-4. **ffmpeg is NOT required for Piper** (it outputs WAV directly that Slack
-   plays natively). ffmpeg is still needed for voice-memo *input*, whichever
-   speech-to-text provider is selected.
+4. **ffmpeg is NOT required for Piper output** (it emits WAV directly that Slack
+   and Telegram can play). Compressed voice input still needs the authenticated
+   decoder described above, whether it comes from the desktop bundle, a trusted
+   system location, or the digest-verified decoder store.
 
 - **ffmpeg** for audio stitching (replay/Slack uploads). Not needed for
   streaming playback in the dashboard.

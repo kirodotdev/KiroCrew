@@ -15,7 +15,11 @@ superseded-by: []
 
 # RFC: Conductor work ledger — workers report structured data, not prompts
 
-Status: partial. Phases 1, 2 and 2.5 are on main; Phases 3, 3b, 4 and 5 are not. Every code reference below was read at `c02cdd67c`.
+Status: partial. Phases 1, 2, 2.5, and the 2.6 conductor swap are on
+main. The four core tools, worker/conductor agents, deprecated alias, doctor
+notice, and ledger cleanup command ship; the work-ledger wake gate, sibling
+visibility, worker-to-worker communication, and Crew-page surface do not. Every
+historical code reference below was read at `c02cdd67c`.
 
 Revision v3 changes what the ledger *is*. v1 and v2 described a two-party record — one conductor, one worker, one item each, and a worker that could see nothing but its own row. v3 calls it what the shipped store already is: **one shared board per conductor, masked by identity.** The conductor sees the whole board. A worker still writes only its own square, but it may now *read* a pointer-only digest of its siblings (§Visibility model, §`work_brief`), and it may ask the conductor for a channel to one of them (§`work_request`) which the conductor may grant with a bounded, expiring pairwise channel (§`work_message`). Every message and every request is an event on the board, so the manager reading the board sees all of the traffic it authorised. The v1/v2 "not a message bus" non-goal is narrowed rather than dropped: there is still no fan-out, no addressing outside one ledger, and no path from a worker's text into anyone's prompt. v3 also promotes the shipped phases from "proposed" to "as implemented" and closes Q2 and Q6.
 

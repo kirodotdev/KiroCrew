@@ -449,8 +449,8 @@ are published, rather than before merge. In front of a pull request there is
 `macos-on-demand.yml` (the same full suite, called against the PR head, advisory;
 runs on a darwin-sensitive path, on the `ci:macos` label, or on a 1-in-20 SHA sample) and the static side of
 this table. A shard passing is still not
-evidence that a gateway starts: 25 whole files are excluded on Windows by
-`test/windows-collect-ignore.txt` and further node ids by
+evidence that a gateway starts: files listed in
+`test/windows-collect-ignore.txt` are excluded on Windows, with further node ids in
 `test/windows-expected-failures.txt` and `test/macos-expected-failures.txt`.
 What runs a real gateway on macOS and Windows is `ci.yml`'s `e2e-boot-matrix`
 job (`test/e2e/test_gateway_boot_matrix.py`), which boots one per test against

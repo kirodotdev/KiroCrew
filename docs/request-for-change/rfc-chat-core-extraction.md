@@ -13,7 +13,14 @@ superseded-by: []
 ---
 # RFC: Extract a chat core shared by every chat surface
 
-- Status: **partial** — P1 (renderer registry) merged; P2 (transport) merged for ChatPane, in review for ChatEmbed, SideChat and ChatPage; P3 (composer) merged for SideChat, in review for ChatEmbed. See §4.2 for the per-PR table.
+- Status: **partial** — the shared `sendTurn` transport, renderer registry,
+  `VirtualTranscript`, and the `Composer` root with its voice slice now ship
+  across the main page and secondary chat hosts. The remaining composer atoms,
+  model-layer seam, non-destructive error hand-off, and final page migration are
+  still incomplete. Current implementations live under `website/src/chat-core/`,
+  `website/src/app-sdk/ChatMessageList.tsx`, and
+  `website/src/pages/chat/transcriptRenderers.tsx`; §4.2 preserves the dated
+  per-PR rollout record rather than current merge state.
 - Author: zezhexu (drafted with Kiro)
 - Created: 2026-08-22 · Last audited: 2026-09-05 at `8ed028b0b`
 - Related: [`rfc-everything-is-an-app.md`](rfc-everything-is-an-app.md) (apps need first-class chat embeds); the error-to-agent hand-off work ([PR #5002](https://github.com/kirodotdev/KiroCrew/pull/5002)), whose review concluded the per-page draft-risk audit only disappears once a non-destructive side-panel chat exists.

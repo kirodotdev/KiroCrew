@@ -1,10 +1,10 @@
 ---
 title: App Session Controls — a composer seam for per-chat app state
-status: accepted
+status: implemented
 author: omerrubi
 created: 2026-08-31
-last-audited: 2026-09-01
-audited-at: 1d705a03f
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: [7573]
 tracking-issues: []
@@ -13,9 +13,9 @@ superseded-by: []
 ---
 # RFC: App Session Controls — a composer seam for per-chat app state
 
-- Status: accepted — this document ships in the same PR as its implementation
-  (#7573), so §4 describes code that lands with it rather than code on a branch.
-  §5 and §9 describe what has not been decided.
+- Status: implemented — #7573 is on main: the manifest schema, resolver,
+  composer host, two-control cap, and `statusPath` polling all ship. §9 keeps
+  follow-up product questions rather than unfinished implementation phases.
 - Author: omerrubi
 - Created: 2026-08-31
 - Related: `rfc-navigation-placement-seam.md` (the sibling problem — a manifest

@@ -1,4 +1,4 @@
-# CLAUDE.md — KiroCrew
+# CLAUDE.md — Kiro Crew
 
 **`AGENTS.md` is the single source of truth for this repository.** Read it before
 any non-trivial change; it is imported below so it is always in context. This

@@ -15,10 +15,15 @@ migration scaffolding, this one is a standing boundary.
 - **Build and infra.** Brazil (`Config`; the root `AUTOSDE.yaml` is NOT this and is
   live), `CODE_APPROVERS.yaml`, `npm-pretty-much`, the toolbox bundler, AIM hooks,
   CodeArtifact registries. The public build is setuptools plus public PyPI and public
-  npm, and `.npmrc` deliberately pins no registry so the system-configured one applies.
-- **Services and auth.** Enterprise SSO, MCS, Kerberos, federated login, device-posture
-  tunnels, Cognito pools and RUM app ids, builder-mcp, `arcc`, Quip, internal
-  ticketing. The internal marker names are scrubbed from code, comments and docs.
+  npm, and `website/.npmrc` deliberately pins no registry so the system-configured one
+  applies.
+- **Services and auth.** The public build bundles no Enterprise SSO, MCS, Kerberos,
+  federated login, device-posture tunnels, Cognito pools or RUM app ids, no
+  internal developer-tooling MCP servers, and no internal wiki or ticketing
+  integration. The authoritative list of markers is the private one the gate below
+  fetches, not a copy kept here. Generic compatibility
+  paths may still preserve user-supplied MCP server names, and optional skills may name
+  an unavailable external governance source; neither is a bundled integration.
 - **Removed product surfaces.** Internal feature-app pages, tabs, API-client methods
   and the credential-TTL card were deleted together with their backend. A downstream
   edition re-adds them **additively** through the extension seams, never by editing
@@ -48,8 +53,9 @@ and do not delete them.
 ## OSS-flipped defaults
 
 The public fork chooses different defaults, not different code paths. Do not flip them
-back while syncing: always-on in-process embeddings, Piper TTS by default, a
-default-open Slack enterprise gate, lazy STT extras.
+back while syncing: always-on in-process embeddings, the host `system` TTS provider
+(`voice_reply.DEFAULT_PROVIDER`) by default, a default-open Slack enterprise gate, lazy
+STT extras.
 
 ## Fork UX divergences
 
@@ -71,8 +77,10 @@ disk.
 
 ## The gate
 
-`.github/workflows/internal-content-scan.yml` runs on `merge_group` and on pushes
-to `main`. It checks **only the lines a change adds**, against a marker list that
+`.github/workflows/internal-content-scan-gate.yml` invokes the reusable
+`.github/workflows/internal-content-scan.yml` for same-repository `pull_request`,
+`merge_group`, and pushes to `main`. It checks **only the lines a change adds**,
+against a marker list that
 is deliberately **not in this repo** — it lives in a private bucket and is fetched
 per run over GitHub's OIDC identity, with no long-lived AWS keys anywhere.
 

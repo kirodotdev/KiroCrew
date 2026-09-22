@@ -426,7 +426,7 @@ floor is under your file before you decide what to isolate yourself:
 | Your test lives in | It inherits |
 |---|---|
 | `test/` | the rootdir `conftest.py` **and** `test/conftest.py` |
-| `src/kiro_crew/apps/builtins/*/tests/` | the rootdir `conftest.py`, plus that app's own `tests/conftest.py` where one exists (`auto_improvement`, `code_review_sage`, `spec_builder` have one; the other five apps do not) |
+| `src/kiro_crew/apps/builtins/*/tests/` | the rootdir `conftest.py`, plus that app's own `tests/conftest.py` where one exists (currently `auto_improvement`, `code_review_sage`, and `spec_builder`) |
 
 The **rootdir `conftest.py` is the host-mutation floor**: everything in it protects the
 developer's machine rather than the correctness of one suite, so it holds for all
@@ -529,7 +529,7 @@ suites nothing. The first two of those entries started life in `test/conftest.py
 were silently absent from the in-package tests, which is how each was found.
 
 Resource consumption belongs on that list for the same reason damage does: a guard
-that only covers `test/` is invisibly absent from the other two testpaths, and the
+that only covers `test/` is invisibly absent from the built-in-app testpath, and the
 failure it was written to prevent — a swapped, unresponsive machine — does not care
 which testpath asked for the workers.
 
@@ -783,7 +783,7 @@ which testpath asked for the workers.
 - Tests MUST NOT reconfigure or restart a real host service. This is enforced,
   not just asked for: the **rootdir** `conftest.py` (distinct from
   `test/conftest.py`, which only applies to `test/` — `testpaths` also collects
-  `transfer` and `src/kiro_crew/apps/builtins`) pins `$XDG_CONFIG_HOME` to a tmp
+  `src/kiro_crew/apps/builtins`) pins `$XDG_CONFIG_HOME` to a tmp
   dir so `dev_fleet._dropin_path()` cannot name the operator's real
   `~/.config/systemd/user/kirocrew-gateway.service.d/`, and traps every stdlib
   spawn funnel (`subprocess.Popen.__init__`,
@@ -2352,12 +2352,13 @@ Linux child-process tests verify these mechanics, not native Windows performance
 
 ### Running on a machine with little RAM
 
-**A worker costs between 1.8 and 2.8 GiB depending on how many there are, and
-`-n auto` would ask for one per core.** Almost all of the fixed part is *collection*:
-every xdist worker independently collects every testpath — 106,491 items — which costs
-~1,499 MiB of peak RSS before it runs a single test, 99% of it private, so there is no
-page sharing to exploit. From there a worker grows another ~60 MiB per 1,000 tests it
-runs, and that growth does not saturate.
+**The Linux/Windows budget reserves 3 GiB per worker; the Linux wide-run
+measurements below were 1.8–2.8 GiB. macOS reserves 16 GiB after measured
+14.9–16.1 GiB workers.** Without the budget, `-n auto` would ask for one worker per
+core. In the Linux measurement almost all of the fixed part was *collection*: every
+xdist worker collected every testpath — 106,491 items — at ~1,499 MiB of peak RSS
+before running a test, 99% of it private. From there a worker grew another ~60 MiB per
+1,000 tests, and that growth did not saturate.
 
 Both numbers were remeasured in the fourth five-run pass and both had roughly DOUBLED
 under the previous figures (~57,000 items / ~750 MiB / ~25 MiB per 1,000). **Re-derive
@@ -2384,13 +2385,14 @@ noise: the same worker slot peaked at 2,771 MiB in all five runs, because the
 `tree_scan_*` xdist groups land together and one of them alone retains ~1.3 GiB of parsed
 source.
 
-That is why the reservation is 3 GiB per worker and why a measurement taken on a wide
-run makes it look more generous than it is: it is ~1.1× the measured worst-case peak at
-`-n 12`, and the worker count where the budget binds is far lower than that. Sizing the
-divisor on a wide-run number would grant 4 workers on an 8 GiB laptop, whose ~26,600
-tests each would then want ~12 GiB between them and swap the machine — which is the
-incident this budget exists to prevent, reintroduced by "optimizing" it. **Do not lower
-the divisor on the strength of a high-parallelism measurement.**
+That is why `xdist_budget.py` reserves 3 GiB per worker on Linux and Windows,
+and 16 GiB on macOS. The 3 GiB value is ~1.1× the measured Linux worst-case peak at
+`-n 12`, and the worker count where the budget binds is far lower than that. On
+Linux/Windows, sizing the divisor on a wide-run number would grant 4 workers on an
+8 GiB laptop, whose ~26,600 tests each would then want ~12 GiB between them and swap
+the machine. On macOS, the 16 GiB value prevents four workers measured at roughly
+62 GiB total from being granted on a 36 GiB host. **Do not lower either divisor on the
+strength of a high-parallelism or cross-platform measurement.**
 
 Where the floor goes, measured by ablation on one worker (a `--collect-only -n0` run
 reproduces a real worker's peak to within about a megabyte, which is the cheap way to
@@ -2420,9 +2422,10 @@ do not quote a layer's absolute number as current. Re-ablate before optimizing o
 Every layer is live: the item tree, the closures and the rewritten modules are
 retained for the whole session by design, so none of the floor is reclaimable.
 
-So the full suite genuinely needs multiple gigabytes, and on an 8–16 GiB laptop with
-a browser open it does not fit. The budget in the rootdir conftest works this out for
-you and clamps `-n auto`, printing one line saying so:
+So the full suite genuinely needs multiple gigabytes. On an 8–16 GiB Linux or Windows
+laptop with a browser open it may not fit; on macOS the 16 GiB reservation often clamps
+a run to one worker even on larger hosts. The budget in the rootdir conftest works this
+out and clamps `-n auto`, naming the active platform reservation. A Linux/Windows example:
 
 ```
 xdist worker budget: 1 of 10 workers (3.0 GiB free, 16 GiB installed). Each worker
@@ -3099,8 +3102,8 @@ shape; `docs/ci/e2e-gate.md` documents the job that runs it.
 
 ## Keeping the suite fast
 
-The suite is ~106k tests. At that count a per-test cost is multiplied by 106,000, so
-setup overhead, not any single slow test, is what dominates. Profile before optimizing:
+The measured runs above exceeded 100k tests. At that scale, setup overhead rather
+than any single slow test is what dominates. Profile before optimizing:
 
 ```bash
 # Per-test durations for the whole suite (writes a JSON map)
