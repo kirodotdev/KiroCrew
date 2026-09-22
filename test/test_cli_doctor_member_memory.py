@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_doctor, memory_stores
+from kiro_crew import cli_doctor
+from kiro_crew import members as members_mod
+from kiro_crew import memory_stores
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
 from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.vector_memory import VectorMemoryStore
@@ -197,9 +199,153 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
         writer.close()
 
 
+def test_dispatchability_is_silent_when_every_name_is_clean(members, capsys):
+    cfg, _, _, writes = members
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_dispatchability(cfg, issues)
+
+    assert capsys.readouterr().out == ""
+    assert issues == []
+    assert writes == []
+
+
+def test_dispatchability_is_silent_for_an_nfd_only_legacy_name(members, capsys):
+    cfg, _, _, writes = members
+    name = "Cafe\u0301"
+    assert members_mod.normalize_unicode(name) != name
+    assert not members_mod.is_valid_member_name(name)
+    assert members_mod.is_dispatchable_member_name(name)
+    cfg.agents[name] = KiroCrewAgentConfig()
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    assert name in cfg.agents  # persisted as raw NFD, not folded to NFC
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_dispatchability(cfg, issues)
+
+    assert capsys.readouterr().out == ""
+    assert issues == []
+    assert writes == []
+
+
+def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(members, capsys):
+    cfg, _, _, writes = members
+    name = "AKIAIOSFODNN7EXAMPLE"
+    cfg.agents[name] = KiroCrewAgentConfig()
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    assert name in cfg.agents
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_dispatchability(cfg, issues)
+
+    output = capsys.readouterr().out
+    assert "Crew Member Names" in output
+    assert "1 stored Crew Member name" in output
+    assert "Open Crew Manager" in output
+    assert "make the replacement the default" in output
+    assert "delete the old member" in output
+    assert "new member identity" in output
+    assert "not transferred automatically" in output
+    assert name not in output
+    assert members_mod.slug_for_name(name) not in output
+    assert issues == ["stored Crew Member names are not dispatchable"]
+    assert writes == []
+
+
+def test_memory_binding_diagnostic_skips_nondispatchable_record(members, capsys):
+    cfg, home, private_store, writes = members
+    name = "AKIAIOSFODNN7EXAMPLE"
+    cfg.agents[name] = KiroCrewAgentConfig()
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    before = _snapshot(home)
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_memory_bindings(cfg, issues)
+
+    output = capsys.readouterr().out
+    assert "'default' -> 'default': valid binding" in output
+    assert "'legacy' -> 'legacy-store': valid binding" in output
+    assert f"'private' -> {private_store!r}: valid binding" in output
+    assert "'healthy-peer' -> 'default': valid binding" in output
+    assert name not in output
+    assert members_mod.slug_for_name(name) not in output
+    assert issues == []
+    _assert_only_new_sqlite_coordination(
+        home, before, memory_stores.memory_stores_root() / private_store / "memory.db"
+    )
+    assert writes == []
+
+
+def _composition_failed(monkeypatch):
+    """Model the host doctor is exempted to diagnose: no composed platform.
+
+    ``is_dispatchable_member_name`` consults the redaction policy through
+    ``platform.context.redact_via_context``, which re-raises the composition
+    failure instead of degrading; doctor must survive it.
+    """
+    from kiro_crew.platform import PlatformCompositionError
+
+    def _raise(name):
+        raise PlatformCompositionError("security_policy.json unreadable")
+
+    monkeypatch.setattr(cli_doctor, "is_dispatchable_member_name", _raise)
+
+
+def test_dispatchability_survives_a_platform_composition_failure(members, capsys, monkeypatch):
+    cfg, _, _, writes = members
+    name = "AKIAIOSFODNN7EXAMPLE"
+    cfg.agents[name] = KiroCrewAgentConfig()
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    _composition_failed(monkeypatch)
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_dispatchability(cfg, issues)
+
+    output = capsys.readouterr().out
+    assert "Crew Member Names" in output
+    assert "not checked" in output
+    assert "Platform section" in output
+    # Unvetted names are never printed, and the Platform section owns the issue.
+    assert name not in output
+    assert "default" not in output
+    assert issues == []
+    assert writes == []
+
+
+def test_memory_bindings_survive_a_platform_composition_failure(members, capsys, monkeypatch):
+    cfg, home, _, writes = members
+    name = "AKIAIOSFODNN7EXAMPLE"
+    cfg.agents[name] = KiroCrewAgentConfig()
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    before = _snapshot(home)
+    _composition_failed(monkeypatch)
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_memory_bindings(cfg, issues)
+
+    output = capsys.readouterr().out
+    assert "Member Memory Bindings" in output
+    assert "not checked" in output
+    # No binding line at all: a line names its member, and none can be vetted.
+    assert "valid binding" not in output
+    assert name not in output
+    assert "'default'" not in output
+    assert issues == []
+    assert _snapshot(home) == before
+    assert writes == []
+
+
 def test_member_store_and_error_text_cannot_inject_terminal_controls(members, capsys):
     cfg, home, private_store, writes = members
-    name = "untrusted\x1b[2J\nmember"
+    # A benign, dispatchable name so the binding is still processed (a
+    # non-dispatchable name would be skipped now); the terminal-control payload
+    # rides the STORE and the resulting error text instead.
+    name = "terminal-probe"
     store = "missing\x1b[2J\nstore"
     cfg.agents[name] = KiroCrewAgentConfig(memory_store=store)
     cfg.save()
@@ -226,4 +372,5 @@ def test_member_diagnostics_are_wired_into_the_doctor_command():
     # Other doctor sections launch external probes; exercise this section with
     # real stores above and retain the command's explicit call-site contract.
     source = inspect.getsource(cli_doctor._doctor)
+    assert "_doctor_member_dispatchability(cfg, issues)" in source
     assert "_doctor_member_memory_bindings(cfg, issues)" in source

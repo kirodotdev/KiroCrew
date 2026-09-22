@@ -41,7 +41,7 @@ from kiro_crew.pinned_fs import (
     supports_pinned_walk,
 )
 from kiro_crew.slugs import slug_hash_fallback
-from kiro_crew.validation import MAX_SHORT_STRING, sanitize_string
+from kiro_crew.validation import MAX_SHORT_STRING, normalize_unicode, sanitize_string
 
 logger = logging.getLogger(__name__)
 
@@ -409,12 +409,28 @@ def is_valid_member_name(value: object) -> bool:
     return True
 
 
+def is_readable_member_name(value: object) -> bool:
+    """Return whether an exact stored Crew Member name may identify local data."""
+    if not isinstance(value, str) or len(value) > MEMBER_NAME_MAX_CHARS:
+        return False
+    if is_valid_member_name(value):
+        return True
+    nfc = normalize_unicode(value)
+    return sanitize_string(value) == nfc and is_valid_member_name(nfc)
+
+
 def is_dispatchable_member_name(value: object) -> bool:
-    """Return whether a Crew Member name can safely reach a model."""
-    return (
-        isinstance(value, str)
-        and is_valid_member_name(value)
-        and not external_text_requires_redaction(value)
+    """Return whether a stored Crew Member name can safely reach a model.
+
+    Legacy NFD spellings pass only when their NFC form is valid and both forms
+    are safe to expose.
+    """
+    if not is_readable_member_name(value):
+        return False
+    assert isinstance(value, str)
+    nfc = normalize_unicode(value)
+    return not external_text_requires_redaction(value) and (
+        nfc == value or not external_text_requires_redaction(nfc)
     )
 
 

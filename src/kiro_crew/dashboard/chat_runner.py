@@ -303,7 +303,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
     should_log_decline,
 )
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import redact_log_via_context, redact_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -10147,7 +10147,10 @@ async def _run_chat(
         slot._active_turn_session_key = session_key
 
         if slot.mode == DM_SLOT_MODE and not is_dispatchable_member_name(slot.agent):
-            logger.warning("refusing to run member slot %s with a non-dispatchable pin", slot.key)
+            logger.warning(
+                "refusing to run member slot %s with a non-dispatchable pin",
+                redact_log_via_context(slot.key),
+            )
             slot.append(
                 "error",
                 "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
@@ -10354,6 +10357,21 @@ async def _run_chat(
                 raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
 
         _require_current_binding()
+        if (
+            bindings is not None
+            and bindings.selection_kind == "member"
+            and not is_dispatchable_member_name(crew_alias)
+        ):
+            logger.warning(
+                "refusing a non-dispatchable member alias for slot %s",
+                redact_log_via_context(slot.key),
+            )
+            slot.append(
+                "error",
+                "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
+                "msg msg-err",
+            )
+            return
         if bindings is not None:
             from kiro_crew.execution_context import (
                 ExecutionContext,

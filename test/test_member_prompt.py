@@ -40,6 +40,7 @@ from kiro_crew.members import (
     read_member_briefing,
     read_member_briefing_bounded,
     read_member_rules,
+    slug_for_name,
     write_dm_binding,
     write_member_rules,
 )
@@ -928,8 +929,9 @@ class TestMemberRulesRoutes:
         assert read_member_rules(CREW, CREW) == "Never merge PRs."
 
     @pytest.mark.asyncio
-    async def test_free_form_name_round_trips_rules(self):
-        name = "dr. eggbot"
+    @pytest.mark.parametrize("name", ["dr. eggbot", "Cafe\u0301"])
+    async def test_free_form_name_round_trips_rules(self, name):
+        slug = slug_for_name(name)
         cfg = _fake_config()
         cfg.agents = {name: cfg.agents[CREW]}
         async with TestClient(TestServer(_make_rules_app())) as client:
@@ -941,16 +943,16 @@ class TestMemberRulesRoutes:
                 _as_owner(),
             ):
                 put_response = await client.put(
-                    "/api/members/dr-eggbot/rules",
+                    f"/api/members/{slug}/rules",
                     json={"member": name, "rules": "Do not publish without approval."},
                 )
                 assert put_response.status == 200
                 get_response = await client.get(
-                    "/api/members/dr-eggbot/rules", params={"member": name}
+                    f"/api/members/{slug}/rules", params={"member": name}
                 )
                 assert get_response.status == 200
                 assert (await get_response.json())["rules"] == ("Do not publish without approval.")
-        assert read_member_rules("dr-eggbot", name) == "Do not publish without approval."
+        assert read_member_rules(slug, name) == "Do not publish without approval."
 
     @pytest.mark.asyncio
     async def test_put_empty_clears(self):

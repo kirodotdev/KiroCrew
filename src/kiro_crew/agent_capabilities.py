@@ -35,6 +35,7 @@ from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
+from kiro_crew.validation import is_registered_agent_name
 
 SECTIONS = agent_state.CAPABILITY_SECTIONS
 MAX_OPERATIONS = 300
@@ -72,7 +73,6 @@ def _read_spec(path: Path) -> dict:
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:
     """Project scope wins exactly as it does for the provider's cwd."""
     from kiro_crew.agent import OWNED_KIRO_AGENT_FILES, _conflicting_spec_for, agent_spec_path
-    from kiro_crew.validation import is_registered_agent_name
 
     if not is_registered_agent_name(name):
         raise CapabilityError("invalid_template_name")

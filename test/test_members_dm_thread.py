@@ -39,9 +39,11 @@ from kiro_crew.members import (
     member_slot_key,
     members_root,
     read_dm_binding,
+    record_activity,
     slug_for_name,
     write_dm_binding,
 )
+from kiro_crew.validation import normalize_unicode
 
 CREW = "code-reviewer"
 OTHER = "other-agent"
@@ -316,6 +318,36 @@ class TestMemberRoutes:
 
         assert read_dm_binding("dr-eggbot")["member"] == "dr. eggbot"
         assert state._slots["member-dr-eggbot"].agent == "dr. eggbot"
+
+    @pytest.mark.asyncio
+    async def test_nfd_legacy_member_survives_roster_and_thread_open(self, tmp_path):
+        name = "Cafe\u0301"
+        assert normalize_unicode(name) != name
+        state = _make_state(tmp_path)
+        cfg = _fake_config([name], default=name)
+        assert record_activity(name, "dashboard_chat-1", "persistent", via="chat")
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                roster_response = await client.get("/api/members")
+                assert roster_response.status == 200
+                roster = await roster_response.json()
+                assert [(row["name"], row["slug"]) for row in roster["members"]] == [(name, "cafe")]
+
+                thread_response = await client.post("/api/members/cafe/thread")
+                assert thread_response.status == 200
+                body = await thread_response.json()
+                assert body == {"slot_key": "member-cafe", "slug": "cafe", "member": name}
+
+                activity_response = await client.get(
+                    "/api/members/cafe/activity", params={"member": name}
+                )
+                assert activity_response.status == 200
+                activity = await activity_response.json()
+                assert activity["member"] == name
+                assert len(activity["entries"]) == 1
+
+        assert read_dm_binding("cafe")["member"] == name
+        assert state._slots["member-cafe"].agent == name
 
     @pytest.mark.asyncio
     async def test_roster_reports_last_activity_from_the_dm_transcript(self, tmp_path):
@@ -937,11 +969,13 @@ class TestPinEnforcement:
         assert slot.agent == name
 
     @pytest.mark.asyncio
-    async def test_runner_refuses_a_redaction_requiring_stored_member_pin(self, tmp_path):
+    async def test_runner_refuses_a_redaction_requiring_stored_member_pin(self, tmp_path, caplog):
         from kiro_crew.dashboard.chat_runner import _run_chat
         from kiro_crew.eventlog.service import get_service
 
         name = "crew password=shortvalue"
+        credential = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        slot_key = f"member-{credential}"
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         state.sessions.get_or_create = AsyncMock(
@@ -951,20 +985,73 @@ class TestPinEnforcement:
         state.context_builder.build_message = MagicMock(
             side_effect=AssertionError("context construction must not run")
         )
-        slot = _member_slot(state, key="member-legacy-credential", agent=name)
+        slot = state.get_or_create_slot(slot_key, agent=name, mode=DM_SLOT_MODE)
         get_service().ensure("legacy-credential", name)
         slot.append("user", "hello", "msg msg-u")
         autonudge = MagicMock()
 
-        with patch("kiro_crew.autonudge.get_instance", return_value=autonudge):
+        with (
+            patch("kiro_crew.autonudge.get_instance", return_value=autonudge),
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"),
+        ):
             await _run_chat(state, slot, "hello")
 
         errors = [message for message in slot.messages if message["role"] == "error"]
         assert len(errors) == 1
         assert name not in errors[0]["content"]
+        logs = "\n".join(caplog.messages)
+        assert credential not in logs
+        assert "[REDACTED" in logs
         assert slot.messages[-1]["role"] == "done"
         assert any(call.args[0] == "chat_done" for call in state.broadcast_ws.call_args_list)
         assert not any(message["role"] == "assistant" for message in slot.messages)
+        autonudge.notify_turn_complete.assert_called_once_with(slot.key)
+        state.sessions.get_or_create.assert_not_called()
+        state.context_builder.build_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runner_refuses_a_non_dispatchable_default_member_on_an_ordinary_slot(
+        self, tmp_path, caplog
+    ):
+        from kiro_crew.dashboard.chat_runner import _run_chat
+
+        name = "crew password=shortvalue"
+        credential = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        slot_key = f"chat-{credential}"
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=AssertionError("provider acquisition must not run")
+        )
+        state.context_builder = MagicMock()
+        state.context_builder.build_message = MagicMock(
+            side_effect=AssertionError("context construction must not run")
+        )
+        slot = state.get_or_create_slot(slot_key)
+        slot.append("user", "hello", "msg msg-u")
+        cfg = KiroCrewConfig()
+        cfg.agents = {name: KiroCrewAgentConfig(kiro_agent="kirocrew")}
+        cfg.default_agent = name
+        autonudge = MagicMock()
+
+        with (
+            patch("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", return_value=cfg),
+            patch("kiro_crew.autonudge.get_instance", return_value=autonudge),
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"),
+        ):
+            await _run_chat(state, slot, "hello")
+
+        errors = [message for message in slot.messages if message["role"] == "error"]
+        assert len(errors) == 1
+        assert (
+            errors[0]["content"]
+            == "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member."
+        )
+        logs = "\n".join(caplog.messages)
+        assert credential not in logs
+        assert "[REDACTED" in logs
+        assert slot.messages[-1]["role"] == "done"
+        assert any(call.args[0] == "chat_done" for call in state.broadcast_ws.call_args_list)
         autonudge.notify_turn_complete.assert_called_once_with(slot.key)
         state.sessions.get_or_create.assert_not_called()
         state.context_builder.build_message.assert_not_called()

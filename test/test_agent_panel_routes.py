@@ -898,6 +898,11 @@ async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch)
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert response.status == 200, await response.text()
+        read_response = await owner.get(
+            f"/api/members/{legacy_slug}/panel", params={"member": legacy_name}
+        )
+        assert read_response.status == 200
+        assert (await read_response.json())["panel"]["data"] == {"cycle": 47}
     kept = agent_panel.read(legacy_slug)
     assert kept is not None
     assert kept["crew_key"] == agent_panel.crew_key(legacy_name)
