@@ -719,18 +719,103 @@ Details worth knowing:
     carries a watchdog rather than waiting for it:
     `.github/workflows/ci-runner-watchdog.yml` runs `scripts/ci/runner_watchdog.py`
     every ten minutes on `ubuntu-latest` (never on CodeBuild — a watchdog for a
-    path cannot depend on that path). It lists the queued and in-progress `CI`
-    runs, and calls a run *orphaned* when one of its jobs is still `queued`,
+    path cannot depend on that path). It lists the queued and in-progress runs
+    REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
+    status returns runs of every workflow at once — and keeps only those whose
+    `path` names a workflow that routes jobs to the CodeBuild fleet — `ci.yml`,
+    `fast-gate.yml`, `main-ratchet-audit.yml`, `build.yml` and eleven others,
+    the set pinned in the script as `WATCHED_WORKFLOWS` and tested against the
+    workflows whose `runs-on` actually carries the fleet label (the watchdog's
+    own workflow is excluded, since that label appears only in its comment). One
+    listing per status covers the whole watched set as a client-side filter and
+    reaches more than a per-workflow loop would. Live statuses read at most eight
+    pages each, and each live classification sweep reads jobs for at most 50
+    runs: 40 to the oldest, which are the only actionable ones, and 10 reserved
+    for the newest, whose prompt CodeBuild starts are the dispatch evidence a
+    saturation hold is judged by. Spending the whole bound oldest first would
+    leave a backlogged sweep unable to tell a dead fleet from a busy one, so it
+    would heal nothing exactly when the watchdog is needed. The log names the
+    bound when other runs wait for the
+    next tick. Cancelled recovery reads at most sixteen pages because GitHub
+    orders that index by creation time while recovery selects by cancellation
+    time. Sixteen pages hold 1600 cancellations, about eight hours at the 200 an
+    hour this repo was measured at, and the 2026-09-20 orphans were 21 hours old,
+    so that reach is BEST-EFFORT and carries no coverage claim. GitHub offers no
+    ordering by cancellation time, so nothing readable from the listing can prove
+    every run cancelled inside the window was seen; truncation logs a warning, and a
+    cancelled run that never got listed needs `gh run rerun` by hand. The reach only
+    changes how often that is true. The three live indexes plus
+    the cancelled index cost at most 40 calls
+    per tick. It
+    calls a run *orphaned* when one of its jobs is still `queued`,
     carries a `codebuild-` label, and has waited more than 15 minutes
     (queue-to-start on CodeBuild is measured in seconds here, so that margin is
     generous). It then cancels the run, waits for the cancellation to land, and
     re-runs it: the re-run is a new attempt, so `changes` recomputes the label
     with the new attempt suffix and GitHub emits fresh `workflow_job.queued`
-    webhooks that start fresh runners. The watchdog re-runs *all* jobs rather
+    webhooks that start fresh runners. The re-run cap of five per tick is one
+    global budget across every watched workflow, not five per workflow. The
+    watchdog re-runs *all* jobs rather
     than only the failed ones, because `gh run rerun --failed` reuses the first
     attempt's `changes` outputs and therefore re-queues the routed jobs under a
     label whose attempt suffix is stale, and CodeBuild's documentation does not
-    say whether it honours that. Slow is not dead: a queued `codebuild-` job is
+    say whether it honours that. A workflow clears TWO heal-safety gates. The
+    declared gate is `HEAL_SAFE_WORKFLOWS`, a written judgement that a full
+    re-run is safe, and it is the LOAD-BEARING one: a workflow joining the
+    watched set is exempt until a person puts it there. Every declared entry is
+    REF-KEYED, which is a requirement: the successor guard filters by head branch,
+    event and head repository, never by pull-request number, and two pull requests
+    can share a head branch, so for a PR-keyed group another PR's newer run would
+    read as this run's successor. The five PR-keyed workflows are therefore watched
+    and classified but never auto-healed. A declared entry must also have a trigger
+    a heal can REACH: pull-request runs are never healed, so `macos-on-demand.yml`,
+    whose only trigger is `pull_request`, is exempt as well -- declaring it would
+    read as coverage no run could use, and a test enforces that. Three of the
+    fifteen are auto-healed.
+    The derived gate is
+    BEST-EFFORT. It requires a run-level concurrency group
+    keyed on `github.ref`, `github.ref_name` or `github.head_ref`, which is a
+    structural fact it reads
+    reliably, and it rejects the publish and deploy spellings it knows: package
+    or release
+    publishing, Pages deployment, Docker pushes, S3 or CodeArtifact publishing,
+    `twine` uploads,
+    signing or notarization, any job-level `environment:`, and `pages: write`,
+    `packages: write`, or `deployments: write`. `id-token: write` alone is
+    ordinary OIDC authentication. A publish step in a spelling the patterns miss
+    — a new marketplace action, a toolchain nobody here uses yet — is caught by
+    neither gate, which is why the declaration is the judgement and the
+    derivation is a backstop rather than the reverse. Pinning each declared
+    workflow's content instead would expire the declaration on every edit to
+    `ci.yml` or `fast-gate.yml`, the two most-edited files in the repo, so the
+    cost lands on every unrelated change. `HEAL_SAFE_WORKFLOWS` in
+    `scripts/ci/runner_watchdog.py` is the membership, and a partition test
+    pins it against `WATCHED_WORKFLOWS`, so read the set rather than a count
+    here: prose restating a pinned set goes stale in silence. The reasons a
+    workflow lands outside it are publishing, a per-commit, per-run or
+    PULL-REQUEST concurrency key, no run-level group at all, and a constant group.
+    A pattern earns its place by naming a route this repo could really grow, and a
+    test fails on one that matches nothing here and names no such route, so the
+    backstop cannot drift into chasing spellings for toolchains nobody uses. The derived
+    gate is fail-closed, so it can silently DISABLE healing as well as allow it: a
+    test asserts it admits each declared workflow's own real YAML, which is what
+    turns a benign edit that the hand-rolled parser misreads into a red at edit
+    time rather than a surprise at the next incident. Exempt
+    runs stay listed, classified, logged, and named in the
+    step summary with a `human-required-heal-exempt-workflow` outcome, which is a
+    FAILED outcome: most of the watched set is exempt, so reporting a stuck run
+    there as a warning inside a passing scheduled run would leave the shape of the
+    incident this watchdog exists for — a stuck run nobody is told about — intact
+    for the majority of the repository. The
+    watchdog never cancels or fully re-runs them. Immediately before a live
+    orphan is cancelled, the watchdog reads the workflow file from that run's
+    `head_sha` through the repository contents API and re-derives heal-safety.
+    Cancelled-orphan recovery performs the same run-revision check before its
+    re-run. A revision read and judged unsafe is human-required and healthy; a
+    revision nobody could read, or a run with no SHA, is UNKNOWN rather than
+    unsafe and reports `heal-safety-unreadable-at-run-revision`, a FAILED
+    outcome, so a cancelled run cannot age out of its window behind a green
+    tick. Neither answer cancels anything. A queued `codebuild-` job is
     also what CodeBuild account-concurrency saturation looks like, so the
     watchdog reads what the *other* routed jobs are doing, counting only starts
     after the orphaned job queued (a fleet that was fine before the orphan
@@ -741,19 +826,47 @@ Details worth knowing:
     CodeBuild in that window (live runs, then the newest completed runs), the
     evidence is inconclusive — a fleet outage looks exactly like an orphan from
     the queued side — and the tick reports `skipped-no-dispatch-evidence`,
-    heals nothing, and points at the rollback above. Guard rails: runs younger than
+    heals nothing, and points at the rollback above. If the listing exceeded the
+    per-tick job-read bound, the sweep reports `skipped-partial-dispatch-evidence`
+    instead of acting, because the band the bound drops is the middle of the sweep
+    and a slow start living there would have held: a "nothing slow was seen"
+    verdict is not established from a partial read. Guard rails: runs younger than
     15 minutes are never actionable (their jobs are still read, since a slow
     start inside one is saturation evidence); the verdict is re-derived from a fresh read
     immediately before the cancel and the cancel is sent only if the same
     attempt is still orphaned (a human who re-ran it by hand has moved it to a
-    new attempt, which is left alone); fork runs are reported, never touched; a
+    new attempt, which is left alone); fork runs are reported, never touched, and so
+    are PULL-REQUEST runs -- the successor check asks whether a newer run of this
+    branch is in flight, GitHub's runs listing can only be filtered by branch NAME,
+    and two pull requests can share one head branch, so each would read as the
+    other's successor and abandon a cancelled orphan behind a green
+    `skipped-superseded`; matching by pull-request number instead is not available
+    (of 20 sampled same-repository `pull_request` runs only 9 carried
+    `pull_requests[].number`). Their owners read their own pull request's checks,
+    unlike the `main` orphans this watchdog exists for, which still heal; a
     run at attempt 3 or later is reported, never touched, so a run that keeps
-    orphaning is escalated rather than looped; at most five runs are healed per
-    tick; a refused cancel or re-run (403 when a human got there first) is
-    logged and left for the next tick. Once a cancel is accepted the watchdog
+    orphaning is escalated rather than looped — unless its workflow is heal-exempt,
+    where the cap is not the operative reason (we never re-run those at all) and the
+    orphan reports `human-required` so it does not sit behind a green tick; at most
+    five runs are healed per
+    tick, and a recovery pass cut short by a rate limit still reports the slots it
+    already spent, so the abort cannot buy five more; a refused cancel or re-run
+    (403 when a human got there first) is
+    logged and left for the next tick. A pre-cancel evidence re-read that fails on a
+    one-off error defers and stays green, but one that fails on a RATE LIMIT carries
+    `aborted-rate-limited` and reds the tick: a limit is a condition, not a one-off,
+    so every tick would otherwise defer and look healthy while the orphan keeps
+    parking later pushes behind it. Once a cancel is accepted the watchdog
     owns the run until it is re-run: it polls to `completed`, escalates to
     `force-cancel` after 90 s, and re-runs each run as it completes inside one
     shared five-minute budget. The whole tick runs inside the script's own
+    Every tick logs its OWN footprint -- how many GitHub API calls it made and the
+    last `X-RateLimit-Remaining` the API reported -- because this watchdog is a
+    heavy consumer of the very shared installation quota whose exhaustion it exists
+    to survive: the cancelled index alone is sixteen pages per tick. That reading is
+    logged, never enforced. A self-imposed call cap would silently stop healing,
+    which is the failure this script ends; read the numbers across a few scheduled
+    ticks to judge whether the bounds are sustainable per hour.
     nine-minute budget, and a re-run is begun only while enough of it remains
     to verify the re-run at its longest (a newer run landing in the window and
     being restored, in turn), so the job's `timeout-minutes` — set above the
@@ -767,10 +880,12 @@ Details worth knowing:
     remains to verify its re-run. The API has no conditional cancel or
     re-run, so each mutation is verified after the fact: once a cancel lands, the run's
     conclusion and attempt are read back (a run that finished on its own keeps
-    its verdict; one somebody re-ran in the gap is re-run again), and each
-    re-run is bracketed by newest-of-branch checks — before it, and again after
-    a short settle — so a newer run that appeared in the window is never left
-    cancelled by the re-run's entry into the concurrency group: the re-run is
+    its verdict; one somebody re-ran in the gap is re-run again), and every
+    re-run is bracketed by unconditional newest-of-branch checks — before it,
+    and again after a short settle. Heal-safety determines whether the watchdog
+    may reach that guard; the guard itself treats every heal-safe run alike.
+    This keeps a newer run from being left cancelled by the re-run's entry into
+    a supersedable concurrency group: the re-run is
     cancelled, that cancellation is waited out (force-cancelled if slow; if it
     still has not completed the tick fails rather than judge), and the newer run is read
     until it reaches a terminal state or the settle window closes (a cancelled
@@ -798,17 +913,53 @@ Details worth knowing:
     recognises the orphan fingerprint on their cancelled jobs (`codebuild-`
     label, no runner name, queued past the threshold when cancelled — a shape a
     healthy run a human stopped never shows, so a deliberate cancel is not
-    resurrected) and re-runs only those still the newest run of their branch.
+    resurrected), applies the same unconditional newest-of-branch guard, and
+    re-runs only those still newest.
     The saturation/outage hold does not apply to it: that hold protects
     finished work, and a cancelled orphan has none left — re-running it into an
     outage leaves it queued until the fleet returns, whereas holding it would
     let the recovery window expire and abandon it silently. It runs before the
     live heals and takes the per-tick cap first, so a sustained backlog of live
-    orphans cannot starve it until the window expires. **The schedule ships disarmed**: `WATCHDOG_ARMED` at the top of the
+    orphans cannot starve it until the window expires. It walks the window
+    **oldest first** and classifies at most `RECOVERY_CLASSIFY_READS` (50) runs
+    per tick, because classifying one costs a job read. Almost none of the
+    cancellation traffic reaches that bound: every `main` push cancels the run it
+    supersedes, and a cancelled run that did not live as long as the orphan
+    threshold cannot hold a job that queued past it, since a job's queue wait is
+    contained in its run's lifetime. Those are skipped for free — of 1000
+    consecutive cancelled runs measured over 6.8 days the median lived 4 seconds
+    and 2 reached the threshold, so the busiest 90-minute window holds 400
+    cancelled runs but 2 candidates. What the bound does spend goes on the runs
+    closest to ageing out, and a newer arrival waits for the next tick instead of
+    displacing an older orphan; a tail run with less than one schedule interval of
+    window left has no next tick, so it is recorded rather than deferred. The same
+    zero-read exclusion applies there, so a run that could not have held an orphan
+    never asks a human to look. **A GitHub rate limit is
+    survivable, not a lost tick.** A 403 or 429 whose body names a rate limit is
+    honoured against its `Retry-After` / `X-RateLimit-Reset` with one cheap,
+    in-budget wait-and-retry -- the cancelled-recovery pass's reads included, since
+    a run with less window left than one schedule interval has no next tick and a
+    five-second reset must not cost its verdict; recovery's MUTATIONS are never
+    retried, because a cancel or re-run that may be on the wire is never repeated.
+    When the reset is too far off, the tick stops
+    gathering, acts on the runs it already classified, and ends with an
+    `aborted-rate-limited` outcome the summary names. That outcome is a FAILURE
+    and the tick exits nonzero, whatever it managed to classify first: the same
+    abort skips the cancelled-orphan recovery pass, and recovery is the only
+    thing between a cancelled run and the end of its 90-minute window, so
+    "the next tick re-lists" is no answer for a run in the final tick-interval of
+    that window while the limit persists. What the abort still buys is the work
+    already done: one exhausted listing page leaves the runs already classified
+    acted on rather than lost. Every other status (401, 404, 5xx) and every
+    malformed payload still raises. **The schedule ships disarmed**: `WATCHDOG_ARMED` at the top of the
     workflow is `"false"`, so every scheduled tick is a dry run — it classifies
     and writes its step summary but touches nothing — until a maintainer, having
     read a few summaries against real API shapes and seen no healthy run called
-    `orphaned`, flips it to `"true"` in a one-line commit. A manual dispatch is
+    `orphaned`, flips it to `"true"` in a one-line commit. That decision is tracked
+    in [issue #12717](https://github.com/kirodotdev/KiroCrew/issues/12717), which
+    carries the evidence gathered so far and the gate to clear before flipping, so
+    the repository cannot quietly come to believe a stall is fixed while the
+    watchdog is still only observing. A manual dispatch is
     governed by its own `dry_run` input regardless, so a stuck run can be healed
     by hand before arming. A `CI` run in *pending* with no jobs is
     **not** something the watchdog touches — that run is waiting on its

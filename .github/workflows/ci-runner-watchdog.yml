@@ -25,18 +25,73 @@ name: CI Runner Watchdog
 # verdicts before a human cancelled it.
 #
 # What this workflow does, every 10 minutes: run `scripts/ci/runner_watchdog.py`,
-# which lists queued / in-progress `CI` runs, and for each run older than
-# 15 minutes reads its jobs. A run is ORPHANED when a job is still `queued`,
-# carries a `codebuild-` label, and has waited more than 15 minutes (CodeBuild's
-# measured queue-to-start here is under a minute). Oldest first, at most 5 per
-# tick, the script cancels the run, waits for the cancellation to land, and
-# re-runs it. The re-run is a new attempt: `changes` recomputes the label with the
-# new attempt suffix and GitHub emits fresh `workflow_job.queued` webhooks, so
-# CodeBuild starts fresh runners. It is a FULL re-run, not `rerun-failed-jobs`:
-# the failed-jobs form does not run `changes` again, so it would re-queue the
-# routed jobs under a label whose attempt suffix is stale, and CodeBuild's
-# documentation does not say whether it honours that. One CI round is the price;
-# the alternative was a ten-hour hold.
+# which lists queued / in-progress runs REPO-WIDE — one paginated
+# `GET /repos/{repo}/actions/runs?status=…` per status returns runs of every
+# workflow at once — and keeps only those whose `path` names a workflow that
+# routes jobs to the CodeBuild fleet — `ci.yml`, `fast-gate.yml`,
+# `main-ratchet-audit.yml`, `build.yml` and eleven others, the set pinned in the
+# script as `WATCHED_WORKFLOWS` and tested against the workflows whose `runs-on`
+# actually carries the fleet label. One listing per status covers the whole
+# watched set as a client-side filter and reaches more than a per-workflow loop
+# would; live paging is bounded at 8 pages, and each live classification
+# sweep reads jobs for at most 50 runs: 40 to the oldest, which are the only
+# actionable ones, and 10 reserved for the newest, whose prompt CodeBuild starts
+# are the dispatch evidence a saturation hold is judged by. Cancelled-run recovery
+# has a separate 16-page reach because GitHub indexes that status by creation
+# time while the pass selects by cancellation time. That reach is about eight
+# hours at this repo's measured 200 cancellations an hour, and the 2026-09-20
+# orphans were 21 hours old. That reach is BEST-EFFORT: GitHub offers no ordering
+# by cancellation time, so truncation only warns and a run that never got listed
+# needs `gh run rerun` by hand.
+# The four repo-wide indexes
+# cost at most 40 calls per tick: eight pages for each of three live statuses,
+# plus 16 cancelled pages.
+# Heal safety never reads this job's checkout. A workflow clears
+# TWO gates: HEAL_SAFE_WORKFLOWS declares it safe, and its run-level concurrency
+# group references `github.ref`, `github.ref_name`, `github.head_ref`, or the pull
+# request number while its YAML carries no publish or deploy signal. Every DECLARED
+# entry is ref-keyed, because the successor guard filters by head branch and never
+# by pull-request number, so the five PR-keyed workflows are watched and classified
+# but never auto-healed: four of the fifteen are. Package or
+# release publishing, Pages deployment, Docker pushes, S3 or CodeArtifact
+# publishing, signing/notarization, a job-level `environment:`, and `pages: write`,
+# `packages: write`, or `deployments: write` require human recovery.
+# `id-token: write` alone is ordinary OIDC authentication. `HEAL_SAFE_WORKFLOWS`
+# in the script is the membership and a partition test pins it against
+# WATCHED_WORKFLOWS, so read the set rather than a count here: prose restating a
+# pinned set goes stale in silence. A workflow lands outside it by publishing, by
+# a per-commit or per-run concurrency key, by having no run-level group, or by a
+# constant group. Exempt runs stay classified, logged, and named in the summary
+# with `human-required-heal-exempt-workflow`; they are never cancelled or re-run.
+# Immediately before cancelling a live orphan, the script re-derives heal-safety
+# from the workflow file at that run's own `head_sha` through the contents API.
+# Cancelled recovery applies the same revision check before re-running. A revision
+# read and judged unsafe is human-required and healthy; a revision nobody could
+# read is UNKNOWN, reports a FAILED outcome, and reds the tick. Neither cancels.
+# This workflow itself is excluded: the label above appears only in this comment,
+# and a watchdog that cancelled and re-ran itself would never finish a tick. For
+# each run older than 15 minutes it reads its jobs. A run is ORPHANED when a job
+# is still `queued`, carries a `codebuild-` label, and has waited more than 15
+# minutes (CodeBuild's measured queue-to-start here is under a minute). Oldest
+# first across every watched workflow, at most 5 per tick as one global cap, the
+# script cancels the run, waits for the cancellation to land, and re-runs it. The
+# re-run is a new attempt: `changes` recomputes the label with the new attempt
+# suffix and GitHub emits fresh `workflow_job.queued` webhooks, so CodeBuild
+# starts fresh runners. It
+# is a FULL re-run, not `rerun-failed-jobs`: the failed-jobs form does not run
+# `changes` again, so it would re-queue the routed jobs under a label whose attempt
+# suffix is stale, and CodeBuild's documentation does not say whether it honours
+# that. One CI round is the price; the alternative was a ten-hour hold.
+#
+# A GitHub rate limit is survivable. A 403 or 429 whose body names a rate limit is
+# honoured against its `Retry-After` / `X-RateLimit-Reset` with one cheap in-budget
+# retry; a further-off reset stops the gathering, acts on the runs already
+# classified, and ends the tick with an `aborted-rate-limited` outcome the summary
+# names. That outcome is a FAILURE and the tick exits nonzero whatever it managed
+# to classify first, because the same abort skips the cancelled-orphan recovery
+# pass and a cancelled run in the last tick-interval of its 90-minute window ages
+# out before any later tick reaches it. Every other status (401, 404, 5xx) and
+# every malformed payload still raises.
 #
 # Slow is not dead. A `codebuild-` job queued past the threshold is also what
 # CodeBuild account-concurrency saturation looks like, and re-running saturated
@@ -53,13 +108,16 @@ name: CI Runner Watchdog
 # evidence is inconclusive: a total fleet outage looks exactly like an orphan
 # from the queued side, and re-running into an outage only discards finished
 # work, so the tick reports `skipped-no-dispatch-evidence`, heals nothing, and
-# points at the documented rollback.
+# points at the documented rollback. A sweep that exceeded its job-read bound
+# reports `skipped-partial-dispatch-evidence` rather than acting: the dropped band
+# is the middle of the sweep, so a slow start there was never read.
 #
 # Mutations are verified after the fact, because the API has no conditional
 # cancel or re-run: once a cancel lands the run's attempt and conclusion are
 # read back (a run that finished on its own keeps its verdict; one somebody
-# re-ran in the gap is re-run again so nothing is lost), and every re-run is
-# followed by a second newest-of-branch check after a short settle. That lookup
+# re-ran in the gap is re-run again so nothing is lost). Every re-run gets a
+# second newest-of-branch check after a short settle. The guard is unconditional;
+# heal-safety decides whether a run can reach it. The lookup
 # matches branch NAMES, which forks share, so it is paged until a run from the
 # same head repository appears and FAILS CLOSED (red tick, run named) if the
 # listing never reaches ours. If a newer run appeared in the window, the re-run
@@ -79,9 +137,8 @@ name: CI Runner Watchdog
 # Guard rails, all in the script and all unit-tested (test/test_ci_runner_watchdog.py):
 #   - runs younger than 15 minutes are never actionable (their jobs are still
 #     read, because a slow start inside one is saturation evidence);
-#   - immediately before every re-run the run must still be the newest run of
-#     its branch and event, otherwise re-running it would cancel its successor
-#     through the workflow's own concurrency group;
+#   - immediately before every re-run, the run must still be the newest run of
+#     its branch and event; the check is unconditional for every heal-safe run;
 #   - fork runs are reported, never touched (forks are never routed to
 #     CodeBuild, and this token could not re-run them anyway);
 #   - a run at attempt 3 or later is reported, never touched -- every
@@ -108,11 +165,15 @@ name: CI Runner Watchdog
 #     in a `::error::` and left for the recovery pass;
 #   - if that budget is exhausted the run is named in a `::error::` and the job
 #     exits 1, and the NEXT tick's recovery pass re-runs it: that pass reads
-#     recently cancelled `CI` runs, recognises the orphan fingerprint on their
+#     recently cancelled runs and recognises the orphan fingerprint on their
 #     cancelled jobs (`codebuild-` label, no runner name, queued past the
-#     threshold when cancelled), and re-runs only those still the newest run of
-#     their branch -- an older, superseded pull-request run has nothing left to
-#     say, and re-running it would cancel its successor through the group;
+#     threshold when cancelled). It applies the same unconditional
+#     newest-of-branch guard and re-runs only the newest run. That
+#     pass walks its window oldest first and classifies at most
+#     `RECOVERY_CLASSIFY_READS` runs per tick: every `main` push cancels the run
+#     it supersedes, so one window holds hundreds of cancelled runs and each
+#     costs a job read, and spending the bound on the oldest keeps a newer
+#     arrival from displacing a run about to age out;
 #   - a refused cancel, or a re-run the API refuses (403: someone re-ran it by
 #     hand first), is logged and skipped;
 #   - `dry_run` performs every read and no write.

@@ -24,15 +24,45 @@ and then evicted by the next push. One orphaned shard blocked verdicts on
 
 What this script does
 ---------------------
-Lists ``ci.yml`` runs that are ``queued``, ``in_progress`` or ``pending``, reads
-each run's jobs, and calls a run ORPHANED when at least one job is still
-``queued``, carries a ``codebuild-`` label, and has waited longer than
+Lists ``queued``, ``in_progress`` and ``pending`` runs REPO-WIDE -- one paginated
+``GET /repos/{repo}/actions/runs?status=…`` per status returns runs of every
+workflow at once -- and keeps only those whose ``path`` names a workflow that
+routes jobs to the CodeBuild fleet (``WATCHED_WORKFLOWS`` -- the label
+``codebuild-kirocrew-gha`` reaches ``ci.yml``, ``fast-gate.yml``,
+``main-ratchet-audit.yml``, ``build.yml`` and eleven others). One listing per
+status covers the whole watched set, and covers strictly more than a
+per-workflow loop would: a fleet-routed workflow nobody registered is still
+returned, and dropped only because it is not watched. It then reads each kept
+run's jobs and calls a run ORPHANED when at least one job is still ``queued``,
+carries a ``codebuild-`` label, and has waited longer than
 ``Policy.orphan_after`` (15 minutes). CodeBuild's measured queue-to-start on this
 repository is under a minute, so a quarter of an hour is far outside any
-legitimate wait. For each orphaned run, oldest first and at most
-``Policy.max_runs`` (5) per invocation, it cancels the run, waits for the cancellation to land, then
+legitimate wait. For each orphaned run, oldest first across every watched
+workflow and at most ``Policy.max_runs`` (5) per invocation as one global cap,
+it cancels the run, waits for the cancellation to land, then
 re-runs it. The re-run creates a new run attempt, which produces fresh
 ``workflow_job.queued`` webhooks and a fresh runner label.
+
+The watched set is a fixed tuple, not read from disk, and it is a client-side
+FILTER on the repo-wide listing rather than a set of endpoints to poll: a
+workflow that gains a fleet route without being added here goes unhealed even
+though the listing returns it, and a workflow that loses one is still filtered in
+harmlessly. A test pins the tuple to the set of workflows whose ``runs-on``
+actually routes to the fleet, and pins ``ci-runner-watchdog.yml`` out of it --
+its own comment names the label, and a watchdog that cancelled and re-ran itself
+would never finish a tick.
+
+A GitHub rate limit is survivable, not fatal. A 403 or 429 whose body names a
+rate limit is honoured against its ``Retry-After`` / ``X-RateLimit-Reset`` with
+one cheap in-budget retry; when the reset is too far off, the tick stops
+gathering, acts on the runs it has already classified, and records an
+``aborted-rate-limited`` outcome that the summary names. That outcome is a
+FAILURE, so ANY aborted tick exits nonzero, however much it classified first:
+the same abort skips the cancelled-orphan recovery pass, and a cancelled run in
+the last tick-interval of its window ages out before a later tick reaches it.
+Every other
+status -- 401, 404, 5xx -- and every malformed payload still raises exactly as
+before.
 
 The re-run is a FULL re-run, not ``rerun-failed-jobs``, because of how the
 label is computed: ``ci.yml`` computes it ONCE, in its ``changes`` job, and the
@@ -68,8 +98,8 @@ The API offers no conditional cancel or re-run, so each mutation is bracketed:
 the cancel is verified against one attempt beforehand and, once it lands, the
 run's attempt and conclusion are read back (a run that finished on its own is
 left with its verdict; a run somebody re-ran in the gap is re-run again so
-nothing is lost). The re-run is preceded by a newest-of-branch check and
-followed by another after a short settle, and if a newer run of the branch
+nothing is lost). Every re-run is preceded by a newest-of-branch check and followed by
+another after a short settle. If a newer run of the branch
 (same head repository -- the listing matches branch NAMES, and forks share
 them) appeared in that window the re-run is cancelled, its cancellation is waited
 out, and the newer run is read until it reaches a terminal state or the settle
@@ -107,19 +137,16 @@ for the recovery pass,
 which looks at recently *cancelled* runs (within ``Policy.recovery_window``,
 90 minutes), obeys the same saturation/outage hold as the live pass, recognises
 the orphan shape on their cancelled jobs (a ``codebuild-`` label, no runner
-name, queued past the threshold when cancelled), and re-runs those that are
-still the newest run of their branch. That last test is what makes the pass
-safe for runs cancelled by something other than this script: a pull-request
-run superseded by a newer push has nothing left to say, and re-running it
-would cancel the newer run through the workflow's own concurrency group.
+name, queued past the threshold when cancelled), and re-runs them only when
+they are still the newest run of their branch. This makes the pass safe for a
+pull-request run superseded by a newer push.
 
 Guard rails
 -----------
 * A run younger than ``Policy.orphan_after`` is never actionable; its jobs are still
   read, because a slow start inside it is saturation evidence (above).
-* Immediately before every re-run the run must still be the newest run of its
-  branch and event; otherwise re-running it would cancel its successor through
-  the workflow's own concurrency group.
+* Immediately before every re-run, the run must still be the newest run of
+  its branch and event; otherwise it is reported for a human.
 * A run whose head repository is a fork is reported but never touched: forks
   are never routed to CodeBuild, and the workflow token could not re-run them.
 * A run at ``Policy.max_attempt`` (3) or beyond is reported but never touched. Every
@@ -142,6 +169,7 @@ workflow run goes red and names the run.
 from __future__ import annotations
 
 import argparse
+import base64
 import http.client
 import json
 import os
@@ -151,16 +179,145 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 CODEBUILD_LABEL_PREFIX = "codebuild-"
-WORKFLOW_FILE = "ci.yml"
+# Every workflow whose `runs-on` routes at least one job to the CodeBuild
+# fleet at this repository. The watchdog lists and heals runs of each. The
+# fleet label (`codebuild-kirocrew-gha-…`) is the membership signal; a test
+# pins this tuple to the set of workflows whose `runs-on` actually carries it.
+# `ci-runner-watchdog.yml` is deliberately absent: the label appears only in
+# its own explanatory comment, and a watchdog must never cancel or re-run
+# itself out from under a tick.
+WATCHED_WORKFLOWS: tuple[str, ...] = (
+    "build-wheel.yml",
+    "build.yml",
+    "ci.yml",
+    "code-review.yml",
+    "cross-platform.yml",
+    "dependency-review.yml",
+    "dependency-vulnerability.yml",
+    "fast-gate.yml",
+    "macos-on-demand.yml",
+    "main-ratchet-audit.yml",
+    "pages.yml",
+    "pr-merge-conflict-label.yml",
+    "pr-scope.yml",
+    "release.yml",
+    "screenshot-evidence.yml",
+)
+# Put the workflows that carry routine pull-request traffic ahead of release
+# and audit workflows when looking for recent fleet starts.
+COMPLETED_SAMPLE_WORKFLOWS: tuple[str, ...] = (
+    "ci.yml",
+    "fast-gate.yml",
+    "code-review.yml",
+) + tuple(
+    workflow
+    for workflow in WATCHED_WORKFLOWS
+    if workflow not in {"ci.yml", "fast-gate.yml", "code-review.yml"}
+)
+# The membership test for a run listed repo-wide: a run's `path` places it in a
+# workflow, and only the watched ones are kept. A frozenset because it is
+# consulted once per listed run across the whole repo, not once per watched
+# workflow.
+_WATCHED_SET = frozenset(WATCHED_WORKFLOWS)
+# Automatic healing is unsafe unless the workflow's run-level concurrency group
+# is keyed on a ref or pull request and a full re-run has no durable side effect.
+# Two gates decide it, and a workflow clears BOTH to be healed.
+# HEAL_SAFE_WORKFLOWS is the DECLARED gate and the LOAD-BEARING one: a written
+# judgement that a full re-run is safe, so a workflow joining WATCHED_WORKFLOWS
+# stays exempt until a person adds it here. The derived gate below is
+# BEST-EFFORT. It reads each workflow's non-comment YAML, requires the branch or
+# pull-request key -- a structural fact it reads reliably -- and rejects the
+# publish, deploy and signing spellings it KNOWS. A publish step spelled a way
+# the patterns miss -- a new marketplace action, a language toolchain nobody here
+# uses yet -- passes it, which is why the declaration is the judgement and this is
+# a backstop
+# for a listed workflow that later grows a recognized signal. Pinning each
+# declared workflow's content instead would expire the declaration on every edit
+# to ci.yml or fast-gate.yml, the most-edited files here.
+#
+# Every entry is REF-KEYED, and that is a requirement rather than a coincidence.
+# Healing is cancel plus a full re-run, whose only protection against cancelling a
+# live successor is the newest-of-branch check, and that check filters by head
+# branch, event and head repository -- never by pull-request number. Two pull
+# requests can share a head branch (different base branches), so for a PR-KEYED
+# concurrency group another PR's newer run would be read as this run's successor
+# and the cancelled verdict would be left unrestored. Scoping the check to the PR
+# number would need a fourth mechanism to decide which workflows are PR-keyed; the
+# gate that already exists answers it by declaring fewer workflows instead, so
+# code-review.yml, cross-platform.yml, dependency-review.yml, pr-scope.yml and
+# screenshot-evidence.yml are watched and classified but never auto-healed.
+#
+# A declared entry must also have a trigger a heal can reach. Pull-request runs are
+# never healed (see SKIPPED_PULL_REQUEST), so a workflow triggered ONLY by
+# `pull_request` -- macos-on-demand.yml is one -- could be declared here and still
+# never produce a single healable run. Such an entry reads as coverage that does not
+# exist, so it stays out and a test enforces that.
+HEAL_SAFE_WORKFLOWS: frozenset[str] = frozenset(
+    {
+        "build.yml",
+        "ci.yml",
+        "fast-gate.yml",
+    }
+)
+_PUBLISH_OR_DEPLOY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bnpm\s+publish\b",
+        r"\bgh\s+release\b",
+        r"\bactions/(?:deploy-pages|upload-pages-artifact)@",
+        r"\buses:\s*\./\.github/workflows/publish-[\w-]+\.yml\b",
+        r"\bdocker\s+push\b",
+        r"\bdocker\s+buildx\s+build\b[^\n]*\s--push\b",
+        r"\baws\s+s3\s+cp\b",
+        r"\baws\s+codeartifact\s+publish-package-version\b",
+        r"\btwine\s+upload\b",
+        r"\b(?:sign-and-notarize\.yml|notarytool\b|codesign\b|signtool\b|cosign\s+sign\b|aws\s+signer\b)",
+    )
+)
+# A REF-keyed run-level concurrency group, and only that. A PR-keyed group is
+# deliberately not accepted: the successor check filters the runs listing by branch
+# NAME, so it cannot tell one pull request's run from another's on a shared head
+# branch, which is why pull-request runs are never healed and why every declared
+# heal-safe workflow must be ref-keyed. Admitting `event.pull_request.number` here
+# would let the derived gate bless a workflow the declaration's own test forbids.
+_BRANCH_GROUP_SIGNAL = re.compile(r"\bgithub\.(?:ref(?:_name)?|head_ref)\b")
+# The watchdog's own workflow, never watched: its comment names the fleet label.
+WATCHDOG_WORKFLOW = "ci-runner-watchdog.yml"
+# A rate-limited call whose window resets within this many seconds, and inside
+# the tick's remaining budget, is waited out and retried once; a further-off
+# reset aborts the gather instead of burning budget on a sleep.
+RATE_LIMIT_RETRY_SECONDS = 30.0
+# The synthetic run id under which a rate-limited abort records its outcome, so
+# the summary can name it. No real workflow run carries id 0.
+RATE_LIMIT_MARKER_ID = 0
 # `pending` runs are held by their concurrency group and have no jobs; they are
 # listed so the summary can say WHY they wait, never acted on.
 CANDIDATE_STATUSES = ("in_progress", "queued", "pending")
 PAGE_SIZE = 100
+# The repo-wide run listing (`GET /repos/{repo}/actions/runs?status=…`) returns
+# runs of EVERY workflow, so one paginated call per status covers the watched set
+# instead of one call per watched workflow. An orphan is an OLD run and rides at
+# the tail of the newest-first listing, so paging must reach it -- this cap is set
+# well above the repo's observed peak (~172 concurrent runs, so ~2 full pages) to
+# do that while still bounding a runaway that would otherwise page forever.
+REPO_LISTING_MAX_PAGES = 8
+# Cancelled runs are indexed newest-first by CREATION time, but recovery selects
+# by cancellation update time, so a long-running orphan sits deep in this index
+# even when its cancellation is inside the recovery window. Sixteen pages hold
+# 1600 cancellations, which is about eight hours at the 200/hour this repo was
+# measured at (300 inside one 90-minute window). That is a reach, not a promise:
+# the 2026-09-20 orphans were 21 hours old, and a run created that long before a
+# burst cancelled it sits past the cap. The index retains about 90 days, so this
+# cap is normally reached and that alone is not a problem; what fails a tick is
+# reaching it BEFORE the start of the recovery window, since then runs both
+# created and cancelled inside the window went unlisted.
+RECOVERY_LISTING_MAX_PAGES = 16
 # A run is re-run whole so `changes` recomputes the per-attempt runner label.
 RERUN_ENDPOINT = "rerun"
 # A recent CodeBuild start that waited at least this fraction of the orphan
@@ -169,6 +326,23 @@ SATURATION_FRACTION = 3
 # When no live run shows a recent CodeBuild start, this many newest completed
 # runs are read for one before anything is healed.
 COMPLETED_SAMPLE = 10
+# How many live runs the classification pass reads the jobs of per sweep, against
+# the shared installation quota the incident exhausted. Runs arrive oldest first,
+# so the head of the bound serves those nearest the orphan threshold.
+LIVE_CLASSIFY_READS = 50
+# Reserved out of that bound for the NEWEST runs. Their prompt CodeBuild starts
+# are the dispatch evidence a saturation hold is judged by, and a bound spent
+# purely oldest first would drop them at exactly backlog scale, leaving a sweep
+# that heals nothing because it cannot tell a dead fleet from a busy one.
+LIVE_EVIDENCE_RESERVE = 10
+# How many in-window cancelled runs the recovery pass reads the jobs of per tick.
+# Every `main` push cancels the run it supersedes, so this repo holds hundreds of
+# cancelled runs inside one recovery window (300 measured in a 90-minute window),
+# and classifying each costs one job read. The pass walks the oldest cancellation
+# updates first, so the bound spends its reads on the runs closest to ageing out
+# of the window and a newer update waits for the next tick rather than displacing
+# an older orphan.
+RECOVERY_CLASSIFY_READS = 50
 # How long to wait after a re-run before re-checking that no newer run of the
 # branch appeared in the window: GitHub applies the concurrency group's
 # cancellation asynchronously.
@@ -209,12 +383,32 @@ CANCELLED_ORPHAN = "cancelled-orphan"
 HEALTHY = "healthy"
 SKIPPED_YOUNG = "skipped-young"
 SKIPPED_FORK = "skipped-fork"
+# A pull-request run: reported, never automatically healed. The successor check
+# asks "is a NEWER run of this branch in flight?", and GitHub's runs listing can
+# only be filtered by branch name, so two pull requests open on the same head
+# branch make each other look like successors -- which would abandon a cancelled
+# orphan behind a green `skipped-superseded`. Matching by pull-request number
+# instead is not available: of 20 sampled same-repository `pull_request` runs only
+# 9 carried `pull_requests[].number`, so that path would fail closed on most PR
+# runs and red the schedule for a healthy repo. Reported like a fork run, and green
+# for the same reason: its owner is looking at their own pull request's checks,
+# unlike a `main` orphan, which is the blindness this watchdog exists to end.
+SKIPPED_PULL_REQUEST = "skipped-pull-request-successor-unknown"
 SKIPPED_ATTEMPT_CAP = "skipped-attempt-cap"
 SKIPPED_SUPERSEDED = "skipped-superseded"
 SKIPPED_SATURATED = "skipped-saturated"
 SKIPPED_NO_DISPATCH_EVIDENCE = "skipped-no-dispatch-evidence"
+# The live listing exceeded the per-tick read bound, so the jobs that would have
+# proved saturation may sit in the band that was never read. Holding is safe (the
+# queued work is left alone and the next tick sees a shorter listing); heal-on-partial
+# is not, because it cancels finished work on evidence known to be incomplete.
+SKIPPED_PARTIAL_EVIDENCE = "skipped-partial-dispatch-evidence"
 LOOKUP_INCONCLUSIVE = "lookup-inconclusive"
 WAITING_ON_GROUP = "waiting-on-group"
+HEAL_EXEMPT = "heal-exempt"
+# Not a run verdict but a tick-level one: the marker RunVerdict carries it so the
+# summary can report that gathering stopped on a rate limit.
+TICK_ABORTED_RATE_LIMITED = "tick-aborted-rate-limited"
 
 # Outcomes of acting on a run.
 OUTCOME_DRY_RUN = "dry-run"
@@ -235,6 +429,26 @@ OUTCOME_CANCEL_TIMED_OUT = "cancel-timed-out"
 OUTCOME_RERUN_DEFERRED = "rerun-deferred-out-of-time"
 OUTCOME_RERUN_REFUSED = "rerun-refused"
 OUTCOME_NOT_ATTEMPTED = "not-attempted-cap-reached"
+OUTCOME_EVIDENCE_REREAD_DEFERRED = "deferred-evidence-reread-failed"
+# A stuck run in a workflow this script will not heal, so only a human can move
+# it. A failed outcome: most of the watched set is heal-exempt,
+# `main-ratchet-audit.yml` among them, and it was one of the three workflows in
+# the incident this script exists for. Reporting those as a warning inside a
+# passing scheduled run nobody watches would leave that incident's own shape --
+# a stuck run nobody is told about -- intact for the majority of the repo.
+OUTCOME_HUMAN_REQUIRED = "human-required-heal-exempt-workflow"
+# The run's own revision could not be read, so its heal safety is UNKNOWN rather
+# than unsafe. A failed outcome, because a cancelled run near the end of its
+# recovery window would otherwise age out behind a green tick on the strength of
+# a read nobody completed.
+OUTCOME_HEAL_SAFETY_UNKNOWN = "heal-safety-unreadable-at-run-revision"
+# A tick a rate limit cut short. A FAILED outcome, because the gathering abort
+# also skips the recovery pass, and recovery is the only thing between a
+# cancelled orphan and the end of its 90-minute window: "the next tick re-lists"
+# is no answer for a run in the final tick-interval of that window while the
+# limit persists. The runs classified ahead of the abort are still acted on; what
+# the outcome refuses is calling a tick healthy when it could not look.
+OUTCOME_ABORTED_RATE_LIMITED = "aborted-rate-limited"
 
 # Outcomes that mean a verdict may have been lost: the tick exits 1 on any of them
 # so the workflow run goes red and its log names the run and the command to type.
@@ -247,6 +461,9 @@ FAILED_OUTCOMES = frozenset(
         OUTCOME_SUCCESSOR_UNSETTLED,
         OUTCOME_OWN_RERUN_UNCANCELLED,
         OUTCOME_LOOKUP_FAILED,
+        OUTCOME_ABORTED_RATE_LIMITED,
+        OUTCOME_HEAL_SAFETY_UNKNOWN,
+        OUTCOME_HUMAN_REQUIRED,
     }
 )
 
@@ -282,12 +499,37 @@ class ApiError(Exception):
     the client -- a second cancel or re-run on top of one that landed is a
     conflict, and a conflict would be misread as a refusal. The caller
     reconciles from the run's own state instead.
+
+    ``retry_after`` and ``remaining`` carry the rate-limit hints from the
+    response headers (seconds until the window resets, and the remaining quota),
+    so the caller can wait out a cheap reset or abort a far-off one. ``rate_limited``
+    is true only for a 403/429 the body or headers identify as a quota exhaustion,
+    which the gather loop treats as a stop-and-report signal rather than a crash.
     """
 
-    def __init__(self, status: int, message: str, *, ambiguous: bool = False) -> None:
-        super().__init__(f"HTTP {status}: {_safe_text(message)}")
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        *,
+        ambiguous: bool = False,
+        retry_after: float | None = None,
+        remaining: str | None = None,
+    ) -> None:
+        self._message = _safe_text(message)
+        super().__init__(f"HTTP {status}: {self._message}")
         self.status = status
         self.ambiguous = ambiguous
+        self.retry_after = retry_after
+        self.remaining = remaining
+
+    @property
+    def rate_limited(self) -> bool:
+        if self.status not in (403, 429):
+            return False
+        if "rate limit" in self._message.lower():
+            return True
+        return self.remaining == "0"
 
 
 class Api(Protocol):
@@ -296,6 +538,33 @@ class Api(Protocol):
     def get(self, path: str) -> Any: ...
 
     def post(self, path: str) -> None: ...
+
+
+def _rate_limit_hints(headers: Any) -> tuple[float | None, str | None]:
+    """Seconds until the rate-limit window resets, and the remaining quota, from headers.
+
+    ``Retry-After`` (seconds) is honoured first -- it is what a secondary rate
+    limit sends. Otherwise ``X-RateLimit-Reset`` (an epoch second) gives the
+    wait when the quota is spent (``X-RateLimit-Remaining`` is ``0``). A missing
+    or non-numeric header yields ``None``, so a caller with no usable hint aborts
+    rather than guessing a wait.
+    """
+    if headers is None:
+        return None, None
+    remaining = headers.get("X-RateLimit-Remaining")
+    retry_after = headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after)), remaining
+        except (TypeError, ValueError):
+            pass
+    reset = headers.get("X-RateLimit-Reset")
+    if reset and remaining == "0":
+        try:
+            return max(0.0, float(reset) - time.time()), remaining
+        except (TypeError, ValueError):
+            pass
+    return None, remaining
 
 
 class GitHubApi:
@@ -317,6 +586,13 @@ class GitHubApi:
         self._base_url = base_url.rstrip("/")
         self._sleep = sleep
         self._open = opener
+        # This watchdog exists because a shared installation quota ran out, and it
+        # is itself a heavy consumer of that quota: the cancelled index alone is
+        # sixteen pages every tick. Counting its own calls and remembering the last
+        # `X-RateLimit-Remaining` the API reported turns "is the schedule
+        # sustainable?" from a guess into a number in every tick's summary.
+        self.calls = 0
+        self.rate_limit_remaining: str | None = None
 
     def _request(self, method: str, path: str) -> Any:
         url = path if path.startswith("https://") else f"{self._base_url}/{path.lstrip('/')}"
@@ -333,8 +609,16 @@ class GitHubApi:
         attempts = 0
         while True:
             attempts += 1
+            self.calls += 1
             try:
                 with self._open(request, timeout=30) as response:
+                    # Tolerated rather than required: the quota reading is
+                    # observability, and a response object without headers must
+                    # not turn a successful read into a crash.
+                    headers = getattr(response, "headers", None)
+                    remaining = headers.get("X-RateLimit-Remaining") if headers else None
+                    if remaining is not None:
+                        self.rate_limit_remaining = remaining
                     body = response.read()
                     return json.loads(body) if body else None
             except urllib.error.HTTPError as exc:
@@ -349,7 +633,12 @@ class GitHubApi:
                         self._sleep(2)
                         continue
                     raise ApiError(exc.code, detail, ambiguous=mutation) from exc
-                raise ApiError(exc.code, detail) from exc
+                retry_after, remaining = _rate_limit_hints(exc.headers)
+                if remaining is not None:
+                    self.rate_limit_remaining = remaining
+                raise ApiError(
+                    exc.code, detail, retry_after=retry_after, remaining=remaining
+                ) from exc
             except urllib.error.URLError as exc:
                 # Usually the connection itself failed, but a timeout while
                 # sending or awaiting the response surfaces here too, and then
@@ -378,6 +667,31 @@ class GitHubApi:
         self._request("POST", path)
 
 
+class _ReadsThrough:
+    """An ``Api`` whose READS go through a wrapper and whose mutations do not.
+
+    The recovery pass reads the cancelled index, each run's jobs and each branch
+    lookup through the plain client, so a rate limit whose window resets in a few
+    seconds -- one the gather phase would simply wait out -- aborted the pass
+    instead. For a cancelled run with less window left than one schedule interval
+    there is no next tick, so a cheap reset was costing a verdict. Wrapping the
+    reads hands recovery the same wait-and-retry the gather already has.
+
+    Mutations pass straight through, deliberately: a cancel or re-run that may be
+    on the wire is never repeated, whatever the failure.
+    """
+
+    def __init__(self, api: Api, read: Callable[[str], Any]) -> None:
+        self._api = api
+        self._read = read
+
+    def get(self, path: str) -> Any:
+        return self._read(path)
+
+    def post(self, path: str) -> None:
+        self._api.post(path)
+
+
 @dataclass(frozen=True)
 class OrphanedJob:
     name: str
@@ -398,12 +712,20 @@ class RunVerdict:
     url: str
     age: timedelta
     verdict: str
+    workflow: str
+    head_sha: str = ""
+    revision_heal_safe: bool = False
     orphans: list[OrphanedJob] = field(default_factory=list)
     detail: str = ""
 
     @property
     def actionable(self) -> bool:
-        return self.verdict in (ORPHANED, CANCELLED_ORPHAN, LOOKUP_INCONCLUSIVE)
+        return self.verdict in (
+            ORPHANED,
+            CANCELLED_ORPHAN,
+            LOOKUP_INCONCLUSIVE,
+            HEAL_EXEMPT,
+        )
 
 
 @dataclass
@@ -417,7 +739,6 @@ class Policy:
     group_wait_after: timedelta = timedelta(minutes=30)
     max_attempt: int = 3
     max_runs: int = 5
-    list_cap: int = 50
     heal_budget: timedelta = timedelta(seconds=300)
     # Wall clock for the whole invocation, from the first listing to the last
     # re-run. Mutations that start an ownership chain (a re-run and its
@@ -427,6 +748,12 @@ class Policy:
     tick_budget: timedelta = timedelta(seconds=540)
     force_cancel_after: timedelta = timedelta(seconds=90)
     recovery_window: timedelta = timedelta(minutes=90)
+    # How often the schedule fires (`ci-runner-watchdog.yml`: `*/10`). Only the
+    # recovery pass reads it, and only to answer one question: will a cancelled run
+    # the per-tick classify cap did not reach still be inside its recovery window
+    # when the next tick lists? Below one interval of window the answer is no, and
+    # "the rest are left for the next tick" stops being true for that run.
+    schedule_interval: timedelta = timedelta(minutes=10)
 
     @property
     def saturation_wait(self) -> timedelta:
@@ -459,8 +786,162 @@ def is_fork_run(run: dict[str, Any], repo: str) -> bool:
     return bool(full_name) and full_name.lower() != repo.lower()
 
 
+def _workflow_of(run: dict[str, Any]) -> str | None:
+    """The workflow file a run belongs to, from its ``path`` (``.github/workflows/X.yml``)."""
+    name = str(run.get("path") or "").rsplit("/", 1)[-1]
+    return name or None
+
+
+def _yaml_mapping_entries(text: str) -> Iterator[tuple[tuple[str, ...], str]]:
+    """Yield simple block-style YAML keys with their mapping path and raw value."""
+    stack: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = re.match(r"^(?P<indent> *)(?P<key>[A-Za-z0-9_-]+):(?P<value>.*)$", line)
+        if match is None:
+            continue
+        indent = len(match.group("indent"))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        key = match.group("key")
+        yield tuple(item[1] for item in stack) + (key,), match.group("value").strip()
+        stack.append((indent, key))
+
+
+def _workflow_without_full_line_comments(raw: str) -> str:
+    return "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("#"))
+
+
+def workflow_has_ref_or_pr_concurrency(text: str) -> bool:
+    """Whether the run-level concurrency group names a ref or pull request."""
+    groups = [
+        value.partition("#")[0]
+        for keys, value in _yaml_mapping_entries(text)
+        if keys == ("concurrency", "group") or (keys == ("concurrency",) and value)
+    ]
+    return any(_BRANCH_GROUP_SIGNAL.search(group) for group in groups)
+
+
+def workflow_text_has_publish_or_deploy_step(raw: str) -> bool:
+    """Whether workflow text can publish, deploy, or sign durable output."""
+    text = _workflow_without_full_line_comments(raw)
+    if any(pattern.search(text) for pattern in _PUBLISH_OR_DEPLOY_PATTERNS):
+        return True
+    for keys, value in _yaml_mapping_entries(text):
+        if len(keys) == 3 and keys[0] == "jobs" and keys[2] == "environment":
+            return True
+        permission = value.partition("#")[0].strip().strip("\"'")
+        if (
+            len(keys) >= 2
+            and keys[-2] == "permissions"
+            and keys[-1] in {"pages", "packages", "deployments"}
+            and permission == "write"
+        ):
+            return True
+    return bool(
+        re.search(r"\buses:\s*docker/build-push-action@", text, re.IGNORECASE)
+        and re.search(r"^\s*push:\s*true\s*(?:#.*)?$", text, re.IGNORECASE | re.MULTILINE)
+    )
+
+
+def workflow_text_is_heal_safe(raw: str) -> bool:
+    """Whether workflow text is branch-scoped and free of durable side effects."""
+    text = _workflow_without_full_line_comments(raw)
+    return workflow_has_ref_or_pr_concurrency(
+        text
+    ) and not workflow_text_has_publish_or_deploy_step(text)
+
+
+def heal_exempt_workflows(
+    workflows: tuple[str, ...] = WATCHED_WORKFLOWS,
+    heal_safe: frozenset[str] = HEAL_SAFE_WORKFLOWS,
+) -> frozenset[str]:
+    """Watched workflows that require human recovery: everything not declared heal-safe.
+
+    Classification reads the declaration alone. The YAML itself is read at the
+    RUN'S OWN revision, by ``workflow_is_heal_safe_at_revision``, immediately
+    before every mutation. Reading the tick's checkout here as well would judge a
+    weaker subject: a branch can change a group or add publishing, and the
+    checkout cannot see that. Anything the checkout read would have stopped, the
+    revision read stops too, before a run is touched.
+    """
+    return frozenset(workflow for workflow in workflows if workflow not in heal_safe)
+
+
+def workflow_is_heal_safe_at_revision(
+    api: Api, repo: str, workflow: str, head_sha: str
+) -> bool | None:
+    """Whether a workflow is heal-safe AT ONE RUN'S OWN revision.
+
+    Three answers, because a declared-unsafe workflow and one whose safety cannot
+    be established are not the same fact and must not share an outcome. ``False``
+    means read and judged unsafe, or declared unsafe with no read needed: a human
+    recovers it, and the tick is healthy. ``None`` means undeterminable -- no
+    ``head_sha``, or the contents read or its decoding failed -- which is a FAILED
+    outcome, so a run whose safety nobody could establish cannot age out of its
+    recovery window behind a green tick.
+
+    Either way nothing is cancelled or re-run: only ``True`` admits a mutation.
+    """
+    if workflow not in HEAL_SAFE_WORKFLOWS:
+        return False
+    if not head_sha:
+        return None
+    query = urllib.parse.urlencode({"ref": head_sha})
+    encoded_workflow = urllib.parse.quote(workflow, safe="")
+    path = f"repos/{repo}/contents/.github/workflows/{encoded_workflow}?{query}"
+    try:
+        payload = api.get(path)
+    except ApiError:
+        return None
+    if not isinstance(payload, dict) or payload.get("encoding") != "base64":
+        return None
+    content = payload.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        encoded = "".join(content.split())
+        raw = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (UnicodeError, ValueError):
+        return None
+    return workflow_text_is_heal_safe(raw)
+
+
+def _mark_heal_exempt(verdict: RunVerdict, exempt_workflows: frozenset[str]) -> RunVerdict:
+    # The attempt cap is included deliberately. That cap exists to stop US looping
+    # re-runs, and an exempt workflow is never re-run by us at all, so the cap is
+    # not the operative reason nobody touched the run -- and reporting it instead
+    # would leave a stuck orphan behind a GREEN tick, since the attempt cap carries
+    # no outcome. The label the summary shows becomes `heal-exempt`; the attempt is
+    # kept in the detail so the escalation reason is not lost. Forks are left alone:
+    # nobody's token can re-run one, which is a more specific answer than exemption.
+    if verdict.workflow in exempt_workflows and verdict.verdict in (
+        ORPHANED,
+        CANCELLED_ORPHAN,
+        SKIPPED_ATTEMPT_CAP,
+    ):
+        if verdict.verdict == SKIPPED_ATTEMPT_CAP and not verdict.orphans:
+            return verdict
+        at_cap = (
+            f" It is also at attempt {verdict.run_attempt}, the watchdog's cap."
+            if verdict.verdict == SKIPPED_ATTEMPT_CAP
+            else ""
+        )
+        verdict.verdict = HEAL_EXEMPT
+        verdict.detail = (
+            "the workflow is not heal-safe: its run concurrency is not keyed to a ref or pull "
+            "request, or it publishes, deploys, or signs durable output; automatic cancel and "
+            f"full re-run are disabled, so a human must recover this orphan.{at_cap}"
+        )
+    return verdict
+
+
 def _base_verdict(run: dict[str, Any], now: datetime) -> RunVerdict:
     created = parse_timestamp(run["created_at"])
+    workflow = _workflow_of(run)
+    if workflow is None:
+        raise ValueError("run payload has no usable workflow path")
     return RunVerdict(
         run_id=int(run["id"]),
         run_attempt=int(run.get("run_attempt") or 1),
@@ -471,6 +952,8 @@ def _base_verdict(run: dict[str, Any], now: datetime) -> RunVerdict:
         url=_safe_text(run.get("html_url")),
         age=now - created,
         verdict=HEALTHY,
+        workflow=workflow,
+        head_sha=_safe_text(run.get("head_sha")),
     )
 
 
@@ -481,6 +964,14 @@ def _guard(
     if is_fork_run(run, policy.repo):
         verdict.verdict = SKIPPED_FORK
         verdict.detail = "head repository is a fork; the workflow token cannot re-run it"
+        return verdict
+    if verdict.event == "pull_request":
+        verdict.verdict = SKIPPED_PULL_REQUEST
+        verdict.detail = (
+            "a pull-request run: whether a listed run of this branch is really this run's "
+            "successor cannot be established, because the runs listing filters by branch name "
+            "and two pull requests can share one head branch; re-running is not attempted"
+        )
         return verdict
     if verdict.run_attempt >= policy.max_attempt:
         verdict.verdict = SKIPPED_ATTEMPT_CAP
@@ -608,6 +1099,12 @@ class DispatchEvidence:
 
     starts: list[tuple[datetime, timedelta, OrphanedJob]] = field(default_factory=list)
     completed_sampled: bool = False
+    # Set when the per-tick read bound dropped part of the live listing. The dropped
+    # band is the MIDDLE of the sweep, so a slow start living there was never read,
+    # and "no slow start seen" stops meaning "no slow start exists". Without this the
+    # sweep would authorize a heal on evidence it knows is partial, at exactly the
+    # backlog scale the bound's own docstring names.
+    partial: bool = False
 
     def absorb(self, jobs: list[dict[str, Any]], policy: Policy) -> None:
         for job in jobs:
@@ -658,12 +1155,71 @@ def _orphan(job: dict[str, Any], queued_for: timedelta) -> OrphanedJob:
     )
 
 
-def _runs_path(repo: str) -> str:
-    return f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
+def _runs_path(repo: str, workflow: str) -> str:
+    return f"repos/{repo}/actions/workflows/{workflow}/runs"
 
 
-def list_runs(api: Api, repo: str, *, status: str, cap: int) -> list[dict[str, Any]]:
-    """Newest ``ci.yml`` runs with the given status filter, at most ``cap``, oldest first."""
+def _iter_repo_runs(
+    api: Api,
+    repo: str,
+    *,
+    status: str,
+    max_pages: int,
+    get: Callable[[str], Any] | None = None,
+    log: Callable[[str], None] = print,
+) -> Iterator[dict[str, Any]]:
+    """Yield runs of EVERY workflow with the given status, newest first, across at
+    most ``max_pages`` pages of ``PAGE_SIZE``.
+
+    ``GET /repos/{repo}/actions/runs?status=…`` is repo-wide: one paginated call
+    returns runs of every workflow, so a single call chain per status covers the
+    watched set. The caller filters to the watched set from each run's ``path``. Paging stops at
+    the first short or empty page, or at ``max_pages`` -- the page cap that bounds a
+    runaway; because an orphan is an old run at the tail of the newest-first
+    listing, that cap is set high enough (see ``REPO_LISTING_MAX_PAGES``) to reach
+    it under the repo's real load.
+    """
+    fetch = get or api.get
+    page = 1
+    while page <= max_pages:
+        # The page size never changes between pages: ``page`` is an offset in
+        # units of ``per_page``, so a smaller page would re-read the head of the
+        # listing and never reach the runs it was meant to fetch.
+        query = urllib.parse.urlencode({"status": status, "per_page": PAGE_SIZE, "page": page})
+        payload = fetch(f"repos/{repo}/actions/runs?{query}")
+        batch = (payload or {}).get("workflow_runs") or []
+        if not batch:
+            return
+        yield from batch
+        if len(batch) < PAGE_SIZE:
+            return
+        if page == max_pages:
+            log(
+                f"::warning::{status} run listing truncated after {max_pages} full "
+                f"page(s) of {PAGE_SIZE}; older runs were not read"
+            )
+            return
+        page += 1
+
+
+def _is_watched(run: dict[str, Any]) -> bool:
+    """Whether a repo-wide-listed run belongs to a watched workflow, by its ``path``."""
+    return _workflow_of(run) in _WATCHED_SET
+
+
+def list_runs(api: Api, repo: str, workflow: str, *, status: str, cap: int) -> list[dict[str, Any]]:
+    """Newest runs of one watched workflow with the given status filter, at most
+    ``cap``, oldest first.
+
+    Workflow-scoped on purpose, and not replaceable by a page of the repo-wide
+    listing: that index is ordered by CREATION time, while this sample wants a
+    recent COMPLETION. Watched workflows differ by an order of magnitude in
+    duration (`fast-gate.yml` runs in about 1.5 minutes, `ci.yml` in about 20),
+    so a repo-wide page mixes them and a long run that finished seconds ago sits
+    below every short run created since it started. Scoped to one workflow, whose
+    runs share a duration, creation order tracks completion order and the newest
+    page holds the newest finishes. The total stays capped at ``COMPLETED_SAMPLE``
+    either way."""
     runs: list[dict[str, Any]] = []
     page = 1
     while len(runs) < cap:
@@ -671,7 +1227,7 @@ def list_runs(api: Api, repo: str, *, status: str, cap: int) -> list[dict[str, A
         # units of ``per_page``, so a smaller final page would re-read the head
         # of the listing and never reach the runs it was meant to fetch.
         query = urllib.parse.urlencode({"status": status, "per_page": PAGE_SIZE, "page": page})
-        payload = api.get(f"{_runs_path(repo)}?{query}")
+        payload = api.get(f"{_runs_path(repo, workflow)}?{query}")
         batch = (payload or {}).get("workflow_runs") or []
         if not batch:
             break
@@ -683,13 +1239,114 @@ def list_runs(api: Api, repo: str, *, status: str, cap: int) -> list[dict[str, A
     return sorted(runs, key=lambda run: run["created_at"])
 
 
-def list_candidate_runs(api: Api, repo: str, *, cap: int) -> list[dict[str, Any]]:
-    """Live runs across every candidate status, deduplicated, oldest first."""
+def gather_all_candidate_runs(
+    api: Api,
+    repo: str,
+    *,
+    get: Callable[[str], Any] | None = None,
+    log: Callable[[str], None] = print,
+) -> tuple[list[dict[str, Any]], ApiError | None]:
+    """Live runs of every watched workflow plus any rate-limit abort, oldest first.
+
+    One paginated repo-wide listing per candidate status covers every workflow at
+    once, and each run is kept only if its ``path`` names a watched workflow. This
+    is one listing per status instead of one per watched workflow, and it covers
+    strictly more: a fleet-routed workflow nobody registered is still returned (and
+    dropped only because it is not in the watched set). No newest-N truncation is
+    applied here -- an orphan is an OLD run at the tail of the newest-first
+    listing, so keeping only the newest N would discard exactly the runs being
+    hunted; the page cap bounds the listing cost, and the global per-tick heal cap
+    still bounds how many runs are acted on.
+    """
     seen: dict[int, dict[str, Any]] = {}
-    for status in CANDIDATE_STATUSES:
-        for run in list_runs(api, repo, status=status, cap=cap):
-            seen.setdefault(int(run["id"]), run)
-    return sorted(seen.values(), key=lambda run: run["created_at"])
+    try:
+        for status in CANDIDATE_STATUSES:
+            for run in _iter_repo_runs(
+                api,
+                repo,
+                status=status,
+                max_pages=REPO_LISTING_MAX_PAGES,
+                get=get,
+                log=log,
+            ):
+                if _is_watched(run):
+                    seen.setdefault(int(run["id"]), run)
+    except ApiError as exc:
+        if not exc.rate_limited:
+            raise
+        return sorted(seen.values(), key=lambda run: run["created_at"]), exc
+    return sorted(seen.values(), key=lambda run: run["created_at"]), None
+
+
+def list_all_candidate_runs(
+    api: Api, repo: str, *, log: Callable[[str], None] = print
+) -> list[dict[str, Any]]:
+    """Live runs of every watched workflow, deduplicated, oldest first."""
+    runs, aborted = gather_all_candidate_runs(api, repo, log=log)
+    if aborted is not None:
+        raise aborted
+    return runs
+
+
+def live_runs_within_read_bound(
+    runs: list[dict[str, Any]], log: Callable[[str], None] = print
+) -> tuple[list[dict[str, Any]], bool]:
+    """The live runs whose jobs this sweep may read: oldest first, newest reserved.
+
+    The reads serve two purposes that pull opposite ways. Classifying an orphan
+    wants the OLDEST runs, the only ones that can be actionable. Proving the
+    fleet still dispatches wants a YOUNG run's prompt CodeBuild start, which is
+    the evidence ``resolve_hold`` judges saturation by. A bound spent purely
+    oldest first starves the second at exactly backlog scale, and a sweep with no
+    dispatch evidence heals nothing, which is safe but useless precisely when the
+    watchdog is needed. So the head of the bound goes to the oldest runs and its
+    tail is reserved for the newest. ``runs`` arrives oldest first, the two
+    slices cannot overlap once the bound is exceeded, and order is preserved.
+    """
+    if len(runs) <= LIVE_CLASSIFY_READS:
+        return runs, False
+    log(
+        f"reached the per-tick live job-read cap of {LIVE_CLASSIFY_READS}; the oldest "
+        f"{LIVE_CLASSIFY_READS - LIVE_EVIDENCE_RESERVE} are classified and the newest "
+        f"{LIVE_EVIDENCE_RESERVE} are read for dispatch evidence; the rest wait for the "
+        "next tick"
+    )
+    oldest = LIVE_CLASSIFY_READS - LIVE_EVIDENCE_RESERVE
+    # The second value tells the caller its saturation evidence is PARTIAL. The band
+    # dropped here is the middle of the sweep, so a slow start living there is never
+    # read and "nothing slow was seen" no longer rules saturation out.
+    return runs[:oldest] + runs[-LIVE_EVIDENCE_RESERVE:], True
+
+
+def list_recent_cancelled_runs(
+    api: Api, repo: str, *, log: Callable[[str], None] = print
+) -> list[dict[str, Any]]:
+    """Cancelled runs of every watched workflow, oldest cancellation update first.
+
+    The reach is BEST-EFFORT and deliberately carries no coverage claim. GitHub orders
+    this index by CREATION time while recovery selects by cancellation time, and offers
+    no ordering by the latter, so nothing readable from the listing can establish that
+    every run cancelled inside the window was seen: a long-lived run cancelled during a
+    burst sits past any page cap, which is exactly what the 2026-09-20 orphans looked
+    like. Three rounds of review went into inventing a signal for that gap; each spelling
+    claimed more than the API can answer, so the honest form is the truncation WARNING
+    the paging already logs, plus this docstring. A cancelled run that never got listed
+    needs `gh run rerun` by hand, and the reach only changes how often that is true.
+    """
+    watched: dict[int, dict[str, Any]] = {}
+    for run in _iter_repo_runs(
+        api,
+        repo,
+        status="cancelled",
+        max_pages=RECOVERY_LISTING_MAX_PAGES,
+        log=log,
+    ):
+        if _is_watched(run):
+            watched.setdefault(int(run["id"]), run)
+    return sorted(
+        watched.values(),
+        key=lambda run: parse_timestamp(str(run.get("updated_at") or run["created_at"])),
+    )
 
 
 def list_jobs(api: Api, repo: str, run_id: int) -> list[dict[str, Any]]:
@@ -737,7 +1394,7 @@ def newest_run_id_for_branch(api: Api, repo: str, verdict: RunVerdict) -> int:
             }
         )
         try:
-            payload = api.get(f"{_runs_path(repo)}?{query}")
+            payload = api.get(f"{_runs_path(repo, verdict.workflow)}?{query}")
         except ApiError as exc:
             # The listing is the only thing standing between a re-run and a
             # newer run's concurrency group; without it no verdict is safe.
@@ -818,7 +1475,7 @@ class Tick:
         self.sleep(min(POST_RERUN_SETTLE_SECONDS, max(0.5, until - self.clock())))
 
 
-HoldCheck = Callable[[RunVerdict], "tuple[str, str] | None"]
+HoldCheck = Callable[[RunVerdict], "tuple[str, str, str | None] | None"]
 
 
 def heal_runs(
@@ -850,6 +1507,10 @@ def heal_runs(
     if prime is not None and verdicts:
         prime()
     for verdict in verdicts:
+        if verdict.verdict == HEAL_EXEMPT:
+            log(f"::warning::{_label(verdict)}: {verdict.detail}")
+            outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
+            continue
         run_path = f"repos/{policy.repo}/actions/runs/{verdict.run_id}"
         try:
             fresh_run = api.get(run_path) or {}
@@ -872,9 +1533,12 @@ def heal_runs(
         # the NEWEST orphan the run has now.
         verdict.orphans = fresh.orphans
         verdict.detail = fresh.detail
+        verdict.head_sha = fresh.head_sha
         hold = hold_check(verdict) if hold_check is not None else None
         if hold is not None:
-            verdict.verdict, verdict.detail = hold
+            verdict.verdict, verdict.detail, hold_outcome = hold
+            if hold_outcome is not None:
+                outcomes[verdict.run_id] = hold_outcome
             log(f"::warning::{_label(verdict)}: {verdict.detail} (re-checked before the cancel)")
             continue
         if tick.remaining() < RERUN_RESERVE_SECONDS:
@@ -888,6 +1552,22 @@ def heal_runs(
             )
             outcomes[verdict.run_id] = OUTCOME_NOT_ATTEMPTED
             continue
+        revision_safe = workflow_is_heal_safe_at_revision(
+            api, policy.repo, verdict.workflow, verdict.head_sha
+        )
+        if revision_safe is None:
+            log(
+                f"::error::{_label(verdict)}: its heal safety cannot be established at its own "
+                f"revision, so nothing is cancelled; re-run it by hand if it stays stuck"
+            )
+            outcomes[verdict.run_id] = OUTCOME_HEAL_SAFETY_UNKNOWN
+            continue
+        if not revision_safe:
+            _mark_heal_exempt(verdict, frozenset({verdict.workflow}))
+            log(f"::warning::{_label(verdict)}: {verdict.detail} (checked at the run revision)")
+            outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
+            continue
+        verdict.revision_heal_safe = True
         if policy.dry_run:
             log(f"[dry-run] would cancel and re-run {_label(verdict)}")
             outcomes[verdict.run_id] = OUTCOME_DRY_RUN
@@ -988,14 +1668,25 @@ def heal_runs(
 
 
 def sample_completed_runs(api: Api, policy: Policy, evidence: DispatchEvidence) -> None:
-    """Absorb the newest completed runs' CodeBuild starts, at most once per evidence set."""
+    """Absorb recent completed runs' CodeBuild starts, at most once per evidence set.
+
+    The fleet is shared across every watched workflow, so a prompt start in any
+    of them is evidence it is dispatching. To bound the cost, at most
+    ``COMPLETED_SAMPLE`` completed runs are read in total across the watched
+    workflows, high-traffic workflows first.
+    """
     evidence.completed_sampled = True
-    for run in list_runs(api, policy.repo, status="completed", cap=COMPLETED_SAMPLE):
-        if policy.now - parse_timestamp(str(run.get("updated_at") or run["created_at"])) > (
-            policy.saturation_lookback
-        ):
-            continue
-        evidence.absorb(list_jobs(api, policy.repo, int(run["id"])), policy)
+    remaining = COMPLETED_SAMPLE
+    for workflow in COMPLETED_SAMPLE_WORKFLOWS:
+        if remaining <= 0:
+            break
+        for run in list_runs(api, policy.repo, workflow, status="completed", cap=remaining):
+            if policy.now - parse_timestamp(str(run.get("updated_at") or run["created_at"])) > (
+                policy.saturation_lookback
+            ):
+                continue
+            remaining -= 1
+            evidence.absorb(list_jobs(api, policy.repo, int(run["id"])), policy)
 
 
 def resolve_hold(
@@ -1029,6 +1720,17 @@ def resolve_hold(
             f"({_fmt_delta(policy.now - since)} ago), so an orphan cannot be told from a fleet outage; "
             f"nothing healed. If this persists, the documented rollback (route the Linux jobs back to "
             f"ubuntu-latest) is the response",
+        )
+    if evidence.partial:
+        # Reached only when the evidence read as DISPATCHING: prompt starts, nothing
+        # slow. That verdict authorizes cancelling finished work, and it is not
+        # established while part of the sweep went unread, since a slow start in the
+        # dropped middle band would have held instead. Hold rather than guess.
+        return (
+            SKIPPED_PARTIAL_EVIDENCE,
+            "the live listing exceeded this tick's job-read bound, so a slow CodeBuild start "
+            "may sit in the band that was not read and saturation cannot be ruled out; "
+            "nothing healed, and the next tick reads a shorter listing",
         )
     return None
 
@@ -1106,6 +1808,21 @@ def _rerun(
     cancelled and nobody left to notice. A re-run that cannot start is a failed
     outcome that names the run (see ``_out_of_time``).
     """
+    if not verdict.revision_heal_safe:
+        revision_safe = workflow_is_heal_safe_at_revision(
+            api, policy.repo, verdict.workflow, verdict.head_sha
+        )
+        if revision_safe is None:
+            log(
+                f"::error::{_label(verdict)}: its heal safety cannot be established at its own "
+                f"revision, so it is NOT re-run; `gh run rerun {verdict.run_id}` by hand"
+            )
+            return OUTCOME_HEAL_SAFETY_UNKNOWN
+        if not revision_safe:
+            _mark_heal_exempt(verdict, frozenset({verdict.workflow}))
+            log(f"::warning::{_label(verdict)}: {verdict.detail}")
+            return OUTCOME_HUMAN_REQUIRED
+        verdict.revision_heal_safe = True
     try:
         if not is_newest_for_branch(api, policy.repo, verdict):
             log(f"{_label(verdict)} was superseded by a newer run of its branch; not re-running it")
@@ -1330,7 +2047,77 @@ def _rerun_cancelled_successor(
             f"and could not be re-run. Run `gh run rerun {successor_id}` by hand."
         )
         return OUTCOME_SUCCESSOR_LOST
+    if outcome == OUTCOME_HUMAN_REQUIRED:
+        # At depth 0 this outcome means "we declined to touch anything", a healthy
+        # tick. Here it means the opposite: OUR re-run's concurrency group cancelled
+        # this successor, and its own revision then read heal-unsafe, so we will not
+        # restore what we destroyed. That is the same loss as a refused re-run and
+        # must carry the same red -- otherwise the run disappears behind a green tick
+        # with no orphan fingerprint for recovery to find.
+        log(
+            f"::error::successor run {successor_id} was cancelled by the re-run of {_label(verdict)} "
+            f"and its own revision is not heal-safe, so it was NOT restored. Run "
+            f"`gh run rerun {successor_id}` by hand."
+        )
+        return OUTCOME_SUCCESSOR_LOST
     return outcome
+
+
+def _flag_unclassified_near_expiry(
+    runs: list[dict[str, Any]],
+    policy: Policy,
+    verdicts: list[RunVerdict],
+    outcomes: dict[int, str],
+    log: Callable[[str], None],
+) -> None:
+    """Refuse a green tick for a cancelled run the classify cap will never reach.
+
+    The cap is a fair trade for a run that will still be listed next tick: it waits
+    one interval and costs nothing. It is not a fair trade for a run with less than
+    one interval of recovery window left, because there is no next tick for it --
+    the window check at the top of the pass drops it before the cap is ever
+    consulted, and its verdict is gone. A burst of more cancels than the cap, all
+    within one window, is exactly that case: the oldest fill the cap every tick
+    while the tail ages out having never been looked at.
+
+    So the tail is walked and the unreachable ones are recorded, which costs NO API
+    read -- the decision is the run's own ``updated_at`` against the window and the
+    interval. They are reported as ``LOOKUP_INCONCLUSIVE`` / ``OUTCOME_LOOKUP_FAILED``
+    rather than a new outcome of their own, because that pair already means the one
+    thing being claimed here: the run's state was never determined, so the tick may
+    have lost a verdict and must exit nonzero. What the detail adds is WHY nobody
+    looked, so an operator reading the summary is not sent hunting for an API error
+    that never happened.
+
+    Deliberately NOT a re-run: this pass never established that these runs are
+    orphans, and re-running a run a human cancelled on purpose is the harm the
+    fingerprint exists to prevent. The outcome asks for a human, it does not act.
+    """
+    for run in runs:
+        created = parse_timestamp(str(run["created_at"]))
+        updated = parse_timestamp(str(run.get("updated_at") or run["created_at"]))
+        if updated - created < policy.orphan_after:
+            # Same zero-read exclusion the pass itself applies: a run that did not
+            # live as long as the orphan threshold cannot hold a job that queued
+            # past it, so nobody needs to look at it and it must not red the tick.
+            continue
+        left = policy.recovery_window - (policy.now - updated)
+        if left <= timedelta(0) or left > policy.schedule_interval:
+            continue
+        verdict = _base_verdict(run, policy.now)
+        verdict.verdict = LOOKUP_INCONCLUSIVE
+        minutes = int(left.total_seconds() // 60)
+        verdict.detail = (
+            f"the per-tick cap of {RECOVERY_CLASSIFY_READS} classify reads was reached before "
+            f"this run, and only {minutes}m of its {int(policy.recovery_window.total_seconds() // 60)}m "
+            "recovery window remain, so no later tick will list it"
+        )
+        outcomes[verdict.run_id] = OUTCOME_LOOKUP_FAILED
+        verdicts.append(verdict)
+        log(
+            f"::error::{_label(verdict)} is a cancelled run nobody classified: {verdict.detail}. "
+            f"Check it and run `gh run rerun {verdict.run_id}` if it was an orphan."
+        )
 
 
 def recover_cancelled_runs(
@@ -1340,6 +2127,9 @@ def recover_cancelled_runs(
     budget: int,
     tick: Tick,
     log: Callable[[str], None] = print,
+    exempt_workflows: frozenset[str] | None = None,
+    verdicts: list[RunVerdict] | None = None,
+    outcomes: dict[int, str] | None = None,
 ) -> tuple[list[RunVerdict], dict[int, str]]:
     """Re-run cancelled orphans that an earlier tick cancelled but nobody re-ran.
 
@@ -1363,15 +2153,57 @@ def recover_cancelled_runs(
     Holding it instead would let the recovery window expire under a long
     outage and abandon the run silently, which is the one unrecoverable path.
     """
-    verdicts: list[RunVerdict] = []
-    outcomes: dict[int, str] = {}
-    for run in list_runs(api, policy.repo, status="cancelled", cap=policy.list_cap):
+    # The caller may own these containers. A rate limit raised out of this pass
+    # never lands the tuple return, so results the pass ALREADY produced -- a
+    # recovery that re-ran a run, consuming one of the tick's five heal slots --
+    # would be invisible to the caller's slot accounting and five more live runs
+    # would be healed on top of them. Filling the caller's containers as we go
+    # means an abort leaves it holding exactly what was done.
+    verdicts = [] if verdicts is None else verdicts
+    outcomes = {} if outcomes is None else outcomes
+    if exempt_workflows is None:
+        exempt_workflows = heal_exempt_workflows()
+    cancelled_runs = list_recent_cancelled_runs(api, policy.repo, log=log)
+    reads_left = RECOVERY_CLASSIFY_READS
+    for index, run in enumerate(cancelled_runs):
+        created = parse_timestamp(str(run["created_at"]))
         updated = parse_timestamp(str(run.get("updated_at") or run["created_at"]))
         if policy.now - updated > policy.recovery_window:
             continue
+        if updated - created < policy.orphan_after:
+            # Costs no read and excludes no orphan. A job is created no earlier
+            # than its run and stops queueing no later than the run's terminal
+            # transition, so its queue wait -- the very quantity the fingerprint
+            # tests against `orphan_after` -- cannot exceed the run's lifetime.
+            # A run that did not live that long therefore cannot hold an orphan.
+            # This is what keeps the read bound below from being spent on runs
+            # that were never candidates: every `main` push cancels the run it
+            # supersedes, and of 1000 consecutive cancelled runs measured over
+            # 6.8 days the median lived 4 seconds and only 2 reached
+            # `orphan_after`, so the busiest 90-minute window holds 400 cancelled
+            # runs but 2 candidates against a bound of 50.
+            continue
+        if reads_left <= 0:
+            log(
+                f"reached the per-tick cap of {RECOVERY_CLASSIFY_READS} cancelled runs to "
+                "classify; the rest are left for the next tick"
+            )
+            _flag_unclassified_near_expiry(
+                cancelled_runs[index:], policy, verdicts, outcomes, log
+            )
+            break
+        reads_left -= 1
         try:
             jobs = list_jobs(api, policy.repo, int(run["id"]))
         except ApiError as exc:
+            if exc.rate_limited:
+                # A rate limit means this run's jobs could not be READ, not that the
+                # run is healthy. Swallowing it here hides it from the caller's
+                # handler -- the one that records ``aborted-rate-limited`` -- and
+                # that outcome exists precisely because "the next tick re-reads" is
+                # no answer for a run in the final interval of its window. Let it
+                # out; the caller decides whether the reset is close enough to wait.
+                raise
             # Nothing has been touched; the next tick's pass reads it again.
             log(f"could not read the jobs of cancelled run {int(run['id'])}: {exc}")
             continue
@@ -1381,7 +2213,10 @@ def recover_cancelled_runs(
             # nothing costs one listing per cancelled run, not two.
             return is_newest_for_branch(api, policy.repo, _base_verdict(run, policy.now))
 
-        verdict = classify_cancelled_run(run, jobs, policy, newest_check=is_newest)
+        verdict = _mark_heal_exempt(
+            classify_cancelled_run(run, jobs, policy, newest_check=is_newest),
+            exempt_workflows,
+        )
         if verdict.verdict == HEALTHY:
             continue
         if verdict.verdict == LOOKUP_INCONCLUSIVE:
@@ -1392,6 +2227,9 @@ def recover_cancelled_runs(
             )
         log(f"{_label(verdict)}: {verdict.verdict} -- {verdict.detail}")
         verdicts.append(verdict)
+        if verdict.verdict == HEAL_EXEMPT:
+            outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
+            continue
         if verdict.verdict != CANCELLED_ORPHAN:
             continue
         if budget <= 0:
@@ -1439,24 +2277,38 @@ def _md_link(verdict: RunVerdict) -> str:
 def render_summary(verdicts: list[RunVerdict], outcomes: dict[int, str], policy: Policy) -> str:
     lines = ["## CI runner watchdog", ""]
     lines.append(f"Mode: {'dry run' if policy.dry_run else 'live'}.")
-    lines.append(f"Inspected {len(verdicts)} run(s).")
+    aborted_markers = [v for v in verdicts if v.verdict == TICK_ABORTED_RATE_LIMITED]
+    real = [v for v in verdicts if v.verdict != TICK_ABORTED_RATE_LIMITED]
+    lines.append(f"Inspected {len(real)} run(s).")
+    if aborted_markers:
+        lines.append("")
+        lines.append(
+            f"Aborted (rate limited): {_md(aborted_markers[0].detail)} -- acted on the runs already "
+            f"classified; the next tick re-lists."
+        )
     lines.append("")
-    acted = [v for v in verdicts if v.actionable]
+    acted = [v for v in real if v.actionable]
     reported = [
         v
-        for v in verdicts
+        for v in real
         if v.verdict
         in (
             SKIPPED_FORK,
+            SKIPPED_PULL_REQUEST,
             SKIPPED_ATTEMPT_CAP,
             SKIPPED_SUPERSEDED,
             SKIPPED_SATURATED,
             SKIPPED_NO_DISPATCH_EVIDENCE,
+            SKIPPED_PARTIAL_EVIDENCE,
             WAITING_ON_GROUP,
         )
     ]
     if not acted and not reported:
-        lines.append("Nothing stuck.")
+        lines.append(
+            "No run was classified before the tick aborted."
+            if aborted_markers
+            else "Nothing stuck."
+        )
         return "\n".join(lines) + "\n"
     if acted:
         lines.append("| Run | Attempt | Branch | Age | Orphaned jobs | Outcome |")
@@ -1473,7 +2325,11 @@ def render_summary(verdicts: list[RunVerdict], outcomes: dict[int, str], policy:
         lines.append("Reported, not acted on:")
         lines.append("")
         for v in reported:
-            lines.append(f"- {_md_link(v)} {_md(v.head_branch)} -- {v.verdict}: {_md(v.detail)}")
+            reported_outcome = outcomes.get(v.run_id)
+            outcome_text = f"; outcome: {reported_outcome}" if reported_outcome is not None else ""
+            lines.append(
+                f"- {_md_link(v)} {_md(v.head_branch)} -- {v.verdict}: {_md(v.detail)}{outcome_text}"
+            )
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -1488,6 +2344,7 @@ def run_watchdog(
 ) -> tuple[list[RunVerdict], dict[int, str]]:
     verdicts: list[RunVerdict] = []
     evidence = DispatchEvidence()
+    exempt_workflows = heal_exempt_workflows()
     start = clock()
     tick = Tick(
         clock=clock,
@@ -1496,40 +2353,116 @@ def run_watchdog(
         started_at=policy.now,
         started_clock=start,
     )
-    for run in list_candidate_runs(api, policy.repo, cap=policy.list_cap):
-        # Jobs are read for EVERY run, young ones included: a young run is never
-        # actionable, but a recent slow CodeBuild start inside it is exactly the
-        # saturation evidence that must hold the watchdog back from older runs.
-        jobs = list_jobs(api, policy.repo, int(run["id"]))
-        verdict = classify_run(run, jobs, policy)
-        log(f"{_label(verdict)}: {verdict.verdict} -- {verdict.detail}")
-        for orphan in verdict.orphans:
-            log(
-                f"  queued {_fmt_delta(orphan.queued_for)} with no runner: {orphan.name} {list(orphan.labels)}"
-            )
-        verdicts.append(verdict)
-        evidence.absorb(jobs, policy)
+    aborted: str | None = None
 
-    # The hold is judged per run, relative to when its NEWEST orphaned job
-    # queued: a start that postdates an older orphan may still predate a
-    # younger one, in another run or in the same one.
-    for verdict in verdicts:
-        if verdict.verdict != ORPHANED:
-            continue
-        hold = resolve_hold(api, policy, evidence, _latest_queue(verdict))
-        if hold is not None:
-            verdict.verdict, verdict.detail = hold
-            log(f"::warning::{_label(verdict)}: {verdict.detail}")
+    def cheap_retry(thunk: Callable[[], Any]) -> Any:
+        """Run ``thunk``; on a rate limit whose reset is cheap and in budget, wait once and retry.
+
+        A rate-limit whose reset is unknown or too far off, or a second one on
+        the retry, propagates -- the gather catches it and ends the tick. Every
+        other ApiError passes straight through, so 401/404/5xx keep raising.
+        """
+        try:
+            return thunk()
+        except ApiError as exc:
+            if not exc.rate_limited:
+                raise
+            wait = exc.retry_after
+            if (
+                wait is not None
+                and 0 <= wait <= RATE_LIMIT_RETRY_SECONDS
+                and tick.remaining() - wait >= RERUN_RESERVE_SECONDS
+            ):
+                log(
+                    f"rate limited ({exc}); the window resets in {int(wait)} s, within budget -- "
+                    f"waiting once and retrying"
+                )
+                sleep(wait)
+                return thunk()
+            raise
+
+    try:
+        candidate_runs, listing_abort = gather_all_candidate_runs(
+            api,
+            policy.repo,
+            get=lambda path: cheap_retry(lambda: api.get(path)),
+            log=log,
+        )
+        bounded_runs, evidence_partial = live_runs_within_read_bound(candidate_runs, log)
+        evidence.partial = evidence.partial or evidence_partial
+        for run in bounded_runs:
+            # Jobs are read for every run the bound admits, young ones included: a
+            # young run is never actionable, but a recent slow CodeBuild start inside
+            # it is exactly the saturation evidence that must hold the watchdog back
+            # from older runs, which is why the bound reserves a slice for them.
+            def read_jobs(run: dict[str, Any] = run) -> list[dict[str, Any]]:
+                return list_jobs(api, policy.repo, int(run["id"]))
+
+            jobs = cheap_retry(read_jobs)
+            verdict = _mark_heal_exempt(classify_run(run, jobs, policy), exempt_workflows)
+            log(f"{_label(verdict)}: {verdict.verdict} -- {verdict.detail}")
+            for orphan in verdict.orphans:
+                log(
+                    f"  queued {_fmt_delta(orphan.queued_for)} with no runner: {orphan.name} {list(orphan.labels)}"
+                )
+            verdicts.append(verdict)
+            evidence.absorb(jobs, policy)
+
+        if listing_abort is not None:
+            raise listing_abort
+
+        # The hold is judged per run, relative to when its NEWEST orphaned job
+        # queued: a start that postdates an older orphan may still predate a
+        # younger one, in another run or in the same one.
+        for verdict in verdicts:
+            if verdict.verdict != ORPHANED:
+                continue
+            hold = resolve_hold(api, policy, evidence, _latest_queue(verdict))
+            if hold is not None:
+                verdict.verdict, verdict.detail = hold
+                log(f"::warning::{_label(verdict)}: {verdict.detail}")
+    except ApiError as exc:
+        # A rate limit stops gathering rather than losing the whole tick: the
+        # runs classified ahead of it are acted on below (heal_runs re-reads the
+        # fleet's state and holds anything it cannot verify), and the next tick
+        # re-lists. Any other error is the caller's to raise, untouched here.
+        if not exc.rate_limited:
+            raise
+        aborted = str(exc)
+        log(
+            f"::warning::the tick hit a GitHub rate limit while gathering ({exc}); it stops listing, "
+            f"acts on the {len(verdicts)} run(s) already classified, and the next tick re-lists"
+        )
 
     # Recovery goes FIRST and takes the per-tick cap before live heals do. A
     # cancelled orphan has already lost its verdict and only a re-run brings it
     # back, whereas a live orphan loses nothing by waiting one more tick; were
     # live heals served first, a sustained backlog of five live orphans per
     # tick would starve recovery until the cancelled run aged out of the
-    # recovery window and its verdict was gone for good.
-    recovered, recovered_outcomes = recover_cancelled_runs(
-        api, policy, budget=policy.max_runs, tick=tick, log=log
-    )
+    # recovery window and its verdict was gone for good. A rate limit here is
+    # non-fatal too: the recovery pass is left for the next tick.
+    recovered: list[RunVerdict] = []
+    recovered_outcomes: dict[int, str] = {}
+    if aborted is None:
+        try:
+            recover_cancelled_runs(
+                _ReadsThrough(api, lambda path: cheap_retry(lambda: api.get(path))),
+                policy,
+                budget=policy.max_runs,
+                tick=tick,
+                log=log,
+                exempt_workflows=exempt_workflows,
+                verdicts=recovered,
+                outcomes=recovered_outcomes,
+            )
+        except ApiError as exc:
+            if not exc.rate_limited:
+                raise
+            aborted = str(exc)
+            log(
+                f"::warning::the recovery pass hit a GitHub rate limit ({exc}); it is left for the "
+                f"next tick"
+            )
     slots_used = sum(
         1
         for v in recovered
@@ -1555,31 +2488,56 @@ def run_watchdog(
         read_at = replace(policy, now=tick.now())
         try:
             latest = DispatchEvidence()
-            for run in list_candidate_runs(api, policy.repo, cap=policy.list_cap):
+            fresh_runs = list_all_candidate_runs(api, policy.repo, log=log)
+            bounded_fresh, latest.partial = live_runs_within_read_bound(fresh_runs, log)
+            for run in bounded_fresh:
                 latest.absorb(list_jobs(api, policy.repo, int(run["id"])), read_at)
             sample_completed_runs(api, read_at, latest)
             fresh["evidence"] = latest
         except ApiError as exc:
             fresh["error"] = exc
 
-    def fresh_hold(verdict: RunVerdict) -> tuple[str, str] | None:
+    def fresh_hold(verdict: RunVerdict) -> tuple[str, str, str | None] | None:
         prime_fresh_evidence()
         if "error" in fresh:
+            # A one-off error (a 502) is genuinely deferrable: nothing was touched,
+            # the run stays orphaned and the next tick re-reads it. A RATE LIMIT is
+            # not one-off but a condition, and it is the condition that killed the
+            # tick in the incident: every tick would defer and every tick would be
+            # green while the orphan keeps parking every later push behind it. So a
+            # rate-limited re-read carries the tick's existing rate-limit outcome,
+            # which is FAILED, rather than the plain deferral.
+            failed = getattr(fresh["error"], "rate_limited", False)
             return (
                 SKIPPED_NO_DISPATCH_EVIDENCE,
                 f"dispatch evidence could not be re-read before the cancel ({fresh['error']}); "
                 f"nothing healed on evidence that may be stale",
+                OUTCOME_ABORTED_RATE_LIMITED if failed else OUTCOME_EVIDENCE_REREAD_DEFERRED,
             )
         # Judged against the wall clock of THIS moment: a start that has aged
         # past the lookback since the sweep no longer counts. The sample is
         # already taken, so this is a pure judgement -- no read, no delay
         # between the run's own re-read and its cancel.
-        return resolve_hold(
+        hold = resolve_hold(
             api, replace(policy, now=tick.now()), fresh["evidence"], _latest_queue(verdict)
         )
+        return None if hold is None else (*hold, None)
 
-    outcomes = heal_runs(
-        api, to_heal, policy, tick=tick, log=log, hold_check=fresh_hold, prime=prime_fresh_evidence
+    outcomes = {
+        verdict.run_id: OUTCOME_HUMAN_REQUIRED
+        for verdict in verdicts
+        if verdict.verdict == HEAL_EXEMPT
+    }
+    outcomes.update(
+        heal_runs(
+            api,
+            to_heal,
+            policy,
+            tick=tick,
+            log=log,
+            hold_check=fresh_hold,
+            prime=prime_fresh_evidence,
+        )
     )
     for verdict in deferred:
         outcomes[verdict.run_id] = OUTCOME_NOT_ATTEMPTED
@@ -1589,6 +2547,26 @@ def run_watchdog(
 
     verdicts.extend(recovered)
     outcomes.update(recovered_outcomes)
+    if aborted is not None:
+        # A synthetic verdict carries the abort so the summary names it. It is
+        # not a run, so it never lands in the acted/reported tables. Its outcome
+        # IS a failure, because the abort also skipped the recovery pass.
+        verdicts.append(
+            RunVerdict(
+                run_id=RATE_LIMIT_MARKER_ID,
+                run_attempt=0,
+                head_branch="",
+                head_repo="",
+                event="",
+                status="",
+                url="",
+                age=timedelta(0),
+                verdict=TICK_ABORTED_RATE_LIMITED,
+                workflow="",
+                detail=aborted,
+            )
+        )
+        outcomes[RATE_LIMIT_MARKER_ID] = OUTCOME_ABORTED_RATE_LIMITED
     return verdicts, outcomes
 
 
@@ -1622,11 +2600,26 @@ def main(argv: list[str] | None = None) -> int:
     policy = Policy(repo=args.repo, now=datetime.now(timezone.utc), dry_run=args.dry_run)
     verdicts, outcomes = run_watchdog(api, policy)
     summary = render_summary(verdicts, outcomes, policy)
+    # Its own footprint against the quota whose exhaustion started all this. Logged
+    # rather than enforced: a cap here would silently stop healing, which is the
+    # failure this script exists to end. Read these across a few scheduled ticks to
+    # judge whether the bounds above are sustainable per hour.
+    remaining = api.rate_limit_remaining
+    print(
+        f"this tick made {api.calls} GitHub API call(s); the installation quota "
+        f"reported {remaining if remaining is not None else 'no'} request(s) remaining"
+    )
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as handle:
             handle.write(summary)
     else:
         print(summary)
+    if outcomes.get(RATE_LIMIT_MARKER_ID) == OUTCOME_ABORTED_RATE_LIMITED:
+        print(
+            "::error::a GitHub rate limit cut this tick short, so the cancelled-orphan recovery "
+            "pass did not run; a cancelled run near the end of its recovery window can age out "
+            "before a later tick reaches it"
+        )
     return 1 if FAILED_OUTCOMES & set(outcomes.values()) else 0
 
 
