@@ -188,7 +188,6 @@
     "installing_packages": "パッケージをインストール中",
     "k_search_for_anything": "⌘K — 何かを検索…",
     "kiro_credit_usage_api_key": "Kiro クレジット使用状況 — API キー認証では利用不可",
-    "kiro_credit_usage_scrape_disabled": "Kiro クレジット使用状況 — ライブ取得はオプトアウトされています（dashboard.usage_text_scrape_enabled）",
     "kiro_credit_usage_checking": "Kiro クレジット使用状況 — 確認中…",
     "kiro_credit_usage_checking_2": "Kiro クレジット使用状況 — 確認中",
     "kiro_credit_usage_signin_required": "Kiro クレジット使用量 — 有効な Kiro のサインインを読み取れませんでした。もう一度サインインしてください",
@@ -263,7 +262,9 @@
     "focus_mode": "フォーカスモード",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
-    "connect_your_phone": "スマホを接続"
+    "connect_your_phone": "スマホを接続",
+    "kiro_credit_usage_no_reading": "Kiro クレジット使用量 — 残高はまだ読み取れていません。開いて更新",
+    "kiro_credit_usage_config_unreadable": "Kiro クレジット使用量 — バックエンド設定を読み取れませんでした。開いて再試行"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5735,18 +5736,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "アカウント詳細を取得できません",
+      "balance_checked_at": "{{time}} に確認",
+      "balance_may_be_stale": "以前の値を表示しています。最新の更新では値が返されませんでした。",
       "checking_account": "アカウントを確認中…",
       "checking_credit_usage": "クレジット使用量を確認中",
       "credit_usage_api_key_auth": "API キー認証ではクレジット使用量を確認できません",
-      "credit_usage_scrape_disabled": "ライブのクレジット使用状況は利用できません。無料の使用状況 API がこのアカウントのプランを返さず、課金される /usage フォールバックはデフォルトで無効です。取得するには config.json で dashboard.usage_text_scrape_enabled を true に設定してください — 更新のたびに少量のクレジットを消費します。",
-      "credit_usage_signin_required": "ライブのクレジット使用量を利用できません: 有効な Kiro のサインイン資格情報を読み取れなかったため、無料の使用量 API は呼び出されていません。Kiro に再度サインインしてください (例: kiro-cli login を実行)。dashboard.usage_text_scrape_enabled を有効にしても解決しません。課金される /usage フォールバックも同じサインインを必要とするためです。",
-      "credit_usage_unavailable": "クレジット使用量を取得できません",
+      "credit_usage_no_reading": "このアカウントの残高はまだ読み取れていません。",
+      "credit_usage_config_unreadable": "設定を読み込めなかったため、残高を表示できません。",
+      "credit_usage_signin_required": "ライブのクレジット使用量を利用できません: 有効な Kiro のサインイン資格情報を読み取れなかったため、無料の使用量 API は呼び出されていません。Kiro に再度サインインしてください (例: kiro-cli login を実行)。",
+      "credit_usage_unavailable": "残高を読み取れませんでした。",
       "days_until_expiration": "有効期限までの日数: {{count}}",
       "estimated_overage_cost": "推定超過料金",
       "hide_email": "メールアドレスを隠す",
       "kiro_account": "Kiro アカウント",
       "kiro_credit_usage": "Kiro クレジット使用量",
       "overage_rate_value": "{{rate}} / クレジット",
+      "refresh_balance": "更新",
+      "refresh_in_flight": "更新はすでに実行中です。",
+      "refresh_paused": "最近の残高チェックが失敗したため、残高チェックは一時停止しています。約 {{minutes}} 分後にもう一度お試しください。",
+      "refresh_returned_stale": "更新では新しい値が返されませんでした。以前の値を表示しています。",
+      "refreshing_balance": "更新中…",
       "remaining_credit_balance": "残りのクレジット残高: {{count}}",
       "show_email": "メールアドレスを表示",
       "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
@@ -14043,11 +14052,7 @@
         "zoom_level": "ズームレベル",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェル、最近のセッション、コマンド補完の設定は使用できません。",
-        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
-        "credit_usage_scrape": "クレジットを少し使って残量を確認する",
-        "credit_usage_scrape_desc": "使用状況のデータを無料で取得できないとき、ダッシュボードのタブを開いている間、約 10 分ごとに課金されるメッセージを送って残量を確認できます。確認のたびに少量のクレジットを消費します。",
-        "credit_usage_scrape_save_failed": "この設定を保存できませんでした。スイッチは保存されている状態を表示しているので、もう一度試せます。",
-        "credit_usage_scrape_owner_only": "これを有効にできるのはダッシュボードの所有者だけです。"
+        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

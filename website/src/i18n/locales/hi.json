@@ -189,7 +189,6 @@
     "installing_packages": "पैकेज इंस्टॉल हो रहे हैं",
     "k_search_for_anything": "⌘K — कुछ भी खोजें…",
     "kiro_credit_usage_api_key": "Kiro क्रेडिट उपयोग — API कुंजी प्रमाणीकरण के साथ अनुपलब्ध",
-    "kiro_credit_usage_scrape_disabled": "Kiro क्रेडिट उपयोग — लाइव फ़ेच बंद है (dashboard.usage_text_scrape_enabled)",
     "kiro_credit_usage_checking": "Kiro क्रेडिट उपयोग — जाँचा जा रहा है…",
     "kiro_credit_usage_checking_2": "Kiro क्रेडिट उपयोग — जाँचा जा रहा है",
     "kiro_credit_usage_signin_required": "Kiro क्रेडिट उपयोग — कोई सक्रिय Kiro साइन-इन नहीं पड़ा जा सका; फिर से साइन इन करें",
@@ -267,7 +266,9 @@
     "focus_mode": "फ़ोकस मोड",
     "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
     "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
-    "connect_your_phone": "फ़ोन कनेक्ट करें"
+    "connect_your_phone": "फ़ोन कनेक्ट करें",
+    "kiro_credit_usage_no_reading": "Kiro क्रेडिट उपयोग — अभी कोई बैलेंस रीडिंग नहीं; रिफ़्रेश करने के लिए खोलो",
+    "kiro_credit_usage_config_unreadable": "Kiro क्रेडिट उपयोग — बैकएंड सेटिंग पढ़ी नहीं जा सकी; फिर से कोशिश करने के लिए खोलो"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5570,18 +5571,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "खाता विवरण उपलब्ध नहीं है",
+      "balance_checked_at": "{{time}} पर जाँचा गया",
+      "balance_may_be_stale": "पहले की रीडिंग दिखाई जा रही है; सबसे हाल के रिफ़्रेश ने कोई रीडिंग नहीं दी।",
       "checking_account": "खाता जाँचा जा रहा है…",
       "checking_credit_usage": "क्रेडिट उपयोग जाँचा जा रहा है",
       "credit_usage_api_key_auth": "API कुंजी प्रमाणीकरण के लिए क्रेडिट उपयोग उपलब्ध नहीं है",
-      "credit_usage_scrape_disabled": "लाइव क्रेडिट उपयोग उपलब्ध नहीं है: मुफ़्त उपयोग API ने इस खाते के लिए कोई प्लान नहीं लौटाया, और बिल किया जाने वाला /usage फ़ॉलबैक डिफ़ॉल्ट रूप से बंद है। इसे प्राप्त करने के लिए config.json में dashboard.usage_text_scrape_enabled को true पर सेट करें — हर रिफ़्रेश में थोड़े क्रेडिट खर्च होते हैं।",
-      "credit_usage_signin_required": "लाइव क्रेडिट उपयोग उपलब्ध नहीं है: कोई सक्रिय Kiro साइन-इन क्रेडेंशियल नहीं पड़ा जा सका, इसलिए मुफ़्त उपयोग API से कभी पूंछा ही नहीं गया। इसे बहाल करने के लिए Kiro में फिर से साइन इन करें (उदाहरण के लिए kiro-cli login चलाकर)। dashboard.usage_text_scrape_enabled को चालू करने से यहाँ मदद नहीं मिलेगी, क्योंकि शुल्क वाला /usage फॉलबैक भी उसी साइन-इन की जरूरत रखता है।",
-      "credit_usage_unavailable": "क्रेडिट उपयोग उपलब्ध नहीं है",
+      "credit_usage_no_reading": "इस खाते के लिए अभी कोई बैलेंस रीडिंग उपलब्ध नहीं है।",
+      "credit_usage_config_unreadable": "सेटिंग्स लोड नहीं हो सकीं, इसलिए तुम्हारा बैलेंस नहीं दिखाया जा सकता।",
+      "credit_usage_signin_required": "लाइव क्रेडिट उपयोग उपलब्ध नहीं है: कोई सक्रिय Kiro साइन-इन क्रेडेंशियल नहीं पढ़ा जा सका, इसलिए मुफ़्त उपयोग API से कभी पूछा ही नहीं गया। इसे बहाल करने के लिए Kiro में फिर से साइन इन करो (उदाहरण के लिए kiro-cli login चलाकर)।",
+      "credit_usage_unavailable": "तुम्हारा बैलेंस पढ़ा नहीं जा सका।",
       "days_until_expiration": "समाप्ति तक दिन: {{count}}",
       "estimated_overage_cost": "अनुमानित अतिरिक्त लागत",
       "hide_email": "ईमेल छिपाएँ",
       "kiro_account": "Kiro खाता",
       "kiro_credit_usage": "Kiro क्रेडिट उपयोग",
       "overage_rate_value": "{{rate}} / क्रेडिट",
+      "refresh_balance": "रिफ़्रेश करो",
+      "refresh_in_flight": "एक रिफ़्रेश पहले से चल रहा है।",
+      "refresh_paused": "हाल की बैलेंस जाँचें विफल रहीं, इसलिए बैलेंस जाँच रोक दी गई है। लगभग {{minutes}} मिनट बाद फिर कोशिश करो।",
+      "refresh_returned_stale": "रिफ़्रेश ने कोई नई रीडिंग नहीं दी। पहले की रीडिंग दिखाई जा रही है।",
+      "refreshing_balance": "रिफ़्रेश हो रहा है…",
       "remaining_credit_balance": "शेष क्रेडिट: {{count}}",
       "show_email": "ईमेल दिखाएँ",
       "usage_scope": "चैट, एजेंट, MCP और सबएजेंट में kiro-cli /usage से मासिक Kiro क्रेडिट उपयोग।",
@@ -14243,11 +14252,7 @@
         "zoom_level": "ज़ूम स्तर",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "सहेजी गई डिस्प्ले सेटिंग लोड नहीं हो सकीं। लोड होने तक शेल, हाल के सत्र और कमांड पूर्णता की सेटिंग उपलब्ध नहीं हैं।",
-        "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।",
-        "credit_usage_scrape": "बैलेंस देखने के लिए थोड़े क्रेडिट खर्च करें",
-        "credit_usage_scrape_desc": "जब तुम्हारे उपयोग का डेटा मुफ़्त में उपलब्ध नहीं होता, तब डैशबोर्ड टैब खुला रहने तक लगभग हर 10 मिनट में एक बिल किया जाने वाला संदेश भेजकर बैलेंस देखा जा सकता है। हर जाँच में थोड़े क्रेडिट खर्च होते हैं।",
-        "credit_usage_scrape_save_failed": "यह सेटिंग सहेजी नहीं जा सकी। स्विच सहेजा गया मान दिखाता है, इसलिए फिर से कोशिश कर सकते हैं।",
-        "credit_usage_scrape_owner_only": "इसे केवल डैशबोर्ड का स्वामी चालू कर सकता है।"
+        "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",

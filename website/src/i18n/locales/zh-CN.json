@@ -188,7 +188,6 @@
     "installing_packages": "正在安装依赖包",
     "k_search_for_anything": "⌘K — 搜索任何内容…",
     "kiro_credit_usage_api_key": "Kiro 额度用量 — API 密钥认证下不可用",
-    "kiro_credit_usage_scrape_disabled": "Kiro 额度用量 — 实时获取已停用（dashboard.usage_text_scrape_enabled）",
     "kiro_credit_usage_checking": "Kiro 额度用量 — 检查中…",
     "kiro_credit_usage_checking_2": "Kiro 额度用量 — 检查中",
     "kiro_credit_usage_signin_required": "Kiro 额度用量 — 无法读取有效的 Kiro 登录凭据；请重新登录",
@@ -263,7 +262,9 @@
     "focus_mode": "专注模式",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
     "focus_mode_title_mac": "专注模式 · ⌥⇧M",
-    "connect_your_phone": "连接手机"
+    "connect_your_phone": "连接手机",
+    "kiro_credit_usage_no_reading": "Kiro 额度用量 — 暂无余额读数；打开以刷新",
+    "kiro_credit_usage_config_unreadable": "Kiro 额度用量 — 无法读取后端设置；打开以重试"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5480,18 +5481,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "账户详情暂不可用",
+      "balance_checked_at": "检查时间 {{time}}",
+      "balance_may_be_stale": "显示的是较早的读数；最近一次刷新没有返回新读数。",
       "checking_account": "正在检查账户…",
       "checking_credit_usage": "正在检查额度用量",
       "credit_usage_api_key_auth": "API 密钥认证方式下无法获取额度用量",
-      "credit_usage_scrape_disabled": "无法获取实时额度用量：免费用量 API 未返回此账户的套餐，而计费的 /usage 回退默认关闭。请在 config.json 中将 dashboard.usage_text_scrape_enabled 设为 true 以获取 — 每次刷新会消耗少量额度。",
-      "credit_usage_signin_required": "无法获取实时额度用量：读取不到有效的 Kiro 登录凭据，因此根本没有调用免费的用量 API。请重新登录 Kiro（例如运行 kiro-cli login）以恢复。启用 dashboard.usage_text_scrape_enabled 在这里没有帮助，因为需要计费的 /usage 兜底方案同样依赖这次登录。",
-      "credit_usage_unavailable": "额度用量暂不可用",
+      "credit_usage_no_reading": "此账户暂时还没有可用的余额读数。",
+      "credit_usage_config_unreadable": "无法加载设置，所以无法显示你的余额。",
+      "credit_usage_signin_required": "无法获取实时额度用量：读取不到有效的 Kiro 登录凭据，因此根本没有调用免费的用量 API。请重新登录 Kiro（例如运行 kiro-cli login）以恢复。",
+      "credit_usage_unavailable": "无法读取余额。",
       "days_until_expiration": "距到期：{{count}} 天",
       "estimated_overage_cost": "预计超额费用",
       "hide_email": "隐藏邮箱",
       "kiro_account": "Kiro 账户",
       "kiro_credit_usage": "Kiro 额度用量",
       "overage_rate_value": "{{rate}} / 额度",
+      "refresh_balance": "刷新",
+      "refresh_in_flight": "已有一次刷新在进行中。",
+      "refresh_paused": "最近几次余额检查失败，余额检查已暂停。请约 {{minutes}} 分钟后再试。",
+      "refresh_returned_stale": "刷新没有返回新读数，显示的是较早的读数。",
+      "refreshing_balance": "正在刷新…",
       "remaining_credit_balance": "剩余额度：{{count}}",
       "show_email": "显示邮箱",
       "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
@@ -14043,11 +14052,7 @@
         "zoom_level": "缩放级别",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell、最近会话和命令补全设置不可用。",
-        "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
-        "credit_usage_scrape": "花少量额度查看余额",
-        "credit_usage_scrape_desc": "当无法免费获取用量数据时，只要仪表板标签页保持打开，就会约每 10 分钟发送一条计费消息来查询余额。每次查询会消耗少量额度。",
-        "credit_usage_scrape_save_failed": "无法保存此设置。开关显示的是已保存的状态，可以再试一次。",
-        "credit_usage_scrape_owner_only": "只有仪表板所有者可以开启此项。"
+        "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
       },
       "importPanel": {
         "agent_data": "代理数据",

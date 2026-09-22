@@ -65,6 +65,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/sessions/memory", handlers.api_sessions_memory)
     app.router.add_get("/api/sessions/health", handlers.api_sessions_health)
     app.router.add_get("/api/sessions/usage", handlers.api_sessions_usage)
+    # The account modal's Refresh button: runs the same free API-then-/usage
+    # refresh the timer runs, now. The handler applies the kiro-unverified check
+    # the GET applies and refuses a second refresh while one is in flight (409).
+    app.router.add_post("/api/sessions/usage/refresh", handlers.api_sessions_usage_refresh)
     # Durable task queue + capacity view. The literal /summary is registered
     # before the /{task_id} pattern for the same reason /sessions/search is.
     app.router.add_get("/api/tasks", handlers.api_tasks_list)

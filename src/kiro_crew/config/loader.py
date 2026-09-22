@@ -3308,9 +3308,6 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         browser_view_port=_port_or_unset(dashboard_data.get("browser_view_port", 0)),
         verbosity=dashboard_data.get("verbosity", "default"),
         link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
-        usage_text_scrape_enabled=_safe_bool(
-            dashboard_data.get("usage_text_scrape_enabled"), False
-        ),
         tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
         terminal=dashboard_data.get("terminal", {"enabled": True}),
         default_project=dashboard_data.get("default_project", ""),

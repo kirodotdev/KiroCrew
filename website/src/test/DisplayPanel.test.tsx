@@ -471,3 +471,38 @@ describe('DisplayPanel – Font Family picker (OpenDyslexic option)', () => {
     expect(screen.getByRole('button', { name: 'OpenDyslexic' })).toBeInTheDocument()
   })
 })
+
+describe('DisplayPanel – sidebar session colors', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // The four sidebar-color controls write straight to the store. The buttons
+  // render their labels as accessible text, so clicking each and reading the
+  // slice back proves the wiring end to end — the fixed-color swatches and the
+  // No color / Auto choices are one exclusive group over the same field.
+  it('dispatches palette, intensity, display mode and default color to the store', () => {
+    const { store } = renderWithProviders(<DisplayPanel />)
+    const state = () => store.getState().dashboard
+
+    fireEvent.click(screen.getByRole('button', { name: 'Gradient' }))
+    expect(state().sessionColorsMode).toBe('gradient')
+    fireEvent.click(screen.getByRole('button', { name: 'Solid Tint' }))
+    expect(state().sessionColorsMode).toBe('tint')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Vivid' }))
+    expect(state().sessionColorsIntensity).toBe('vivid')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Horizon' }))
+    expect(state().sessionColorsPalette).toBe('horizon')
+
+    const defaults = within(
+      screen.getByText('Default for New Sessions').parentElement as HTMLElement,
+    )
+    fireEvent.click(defaults.getByRole('button', { name: 'Auto' }))
+    expect(state().sessionDefaultColor).toBe('auto')
+    fireEvent.click(defaults.getByRole('button', { name: 'Color 2' }))
+    expect(state().sessionDefaultColor).toBe(1)
+    expect(defaults.getByRole('button', { name: 'Color 2' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(defaults.getByRole('button', { name: 'No color' }))
+    expect(state().sessionDefaultColor).toBeNull()
+  })
+})

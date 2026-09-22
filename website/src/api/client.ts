@@ -2525,13 +2525,8 @@ export interface KiroBonusCreditGrantPayload {
 export interface KiroUsagePayload {
   available?: boolean
   /**
-   * Why usage is unavailable when `available` is false (e.g. `api_key_auth`,
-   * `scrape_disabled`, `signin_required`).
-   *
-   * `signin_required` and `scrape_disabled` are deliberately distinct: the first
-   * is fixed by signing in again and costs nothing, the second by opting into a
-   * billed scrape. Reporting the second for the first told users to spend credits
-   * on a fetch that cannot authenticate.
+   * Why usage is unavailable when `available` is false (`api_key_auth` or
+   * `signin_required`); absent when the gateway simply holds no reading.
    */
   reason?: string
   credits_used?: number
@@ -2548,6 +2543,13 @@ export interface KiroUsagePayload {
   email?: string
   account_type?: string
   start_url?: string
+}
+
+/** `POST /api/sessions/usage/refresh` — the GET envelope plus the declined-scrape marker. */
+export interface KiroUsageRefreshResponse {
+  usage?: KiroUsagePayload
+  skipped?: 'scrape_parked'
+  retry_after?: number
 }
 
 export interface KiroBonusCreditGrant {
@@ -3747,6 +3749,16 @@ export const api = {
     history: { t: number; mb: number }[]
   }>,
   sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload }>,
+  /**
+   * Refresh the credit reading now (the account modal's Refresh button). Same
+   * `{usage}` envelope as `sessionsUsage`, so `parseKiroUsagePayload` reads
+   * both. `skipped: 'scrape_parked'` (with `retry_after` seconds) means the
+   * free API returned no plan and the gateway has parked the `/usage` scrape
+   * after repeated failures, so no new reading was fetched: `usage` is a
+   * same-identity prior reading dimmed `stale`, or an unavailable marker. The
+   * one refusal is 409 `refresh_in_flight` while a refresh is already running.
+   */
+  sessionsUsageRefresh: () => post('/api/sessions/usage/refresh').then(j) as Promise<KiroUsageRefreshResponse>,
   providerUsage: () => fetch('/api/usage').then(j),
   mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
   // Agents

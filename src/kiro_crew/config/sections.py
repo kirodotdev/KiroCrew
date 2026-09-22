@@ -3252,19 +3252,6 @@ class DashboardConfig:
             "returns 403.",
         ),
     )
-    usage_text_scrape_enabled: bool = field(
-        default=False,
-        metadata=_meta(
-            "Spend Credits To Read The Credit Meter",
-            "Let the credit pill fall back to a `kiro-cli /usage` chat turn when "
-            "the free usage API returns no plan. That fallback is a REAL billed "
-            "LLM turn on whichever model the lite agent resolves, and it repeats "
-            "on every refresh interval for as long as any dashboard tab is open, "
-            "so it is off by default: a meter that reports spending must not "
-            "itself spend. While it is off the pill shows whatever the free API "
-            "returned and hides when the API has nothing to show.",
-        ),
-    )
     tail_fork_enabled: bool = field(
         default=False,
         metadata=_meta(

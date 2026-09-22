@@ -190,7 +190,6 @@
     "installing_packages": "Instalando pacotes",
     "k_search_for_anything": "⌘K — Pesquisar qualquer coisa…",
     "kiro_credit_usage_api_key": "Uso de créditos Kiro — indisponível com autenticação por chave de API",
-    "kiro_credit_usage_scrape_disabled": "Uso de créditos Kiro — a busca ao vivo está desativada (dashboard.usage_text_scrape_enabled)",
     "kiro_credit_usage_checking": "Uso de créditos Kiro — verificando…",
     "kiro_credit_usage_checking_2": "Uso de créditos Kiro — verificando",
     "kiro_credit_usage_signin_required": "Uso de créditos do Kiro — não foi possível ler nenhum login ativo do Kiro; entre novamente",
@@ -271,7 +270,9 @@
     "focus_mode": "Modo de foco",
     "focus_mode_title": "Modo de foco · Alt+Shift+M",
     "focus_mode_title_mac": "Modo de foco · ⌥⇧M",
-    "connect_your_phone": "Conectar seu telefone"
+    "connect_your_phone": "Conectar seu telefone",
+    "kiro_credit_usage_no_reading": "Uso de créditos do Kiro — ainda sem leitura do saldo; abra para atualizar",
+    "kiro_credit_usage_config_unreadable": "Uso de créditos do Kiro — não foi possível ler a configuração do backend; abra para tentar de novo"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5660,18 +5661,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Os detalhes da conta não estão disponíveis",
+      "balance_checked_at": "Verificado às {{time}}",
+      "balance_may_be_stale": "Mostrando uma leitura anterior; a última atualização não retornou nenhuma.",
       "checking_account": "Verificando a conta…",
       "checking_credit_usage": "Verificando o uso de créditos",
       "credit_usage_api_key_auth": "O uso de créditos não está disponível com autenticação por chave de API",
-      "credit_usage_scrape_disabled": "O uso de créditos ao vivo não está disponível: a API gratuita de uso não retornou nenhum plano para esta conta, e o fallback cobrado /usage está desativado por padrão. Defina dashboard.usage_text_scrape_enabled como true em config.json para buscá-lo — cada atualização consome um pequeno número de créditos.",
-      "credit_usage_signin_required": "O uso de créditos em tempo real não está disponível: não foi possível ler nenhuma credencial de login ativa do Kiro, portanto a API gratuita de uso nunca foi consultada. Entre novamente no Kiro (por exemplo, executando kiro-cli login) para restaurá-lo. Ativar dashboard.usage_text_scrape_enabled não vai ajudar aqui, porque o fallback pago /usage precisa do mesmo login.",
-      "credit_usage_unavailable": "O uso de créditos não está disponível",
+      "credit_usage_no_reading": "Ainda não há nenhuma leitura de saldo para esta conta.",
+      "credit_usage_config_unreadable": "Não foi possível carregar as configurações, então seu saldo não pode ser exibido.",
+      "credit_usage_signin_required": "O uso de créditos em tempo real não está disponível: não foi possível ler nenhuma credencial de login ativa do Kiro, portanto a API gratuita de uso nunca foi consultada. Entre novamente no Kiro (por exemplo, executando kiro-cli login) para restaurá-lo.",
+      "credit_usage_unavailable": "Não foi possível ler seu saldo.",
       "days_until_expiration": "Dias até a expiração: {{count}}",
       "estimated_overage_cost": "Custo excedente estimado",
       "hide_email": "Ocultar e-mail",
       "kiro_account": "Conta Kiro",
       "kiro_credit_usage": "Uso de créditos Kiro",
       "overage_rate_value": "{{rate}} / crédito",
+      "refresh_balance": "Atualizar",
+      "refresh_in_flight": "Já existe uma atualização em andamento.",
+      "refresh_paused": "As verificações do saldo estão pausadas porque as últimas falharam. Tente de novo em cerca de {{minutes}} min.",
+      "refresh_returned_stale": "A atualização não retornou uma leitura nova. Mostrando a anterior.",
+      "refreshing_balance": "Atualizando…",
       "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
       "show_email": "Mostrar e-mail",
       "usage_scope": "Uso mensal de créditos Kiro segundo kiro-cli /usage em chats, agentes, MCP e subagentes.",
@@ -14443,11 +14452,7 @@
         "zoom_level": "Nível de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Não foi possível carregar as configurações de exibição salvas. As configurações de shell, sessões recentes e conclusão de comandos ficam indisponíveis até que elas carreguem.",
-        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
-        "credit_usage_scrape": "Gastar alguns créditos para consultar seu saldo",
-        "credit_usage_scrape_desc": "Quando seus dados de uso não estão disponíveis gratuitamente, seu saldo ainda pode ser consultado enviando uma mensagem cobrada, a cada 10 minutos aproximadamente enquanto uma aba do painel estiver aberta. Cada consulta consome um pequeno número de créditos.",
-        "credit_usage_scrape_save_failed": "Não foi possível salvar esta configuração. A chave mostra o valor salvo, então você pode tentar de novo.",
-        "credit_usage_scrape_owner_only": "Somente a pessoa proprietária do painel pode ativar isso."
+        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

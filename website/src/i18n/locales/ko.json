@@ -188,7 +188,6 @@
     "installing_packages": "패키지 설치 중",
     "k_search_for_anything": "⌘K — 무엇이든 검색…",
     "kiro_credit_usage_api_key": "Kiro 크레딧 사용량 — API 키 인증에서는 사용 불가",
-    "kiro_credit_usage_scrape_disabled": "Kiro 크레딧 사용량 — 실시간 가져오기가 비활성화됨 (dashboard.usage_text_scrape_enabled)",
     "kiro_credit_usage_checking": "Kiro 크레딧 사용량 — 확인 중…",
     "kiro_credit_usage_checking_2": "Kiro 크레딧 사용량 — 확인 중",
     "kiro_credit_usage_signin_required": "Kiro 크레딧 사용량 — 유효한 Kiro 로그인을 읽을 수 없습니다. 다시 로그인하세요",
@@ -263,7 +262,9 @@
     "focus_mode": "집중 모드",
     "focus_mode_title": "집중 모드 · Alt+Shift+M",
     "focus_mode_title_mac": "집중 모드 · ⌥⇧M",
-    "connect_your_phone": "휴대폰 연결"
+    "connect_your_phone": "휴대폰 연결",
+    "kiro_credit_usage_no_reading": "Kiro 크레딧 사용량 — 아직 잔액 정보 없음. 열어서 새로 고침",
+    "kiro_credit_usage_config_unreadable": "Kiro 크레딧 사용량 — 백엔드 설정을 읽을 수 없음. 열어서 다시 시도"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5735,18 +5736,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",
+      "balance_checked_at": "{{time}}에 확인함",
+      "balance_may_be_stale": "이전 값을 표시하고 있습니다. 최근 새로 고침에서 값이 반환되지 않았습니다.",
       "checking_account": "계정 확인 중…",
       "checking_credit_usage": "크레딧 사용량 확인 중",
       "credit_usage_api_key_auth": "API 키 인증에서는 크레딧 사용량을 확인할 수 없습니다",
-      "credit_usage_scrape_disabled": "실시간 크레딧 사용량을 확인할 수 없습니다. 무료 사용량 API가 이 계정의 플랜을 반환하지 않았고, 과금되는 /usage 대체 조회는 기본적으로 꺼져 있습니다. 가져오려면 config.json에서 dashboard.usage_text_scrape_enabled를 true로 설정하세요 — 새로 고침할 때마다 소량의 크레딧이 소모됩니다.",
-      "credit_usage_signin_required": "실시간 크레딧 사용량을 사용할 수 없습니다: 유효한 Kiro 로그인 자간 증명을 읽을 수 없어 무료 사용량 API를 호출하지 않았습니다. Kiro에 다시 로그인하세요(예: kiro-cli login 실행). dashboard.usage_text_scrape_enabled를 켜도 해결되지 않습니다. 요금이 부과되는 /usage 대체 경로도 동일한 로그인이 필요하기 때문입니다.",
-      "credit_usage_unavailable": "크레딧 사용량을 불러올 수 없음",
+      "credit_usage_no_reading": "이 계정의 잔액 정보를 아직 읽어오지 못했습니다.",
+      "credit_usage_config_unreadable": "설정을 불러올 수 없어서 잔액을 표시할 수 없습니다.",
+      "credit_usage_signin_required": "실시간 크레딧 사용량을 사용할 수 없습니다: 유효한 Kiro 로그인 자간 증명을 읽을 수 없어 무료 사용량 API를 호출하지 않았습니다. Kiro에 다시 로그인하세요(예: kiro-cli login 실행).",
+      "credit_usage_unavailable": "잔액을 읽을 수 없습니다.",
       "days_until_expiration": "만료까지 남은 일수: {{count}}",
       "estimated_overage_cost": "예상 초과 요금",
       "hide_email": "이메일 숨기기",
       "kiro_account": "Kiro 계정",
       "kiro_credit_usage": "Kiro 크레딧 사용량",
       "overage_rate_value": "크레딧당 {{rate}}",
+      "refresh_balance": "새로 고침",
+      "refresh_in_flight": "새로 고침이 이미 진행 중입니다.",
+      "refresh_paused": "최근 잔액 확인이 실패해 잔액 확인이 일시 중지되었습니다. 약 {{minutes}}분 후에 다시 시도하세요.",
+      "refresh_returned_stale": "새로 고침에서 새 값이 반환되지 않았습니다. 이전 값을 표시합니다.",
+      "refreshing_balance": "새로 고치는 중…",
       "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
       "show_email": "이메일 표시",
       "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
@@ -14043,11 +14052,7 @@
         "zoom_level": "확대/축소 수준",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "저장된 표시 설정을 불러올 수 없습니다. 불러올 때까지 셸, 최근 세션, 명령 자동 완성 설정은 사용할 수 없습니다.",
-        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다.",
-        "credit_usage_scrape": "크레딧을 조금 써서 잔액 확인",
-        "credit_usage_scrape_desc": "사용량 정보를 무료로 가져올 수 없을 때, 대시보드 탭이 열려 있는 동안 약 10분마다 과금되는 메시지를 보내 잔액을 확인할 수 있습니다. 확인할 때마다 소량의 크레딧이 소모됩니다.",
-        "credit_usage_scrape_save_failed": "이 설정을 저장하지 못했습니다. 스위치는 저장된 상태를 표시하므로 다시 시도할 수 있습니다.",
-        "credit_usage_scrape_owner_only": "대시보드 소유자만 이 항목을 켤 수 있습니다."
+        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

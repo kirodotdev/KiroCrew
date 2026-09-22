@@ -1636,16 +1636,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "display.spend-a-few-credits-to-check-your-balance",
-    "label": "Spend a few credits to check your balance",
-    "labelKey": "pages.settings.displayPanel.credit_usage_scrape",
-    "description": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
-    "tab": "display",
-    "type": "toggle",
-    "occurrence": 1,
-    "configKey": "dashboard.usage_text_scrape_enabled"
-  },
-  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",

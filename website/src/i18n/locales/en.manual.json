@@ -171,7 +171,6 @@
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
     "kiro_credit_usage_api_key": "Kiro credit usage — not available with API key authentication",
-    "kiro_credit_usage_scrape_disabled": "Kiro credit usage — live fetch is opted out (dashboard.usage_text_scrape_enabled)",
     "kiro_credit_usage_signin_required": "Kiro credit usage — no live Kiro sign-in could be read; sign in again to restore it",
     "kiro_credit_usage_unavailable": "Kiro credit usage — unavailable",
     "memory_unavailable": "Memory: unavailable",
@@ -214,7 +213,9 @@
     "focus_mode": "Focus mode",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
     "focus_mode_title_mac": "Focus mode · ⌥⇧M",
-    "connect_your_phone": "Connect your phone"
+    "connect_your_phone": "Connect your phone",
+    "kiro_credit_usage_no_reading": "Kiro credit usage — no balance reading yet; open to refresh",
+    "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1658,18 +1659,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
+      "balance_checked_at": "Checked at {{time}}",
+      "balance_may_be_stale": "Showing an earlier reading; the latest refresh did not return one.",
       "checking_account": "Checking account…",
       "checking_credit_usage": "Checking credit usage",
       "credit_usage_api_key_auth": "Credit usage isn’t available for API key authentication",
-      "credit_usage_scrape_disabled": "Live credit usage isn’t available: the free usage API returned no plan for this account, and the billed /usage fallback is off by default. Set dashboard.usage_text_scrape_enabled to true in config.json to fetch it — each refresh spends a small number of credits.",
-      "credit_usage_signin_required": "Live credit usage isn’t available: no live Kiro sign-in credential could be read, so the free usage API was never asked. Sign in to Kiro again — for example by running kiro-cli login — to restore it. Enabling dashboard.usage_text_scrape_enabled will not help here, because the billed /usage fallback needs the same sign-in.",
-      "credit_usage_unavailable": "Credit usage unavailable",
+      "credit_usage_no_reading": "No balance reading is available for this account yet.",
+      "credit_usage_config_unreadable": "Could not load settings, so your balance can’t be shown.",
+      "credit_usage_signin_required": "Live credit usage isn’t available: no live Kiro sign-in credential could be read, so the free usage API was never asked. Sign in to Kiro again — for example by running kiro-cli login — to restore it.",
+      "credit_usage_unavailable": "Could not read your balance.",
       "days_until_expiration": "Days until expiration: {{count}}",
       "estimated_overage_cost": "Estimated overage cost",
       "hide_email": "Hide email",
       "kiro_account": "Kiro Account",
       "kiro_credit_usage": "Kiro credit usage",
       "overage_rate_value": "{{rate}} / credit",
+      "refresh_balance": "Refresh",
+      "refresh_in_flight": "A refresh is already running.",
+      "refresh_paused": "Balance checks are paused because recent ones failed. Try again in about {{minutes}} min.",
+      "refresh_returned_stale": "The refresh did not return a new reading. Showing the earlier one.",
+      "refreshing_balance": "Refreshing…",
       "remaining_credit_balance": "Remaining credit balance: {{count}}",
       "show_email": "Show email",
       "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
@@ -6156,11 +6165,7 @@
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
-        "recent_tint_save_failed": "Could not save the recent-session highlight count.",
-        "credit_usage_scrape": "Spend a few credits to check your balance",
-        "credit_usage_scrape_desc": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
-        "credit_usage_scrape_save_failed": "Could not save this setting. The switch shows the setting that is saved, so you can try again.",
-        "credit_usage_scrape_owner_only": "Only the dashboard owner can turn this on."
+        "recent_tint_save_failed": "Could not save the recent-session highlight count."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

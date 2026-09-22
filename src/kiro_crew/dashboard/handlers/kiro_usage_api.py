@@ -41,10 +41,10 @@ another product's store. Those may well be the same account, but nothing proves 
 and treating them as interchangeable is what served one Builder ID account's
 leftover token as a different Builder ID account's balance.
 
-Provenance-anchoring is what keeps the free API path available to every account
-class. Requiring an ARN instead would push all profile-less accounts onto the text
-scrape — which spends credits on every refresh, indefinitely, and hits the smallest
-quotas hardest.
+Provenance-anchoring is what keeps the API path available to every account class.
+Requiring an ARN instead would push all profile-less accounts onto the text scrape —
+a kiro-cli subprocess on every refresh, slower and lossier (recent kiro-cli prints
+no overage line) than the direct call this module makes.
 
 It is a read-only client: it reads the live bearer token that kiro-cli already
 maintains and makes one authenticated call. The JSON SSO cache files live under
@@ -137,14 +137,13 @@ _TOTAL_DEADLINE_SECS = 30
 # caller can tell an AUTH-CLASS failure (one a fresh sign-in fixes) from every
 # other reason the usage read came back empty.
 #
-# The distinction is not cosmetic. When the read fails and the billed ``/usage``
-# text scrape is opted out, the scrape-disabled message asserts the free API
-# "returned no plan for this account" and offers enabling the scrape as the
-# remedy. On a host whose stored credential has expired that is a false cause AND
-# a remedy that spends credits without being able to work, because the scrape is a
-# billed kiro-cli
-# chat turn that needs the same sign-in. Only these two states may be reported as
-# "sign in again"; everything else stays deliberately unclassified.
+# The distinction is not cosmetic. The ``/usage`` text scrape that follows a failed
+# read is a kiro-cli slash command over this same API, so it needs the same sign-in
+# and fails the same way when the stored credential has expired. Reporting that as
+# "the account has no credit plan" names a cause that did not happen; the one remedy
+# is a fresh sign-in, and the pill can only say so when the failure is known to be
+# auth-class. Only these two states may be reported as "sign in again"; everything
+# else stays deliberately unclassified.
 
 #: A candidate credential was accepted and usage was returned.
 AUTH_OK = "ok"
@@ -966,8 +965,8 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
 
     The ``auth_state`` alongside it says whether that None was AUTH-CLASS -- see
     :data:`AUTH_NO_CREDENTIAL` and :data:`AUTH_REJECTED` -- so the caller can tell
-    the user to sign in again instead of reporting the account has no credit plan
-    and offering a remedy that spends credits. It is classified from the
+    the user to sign in again instead of reporting the account has no credit plan.
+    It is classified from the
     enumeration this function already performs: no store is read a second time,
     no new credential source is consulted, and nothing about who may read or
     refresh a token changes.

@@ -1,157 +1,91 @@
-"""``dashboard.usage_text_scrape_enabled`` is writable from the dashboard, and stays off.
+"""``dashboard.usage_text_scrape_enabled`` is not a setting, and a config that still
+carries it loads cleanly.
 
-The Settings > Display toggle writes this field over ``PATCH /api/config/kirocrew``,
-so it has to be in ``_EDITABLE_CONFIG`` at all -- before this it was absent and
-every save came back "field not editable", which is why the only way to opt in was
-to know the key name and edit ``config.json`` by hand.
+The ``/usage`` text scrape is the credit pill's automatic fallback: a kiro-cli slash
+command answered locally from the free ``GetUsageLimits`` call. Nothing gates it,
+so there is no key to declare, edit or document. Two things are pinned:
 
-The two halves pinned here are deliberately different in kind:
-
-* REACHABILITY -- the path is in the allowlist, and it is the same path the reader
-  resolves. Membership alone would pass for a typo, so the field name is also
-  checked against ``DashboardConfig``'s declared fields.
-* THE DEFAULT IS UNCHANGED -- the setting gates a REAL billed LLM turn, so making
-  it reachable must not make it active. A config that has never carried the key
-  still reads ``False``.
-
-The ``bool`` spec is load-bearing rather than cosmetic: the handler's ``bool``
-branch rejects a non-boolean outright, whereas a ``str`` spec would accept the
-string ``"false"`` and store a value that is truthy everywhere it is read.
+* THE KEY IS GONE everywhere a setting is declared -- the ``DashboardConfig``
+  schema, the config PATCH allowlist and the schema registry -- so no surface can
+  offer or accept it again by accident.
+* LEGACY TOLERANCE -- a ``config.json`` written while the key existed (by
+  ``kirocrew config set`` or the config PATCH) must load without error. The loader
+  keeps an unmodelled nested key in ``_extra_keys`` and round-trips it on save, so
+  the operator's file is neither rejected nor silently rewritten; it warns about
+  nothing, because a nested unknown key is preserved rather than reported.
 """
 
+from __future__ import annotations
+
 import json
-from unittest.mock import patch
+import logging
 
 import pytest
 
+from kiro_crew.config import loader as L
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.schema import SCHEMA_REGISTRY
 from kiro_crew.config.sections import DashboardConfig
 from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 
 FIELD = "dashboard.usage_text_scrape_enabled"
+LEAF = "usage_text_scrape_enabled"
 
 
-def test_the_scrape_gate_is_editable_from_the_dashboard():
-    assert FIELD in _EDITABLE_CONFIG, f"{FIELD} must be PATCH-able or the toggle cannot save"
-
-
-def test_a_path_that_is_not_in_the_allowlist_is_absent():
-    """Control for the assertion above: membership is a test that can fail.
-
-    Without this, a typo in ``FIELD`` would make the previous test pass by
-    asserting nothing -- the same shape as a regex pinned false by construction.
-    """
-    assert "dashboard.usage_text_scrape" not in _EDITABLE_CONFIG
-    assert "dashboard.usage_text_scrape_enabled_typo" not in _EDITABLE_CONFIG
-
-
-def test_the_allowlist_path_resolves_to_a_declared_field():
-    """The allowlist and the reader must name the SAME field.
-
-    ``handlers/sessions._text_scrape_enabled`` reads
-    ``KiroCrewConfig.load().dashboard.usage_text_scrape_enabled``. An allowlist
-    entry whose leaf does not exist on ``DashboardConfig`` would accept a write
-    that no reader ever consults -- a setting that saves and does nothing.
-    """
-    section, _, leaf = FIELD.partition(".")
-    assert section == "dashboard"
-    assert leaf in DashboardConfig.__dataclass_fields__
-
-
-def test_the_spec_is_bool_so_a_string_cannot_be_stored():
-    """A ``str`` spec would accept ``"false"`` -- truthy at every read site."""
-    assert _EDITABLE_CONFIG[FIELD]["type"] == "bool"
-
-
-def test_making_it_reachable_does_not_turn_it_on():
-    """The billed fallback stays opt-in; the toggle only makes the opt-in findable."""
-    assert DashboardConfig().usage_text_scrape_enabled is False
-    assert DashboardConfig.__dataclass_fields__["usage_text_scrape_enabled"].default is False
-
-
-# ── Enabling is owner-only; disabling is not ────────────────────────────────
-#
-# Reachability alone would be the wrong bar for this one field. Every other path
-# in the allowlist is a preference, but enabling this one starts REAL billed
-# ``kiro-cli /usage`` turns that repeat every refresh interval, and a dashboard
-# token does not imply ownership -- an allow-listed messaging user holds one. So
-# the write is split: the ENABLE needs the owner, the DISABLE never does, because
-# someone who can see spend must always be able to stop it.
-
-
-def _patch_app():
-    """A bare app carrying only the PATCH route, as test_config_patch.py builds it."""
-    from aiohttp import web
-
-    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
-
-    app = web.Application()
-    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
-    return app
+def test_the_key_is_neither_editable_nor_in_the_schema():
+    assert FIELD not in _EDITABLE_CONFIG
+    assert LEAF not in DashboardConfig.__dataclass_fields__
+    assert FIELD not in {e.path for e in SCHEMA_REGISTRY}
 
 
 @pytest.fixture
-def scrape_config(tmp_path):
-    """Point the loader at a tmpfile through its own supported seam.
-
-    ``config_path`` is the documented redirect; ``config_dir()`` ignores both
-    ``HOME`` and ``KIROCREW_HOME``, so neither of those isolates anything.
-    """
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
-    with patch("kiro_crew.config.loader.config_path", return_value=cfg):
-        yield cfg
+def cfg_home(tmp_path, monkeypatch):
+    """Point every config path at a temp home and return the config.json path."""
+    cfgp = tmp_path / "config.json"
+    monkeypatch.setattr(L, "config_path", lambda: cfgp)
+    monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+    return cfgp
 
 
-def _owner(verdict: bool):
-    """Pin the shared owner predicate the gate consults."""
-    return patch(
-        "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
-        return_value=verdict,
+def test_a_config_still_carrying_the_key_loads_and_keeps_it(cfg_home, caplog):
+    cfg_home.write_text(
+        json.dumps({"dashboard": {LEAF: True, "link_previews": True}}), encoding="utf-8"
     )
+    caplog.set_level(logging.WARNING)
 
+    cfg = KiroCrewConfig.load()
 
-async def _patch_field(client, value):
-    return await client.patch("/api/config/kirocrew", json={"path": FIELD, "value": value})
+    # Loaded, the modelled sibling intact, the stale key parked with the other
+    # unmodelled keys rather than read into the dataclass.
+    assert cfg.dashboard.link_previews is True
+    assert not hasattr(cfg.dashboard, LEAF)
+    assert cfg._extra_keys.get("dashboard") == {LEAF: True}
+    # At most one line about it, and in fact none: preserved keys are not warned about.
+    mentions = [r for r in caplog.records if LEAF in r.getMessage()]
+    assert len(mentions) <= 1, [r.getMessage() for r in mentions]
 
-
-@pytest.mark.asyncio
-async def test_the_owner_may_enable_the_billed_fallback(scrape_config) -> None:
-    from aiohttp.test_utils import TestClient, TestServer
-
-    async with TestClient(TestServer(_patch_app())) as c:
-        with _owner(True):
-            resp = await _patch_field(c, True)
-        assert resp.status == 200, await resp.text()
-    written = json.loads(scrape_config.read_text(encoding="utf-8"))
-    assert written["dashboard"]["usage_text_scrape_enabled"] is True
-
-
-@pytest.mark.asyncio
-async def test_a_non_owner_cannot_enable_the_billed_fallback(scrape_config) -> None:
-    """The finding this gate answers: a dashboard token is not ownership."""
-    from aiohttp.test_utils import TestClient, TestServer
-
-    async with TestClient(TestServer(_patch_app())) as c:
-        with _owner(False):
-            resp = await _patch_field(c, True)
-        assert resp.status == 403, await resp.text()
-        assert (await resp.json())["code"] == "owner_only"
-    # And nothing was written: a refused enable must not bill later anyway.
-    written = json.loads(scrape_config.read_text(encoding="utf-8"))
-    assert "usage_text_scrape_enabled" not in written["dashboard"]
+    # A save of anything else round-trips the operator's file as written.
+    cfg.timezone = "UTC"
+    cfg.save()
+    after = json.loads(cfg_home.read_text(encoding="utf-8"))
+    assert after["dashboard"][LEAF] is True
+    assert after["timezone"] == "UTC"
 
 
 @pytest.mark.asyncio
-async def test_a_non_owner_may_still_switch_the_billing_off(scrape_config) -> None:
-    """Stopping spend is never gated: the narrower choice always composes."""
+async def test_the_config_patch_refuses_the_key(cfg_home) -> None:
+    """The dashboard's write path answers "field not editable", like any unknown path."""
+    from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    scrape_config.write_text(
-        json.dumps({"dashboard": {"usage_text_scrape_enabled": True}}), encoding="utf-8"
-    )
-    async with TestClient(TestServer(_patch_app())) as c:
-        with _owner(False):
-            resp = await _patch_field(c, False)
-        assert resp.status == 200, await resp.text()
-    written = json.loads(scrape_config.read_text(encoding="utf-8"))
-    assert written["dashboard"]["usage_text_scrape_enabled"] is False
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
+
+    cfg_home.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
+    app = web.Application()
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.patch("/api/config/kirocrew", json={"path": FIELD, "value": True})
+        assert resp.status == 400, await resp.text()
+    written = json.loads(cfg_home.read_text(encoding="utf-8"))
+    assert LEAF not in written["dashboard"]

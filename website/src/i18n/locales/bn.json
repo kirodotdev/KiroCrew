@@ -189,7 +189,6 @@
     "installing_packages": "প্যাকেজ ইনস্টল হচ্ছে",
     "k_search_for_anything": "⌘K — যা কিছু খুঁজুন…",
     "kiro_credit_usage_api_key": "Kiro ক্রেডিট ব্যবহার — API কী প্রমাণীকরণে উপলভ্য নয়",
-    "kiro_credit_usage_scrape_disabled": "Kiro ক্রেডিট ব্যবহার — লাইভ আনা বন্ধ আছে (dashboard.usage_text_scrape_enabled)",
     "kiro_credit_usage_checking": "Kiro ক্রেডিট ব্যবহার — যাচাই করা হচ্ছে…",
     "kiro_credit_usage_checking_2": "Kiro ক্রেডিট ব্যবহার — যাচাই করা হচ্ছে",
     "kiro_credit_usage_signin_required": "Kiro ক্রেডিট ব্যবহার — সক্রিয় কোনও Kiro সাইন-ইন পড়া যায়নি; আবার সাইন ইন করো",
@@ -267,7 +266,9 @@
     "focus_mode": "ফোকাস মোড",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
     "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
-    "connect_your_phone": "ফোন সংযুক্ত করুন"
+    "connect_your_phone": "ফোন সংযুক্ত করুন",
+    "kiro_credit_usage_no_reading": "Kiro ক্রেডিট ব্যবহার — এখনো কোনো ব্যালেন্স রিডিং নেই; রিফ্রেশ করতে খোলো",
+    "kiro_credit_usage_config_unreadable": "Kiro ক্রেডিট ব্যবহার — ব্যাকএন্ড সেটিং পড়া যায়নি; আবার চেষ্টা করতে খোলো"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5570,18 +5571,26 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "অ্যাকাউন্টের বিবরণ পাওয়া যাচ্ছে না",
+      "balance_checked_at": "{{time}}-এ যাচাই করা হয়েছে",
+      "balance_may_be_stale": "আগের রিডিং দেখানো হচ্ছে; সর্বশেষ রিফ্রেশ কোনো রিডিং ফেরত দেয়নি।",
       "checking_account": "অ্যাকাউন্ট যাচাই করা হচ্ছে…",
       "checking_credit_usage": "ক্রেডিট ব্যবহার যাচাই করা হচ্ছে",
       "credit_usage_api_key_auth": "API কী প্রমাণীকরণের জন্য ক্রেডিট ব্যবহার পাওয়া যায় না",
-      "credit_usage_scrape_disabled": "লাইভ ক্রেডিট ব্যবহারের তথ্য পাওয়া যাচ্ছে না: বিনামূল্যের ব্যবহার API এই অ্যাকাউন্টের জন্য কোনো প্ল্যান ফেরত দেয়নি, এবং বিল হওয়া /usage বিকল্পটি ডিফল্টভাবে বন্ধ। এটি আনতে config.json-এ dashboard.usage_text_scrape_enabled কে true সেট করুন — প্রতিটি রিফ্রেশে অল্প পরিমাণ ক্রেডিট খরচ হয়।",
-      "credit_usage_signin_required": "লাইভ ক্রেডিট ব্যবহার পাওয়া যাে্ছনা: সক্রিয় কোনও Kiro সাইন-ইন ক্রেডেনশিয়াল পড়া যায়নি, তাই বিনামূল্যের ব্যবহার API-কে জিজ্ঞাসাই করা হয়নি। এটি ফিরিয়ে আনতে Kiro-তে আবার সাইন ইন করো (উদাহরণস্বরূপ kiro-cli login চালিয়ে)। dashboard.usage_text_scrape_enabled চালু করলে এখানে কাজ হবে না, কারণ বিল হওয়া /usage বিকল্পটিরও একই সাইন-ইন দরকার।",
-      "credit_usage_unavailable": "ক্রেডিট ব্যবহার পাওয়া যাচ্ছে না",
+      "credit_usage_no_reading": "এই অ্যাকাউন্টের জন্য এখনো কোনো ব্যালেন্স রিডিং পাওয়া যায়নি।",
+      "credit_usage_config_unreadable": "সেটিংস লোড করা যায়নি, তাই তোমার ব্যালেন্স দেখানো যাচ্ছে না।",
+      "credit_usage_signin_required": "লাইভ ক্রেডিট ব্যবহার পাওয়া যাে্ছনা: সক্রিয় কোনও Kiro সাইন-ইন ক্রেডেনশিয়াল পড়া যায়নি, তাই বিনামূল্যের ব্যবহার API-কে জিজ্ঞাসাই করা হয়নি। এটি ফিরিয়ে আনতে Kiro-তে আবার সাইন ইন করো (উদাহরণস্বরূপ kiro-cli login চালিয়ে)।",
+      "credit_usage_unavailable": "তোমার ব্যালেন্স পড়া যায়নি।",
       "days_until_expiration": "মেয়াদ শেষ হতে দিন: {{count}}",
       "estimated_overage_cost": "আনুমানিক অতিরিক্ত খরচ",
       "hide_email": "ইমেইল লুকান",
       "kiro_account": "Kiro অ্যাকাউন্ট",
       "kiro_credit_usage": "Kiro ক্রেডিট ব্যবহার",
       "overage_rate_value": "{{rate}} / ক্রেডিট",
+      "refresh_balance": "রিফ্রেশ করো",
+      "refresh_in_flight": "একটি রিফ্রেশ আগে থেকেই চলছে।",
+      "refresh_paused": "সম্প্রতি ব্যালেন্স চেকগুলো ব্যর্থ হওয়ায় ব্যালেন্স চেক থামিয়ে রাখা হয়েছে। প্রায় {{minutes}} মিনিট পরে আবার চেষ্টা করো।",
+      "refresh_returned_stale": "রিফ্রেশ কোনো নতুন রিডিং ফেরত দেয়নি। আগের রিডিং দেখানো হচ্ছে।",
+      "refreshing_balance": "রিফ্রেশ হচ্ছে…",
       "remaining_credit_balance": "অবশিষ্ট ক্রেডিট: {{count}}",
       "show_email": "ইমেইল দেখান",
       "usage_scope": "চ্যাট, এজেন্ট, MCP এবং সাবএজেন্ট জুড়ে kiro-cli /usage থেকে মাসিক Kiro ক্রেডিট ব্যবহার।",
@@ -14243,11 +14252,7 @@
         "zoom_level": "জুম লেভেল",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "সংরক্ষিত ডিসপ্লে সেটিং লোড করা যায়নি। লোড হওয়া পর্যন্ত শেল, সাম্প্রতিক সেশন ও কমান্ড সম্পূর্ণকরণের সেটিংগুলো অনুপলব্ধ।",
-        "recent_tint_save_failed": "সাম্প্রতিক সেশন হাইলাইটের সংখ্যা সংরক্ষণ করা যায়নি।",
-        "credit_usage_scrape": "ক্রেডিট খরচ করে ব্যালেন্স দেখা",
-        "credit_usage_scrape_desc": "ব্যবহারের তথ্য বিনামূল্যে না পাওয়া গেলে, ড্যাশবোর্ড ট্যাব খোলা থাকা অবস্থায় প্রায় প্রতি 10 মিনিটে একটি বিল হওয়া মেসেজ পাঠিয়ে ব্যালেন্স দেখা যায়। প্রতিটি যাচাইয়ে অল্প পরিমাণ ক্রেডিট খরচ হয়।",
-        "credit_usage_scrape_save_failed": "এই সেটিং সংরক্ষণ করা যায়নি। সুইচ সংরক্ষিত অবস্থাই দেখায়, তাই আবার চেষ্টা করা যায়।",
-        "credit_usage_scrape_owner_only": "কেবল ড্যাশবোর্ডের মালিক এটি চালু করতে পারেন।"
+        "recent_tint_save_failed": "সাম্প্রতিক সেশন হাইলাইটের সংখ্যা সংরক্ষণ করা যায়নি।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
