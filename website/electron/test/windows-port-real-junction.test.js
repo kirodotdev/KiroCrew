@@ -68,6 +68,20 @@ test("realpathSync.native follows a real directory junction to the versioned tre
   );
 }));
 
+// `windowsProcessCommand`'s defaults (PowerShell 8 s, WMIC 5 s) are the
+// launcher's stop-path budget: a probe that overruns them returns "" so the
+// caller treats the process as foreign. This test proves the spelling
+// contract, not that budget, and a hosted Windows runner's first
+// Get-CimInstance call can take longer than 8 s while wmic.exe is absent on
+// current runner images. The asserted probe therefore gets a CI-sized budget,
+// and the CIM cold start is paid once beforehand against our own pid.
+const CI_PROBE_BUDGET = { powershellTimeoutMs: 30000, wmicTimeoutMs: 15000 };
+const CIM_WARMUP_BUDGET = { powershellTimeoutMs: 60000, wmicTimeoutMs: 15000 };
+
+async function warmUpCimProvider() {
+  await windowsProcessCommand(process.pid, CIM_WARMUP_BUDGET);
+}
+
 test("a process launched through a junction is matched however Win32_Process spells it", { skip }, () => withScratch(async (root) => {
   // A real interpreter is needed so the OS has a process to report. Node
   // itself stands in, copied under the name the matcher expects.
@@ -79,6 +93,8 @@ test("a process launched through a junction is matched however Win32_Process spe
   const viaLink = path.join(link, "resources", "backend-dist", "kirocrew-backend");
   const linkPython = path.join(viaLink, "python.exe");
 
+  await warmUpCimProvider();
+
   const child = spawn(linkPython, ["-e", "setTimeout(() => {}, 120000)"], {
     stdio: "ignore",
     windowsHide: true,
@@ -88,8 +104,12 @@ test("a process launched through a junction is matched however Win32_Process spe
       child.once("spawn", resolve);
       child.once("error", reject);
     });
-    const identity = await windowsProcessCommand(child.pid);
-    assert.ok(identity, "PowerShell/WMIC reported the process");
+    const identity = await windowsProcessCommand(child.pid, CI_PROBE_BUDGET);
+    assert.ok(
+      identity,
+      "identity probe returned nothing within "
+        + `${CI_PROBE_BUDGET.powershellTimeoutMs} ms (PowerShell timed out or failed and WMIC was unavailable)`
+    );
     const reported = /^"([^"]+)"/.exec(identity);
     assert.ok(reported, `identity starts with a quoted ExecutablePath: ${identity}`);
 
