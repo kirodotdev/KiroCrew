@@ -191,7 +191,7 @@ never bannered. `useWebSocket` withholds the event during a reconnect catch-up
 | Priority | Banner |
 |---|---|
 | `critical` | stays until clicked, dismissed, or acted on; the live region is `role="alert"` while one is pending |
-| `default` | auto-hides after `BANNER_AUTO_HIDE_MS` (6 s). Every pending default card shares ONE timer, restarted by each default arrival and paused while the stack is hovered or holds focus. The pointer and keyboard are tracked as two separate holds: the clock resumes only when BOTH have let go, and an emptying deck releases both (a removed element fires no blur, and a vacated card no pointer-leave) |
+| `default` | auto-hides after `BANNER_AUTO_HIDE_MS` (6 s). Every pending default card shares ONE timer, restarted by each default arrival and paused while the stack is hovered or holds focus. The pointer and keyboard are tracked as two separate holds and the clock resumes only when BOTH have let go. A card's removal destroys ownership without firing the release event, so the holds are re-read after every change to the deck: FOCUS is owned by an element (held while the stack still contains the active one, released when its holder unmounts), the POINTER by the container (a removal does not move that boundary, so only a real pointer-leave — or an empty deck — releases it) |
 | `passive`, or `silenced` (`isSilencedNote`) | never |
 
 Auto-hide does **not** acknowledge: the note stays unread in the bell, and the

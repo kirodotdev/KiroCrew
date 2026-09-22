@@ -112,6 +112,9 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   // the timer reads; these two say who is asking for it.
   const hovering = useRef(false)
   const focusedWithin = useRef(false)
+  // The element the two handler pairs are bound to: what "inside the banner"
+  // means when the holds are re-read from the DOM after a removal.
+  const stackRef = useRef<HTMLDivElement>(null)
   const pendingRef = useRef(pending)
   pendingRef.current = pending
 
@@ -138,11 +141,6 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
     pendingRef.current = next
     setPending(next)
     if (next.length <= 1) setExpanded(false)
-    // With the deck empty there is no card left to hover or focus, and neither
-    // owner gets to say so: removing the focused element fires no blur, and a
-    // pointer over the space a card VACATED gets no leave. Left standing, the
-    // hold outlives its card and the next arrival never starts its clock.
-    if (next.length === 0) { hovering.current = false; focusedWithin.current = false; paused.current = false }
   }, [measureExit])
 
   const fireAutoHide = useCallback(() => {
@@ -185,6 +183,30 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   }, [armTimer, clearTimer])
 
   useEffect(() => clearTimer, [clearTimer])
+
+  // Re-derive the holds from the DOM after every change to the deck, because a
+  // card's removal destroys the ownership without firing the event that
+  // releases it: an unmounted focused element sends no blur, so `blurCapture`
+  // never runs and a hold taken on a card the user then dismissed would go on
+  // pausing the cards that outlive it.
+  //
+  // The two owners are re-read differently because they are owned at different
+  // levels. FOCUS is owned by an ELEMENT, so the only truthful answer is
+  // whether the stack still contains the active one -- true while a SURVIVING
+  // card holds it, false the moment the holder is unmounted (focus falls to
+  // `body`). The POINTER is owned by the CONTAINER, and removing a card inside
+  // it does not move the boundary the enter/leave pair is measured at, so a
+  // pointer hold stays owned and only a real `pointerleave` releases it -- the
+  // one exception being an empty deck, where there is no box left to be over.
+  //
+  // Runs as an effect, not inside `removeNotes`: the handler fires BEFORE React
+  // commits the removal, so `document.activeElement` there is still the button
+  // that is about to disappear.
+  useEffect(() => {
+    focusedWithin.current = !!stackRef.current?.contains(document.activeElement)
+    if (pendingRef.current.length === 0) hovering.current = false
+    syncPaused()
+  }, [pending, syncPaused])
 
   // ---- arrival -----------------------------------------------------------------
   useEffect(() => {
@@ -304,6 +326,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
       className={`fixed z-[59] pointer-events-none top-safe-offset-[50px] ${isMobile ? 'left-safe-offset-3 right-safe-offset-3' : 'right-safe-offset-3 w-[340px]'}`}
     >
       <div
+        ref={stackRef}
         className={`relative pointer-events-auto ${expanded ? 'flex flex-col gap-2' : ''}`}
         onPointerEnter={() => { hovering.current = true; syncPaused() }}
         onPointerLeave={() => { hovering.current = false; syncPaused() }}

@@ -324,6 +324,58 @@ describe('NotificationBanner: auto-hide', () => {
     act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS + 1) })
     expect(cards()).toHaveLength(0)
   })
+
+  it('resumes the SURVIVING card after a focused one is dismissed out of a deck', () => {
+    renderBanner()
+    vi.useFakeTimers()
+    arrive(mkN({ title: 'Older' }))
+    arrive(mkN({ title: 'Newest' }))
+    expect(cards()).toHaveLength(2)
+    // Only the top card renders a real card (the rest are blank deck shells),
+    // so this is the focus INSIDE the card that is about to be dismissed.
+    act(() => { screen.getByTestId('notification-banner-dismiss').focus() })
+    fireEvent.click(screen.getByTestId('notification-banner-dismiss'))
+    // The deck is NOT empty, so an empty-deck reset never runs — and the
+    // unmounted button fired no blur. The hold has no owner left.
+    expect(cards()).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+    expect(cards()).toHaveLength(0)
+  })
+
+  it('keeps a focus hold a SURVIVING card still owns', () => {
+    renderBanner()
+    vi.useFakeTimers()
+    arrive(mkN({ title: 'Older' }))
+    arrive(mkN({ title: 'Newest' }))
+    // Expanded, both render real cards, so focus can sit in the one that lives.
+    fireEvent.click(screen.getByTestId('notification-banner-count'))
+    const dismissals = screen.getAllByTestId('notification-banner-dismiss')
+    expect(dismissals).toHaveLength(2)
+    act(() => { dismissals[1].focus() })
+    // Escape dismisses the TOP card; focus is in the second one, which stays.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(cards()).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('keeps the pointer hold when a card is removed under the cursor', () => {
+    renderBanner()
+    vi.useFakeTimers()
+    arrive(mkN({ title: 'Older' }))
+    arrive(mkN({ title: 'Newest' }))
+    const stack = cards()[0].parentElement!
+    fireEvent.pointerEnter(stack)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    // The container's box did not move, so the pointer still rests on it and
+    // its hold is still owned. Only a real pointerleave releases it.
+    expect(cards()).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+    expect(cards()).toHaveLength(1)
+    fireEvent.pointerLeave(stack)
+    act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS + 1) })
+    expect(cards()).toHaveLength(0)
+  })
 })
 
 describe('NotificationBanner: stack and interaction', () => {
