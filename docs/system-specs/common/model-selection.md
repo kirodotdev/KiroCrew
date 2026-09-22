@@ -168,7 +168,12 @@ after the literal match and the one `<namespace>::` peel miss, it folds both sid
 with the same `catalog_key` and returns the advertised id, tie-breaking several
 candidates through `preferred_advertised_spelling` exactly as `resolve_wire_model_id`
 does. Folding the two sides with different functions is how the entitlement
-warning came to name a spelling problem.
+warning came to name a spelling problem. It is a SPELLING fold, never a model fold:
+`catalog_key` folds the window marker away, so the 200K `claude-opus-4-8` and the 1M
+`claude-opus-4.8` share a key, but the registry lists them as two canonical models
+and `same_registered_model` refuses to fold one onto the other -- a pin never
+resolves to its neighbour with a different context window. Two ids the registry
+cannot both place are unknown, not different, and fold on spelling alone.
 
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in

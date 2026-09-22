@@ -21,6 +21,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from kiro_crew.acp.client import model_is_unusable, resolve_pin_spelling
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -54,6 +56,13 @@ def _provider(models: object, *, getter: bool = True, raises: bool = False) -> M
     return provider
 
 
+def _claude_provider(models: object) -> MagicMock:
+    """A live claude session: advertises prefixed ids in the claude_code namespace."""
+    provider = _provider(models)
+    provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
+    return provider
+
+
 def _request(*providers: MagicMock) -> MagicMock:
     state = MagicMock()
     state.sessions.active_providers = MagicMock(return_value=list(providers))
@@ -74,19 +83,32 @@ def test_advertised_narrows_the_catalog():
 
 def test_a_spelling_the_wire_rejects_is_not_offered():
     # The catalog spells versions dotted (`claude-opus-4.8`); a backend may
-    # advertise them dashed. Nothing translates between the two before the wire —
-    # `set_model` pre-flights the id exactly as given, and the pin validator in
-    # handlers/core applies the same raw predicate — so a dotted row here would be
-    # offered by the picker and then withheld at spawn, which is the lie this
-    # narrowing exists to remove. The only fold the keep/drop applies is the same
-    # `<namespace>::` peel the wire applies (`resolve_pin_spelling`); it never
-    # translates dotted to dashed, so this row still drops.
+    # advertise them dashed. `set_model` pre-flights the id exactly as given, and
+    # the pin validator in handlers/core applies the same raw predicate, so the
+    # dotted row must not be offered as-is: the picker would offer it and the
+    # spawn would withhold it. The keep/drop applies the wire's own fold
+    # (`resolve_pin_spelling`), and that fold refuses these two in particular:
+    # the registry lists dashed `claude-opus-4-8` (200K) and dotted
+    # `claude-opus-4.8` (1M) as different models, so the row is not rewritten
+    # onto its neighbour -- it drops, like sonnet, which is advertised under no
+    # spelling at all.
     request = _request(
         _provider(
             [{"modelId": "auto"}, {"modelId": "claude-opus-4-8"}, {"modelId": "claude-opus-5"}]
         )
     )
     assert _names(agents._entitled_kiro_models(request, CATALOG)) == ["auto", "claude-opus-5"]
+
+
+def test_a_spelling_variant_of_the_same_model_is_offered_as_advertised():
+    # The fold's positive case: the registry does not know `claude-zeta-9`, so
+    # a prefixed catalog spelling and the bare advertised id are one model on
+    # spelling alone, and the row is offered under the id the wire accepts.
+    catalog = CATALOG + [{"model_name": "us.anthropic.claude-zeta-9", "description": "Zeta"}]
+    request = _request(_provider([{"modelId": "auto"}, {"modelId": "claude-zeta-9"}]))
+    kept = agents._entitled_kiro_models(request, catalog)
+    assert _names(kept) == ["auto", "claude-zeta-9"]
+    assert kept[1]["description"] == "Zeta"
 
 
 def test_picker_and_wire_never_disagree_row_by_row():
@@ -147,15 +169,34 @@ def test_sentinel_only_survivor_fails_open():
     # A catalog sharing no namespace with the advertised ids is a mismatch, not an
     # account entitled to nothing: nothing lines up, `auto` included. Showing the
     # whole catalog beats emptying the picker.
+    request = _request(_provider([{"modelId": "openai.gpt-9-nova[high]"}]))
+    assert _names(agents._entitled_kiro_models(request, CATALOG)) == _names(CATALOG)
+
+
+def test_a_claude_session_never_narrows_the_kiro_picker():
+    # claude's ids name the same models under a prefixed spelling, and the wire
+    # fold (`resolve_pin_spelling`) folds them onto the catalog's bare ids. That
+    # fold is right on a kiro session; on a claude session it would rewrite the
+    # kiro picker into claude's spelling and narrow it to claude's entitlements.
+    # The namespace gate keeps a claude list out of this narrowing entirely.
     request = _request(
-        _provider(
+        _claude_provider(
             [
                 {"modelId": "global.anthropic.claude-opus-4-8[1m]"},
                 {"modelId": "global.anthropic.claude-sonnet-4-6[1m]"},
             ]
         )
     )
-    assert _names(agents._entitled_kiro_models(request, CATALOG)) == _names(CATALOG)
+    assert agents._entitled_kiro_models(request, CATALOG) == CATALOG
+
+
+def test_a_claude_session_is_skipped_in_favour_of_an_older_kiro_one():
+    # Newest-first is newest-in-namespace-first: the claude session started last,
+    # but the older kiro session is the one whose list narrows kiro's catalog.
+    kiro = _provider([{"modelId": "auto"}, {"modelId": "claude-sonnet-5"}])
+    claude = _claude_provider([{"modelId": "global.anthropic.claude-opus-4-8[1m]"}])
+    request = _request(kiro, claude)  # oldest first, as the dict yields them
+    assert _names(agents._entitled_kiro_models(request, CATALOG)) == ["auto", "claude-sonnet-5"]
 
 
 def test_newest_session_wins_over_a_stale_one():
@@ -283,10 +324,10 @@ def test_getter_raising_is_skipped_not_fatal():
 
 
 def test_disjoint_advertised_set_fails_open():
-    # A backend whose ids live in a different namespace (the claude backend's
-    # bare/prefixed split) intersects nothing. Filtering there would empty the
-    # picker, so the catalog is returned untouched.
-    request = _request(_provider([{"modelId": "global.anthropic.claude-opus-4-8[1m]"}]))
+    # An advertised set that intersects the catalog under no spelling is a
+    # mismatch, not an entitlement. Filtering there would empty the picker, so
+    # the catalog is returned untouched.
+    request = _request(_provider([{"modelId": "openrouter::z-ai/glm-5.3-flash"}]))
     assert agents._entitled_kiro_models(request, CATALOG) == CATALOG
 
 

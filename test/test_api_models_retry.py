@@ -384,17 +384,6 @@ def test_catalog_warms_the_acp_advertised_cache_unfiltered(tmp_path, monkeypatch
     assert persisted == ["acp"]
 
 
-def test_catalog_ids_skip_malformed_rows_and_keep_order():
-    rows = [
-        {"model_id": "a", "model_name": "a"},
-        {"model_id": "b-id", "model_name": "b"},
-        {"model_id": 3, "model_name": " "},
-        None,
-        {"model_name": "c"},
-    ]
-    assert agents._kiro_catalog_ids(rows) == ["a", "a", "b-id", "b", "c"]
-
-
 # ---------------------------------------------------------------------------
 # The CONFIGURED sandbox tier (agent.sandbox), not wrap_argv's parameter default
 # ---------------------------------------------------------------------------

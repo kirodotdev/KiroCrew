@@ -210,16 +210,43 @@ class TestPinSpellingResolver:
         assert resolve_pin_spelling("::z-ai/glm-5.3-flash", self._BARE) == ""
 
     def test_fold_prefers_the_window_variant_like_the_wire_fold(self):
-        # Several advertised ids fold to one key; the tie-break is the one
-        # `resolve_wire_model_id` applies ([1m] first, then shortest), so the
-        # display fold and the wire fold cannot prefer different spellings.
+        # Several advertised spellings of one model fold to one key; the
+        # tie-break is the one `resolve_wire_model_id` applies ([1m] first,
+        # then shortest), so the display fold and the wire fold cannot prefer
+        # different spellings.
         both = ["claude-opus-4.8", "claude-opus-4.8-1m"]
         assert (
-            resolve_pin_spelling("global.anthropic.claude-opus-4-8", both) == "claude-opus-4.8-1m"
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", both)
+            == "claude-opus-4.8-1m"
         )
         # A literal match still wins outright: no fold runs for a pin that is
         # already an advertised spelling.
         assert resolve_pin_spelling("claude-opus-4.8", both) == "claude-opus-4.8"
+
+    def test_fold_never_conflates_two_registered_models(self):
+        # `catalog_key` folds the window marker away, so the 200K
+        # `claude-opus-4-8` and kiro's 1M `claude-opus-4.8` share a key -- but
+        # the registry lists them as two canonical models. A spelling fold that
+        # let one stand in for the other would send a pin's neighbour with a
+        # different context window; the fold refuses, and the pin takes the
+        # withhold path instead of a silent capacity change.
+        assert resolve_pin_spelling("claude-opus-4.8", ["claude-opus-4-8"]) == ""
+        assert resolve_pin_spelling("global.anthropic.claude-opus-4-8", ["claude-opus-4.8"]) == ""
+        # The guard reads the pin case-insensitively, like the literal match does.
+        assert resolve_pin_spelling("CLAUDE-OPUS-4-8", ["claude-opus-4.8"]) == ""
+        # The same model under two spellings still folds.
+        assert (
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", ["claude-opus-4.8"])
+            == "claude-opus-4.8"
+        )
+
+    def test_fold_keeps_its_answer_for_ids_the_registry_does_not_know(self):
+        # Unknown is not different: a model newer than the shipped registry
+        # folds on spelling alone, which is the case the fold exists for.
+        assert (
+            resolve_pin_spelling("us.anthropic.claude-zeta-9[1m]", ["claude-zeta-9"])
+            == "claude-zeta-9"
+        )
 
     def test_the_auto_sentinel_names_no_model_to_fold(self):
         # `catalog_key("auto")` is "", so the fold cannot match `auto` to an
