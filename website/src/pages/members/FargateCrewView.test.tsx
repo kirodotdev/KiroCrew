@@ -147,7 +147,7 @@ describe('FargateCrewView', () => {
     // The way to the launch's Cancel, as a door: the label names the place.
     fireEvent.click(screen.getByTestId('deploy-action-manage'))
     expect(goToSettings).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('deploy-action-manage').textContent).toBe('Open Remote Instances in Settings')
+    expect(screen.getByTestId('deploy-action-manage').textContent).toBe('Open Remote Crew in Settings')
     expect(cloudLaunchTask).not.toHaveBeenCalled()
   })
 

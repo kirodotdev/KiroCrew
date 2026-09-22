@@ -1,6 +1,6 @@
 # Adding a remote-provisioner lane
 
-A **remote instance** is another machine running a Kiro Crew gateway that this gateway reaches through a loopback tunnel. Two things can put one in the registry: a human typing coordinates into **Settings → Remote Instances**, or a **provisioner** that creates the machine first and registers it afterwards.
+A **remote instance** is another machine running a Kiro Crew gateway that this gateway reaches through a loopback tunnel. Two things can put one in the registry: a human typing coordinates into **Settings → Remote Crew**, or a **provisioner** that creates the machine first and registers it afterwards.
 
 The stock build ships exactly one provisioner: EC2 in the user's own AWS account. This guide is for the case where you need a second one — a container task, a managed dev-environment service, a fleet API — and it answers three questions in order: how a remote instance is reached today, which parts of that are an interface you may implement, and what a new lane actually has to write.
 

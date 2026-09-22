@@ -1950,7 +1950,7 @@
           "kirocrew_agents": "{{productName}} Agents",
           "logs": "Logs",
           "pages": "Pages",
-          "remote_crew": "Remote Instances",
+          "remote_crew": "Remote Crew",
           "tasks": "Tasks"
         },
         "promptsProvider": {
@@ -3386,7 +3386,7 @@
       "group_actions": "Actions",
       "group_chat_navigation": "Chat Navigation",
       "group_panel_navigation": "Panel Navigation",
-      "group_remote_crews": "Remote Instances",
+      "group_remote_crews": "Remote Crews",
       "jump_to_chat": "Jump to chat {{n}}",
       "last_visited_chat_mru": "Last visited chat (MRU)",
       "next_chat": "Next chat",
@@ -3402,7 +3402,7 @@
       "projects_panel": "Projects panel",
       "schedule_panel": "Schedule panel",
       "switch_to_local": "Switch to Local",
-      "switch_to_remote_crew": "Switch to remote instance {{n}}",
+      "switch_to_remote_crew": "Switch to remote crew {{n}}",
       "walk_back_mru_history": "Walk back MRU history",
       "stop_speaking": "Stop speaking",
       "toggle_focus_mode": "Toggle focus mode",
@@ -6110,7 +6110,7 @@
         "credit_usage_scrape_owner_only": "Only the dashboard owner can turn this on."
       },
       "instancesPanel": {
-        "add_remote_crew": "Add remote instance",
+        "add_remote_crew": "Add remote crew",
         "adding": "Adding…",
         "connect": "Connect",
         "connect_failed": "Connect to {{id}} failed: {{error}}",
@@ -6123,10 +6123,10 @@
         "disable": "Disable",
         "disabling": "Disabling…",
         "disconnect_failed": "Disconnect of {{id}} failed: {{error}}",
-        "enable_remote_crew_management": "Enable remote instance management",
+        "enable_remote_crew_management": "Enable remote crew management",
         "enabling": "Enabling…",
-        "failed_to_add_remote_crew": "Failed to add remote instance",
-        "failed_to_load_remote_crews": "Failed to load remote instances",
+        "failed_to_add_remote_crew": "Failed to add remote crew",
+        "failed_to_load_remote_crews": "Failed to load remote crews",
         "remove": "Remove {{name}}",
         "remove_failed": "Remove of {{id}} failed: {{error}}",
         "token_left": "· token {{time}} left",
@@ -6824,7 +6824,7 @@
     "developer": {
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
-        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane.",
         "intro": {
           "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
@@ -7045,8 +7045,8 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Manage remote instances over SSH tunnels; switch between them from the top header",
-        "label": "Remote Instances"
+        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
+        "label": "Remote Crew"
       },
       "notifications": {
         "description": "Sound effects and per-source alert preferences",

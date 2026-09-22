@@ -286,7 +286,7 @@ describe('InstancesViewport', () => {
     expect(store.getState().instances.activeId).toBeNull()
   })
 
-  it('the Settings → Remote Instances link returns to Local before navigating (same overlay rule as the hand-off)', async () => {
+  it('the Settings → Remote Crew link returns to Local before navigating (same overlay rule as the hand-off)', async () => {
     // The link soft-navigates the LOCAL SPA, which sits underneath this panel's
     // opaque root overlay while a remote tab is active. Without leaving the
     // remote tab the click looks dead. A modified click opens a new tab and
@@ -313,7 +313,7 @@ describe('InstancesViewport', () => {
     renderWithProviders(<InstancesViewport />, { store })
     expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
 
-    const link = screen.getByRole('link', { name: /Settings → Remote Instances/ }) as HTMLAnchorElement
+    const link = screen.getByRole('link', { name: /Settings → Remote Crew/ }) as HTMLAnchorElement
     expect(link.getAttribute('href')).toBe('/settings/instances')
 
     fireEvent.click(link, { metaKey: true })
@@ -433,9 +433,9 @@ describe('InstancesViewport', () => {
 
     expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
     // The full switcher renders atop the panel: Local + the instance tab.
-    const bar = await screen.findByRole('group', { name: /Remote instances/i })
+    const bar = await screen.findByRole('group', { name: /Remote crews/i })
     expect(bar).toBeInTheDocument()
-    await u.click(screen.getByRole('button', { name: /Switch instance/i }))
+    await u.click(screen.getByRole('button', { name: /Switch crew/i }))
     expect(screen.getByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitemradio', { name: /Cloud One/i })).toBeInTheDocument()
 
@@ -466,7 +466,7 @@ describe('InstancesViewport', () => {
     })
     renderWithProviders(<InstancesViewport macInset />, { store })
 
-    const bar = await screen.findByRole('group', { name: /Remote instances/i })
+    const bar = await screen.findByRole('group', { name: /Remote crews/i })
     expect(bar.style.paddingLeft).toBe('84px')
   })
 
@@ -522,7 +522,7 @@ describe('InstancesViewport', () => {
 
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
     // The full switcher renders atop the overlay: the user can always escape.
-    const bar = await screen.findByRole('group', { name: /Remote instances/i })
+    const bar = await screen.findByRole('group', { name: /Remote crews/i })
     expect(bar).toBeInTheDocument()
     // Not the error panel — no Retry while the load is still in flight.
     expect(screen.queryByText(/Connection error/i)).toBeNull()
@@ -1027,7 +1027,7 @@ describe('InstancesViewport', () => {
       vi.useRealTimers()
     }
     // The escape-hatch strip is on the panel (query resolves under real timers).
-    expect(await screen.findByRole('group', { name: /Remote instances/i })).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: /Remote crews/i })).toBeInTheDocument()
   })
 
   it('Retry after a load timeout force-reloads the iframe even for an identical token', async () => {

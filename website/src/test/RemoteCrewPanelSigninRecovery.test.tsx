@@ -106,7 +106,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done' as const,
-    detail: 'Added to your instances. Finish the Kiro sign-in before connecting.',
+    detail: 'Added to Your crews. Finish the Kiro sign-in before connecting.',
   },
 ]
 const UNSIGNED_JOB = {
@@ -183,7 +183,7 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
 
     expect(await screen.findByText(/Needs sign-in/i)).toHaveAttribute(
       'title',
-      'This instance exists, but Kiro is not signed in on it yet — every chat on it will fail until the sign-in is finished.',
+      'This crew exists, but Kiro is not signed in on it yet — every chat on it will fail until the sign-in is finished.',
     )
     // And the footer must not say "your new instance is ready" under that badge.
     expect(screen.getByText(/not signed in on it yet/i)).toBeInTheDocument()
@@ -198,7 +198,7 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
 
     const icon = await screen.findByTestId('step-waiting-connect')
     const row = icon.closest('li')
-    expect(row).toHaveTextContent(/Added to your instances\./i)
+    expect(row).toHaveTextContent(/Added to Your crews\./i)
     expect(row?.querySelector('.text-ok')).toBeNull()
     // A warn-tinted hollow circle, deliberately NOT the key: the key marks the
     // step in the user's court; this step ran and is only held.
@@ -362,7 +362,7 @@ describe('the code box', () => {
 })
 
 describe('what Cancel destroys', () => {
-  it('says a retry only stops the sign-in and keeps the instance', async () => {
+  it('says a retry only stops the sign-in and keeps the crew', async () => {
     // The reader "would not dare click it" — the same word covered stopping a
     // sign-in and tearing down the instance that was already created.
     useJob(withCode('LIVE', { status: 'awaiting_signin' as const }))
@@ -371,17 +371,19 @@ describe('what Cancel destroys', () => {
     await openSetup(u)
 
     const cancel = await screen.findByRole('button', {
-      name: /Stop the sign-in on kc-5e10bb and keep the instance/i,
+      name: /Stop the sign-in on kc-5e10bb and keep the crew/i,
     })
-    expect(cancel).toHaveTextContent(/Stop sign-in, keep the instance/i)
-    // The instance exists: nothing here removes it.
+    expect(cancel).toHaveTextContent(/Stop sign-in, keep the crew/i)
+    // The crew exists: nothing here removes it.
     expect(cancel).not.toHaveTextContent(/remove/i)
-    // And it is called an instance, the word the panel headers use. "Crew" here
-    // read as a second, different thing the reader had to guess at.
-    expect(cancel).not.toHaveTextContent(/\bcrew\b/i)
+    // And it is called a crew, the word the panel headers use. "Instance" here
+    // read as a second, different thing the reader had to guess at — the panel
+    // reserves that word for the EC2 machine (see `stamped_ec2_note`), so a
+    // label naming the row must not borrow it.
+    expect(cancel).not.toHaveTextContent(/\binstance\b/i)
   })
 
-  it('says a launch that has not registered yet removes the instance', async () => {
+  it('says a launch that has not registered yet removes the crew', async () => {
     // Same button, opposite blast radius. Read off the same `isRegistered` test
     // the rest of the panel uses, so the two cannot drift.
     useJob({
@@ -398,10 +400,10 @@ describe('what Cancel destroys', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     const cancel = await screen.findByRole('button', {
-      name: /Cancel setup of kc-5e10bb and remove the instance/i,
+      name: /Cancel setup of kc-5e10bb and remove the crew/i,
     })
-    expect(cancel).toHaveTextContent(/Cancel and remove the instance/i)
-    expect(cancel).not.toHaveTextContent(/keep the instance/i)
+    expect(cancel).toHaveTextContent(/Cancel and remove the crew/i)
+    expect(cancel).not.toHaveTextContent(/keep the crew/i)
   })
 })
 
@@ -425,7 +427,7 @@ describe('the outcome hint', () => {
     await openSetup(u)
 
     const hint = await screen.findByTestId('signin-recovery-hint')
-    expect(hint).toHaveTextContent(/Starts the sign-in on the instance and shows a new code here\./i)
+    expect(hint).toHaveTextContent(/Starts the sign-in on the crew and shows a new code here\./i)
     expect(hint).not.toHaveTextContent(/retires it/i)
   })
 
@@ -472,7 +474,7 @@ describe('the restart, and the state before a code exists', () => {
     await openSetup(u)
 
     const prompt = await screen.findByTestId('signin-prompt')
-    expect(prompt).toHaveTextContent(/Starting the Kiro sign-in on the instance\./i)
+    expect(prompt).toHaveTextContent(/Starting the Kiro sign-in on the crew\./i)
     expect(prompt).toHaveTextContent(/takes a few seconds/i)
     // Nothing to approve and nothing to replace: either button could not work.
     expect(screen.queryByRole('button', { name: /Start over with a new code|Show the sign-in code/i })).not.toBeInTheDocument()
@@ -480,7 +482,7 @@ describe('the restart, and the state before a code exists', () => {
   })
 })
 
-describe('Your instances — an unsigned cloud crew', () => {
+describe('Your crews — an unsigned cloud crew', () => {
   beforeEach(() => {
     vi.mocked(api.listInstances).mockResolvedValue(
       { active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] } as never,
@@ -518,7 +520,7 @@ describe('Your instances — an unsigned cloud crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     const row = await screen.findByTestId('signin-prompt')
-    expect(row).toHaveTextContent(/Starts the sign-in on the instance/i)
+    expect(row).toHaveTextContent(/Starts the sign-in on the crew/i)
     await u.click(await screen.findByRole('button', { name: /Start sign-in/i }))
     await waitFor(() => expect(api.cloudLaunchSigninRestart).toHaveBeenCalledWith('j-unsigned'))
   })
@@ -821,12 +823,12 @@ describe('the cancel that removes an instance asks first', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    const first = (await screen.findAllByRole('button', { name: /remove the instance/i }))[0]
-    expect(first).toHaveTextContent(/Cancel and remove the instance…$/)
+    const first = (await screen.findAllByRole('button', { name: /remove the crew/i }))[0]
+    expect(first).toHaveTextContent(/Cancel and remove the crew…$/)
   })
 
   it('arms, warns, and only then removes', async () => {
-    // One unguarded click destroyed the instance being created, while the crew
+    // One unguarded click destroyed the crew being created, while the crew
     // row's Delete asks first -- so the reader could not tell whether this one
     // would, and "would not dare" press it.
     useJob(LAUNCHING)
@@ -834,7 +836,7 @@ describe('the cancel that removes an instance asks first', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    const first = (await screen.findAllByRole('button', { name: /remove the instance/i }))[0]
+    const first = (await screen.findAllByRole('button', { name: /remove the crew/i }))[0]
     await u.click(first)
     expect(api.cloudLaunchCancel).not.toHaveBeenCalled()
     const warning = await screen.findByTestId('cancel-remove-warning')
@@ -854,21 +856,21 @@ describe('the cancel that removes an instance asks first', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    await u.click((await screen.findAllByRole('button', { name: /remove the instance/i }))[0])
+    await u.click((await screen.findAllByRole('button', { name: /remove the crew/i }))[0])
     await u.click(await screen.findByRole('button', { name: /Keep setting up/i }))
     expect(screen.queryByTestId('cancel-remove-warning')).not.toBeInTheDocument()
     expect(api.cloudLaunchCancel).not.toHaveBeenCalled()
   })
 
   it('does not make stopping a sign-in ask twice', async () => {
-    // That click keeps the instance and the crew row: a confirm there is ceremony,
+    // That click keeps the crew and the crew row: a confirm there is ceremony,
     // and ceremony everywhere is what makes a real warning invisible.
     useJob(withCode('LIVE', { status: 'awaiting_signin' as const }))
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    await u.click(await screen.findByRole('button', { name: /keep the instance/i }))
+    await u.click(await screen.findByRole('button', { name: /keep the crew/i }))
     await waitFor(() => expect(api.cloudLaunchCancel).toHaveBeenCalled())
     expect(screen.queryByTestId('cancel-remove-warning')).not.toBeInTheDocument()
   })
@@ -943,7 +945,7 @@ describe('the two cancels do not look alike', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    const removes = (await screen.findAllByRole('button', { name: /remove the instance/i }))[0]
+    const removes = (await screen.findAllByRole('button', { name: /remove the crew/i }))[0]
     expect(removes.className).toMatch(/danger/)
   })
 
@@ -955,7 +957,7 @@ describe('the two cancels do not look alike', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetup(u)
 
-    const keeps = await screen.findByRole('button', { name: /keep the instance/i })
+    const keeps = await screen.findByRole('button', { name: /keep the crew/i })
     expect(keeps.className).not.toMatch(/danger/)
   })
 })
@@ -1037,7 +1039,7 @@ describe('the step details these fixtures put on screen', () => {
   // The card renders `step.detail` verbatim, so a fixture that invents one tests
   // — and screenshots — a screen that does not ship. Both fixtures drifted once:
   // they still said "Added to your crews." after the backend had moved to
-  // "Added to your instances.". Pin them to their source instead.
+  // "Added to Your crews.". Pin them to their source instead.
   const read = (rel: string): string =>
     readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
   const details = STEPS_REGISTERED.flatMap(step =>

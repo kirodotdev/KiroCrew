@@ -689,7 +689,7 @@ If the desktop app should act only as a client for this remote gateway, turn off
 its supervised gateway releases port 5476. Start the tunnel, verify the health
 probe below, and only then reopen the app. Turning the switch off does not create
 or supervise a tunnel; on the next launch the app expects a gateway to already
-answer on port 5476. A connected entry on the Instances page does not satisfy
+answer on port 5476. A connected entry on the Remote Crew page does not satisfy
 this requirement because those tunnels are supervised by the local gateway
 itself and use separate loopback ports.
 

@@ -204,7 +204,7 @@ describe('RemoteCrewPanel', () => {
 
   it('refreshes the crew list when a launch finishes, without waiting for a manual reload', async () => {
     // Switching tabs does not remount the panel, so nothing would invalidate the
-    // instances cache and the brand-new crew would stay missing from Your instances.
+    // instances cache and the brand-new crew would stay missing from Your crews.
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [RUNNING_JOB] })
     vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'done' as const })
@@ -707,7 +707,7 @@ describe('RemoteCrewPanel', () => {
     const card = (await screen.findByText(/WXYZ-1234/)).closest('div')?.parentElement
     expect(card).toBeTruthy()
     const page = document.body.textContent ?? ''
-    expect(page).toMatch(/leave the page or switch instances and it keeps going/i)
+    expect(page).toMatch(/leave the page or switch crews and it keeps going/i)
     expect(page).not.toMatch(/quit the app/i)
     expect(page).not.toMatch(/get a notification/i)
   })
@@ -781,8 +781,8 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote instance management is off/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Enable remote instance management/i })).toBeInTheDocument()
+    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Enable remote crew management/i })).toBeInTheDocument()
   })
 
   it('does not flash the tabbed UI before showing the disabled state', async () => {
@@ -798,14 +798,14 @@ describe('RemoteCrewPanel', () => {
 
     // While loading: a spinner, no tabs, no form.
     expect(screen.getByText(/Loading/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your instances/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Set up a new one/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Enable remote instance management/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
 
     // After the 403 resolves: transitions directly to the disabled card.
     rejectInstances(new ApiError(403, 'instances feature is disabled'))
-    expect(await screen.findByText(/Remote instance management is off/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your instances/i })).not.toBeInTheDocument()
+    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
   })
 
   it('distinguishes cloud crews from hand-added machines, and shows an in-progress launch', async () => {
@@ -865,7 +865,7 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     expect(await screen.findByText(/gateway exploded/i)).toBeInTheDocument()
-    expect(screen.queryByText(/No instances yet/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No crews yet/i)).not.toBeInTheDocument()
     // A retry sits with the error, in addition to the header's refresh control.
     expect(screen.getAllByRole('button', { name: /Refresh/i }).length).toBeGreaterThan(1)
   })
@@ -1361,7 +1361,7 @@ describe('RemoteCrewPanel', () => {
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(await screen.findByRole('button', { name: /^Launch$/ })).toBeInTheDocument()
       // One choice is not a choice: no selector, and nothing asking the question.
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
       expect(
         screen.queryByRole('button', { name: /AWS EC2 in your own account/i }),
       ).not.toBeInTheDocument()
@@ -1382,7 +1382,7 @@ describe('RemoteCrewPanel', () => {
 
       // Every renderable row is offered by its SERVER-authored label; two rows may
       // share one kind, so the selector is per row, not per renderer.
-      expect(await screen.findByText(/Where should the new instance run/i)).toBeInTheDocument()
+      expect(await screen.findByText(/Where should the new crew run/i)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'AWS EC2 in your own account' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Amazon DevSpace (PDX)' })).toBeInTheDocument()
       const second = screen.getByRole('button', { name: 'Amazon DevSpace (IAD)' })
@@ -1519,7 +1519,7 @@ describe('RemoteCrewPanel', () => {
 
       await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
-      expect(await screen.findByText(/no way to create an instance that this dashboard can draw/i)).toBeInTheDocument()
+      expect(await screen.findByText(/no way to create a crew that this dashboard can draw/i)).toBeInTheDocument()
       expect(screen.queryByText(/Before you start/i)).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /^Launch$/ })).not.toBeInTheDocument()
       // (With no remembered lane the AWS probe fires before the list arrives, on
@@ -1567,7 +1567,7 @@ describe('RemoteCrewPanel', () => {
       // One renderable row is left, so there is no selector and no unpickable card.
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(screen.queryByText('Nobody draws me')).not.toBeInTheDocument()
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
     })
 
     it('falls back to the built-in form when the provisioners endpoint fails', async () => {
@@ -1584,7 +1584,7 @@ describe('RemoteCrewPanel', () => {
       await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
       // The failure is said, not swallowed: an ErrorNotice above the form names
       // it and offers the agent hand-off, while the form itself stays usable.
       expect(await screen.findByRole('alert')).toHaveTextContent(/not found|Could not read which ways/i)

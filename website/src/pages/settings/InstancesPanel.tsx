@@ -1,7 +1,7 @@
 /**
  * InstancesPanel — legacy control plane for remote Kiro Crew instances
  * reachable over SSH tunnels (add / edit / connect / disconnect / diagnose).
- * No longer routed as a settings tab: Settings → Remote Instances renders
+ * No longer routed as a settings tab: Settings → Remote Crew renders
  * RemoteCrewPanel, which reuses AddInstanceForm and StatusBadge from this
  * file. This panel is the *control plane* only — it does not
  * embed remote dashboards. Once an instance is connected here, switch into it

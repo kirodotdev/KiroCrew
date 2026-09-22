@@ -896,7 +896,7 @@
       "label": "Chat on a crew",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.chat-on-a-crew",
-      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
+      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
     },
     {
       "id": "developer.crew-members",
@@ -934,11 +934,11 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
-      "id": "developer.remote-instance-sessions",
-      "label": "Remote instance sessions",
+      "id": "developer.remote-crew-sessions",
+      "label": "Remote crew sessions",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.remote-instance-sessions",
-      "description": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
+      "route": "/settings/developer?highlight=developer.remote-crew-sessions",
+      "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
     },
     {
       "id": "developer.run-a-local-gateway",
@@ -1077,7 +1077,7 @@
     },
     {
       "id": "instances.enable-remote-crew-management",
-      "label": "Enable remote instance management",
+      "label": "Enable remote crew management",
       "tab": "instances",
       "route": "/settings/instances?highlight=key%3Ainstances.enabled",
       "configKey": "instances.enabled"

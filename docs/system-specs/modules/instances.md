@@ -6,19 +6,19 @@ SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
 below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
 per-instance (`connection_method`) — see §13.
 
-> **Naming — "Remote Instances".** The user-facing surfaces label this feature
-> **Remote Instances**: the Settings section (*Settings → Remote Instances*), the
-> top-header switcher group ("Remote Instances" / "Switch instance"), and the
+> **Naming — "Remote Crew".** The user-facing surfaces label this feature
+> **Remote Crew**: the Settings section (*Settings → Remote Crew*), the
+> top-header switcher group ("Remote Crews" / "Switch crew"), and the
 > keyboard shortcuts. This is deliberately distinct from the product name
 > **Kiro Crew** and from an agent **crew** (an assistant with its own
-> workspace/memory — `kiroCrewAgentsPage`, the Crew Members page). Earlier UI copy called
-> this feature "Remote Crew"; that wording was retired in favour of "instance" to
-> match the code and config it already sits on (`/api/instances`,
-> `instances.json`, `InstancesPanel`, EC2 `instance_id` / `ssm_target`). Only the
-> **displayed strings** changed — i18n key names and internal identifiers
-> (including the `remoteCrewPanel` component/key namespace) are unchanged, so
-> "crew" as a shorthand for an instance still appears in code and in this spec's
-> prose below.
+> workspace/memory — `kiroCrewAgentsPage`, the Crew Members page). The **code and
+> config** underneath use "instance" throughout (`/api/instances`,
+> `instances.json`, `InstancesPanel`, EC2 `instance_id` / `ssm_target`), so a
+> displayed "crew" and a stored "instance" are the same thing seen from two
+> sides. i18n key names and internal identifiers (including the
+> `remoteCrewPanel` component/key namespace) track the code, not the label, and
+> this spec's prose below uses "instance" wherever it is describing the
+> registry, the tunnel or the EC2 box rather than the surface.
 
 > **Section numbers in this document are an API.** `src/kiro_crew/cloud/connect.py`
 > cites "instances.md §9" from two docstrings (the module docstring and
@@ -28,7 +28,7 @@ per-instance (`connection_method`) — see §13.
 Code: `src/kiro_crew/instances/` (registry, tunnel manager, port allocator, token
 mint, diagnostics, injection validation, run-marker) plus
 `src/kiro_crew/dashboard/handlers_instances.py` (control plane) and the frontend
-`InstanceTabBar` / `InstancesViewport` / `Settings → Remote Instances` surfaces.
+`InstanceTabBar` / `InstancesViewport` / `Settings → Remote Crew` surfaces.
 
 ---
 
@@ -90,7 +90,7 @@ kirocrew config set instances.enabled true
 kirocrew restart
 ```
 
-Settings → Remote Instances offers the same toggle (it PATCHes
+Settings → Remote Crew offers the same toggle (it PATCHes
 `instances.enabled` through `/api/config/kirocrew`) and then shows a
 "restart required" hint, because the flag is only consulted in the gateway's
 `on_startup` hook.
@@ -121,7 +121,7 @@ after startup and a restart is still pending.
  |  Dashboard SPA                                                        |
  |   |- InstanceTabBar    switcher dropdown: Local + crews with intent   |
  |   |- InstancesViewport  warm <iframe>s: http://<host>:<port>/?token=  |
- |   +- Settings > Remote Instances  add/edit/connect/diagnose/remove    |
+ |   +- Settings > Remote Crew  add / edit / connect / diagnose / remove |
  |            | owner-only JSON API (SEL-audited)                        |
  |  dashboard/handlers_instances.py                                      |
  |            |                                                          |
@@ -609,8 +609,8 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 ## 8. Using it (step by step)
 
 1. **Enable** on the hub: `kirocrew config set instances.enabled true && kirocrew restart`
-   (or the Settings → Remote Instances toggle, then a restart).
-2. Open the dashboard and go to **Settings → Remote Instances**. This panel is the
+   (or the Settings → Remote Crew toggle, then a restart).
+2. Open the dashboard and go to **Settings → Remote Crew**. This panel is the
    control plane only; it does not embed remote dashboards.
 3. **Add** an instance:
    - *Name*: any label.
@@ -881,7 +881,7 @@ used by the managed path.
 
 ### Provisioning from the dashboard (`/api/cloud/*`)
 
-The Remote Instances settings page can create an EC2 instance in the user's own AWS
+The Remote Crew settings page can create an EC2 instance in the user's own AWS
 account without dropping to the CLI. `dashboard/handlers_cloud.py` exposes the
 launcher behind the same owner-only guard as `/api/instances/*`: an
 authenticated owner (`request["user"]`), non-Slack, POSIX only, `403` otherwise.
@@ -976,7 +976,7 @@ whose current variable parts are all charset-bound literals.
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
-| Settings → Remote Instances shows the opt-in card | `instances.enabled` is false. Set it and restart. |
+| Settings → Remote Crew shows the opt-in card | `instances.enabled` is false. Set it and restart. |
 | Enabled but the panel says "not active" | The flag was set after the gateway started; the SSH manager is created at startup only. Restart. |
 | Iframe is blank or black | The pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |

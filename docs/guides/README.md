@@ -13,7 +13,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [docker-troubleshooting.md](docker-troubleshooting.md) | Diagnosing common Docker deployment issues. |
 | [remote-and-mobile.md](remote-and-mobile.md) | Running 24/7 on a remote host, keeping it alive as a service, and reaching it from a phone over a tunnel. |
 | [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md) | How a cloud-launched instance is reached through the Instances hub: the native AWS SSM transport vs the legacy SSH-over-`ProxyCommand` path. |
-| [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Instance gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
+| [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Crew gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
 | [adding-a-remote-provisioner.md](adding-a-remote-provisioner.md) | Contributing a SECOND way to create a remote instance: the `remote_provisioners` seam, the five-method `LaunchEngine`, which launch machinery is inherited rather than reimplemented, and two worked lanes (a container task, a managed dev-environment service over SSH). |
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
 | [enterprise-mcp-governance.md](enterprise-mcp-governance.md) | Running Kiro Crew on an enterprise Kiro account (IAM Identity Center / API key) whose administrator allow-lists MCP servers through a registry: why features go silently missing, and the two-sided fix. Also the admin-facing rollout for **central policy distribution** — publishing one `security_policy.json` that every host fetches, caches and re-fetches. |

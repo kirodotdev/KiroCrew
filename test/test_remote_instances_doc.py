@@ -1,4 +1,4 @@
-"""The packaged Remote Instances page's code-coupled claims are pinned to the code.
+"""The packaged Remote Crew page's code-coupled claims are pinned to the code.
 
 ``scripts/docs_lint.py`` gates a doc's paths and links, never what it claims, so
 ``src/kiro_crew/docs/remote-instances.md`` is free to quote a config key that was
@@ -64,7 +64,7 @@ def test_the_opt_in_is_still_off_by_default(doc_flat: str) -> None:
     """The page opens by saying the feature is off until you turn it on."""
     from kiro_crew.config.sections import InstancesConfig
 
-    assert InstancesConfig().enabled is False, "the page says Remote Instances is opt-in"
+    assert InstancesConfig().enabled is False, "the page says Remote Crew is opt-in"
     assert "off by default" in doc_flat
 
 
@@ -200,8 +200,8 @@ def test_the_two_feature_previews_the_page_sends_users_to_still_exist(doc_flat: 
         ), f"the page names the {key} card, which Feature Previews no longer renders"
 
     labels = (ROOT / "website" / "src" / "i18n" / "locales" / "en.json").read_text(encoding="utf-8")
-    assert '"remote_instance_sessions": "Remote instance sessions"' in labels
-    assert "Feature Previews → Remote instance sessions" in doc_flat
+    assert '"remote_instance_sessions": "Remote crew sessions"' in labels
+    assert "Feature Previews → Remote crew sessions" in doc_flat
 
     manual = (ROOT / "website" / "src" / "i18n" / "locales" / "en.manual.json").read_text(
         encoding="utf-8"

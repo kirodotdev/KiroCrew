@@ -12,8 +12,9 @@ session's topics out to sub-sessions. It is retired — see
 (`/members`, served by `dashboard/handlers/members.py` and `members.py` in the
 table below), where each crew is a standing agent with its own thread.
 
-A crew is not a *Remote Instance* (see [instances.md](instances.md)), and not
-an Issue Radar *crew*, which is that app's own repository work crew
+A crew is not a *Remote Crew* — that is another machine running its own Kiro Crew
+gateway, which this one reaches through a tunnel (see [instances.md](instances.md))
+— and not an Issue Radar *crew*, which is that app's own repository work crew
 (see [issue-radar.md](issue-radar.md)).
 
 ## Components

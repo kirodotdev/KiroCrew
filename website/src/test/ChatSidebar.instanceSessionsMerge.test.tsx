@@ -238,7 +238,7 @@ function renderSidebar({
   return { ...view, store, setActiveSlot: (active: string) => view.rerender(tree(active)) }
 }
 
-describe('ChatSidebar – remote instance sessions merge into the list', () => {
+describe('ChatSidebar – remote crew sessions merge into the list', () => {
   // `mockReset` + re-declared default, not `mockClear`: the failure cases here
   // queue rejections, and an unconsumed `mockRejectedValueOnce` (or a persistent
   // `mockRejectedValue`) survives `mockClear` and poisons the NEXT case — which
@@ -324,7 +324,7 @@ describe('ChatSidebar – remote instance sessions merge into the list', () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     // The other half of the same honesty rule, and the one that used to vanish
     // entirely: when `['instances']` itself fails there is no instance to name, so
-    // the "checking remote instances…" line simply disappeared and the list looked
+    // the "checking remote crews…" line simply disappeared and the list looked
     // complete. No peer query is ever created in this state, which is why one
     // banner covers both failures.
     listInstancesMock.mockRejectedValueOnce(new Error('crew refused to list instances'))
@@ -333,7 +333,7 @@ describe('ChatSidebar – remote instance sessions merge into the list', () => {
     const notice = await screen.findByTestId('instance-sessions-error')
     expect(notice.textContent).toMatch(/could not be listed/i)
     expect(notice.textContent).toContain('crew refused to list instances')
-    expect(container.textContent).not.toMatch(/checking remote instances/i)
+    expect(container.textContent).not.toMatch(/checking remote crews/i)
   })
 
   it('shows no remote-sessions error banner while the preview flag is off', async () => {
@@ -785,7 +785,7 @@ describe('ChatSidebar – remote instance sessions merge into the list', () => {
     expect(localRow!.querySelector('[data-testid="session-peer-destination"]')).toBeNull()
   })
 
-  it('says it is checking remote instances while the first remote fetch is outstanding', async () => {
+  it('says it is checking remote crews while the first remote fetch is outstanding', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     let releaseSlots: ((rows: unknown[]) => void) | undefined
     instanceChatSlotsMock.mockReturnValueOnce(
@@ -795,12 +795,12 @@ describe('ChatSidebar – remote instance sessions merge into the list', () => {
 
     // Same honesty rule the unreachable-instance notice exists for: until the
     // peer answers, the list is incomplete and must not imply otherwise.
-    await waitFor(() => expect(container.textContent).toMatch(/checking remote instances/i))
+    await waitFor(() => expect(container.textContent).toMatch(/checking remote crews/i))
     releaseSlots?.([
       { key: 'chat-9', title: 'REMOTE arrived row', last_turn_ts: new Date(Date.now() - 120_000).toISOString() },
     ])
     await waitFor(() => expect(container.textContent).toContain('REMOTE arrived row'))
-    expect(container.textContent).not.toMatch(/checking remote instances/i)
+    expect(container.textContent).not.toMatch(/checking remote crews/i)
   })
 
   it('reveals the LOCAL session when a colliding remote row sorts above it', async () => {

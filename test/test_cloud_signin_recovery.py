@@ -1536,7 +1536,7 @@ class TestSigninPromptReprobe:
         store = state.cloud_launch_store
         job.error = "Interrupted — Kiro Crew restarted while the Kiro sign-in was running."
         job.step(lj.STEP_CONNECT).detail = (
-            "Added to your instances. Finish the Kiro sign-in before connecting."
+            "Added to Your crews. Finish the Kiro sign-in before connecting."
         )
         store.save(job)
 

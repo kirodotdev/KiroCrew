@@ -93,7 +93,7 @@ describe('crew switcher at phone widths', () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: state })
     // The trailing dropdown is the affordance that must survive: it lists every
     // crew, including the one on screen, so it alone is a complete switcher.
-    expect(await screen.findByLabelText('Switch instance')).toBeTruthy()
+    expect(await screen.findByLabelText('Switch crew')).toBeTruthy()
     // The nav button shares the group and must not be crowded out of the DOM.
     expect(screen.getByLabelText('Open menu')).toBeTruthy()
   })

@@ -58,7 +58,7 @@ FEATURE_TITLES: dict[str, str] = {
     "notifications": "Notifications",
     "computer-use": "Computer Use",
     "instances": "Multi-instance shell",
-    "remote-instances": "Remote instances & cloud launch",
+    "remote-instances": "Remote crews & cloud launch",
     "popout": "Popouts & embeds",
     "auth": "Authentication & sign-in",
     "onboarding": "Onboarding",

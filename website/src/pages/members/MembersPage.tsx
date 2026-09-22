@@ -2093,7 +2093,7 @@ export default function MembersPage() {
               the secondary `Btn`, unlike its ghost `+`
               sibling: an icon-plus-word with no edge reads as a status chip,
               and a reader who takes it for a label never opens the panel.
-              The panel's actions lead into Settings > Remote Instances,
+              The panel's actions lead into Settings > Remote Crew,
               which owns the set-up flow. */}
           <button
             onClick={() => setDeployOpen(true)}

@@ -538,17 +538,17 @@ describe('Settings > Developer > Feature Previews', () => {
     for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
   })
 
-  it('carries a remote-instance-sessions card that starts off and writes only its own key', async () => {
+  it('carries a remote-crew-sessions card that starts off and writes only its own key', async () => {
     // The toggle IS this preview's whole affordance — it has no page of its own,
     // so nothing else on the page would reveal a card that failed to render or
     // an onChange wired to the wrong constant. Four flags now share one section,
     // and a shared write would release every unfinished surface at once, so the
     // sibling assertions are the point rather than padding.
     //
-    // `/^remote instance sessions$/i` anchored: the card's description also says
+    // `/^remote crew sessions$/i` anchored: the card's description also says
     // "Sessions list", and the accessible name is the label alone.
     renderTab()
-    const toggle = () => screen.getByRole('switch', { name: /^remote instance sessions$/i })
+    const toggle = () => screen.getByRole('switch', { name: /^remote crew sessions$/i })
     expect(toggle().getAttribute('aria-checked')).toBe('false')
     await act(async () => { toggle().click() })
     expect(localStorage.getItem(PREVIEW_INSTANCE_SESSIONS)).toBe('1')

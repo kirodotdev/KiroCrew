@@ -46,6 +46,15 @@ describe('resolveLegacyHighlightId', () => {
     expect(resolveLegacyHighlightId('chat.pin-the-latest-prompt')).toBe('chat.pin-the-latest-turn')
   })
 
+  // The peer-session preview card was relabeled from "Remote instance sessions"
+  // back to "Remote crew sessions" when the remote-crew vocabulary was restored;
+  // registry ids derive from the label, so a bookmark saved against the old id
+  // would silently stop highlighting.
+  it('maps the peer-session preview id to its restored crew form', () => {
+    expect(resolveLegacyHighlightId('developer.remote-instance-sessions'))
+      .toBe('developer.remote-crew-sessions')
+  })
+
   it('every migrated target exists in the generated registry', () => {
     const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
     for (const legacy of [
@@ -53,6 +62,7 @@ describe('resolveLegacyHighlightId', () => {
       'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
       'voice.aws-profile-polly', 'voice.aws-region-polly',
       'chat.pin-the-latest-prompt',
+      'developer.remote-instance-sessions',
     ]) {
       const target = resolveLegacyHighlightId(legacy)
       expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)

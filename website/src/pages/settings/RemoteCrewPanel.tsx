@@ -1,5 +1,5 @@
 /**
- * RemoteCrewPanel — Settings → Remote Instances. One page, two tabs:
+ * RemoteCrewPanel — Settings → Remote Crew. One page, two tabs:
  *
  *   1. "Your crews" (default) — the machines you can switch to from the top
  *      header: any in-progress cloud launch (a durable gateway job), the
@@ -187,7 +187,7 @@ const DEFAULT_REGION = 'us-east-1'
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
 const isTerminal = (j: LaunchJob) => TERMINAL.includes(j.status)
 
-/** The connect (register) step ran — the crew exists under Your instances, so a
+/** The connect (register) step ran — the crew exists under Your crews, so a
  *  sign-in can be re-run against it rather than provisioning anything. */
 const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'connect' && st.state === 'done')
 
@@ -417,7 +417,7 @@ function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, noti
   notice?: SigninNotice | null
   compact?: boolean
   /** The crew this block belongs to, when nothing directly above the block names
-   *  it. In `Your instances` the block sits among several rows, and an unnamed
+   *  it. In `Your crews` the block sits among several rows, and an unnamed
    *  "This crew" there attributes the sign-in to whichever row the reader
    *  happened to be looking at. The setup card names the crew in its own header,
    *  so it passes nothing and keeps the shorter title. */
@@ -761,7 +761,7 @@ function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel:
   const active = job.steps.find(s => s.state === 'active')
   return (
     // Stacked below `sm`, side by side above it. The cancel label names its blast
-    // radius ("Cancel and remove the instance"), and that long string in a
+    // radius ("Cancel and remove the crew"), and that long string in a
     // `shrink-0` slot left the crew name and the step line one word per line on a
     // phone -- for the whole provisioning wait. Wrapping the label instead would
     // keep the squeeze; the button gets its own line.

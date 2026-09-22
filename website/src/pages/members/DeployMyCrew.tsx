@@ -39,7 +39,7 @@
  * therefore a past event ("finished"), said in the past tense, never a present
  * state. See `deployLiveness`.
  *
- * Every navigation lands in Settings > Remote Instances, which owns creating,
+ * Every navigation lands in Settings > Remote Crew, which owns creating,
  * repairing and tearing down a launch. This panel never writes.
  *
  * HONEST NUMBERS ONLY. Both numbers derive from the launch record the gateway

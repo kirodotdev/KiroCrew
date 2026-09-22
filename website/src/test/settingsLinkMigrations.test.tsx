@@ -27,10 +27,10 @@ describe('Settings-link migrations', () => {
         components={[<SettingsLink key="l" tab="instances" />]}
       />,
     )
-    const link = screen.getByRole('link', { name: /Settings → Remote Instances/ }) as HTMLAnchorElement
+    const link = screen.getByRole('link', { name: /Settings → Remote Crew/ }) as HTMLAnchorElement
     expect(link.getAttribute('href')).toBe('/settings/instances')
     // The sentence around the link survives the wrapping.
-    expect(screen.getByText(/This tab stays until you disconnect the instance in/)).toBeInTheDocument()
+    expect(screen.getByText(/This tab stays until you disconnect the crew in/)).toBeInTheDocument()
   })
 
   it('Capabilities destinations are spelled by the rail and tab label keys, not by the sentence', () => {

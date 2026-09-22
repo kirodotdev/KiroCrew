@@ -179,8 +179,8 @@ export default function SettingsPage() {
     navigate({ pathname: target, search: rest ? `?${rest}` : '' }, { replace: true })
   }, [search, pathname, navigate])
 
-  // An embedded instance pane can't manage remote instances (single-level by
-  // design) — hide the Instances tab so a pane can't connect onward.
+  // An embedded instance pane can't manage remote crews (single-level by
+  // design) — hide the Remote Crew tab so a pane can't connect onward.
   const embedded = isEmbeddedPane()
   // Update nudge: dot on the About entry while an update is available. Two
   // independent sources, because they cover different installs: the Electron

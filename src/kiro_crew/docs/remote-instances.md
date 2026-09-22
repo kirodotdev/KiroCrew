@@ -1,6 +1,6 @@
-# Remote Instances
+# Remote Crew
 
-A **Remote Instance** is another machine running its own Kiro Crew gateway — a
+A **Remote Crew** is another machine running its own Kiro Crew gateway — a
 dev box, an EC2 instance, the server in your closet — that this dashboard can
 reach. One dashboard becomes the hub: you switch between your own machine and
 each remote one from a strip in the top header, start a session that runs over
@@ -18,7 +18,7 @@ sorts them out.
 
 ## Turning it on
 
-Remote Instances is off by default and is read only at gateway startup, so it
+Remote Crew is off by default and is read only at gateway startup, so it
 takes a restart:
 
 ```bash
@@ -26,7 +26,7 @@ kirocrew config set instances.enabled true
 kirocrew restart
 ```
 
-**Settings → Remote Instances** has the same toggle and then tells you a restart
+**Settings → Remote Crew** has the same toggle and then tells you a restart
 is still pending. With the flag off, that page shows an opt-in card and the
 instances API answers `403`. If the page says the feature is enabled but not
 active, the flag was set after the gateway started — restart.
@@ -67,7 +67,7 @@ launcher registers that record for you, and the task runs no gateway to reach.
 
 ## Adding an instance
 
-**Settings → Remote Instances** is the control plane. It does not embed anything
+**Settings → Remote Crew** is the control plane. It does not embed anything
 — that is the switcher's job.
 
 1. Open the panel and add an instance.
@@ -152,7 +152,7 @@ send.
 
 The opposite direction: sessions a connected machine **owns** can be merged into
 this dashboard's Sessions list. Turn on **Settings → Developer → Feature
-Previews → Remote instance sessions**. With it off, nothing is fetched at all.
+Previews → Remote crew sessions**. With it off, nothing is fetched at all.
 
 Peer rows are ordered with your local ones by recency and badged with the machine
 that owns them. Clicking one opens it **here**: the hub binds a fresh local
@@ -209,11 +209,11 @@ confused. They are unrelated.
 | What you see | What it is | Where it lives |
 |---|---|---|
 | **Kiro Crew** | The product. | Everywhere |
-| **Remote Instance** — also "crew" in some UI copy, as in *New chat on crew* | Another machine running its own gateway, reached over a tunnel. This page. | Settings → Remote Instances, the header switcher |
+| **Remote Crew** — spelled `instance` in config, routes and code (`instances.json`, `/api/instances`) | Another machine running its own gateway, reached over a tunnel. This page. | Settings → Remote Crew, the header switcher |
 | **Crew Member**, or **crewmate** | A named assistant you keep: its own workspace, memory, agent template and model, with a standing thread. Not a machine. | The Crew Members page — see [crew-members.md](crew-members.md) |
 | **Issue Radar crew** | An automation worker configured on a repository that claims an issue and moves it through the triage phases. Not a machine and not an assistant you chat with. | The Issue Radar Pipeline tab — see [issue-radar-pipeline.md](issue-radar-pipeline.md) |
 
-The short test: a Remote Instance is a **host**, a crewmate is an **assistant**,
+The short test: a Remote Crew is a **host**, a crewmate is an **assistant**,
 an Issue Radar crew is a **worker on a repo**.
 
 ## Tuning
@@ -262,7 +262,7 @@ reports the first broken link, which is usually the whole answer.
 
 ## Next
 
-- [Setting up a Remote Instance on EC2](../../../docs/guides/remote-crew-on-ec2.md) — both transports end to end, plus the EC2 gotchas.
+- [Setting up Remote Crew on an EC2 instance](../../../docs/guides/remote-crew-on-ec2.md) — both transports end to end, plus the EC2 gotchas.
 - [Native SSM vs legacy SSH](../../../docs/guides/cloud-instance-ssm-vs-ssh.md) — how a cloud-launched machine is reached.
 - [Remote and mobile access](../../../docs/guides/remote-and-mobile.md) — installing and running a gateway on the far machine in the first place.
 - [dashboard.md](dashboard.md) — the dashboard the switcher sits in.

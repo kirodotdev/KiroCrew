@@ -435,7 +435,7 @@ describe('the panel', () => {
     expect(screen.queryByTestId('deploy-address')).toBeNull()
     // The one door out: a muted link into Settings, where the launch row and
     // its Cancel live; it names the navigation and the destination.
-    expect(screen.getByTestId('deploy-action-manage').textContent).toBe('Open Remote Instances in Settings')
+    expect(screen.getByTestId('deploy-action-manage').textContent).toBe('Open Remote Crew in Settings')
     // The deploy runs in the gateway, so Close does not cancel it, and the
     // dialog says so rather than leaving the reader to babysit the window.
     expect(screen.getByTestId('deploy-close-hint').textContent).toContain('window')
@@ -657,7 +657,7 @@ describe('the panel', () => {
     expect(line.textContent).toContain('eu-west-1')
     expect(line.textContent).toContain('Details')
     // A warning about a paying machine ends with where to stop it.
-    expect(line.textContent).toContain('Remote Instances in Settings')
+    expect(line.textContent).toContain('Remote Crew in Settings')
   })
 
   it('does not name an earlier launch the registry no longer holds', async () => {
@@ -679,7 +679,7 @@ describe('the panel', () => {
     expect(screen.queryByTestId('deploy-state-deployed')).toBeNull()
     expect(state.textContent).toContain('A deploy finished')
     expect(state.textContent).toContain('eu-west-1')
-    expect(state.textContent).toContain('no longer in your instances list')
+    expect(state.textContent).toContain('no longer in Your crews')
     // Nothing to reach: no address, no stats, no console pointer for a machine
     // the registry says is gone.
     expect(screen.queryByTestId('deploy-address')).toBeNull()
@@ -699,7 +699,7 @@ describe('the panel', () => {
     renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
     const state = await screen.findByTestId('deploy-state-finished')
     expect(state.textContent).toContain('cannot tell whether it is still running')
-    expect(state.textContent).not.toContain('no longer in your instances list')
+    expect(state.textContent).not.toContain('no longer in Your crews')
     expect(screen.getByTestId('deploy-check-console').textContent).toContain('AWS console')
     // The sentence is the link, to that region's console, in a new tab.
     const link = screen.getByTestId('deploy-console-link')
@@ -770,7 +770,7 @@ describe('the panel', () => {
     // ... and the line names the older one, still billing behind it.
     const line = screen.getByTestId('deploy-earlier-live')
     expect(line.textContent).toContain('eu-west-1')
-    expect(line.textContent).toContain('Remote Instances in Settings')
+    expect(line.textContent).toContain('Remote Crew in Settings')
   })
 
   it('makes no launch read at all while it is closed', async () => {

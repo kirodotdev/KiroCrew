@@ -7884,7 +7884,7 @@ function ChatSidebar({
                  *  the Crew Members page's: the landing is what is unfinished, since the
                  *  created session opens in that crew's pane and the local list
                  *  does not yet show live remote sessions. Toggle lives in
-                 *  Settings > Remote Instances. */}
+                 *  Settings > Remote Crew. */}
                 {remoteCrewChatPreview && warmCrews.length > 0 && (() => {
                   const crewRows = warmCrews.map(c => (
                     <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}
@@ -9309,7 +9309,7 @@ function ChatSidebar({
                   ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
                 // Additive rather than a boolean OR: here the backend result IS the
                 // source list, so filtering `history` instead would drop backend-only hits.
-                // Remote instance sessions are NOT merged here: they are the peer's
+                // Remote crew sessions are NOT merged here: they are the peer's
                 // LIVE slots and join the live sessions list above. Merging them into
                 // history as well would render each remote row twice.
                 const filteredHistory = (() => {

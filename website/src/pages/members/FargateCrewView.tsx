@@ -16,10 +16,10 @@
  *   starting   the launch is still moving                 -> wait; the launch in Settings
  *   running    ECS reports RUNNING (or on the way up)      -> the task in the ECS console
  *   stopping   ECS reports it on the way down              -> wait
- *   stopped    ECS reports STOPPED, with ECS's own reason  -> Open Remote Instances in Settings
- *   missing    ECS no longer lists the task                -> Open Remote Instances in Settings
+ *   stopped    ECS reports STOPPED, with ECS's own reason  -> Open Remote Crew in Settings
+ *   missing    ECS no longer lists the task                -> Open Remote Crew in Settings
  *   unknown    the read did not complete                   -> Try again
- *   failed     the launch itself did not finish            -> Open Remote Instances in Settings
+ *   failed     the launch itself did not finish            -> Open Remote Crew in Settings
  *
  * A STATUS IS A READING AT AN INSTANT. Every ECS-derived sentence carries the
  * time of the read ("As of 16:32") and a Check again. A task on its way up or

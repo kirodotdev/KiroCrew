@@ -753,7 +753,7 @@ def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
     s.detail = detail
     c = job.step(STEP_CONNECT)
     if c.state == STEP_DONE:
-        c.detail = "Added to your instances."
+        c.detail = "Added to Your crews."
 
 
 def _abort_signin(handle: SigninHandle, job: "Optional[LaunchJob]" = None) -> bool:
@@ -1019,9 +1019,9 @@ def run_launch(
         # when the sign-in did not confirm; the card's icon shows a waiting key in
         # that case and this is the sentence under it.
         s.detail = (
-            "Added to your instances."
+            "Added to Your crews."
             if job.signin_detected
-            else "Added to your instances. Finish the Kiro sign-in before connecting."
+            else "Added to Your crews. Finish the Kiro sign-in before connecting."
         )
         store.save(job)
 

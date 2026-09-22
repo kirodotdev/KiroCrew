@@ -54,7 +54,7 @@ under `scenarios/` says how the lane checks it.
 | Notifications (`notifications`) | 5 | 2 | 0 | 1 | 0 | 2 |
 | Computer Use (`computer-use`) | 3 | 0 | 1 | 2 | 0 | 0 |
 | Multi-instance shell (`instances`) | 2 | 1 | 0 | 0 | 1 | 0 |
-| Remote instances & cloud launch (`remote-instances`) | 4 | 0 | 1 | 0 | 1 | 2 |
+| Remote crews & cloud launch (`remote-instances`) | 4 | 0 | 1 | 0 | 1 | 2 |
 | Popouts & embeds (`popout`) | 6 | 0 | 4 | 2 | 0 | 0 |
 | Authentication & sign-in (`auth`) | 3 | 2 | 0 | 0 | 0 | 1 |
 | Onboarding (`onboarding`) | 4 | 0 | 4 | 0 | 0 | 0 |
@@ -328,7 +328,7 @@ Priorities: P0 10 · P1 36 · P2 162 · P3 61. Deduped from 387 raw records.
 |---|---|---|---|---|---|---|
 | P1 | `sidebar-blank-instance` | As a first-time user, I want to see what the dashboard offers with no content, so that I know how to begin. | `/chat` | empty | smoke | 1 |
 
-## Remote instances & cloud launch (`remote-instances`)
+## Remote crews & cloud launch (`remote-instances`)
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
@@ -485,8 +485,8 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | needs-secret | `settings-channels-whatsapp-configure` | channels | Configure WhatsApp channel (enable, who can message, how the agent joins in) | Real account pairing required for connection; conditional form rendering could be nightly. |
 | needs-secret | `stt-dictation-aws-transcribe` | voice | Dictate through AWS Transcribe after granting consent | Billed AWS service with real credentials and network; also needs a microphone, which the target lacks. |
 | needs-secret | `voice-polly-synthesis-with-aws-consent` | voice | Select Amazon Polly and pass the AWS consent gate before hearing a reply | A paid AWS service reached with real credentials over the network; the target has neither. |
-| needs-secret | `shell-instances-tab-bar-switching` | instances | Switch between Local and remote instance panes | Needs a reachable remote instance over a tunnel. |
-| needs-secret | `settings-instances-remote-crew` | remote-instances | Add a remote instance and switch panes via the header tab strip | Connecting needs a real peer and tunnel credentials; the form and empty tab strip are nightly-testable. |
+| needs-secret | `shell-instances-tab-bar-switching` | instances | Switch between Local and remote crew panes | Needs a reachable remote instance over a tunnel. |
+| needs-secret | `settings-instances-remote-crew` | remote-instances | Add a remote crew and switch panes via the header tab strip | Connecting needs a real peer and tunnel credentials; the form and empty tab strip are nightly-testable. |
 | needs-secret | `themes-install-pack-from-github` | themes | Install a theme pack from a github.com URL | Needs outbound network to github.com (and a sandbox backend), unavailable on the target. |
 | excluded | `chat-mcp-app-inline-render` | chat | An MCP App renders inline in chat as a sandboxed iframe with a live bridge | Not reachable on the fake backend/no-network target. |
 | excluded | `chat-workflow-launch-and-completion-cards` | chat | workflow_run shows a launch card and later a completion card in chat | Depends on real MCP tool execution by a model, absent on the fake ACP target. |

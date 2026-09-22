@@ -61,7 +61,7 @@ const STEPS_DONE = [
   { key: 'preflight', label: 'Check your AWS setup', state: 'done', detail: '' },
   { key: 'provision', label: 'Create the instance and install Kiro Crew', state: 'done', detail: 'i-0abc123456789def0' },
   { key: 'signin', label: 'Sign in to Kiro', state: 'done', detail: '' },
-  { key: 'connect', label: 'Connect', state: 'done', detail: 'Added to your instances.' },
+  { key: 'connect', label: 'Connect', state: 'done', detail: 'Added to Your crews.' },
 ]
 
 /** A launch that finished on the built-in EC2 lane three hours ago. */
@@ -309,8 +309,8 @@ for (const theme of ['dark', 'light']) {
     fail(`${theme}: the faces row rendered nothing`)
   }
   const actions = await countActions(dialog)
-  if (actions.length !== 1 || actions[0] !== 'Open Remote Instances in Settings') {
-    fail(`${theme}: exactly one action, "Open Remote Instances in Settings", got ${JSON.stringify(actions)}`)
+  if (actions.length !== 1 || actions[0] !== 'Open Remote Crew in Settings') {
+    fail(`${theme}: exactly one action, "Open Remote Crew in Settings", got ${JSON.stringify(actions)}`)
   }
   if (await dialog.getByTestId('deploy-details').count()) fail(`${theme}: no Details line without a launch`)
   // The button only opens Settings, and the line under it says so: a reader
@@ -341,7 +341,7 @@ world.jobs = [DEPLOYING_JOB]
   const actions = await countActions(dialog)
   // Nothing acts on the launch here; the one control is the muted link into
   // Settings, where the launch row and its Cancel live.
-  if (actions.length !== 1 || actions[0] !== 'Open Remote Instances in Settings') fail(`${theme}: a moving launch offers only the link into Settings, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 1 || actions[0] !== 'Open Remote Crew in Settings') fail(`${theme}: a moving launch offers only the link into Settings, got ${JSON.stringify(actions)}`)
   if (!(await dialog.getByTestId('deploy-action-manage').isVisible())) fail(`${theme}: the manage link is missing`)
   if (await dialog.getByTestId('deploy-address').count()) fail(`${theme}: no target row while deploying`)
   if (!/Closing this window does not stop the deploy\./.test(text)) fail(`${theme}: the close hint is missing`)
@@ -362,8 +362,8 @@ world.jobs = [SIGNIN_JOB]
   const text = await dialog.innerText()
   if (!/Your crew is waiting for you to sign in\./.test(text)) fail(`${theme}: the sign-in sentence is missing`)
   const actions = await countActions(dialog)
-  if (actions.length !== 1 || actions[0] !== 'Open Remote Instances in Settings to sign in') {
-    fail(`${theme}: exactly one action, "Open Remote Instances in Settings to sign in", got ${JSON.stringify(actions)}`)
+  if (actions.length !== 1 || actions[0] !== 'Open Remote Crew in Settings to sign in') {
+    fail(`${theme}: exactly one action, "Open Remote Crew in Settings to sign in", got ${JSON.stringify(actions)}`)
   }
   if (!/Closing this window does not stop the deploy\./.test(text)) fail(`${theme}: the sign-in state needs the close reassurance too`)
   await page.screenshot({ path: `${OUT}/04-signin-${theme}.png`, clip: await clipOf(dialog) })
@@ -477,8 +477,8 @@ world.jobs = [FAILED_JOB]
   const actions = await countActions(dialog)
   // ErrorNotice carries its own agent hand-off; the panel's single action is the deploy button.
   const own = actions.filter((a) => !/ask/i.test(a))
-  if (own.length !== 1 || own[0] !== 'Open Remote Instances in Settings') {
-    fail(`${theme}: exactly one panel action, "Open Remote Instances in Settings", got ${JSON.stringify(actions)}`)
+  if (own.length !== 1 || own[0] !== 'Open Remote Crew in Settings') {
+    fail(`${theme}: exactly one panel action, "Open Remote Crew in Settings", got ${JSON.stringify(actions)}`)
   }
   if (!/Nothing is created until you confirm the steps there\./.test(text)) fail(`${theme}: the cost/undo line must accompany the deploy button here too`)
   await page.screenshot({ path: `${OUT}/08-failed-${theme}.png`, clip: await clipOf(dialog) })
@@ -608,7 +608,7 @@ world.instances = REGISTERED
   const page = await openMembers(theme)
   const dialog = await openPanel(page, 'deploy-state-failed')
   const line = dialog.getByTestId('deploy-earlier-live')
-  if (!/An earlier deploy is still running in us-east-1\. You can delete it under Remote Instances in Settings; its identifiers are in Details\./.test(await line.innerText())) {
+  if (!/An earlier deploy is still running in us-east-1\. You can delete it under Remote Crew in Settings; its identifiers are in Details\./.test(await line.innerText())) {
     fail(`${theme}: the live earlier launch must be named: ${JSON.stringify(await line.innerText())}`)
   }
   if (await dialog.getByTestId('deploy-address').count()) fail(`${theme}: the failed headline offers no target row`)
@@ -631,14 +631,14 @@ world.instances = []
   const dialog = await openPanel(page, 'deploy-state-finished')
   const text = await dialog.innerText()
   if (/Your crew is deployed in the cloud\./.test(text)) fail(`${theme}: a torn-down machine must not read as deployed`)
-  if (!/A deploy finished 3h 1[2-4]m ago in us-east-1\. Its machine is no longer in your instances list\./.test(text)) {
+  if (!/A deploy finished 3h 1[2-4]m ago in us-east-1\. Its machine is no longer in Your crews\./.test(text)) {
     fail(`${theme}: the gone sentence is missing or stale: ${JSON.stringify(text)}`)
   }
   if (await dialog.getByTestId('deploy-address').count()) fail(`${theme}: no target for a machine that is gone`)
   if (await dialog.getByTestId('deploy-check-console').count()) fail(`${theme}: no console pointer when the registry answered`)
   if (await dialog.getByTestId('deploy-earlier-live').count()) fail(`${theme}: no earlier-launch line: the only launch is the gone one`)
   const actions = await countActions(dialog)
-  if (actions.length !== 1 || !/Open Remote Instances in Settings/.test(actions[0])) fail(`${theme}: the gone state offers the set-up flow, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 1 || !/Open Remote Crew in Settings/.test(actions[0])) fail(`${theme}: the gone state offers the set-up flow, got ${JSON.stringify(actions)}`)
   if (!/Nothing is created until you confirm the steps there\./.test(text)) fail(`${theme}: the where-it-leads line is missing`)
   await page.screenshot({ path: `${OUT}/14-finished-gone-${theme}.png`, clip: await clipOf(dialog) })
   console.log(`wrote 14 (${theme})`)
@@ -659,7 +659,7 @@ world.instancesAnswer = { status: 403, body: { error: 'Instances feature is disa
   const dialog = await openPanel(page, 'deploy-state-finished')
   const text = await dialog.innerText()
   if (/Your crew is deployed in the cloud\./.test(text)) fail(`${theme}: an unreadable registry must not read as deployed`)
-  if (/no longer in your instances list/.test(text)) fail(`${theme}: an unreadable registry must not read as gone`)
+  if (/no longer in Your crews/.test(text)) fail(`${theme}: an unreadable registry must not read as gone`)
   if (!/A deploy finished 3h 1[2-4]m ago in us-east-1\. This page cannot tell whether it is still running\./.test(text)) {
     fail(`${theme}: the unknown sentence is missing or stale: ${JSON.stringify(text)}`)
   }
@@ -701,7 +701,7 @@ world.instances = [
   const row = await dialog.getByTestId('deploy-address').innerText()
   if (!/i-0abc123456789def0/.test(row)) fail(`${theme}: the target row belongs to the newest machine: ${JSON.stringify(row)}`)
   const line = dialog.getByTestId('deploy-earlier-live')
-  if (!/An earlier deploy is still running in eu-west-1\. You can delete it under Remote Instances in Settings; its identifiers are in Details\./.test(await line.innerText())) {
+  if (!/An earlier deploy is still running in eu-west-1\. You can delete it under Remote Crew in Settings; its identifiers are in Details\./.test(await line.innerText())) {
     fail(`${theme}: the older registered machine must be named under the deployed headline: ${JSON.stringify(await line.innerText())}`)
   }
   await page.screenshot({ path: `${OUT}/16-deployed-over-live-${theme}.png`, clip: await clipOf(dialog) })
@@ -723,7 +723,7 @@ world.instancesAnswer = { status: 500, body: { error: 'registry unavailable' } }
   const dialog = await openPanel(page, 'deploy-error')
   const text = await dialog.innerText()
   if (!/Could not read your deployments\./.test(text)) fail(`${theme}: the read error sentence is missing: ${JSON.stringify(text)}`)
-  if (/cannot tell whether it is still running|is deployed in the cloud|no longer in your instances list/.test(text)) fail(`${theme}: a failed registry read must not render any state`)
+  if (/cannot tell whether it is still running|is deployed in the cloud|no longer in Your crews/.test(text)) fail(`${theme}: a failed registry read must not render any state`)
   if (!(await dialog.getByRole('button', { name: /ask the agent/i }).count())) fail(`${theme}: the read error must offer the agent hand-off`)
   if (!(await dialog.getByTestId('deploy-retry').isVisible())) fail(`${theme}: the read error must offer Try again`)
   await page.screenshot({ path: `${OUT}/17-registry-failed-${theme}.png`, clip: await clipOf(dialog) })
@@ -766,7 +766,7 @@ world.taskAnswer = {
   if (!(await dialog.getByTestId('deploy-task-read-at').isVisible())) fail(`${theme}: the read instant stays on a stopped task`)
   if (/is running|is deployed/.test(text)) fail(`${theme}: a stopped task must not read as running`)
   const actions = await countActions(dialog)
-  if (actions.length !== 2 || !/Check again/.test(actions[0]) || !/Open Remote Instances in Settings/.test(actions[1])) fail(`${theme}: a stopped task offers Check again and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 2 || !/Check again/.test(actions[0]) || !/Open Remote Crew in Settings/.test(actions[1])) fail(`${theme}: a stopped task offers Check again and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
   await page.screenshot({ path: `${OUT}/18-task-stopped-${theme}.png`, clip: await clipOf(dialog) })
   console.log(`wrote 18 (${theme})`)
   await page.close()
@@ -789,7 +789,7 @@ world.taskAnswer = { status: 200, body: { ...TASK_RUNNING, task: null } }
   if (await dialog.getByTestId('deploy-task-console-link').count()) fail(`${theme}: no console link to a task ECS does not list`)
   if (!(await dialog.getByTestId('deploy-task-check').isVisible())) fail(`${theme}: Check again stays on an unlisted task, so the reader can re-verify`)
   const actions = await countActions(dialog)
-  if (actions.length !== 2 || !/Check again/.test(actions[0]) || !/Open Remote Instances in Settings/.test(actions[1])) fail(`${theme}: an unlisted task offers Check again and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 2 || !/Check again/.test(actions[0]) || !/Open Remote Crew in Settings/.test(actions[1])) fail(`${theme}: an unlisted task offers Check again and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
   await page.screenshot({ path: `${OUT}/19-task-missing-${theme}.png`, clip: await clipOf(dialog) })
   console.log(`wrote 19 (${theme})`)
   await page.close()
@@ -847,7 +847,7 @@ world.jobs = [{
   if (!/Closing this window does not stop the deploy\./.test(text)) fail(`${theme}: the close hint is missing`)
   if (await dialog.getByTestId('deploy-task-read-at').count()) fail(`${theme}: no task read on a launch that has not recorded a task`)
   const actions = await countActions(dialog)
-  if (actions.length !== 1 || !/Open Remote Instances in Settings/.test(actions[0])) fail(`${theme}: the starting state offers the door to Settings and nothing else, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 1 || !/Open Remote Crew in Settings/.test(actions[0])) fail(`${theme}: the starting state offers the door to Settings and nothing else, got ${JSON.stringify(actions)}`)
   await page.screenshot({ path: `${OUT}/21-task-starting-${theme}.png`, clip: await clipOf(dialog) })
   console.log(`wrote 21 (${theme})`)
   await page.close()
@@ -884,7 +884,7 @@ world.jobs = [{
   if (await dialog.getByTestId('deploy-task-read-at').count()) fail(`${theme}: no task read on a launch that recorded no task`)
   if (/is running|has stopped|no longer lists/.test(text)) fail(`${theme}: a failed launch earns no task state`)
   const actions = await countActions(dialog)
-  if (actions.length !== 2 || !/ask the agent/i.test(actions[0]) || !/Open Remote Instances in Settings/.test(actions[1])) fail(`${theme}: the failed launch offers the agent hand-off and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
+  if (actions.length !== 2 || !/ask the agent/i.test(actions[0]) || !/Open Remote Crew in Settings/.test(actions[1])) fail(`${theme}: the failed launch offers the agent hand-off and the set-up door, nothing else, got ${JSON.stringify(actions)}`)
   await page.screenshot({ path: `${OUT}/22-task-failed-${theme}.png`, clip: await clipOf(dialog) })
   console.log(`wrote 22 (${theme})`)
   await page.close()
