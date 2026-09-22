@@ -1,6 +1,6 @@
 ---
 title: Overload resilience — durable task queue, admission before allocation, adaptive concurrency, layered recovery
-status: accepted
+status: partial
 revision: v3
 author: bolichen
 created: 2026-09-12

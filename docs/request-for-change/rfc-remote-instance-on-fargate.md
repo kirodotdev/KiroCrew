@@ -1,6 +1,6 @@
 ---
 title: Remote Instance on Fargate
-status: in-progress
+status: partial
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07

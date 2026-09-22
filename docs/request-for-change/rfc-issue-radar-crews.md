@@ -1,11 +1,11 @@
 ---
 title: Issue Radar Crews — autonomous issue workers with a public claim ledger
-status: implemented
+status: partial
 revision: v1
 author: kirocrew agent session, directed by diwm
 created: 2026-08-08
-last-audited: 2026-08-08
-audited-at: f2aa4c8bb
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,12 +14,13 @@ superseded-by: []
 ---
 # RFC: Issue Radar Crews — autonomous issue workers with a public claim ledger
 
-Status: implemented in
+Status: partial — the crew ledger and its agent surface are implemented in
 `src/kiro_crew/apps/builtins/issue_radar/backend/crew_runtime.py`,
 `src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py`,
 `src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py`, and the Issue
 Radar Crews UI under `website/src/apps/issue-radar/`; the two agent ledger tools
-live in `src/kiro_crew/mcp_tools/apps.py`. The body below remains the historical
+live in `src/kiro_crew/mcp_tools/apps.py`. This audit did not re-classify every
+later phase of the RFC. The body below remains the historical
 design record and differs from the shipped implementation where later safety
 work superseded a mechanism (for example, a scoped `SafetyOverride` replaces
 `slot._trust`).

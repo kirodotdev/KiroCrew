@@ -1,6 +1,6 @@
 ---
 title: Arrival provenance filing — file every arriving session under Imported / from <sender>
-status: accepted
+status: implemented
 author: chenmingwei23
 created: 2026-09-20
 last-audited: 2026-09-20

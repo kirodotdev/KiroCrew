@@ -73,10 +73,13 @@ skill or the card's Deploy button — fills in the rest.
 
 ## Model — two static deployment paths
 
-- **Operator-script app path:** one shared base stack per account
-  (`kirocrew-deploy-base`) holds a private S3 bucket + global CloudFront
-  distribution. Each app is uploaded under `/<slug>/`; backend scripts attach
-  `/<slug>/api/*` to that same distribution.
+- **Operator-script app path — cheap AND instant:** one shared base stack per
+  account (`kirocrew-deploy-base`): a private S3 bucket + a global CloudFront
+  distribution. Created once (~5-15 min for the first CloudFront propagation —
+  the only slow step on this path). Each deploy is just an S3 upload under a
+  `/<slug>/` prefix + a CloudFront invalidation → **seconds**. No per-deploy
+  stack, no per-deploy cold-create. Backend scripts attach `/<slug>/api/*` to
+  that same distribution.
 - **Artifact publish / MCP preview path:** `POST /api/deploy/deploy` uses the core
   Python engine and creates per-site `kirocrew-web-*` S3 + CloudFront + OAC
   infrastructure. It does not wrap `scripts/deploy.sh` and must not be mixed with
@@ -89,7 +92,7 @@ skill or the card's Deploy button — fills in the rest.
 
 Every deploy runs in its **own isolated, agent-debuggable context** — deploys are
 long (CloudFront cold-create), fail in ways that need iterative fixing (IAM,
-CloudFormation, framework quirks), and are context-heavy. There are two entry
+boto3 `Decimal`, framework quirks), and are context-heavy. There are two entry
 points; the isolation source differs:
 
 - **The "Deploy" button (preferred — solves discoverability).** Most users won't
@@ -222,13 +225,15 @@ When the user asks to deploy / ship / share a demo:
    in-contract; brownfield: wrap the existing server in a Lambda shim. Fail loud
    on Tier-3 apps rather than shipping something broken.
 1. Confirm the resulting app dir has `public/` (an `index.html` at its static
-   root) and, if there is a backend, `api/`.
-2. Resolve the AWS profile from the **core registry**: user-picked > registry
-   default > legacy config. If unconfigured, send the user to `/deploy`. Confirm
-   the account returned by `POST /api/deploy/verify` before previewing real,
-   billable infrastructure; never guess a production account.
-3. Scan the app for credentials and internal data (see Security). Credential
-   findings are a hard stop.
+   root) and, if there's a backend, `api/`.
+2. Resolve the AWS profile from the **core registry** (see "AWS config" above):
+   user-picked > registry default > legacy config; if unconfigured, send the
+   user to the Artifact Deploy page (`/deploy`) for the one-time setup. Then
+   **confirm which account** (verify endpoint returns the account id) -- this
+   provisions REAL resources that cost money. Never guess a prod account; if
+   unsure, ask.
+3. **Scan the app for internal tokens** first (see Security) — this content is
+   going to the public internet. Credential findings are a hard stop.
 4. Choose one coherent deployment path:
    - **Static artifact or static-only app:** call the MCP `deploy_artifact` tool
      once. Use `artifact_slug` only for `widget`, `html`, or `markdown`; a
@@ -243,13 +248,19 @@ When the user asks to deploy / ship / share a demo:
    `override_scan`; it stores a pending entry and returns instructions for the
    human to confirm on the Artifact Deploy page. Relay that the link is public
    with no authentication. A human may override only non-credential findings in
-   the dashboard; credential findings cannot be overridden.
-6. After the human confirms and deployment succeeds, immediately back-fill the
-   artifact's `webapp_metadata` (`public_url`, resolved profile/region, lifecycle,
-   TTL, teardown, and infrastructure identifiers) **before** endpoint
-   verification. A verification timeout must not leave a live site shown as a
-   draft.
-7. Return the public URL + TTL and offer teardown or promotion to persistent.
+   the dashboard; credential findings cannot be overridden. The API path behind
+   the tool provides: schema validation, fail-closed scan gate, confirm gate,
+   SEL audit trail, and `_deny_restricted` session guard. **Do NOT bypass it by
+   calling deploy scripts directly.**
+6. Return the public URL + the TTL.
+   **Important ordering**: after the human confirms and the deploy succeeds,
+   **immediately back-fill the artifact's `webapp_metadata`** (`public_url`,
+   `lifecycle.status`, `deploy_target`) before performing endpoint verification
+   (HTTP GET on the deployed URL). The endpoint check can timeout (~30s+) or be
+   killed by a session budget wall — if the metadata write happens after it, a
+   timeout leaves the artifact in a stale "draft" state even though the deploy
+   succeeded. Metadata first, verify second.
+7. Offer tear down / promote-to-persistent.
 
 ### MCP `deploy_artifact` tool (preview-only in MCP-tool-capable sessions)
 
@@ -290,11 +301,10 @@ audit, preview, or human-confirmation boundary.
 ## Security
 
 - **Credentials hard rule** — the agent NEVER executes credential writes and
-  NEVER reads credentials files. "Configure a profile" means: send the user to
-  `/deploy`, where they run `aws configure sso` or `aws configure --profile X`
-  themselves and register the resulting profile. The console can write only the
-  allowlisted `region` and `credential_process` config keys, never credential
-  values. After a successful deploy,
+  NEVER reads credentials files. "Configure a profile" means: *generate* the
+  commands (`aws configure --profile X` / `ada profile add ...`) for the USER to
+  run in their terminal, then verify with
+  `aws sts get-caller-identity --profile X` (a read). After a successful deploy,
   fill `webapp_metadata.deploy_target.profile` with the profile NAME (display
   only — never a credential value).
 - **Least privilege** — never run with admin credentials if a scoped deploy profile

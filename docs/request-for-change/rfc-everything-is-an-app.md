@@ -3,8 +3,8 @@ title: Everything is an App — the core/app boundary and what makes a surface r
 status: partial
 author: zezhexu
 created: 2026-08-18
-last-audited: 2026-08-18
-audited-at: e6b06685e
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []

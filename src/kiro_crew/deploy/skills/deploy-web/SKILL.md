@@ -6,15 +6,18 @@ description: Publish a Kiro Crew artifact (HTML / markdown / widget) to a public
 # deploy-web — publish artifacts to your own AWS
 
 deploy-web is a **core Artifact Deploy feature**, not an installable built-in app. The
-deploy/recall/destroy mechanics run as deterministic Python in `src/kiro_crew/deploy/`
-(which shells to the `aws` CLI with `--profile`). This legacy-named skill is the
-**chat-native preview front door**. You never read, store, or manage credentials, and you
-never perform an IAM write — the `/deploy` console generates policy text the user applies.
+deploy/recall/destroy mechanics run as **deterministic Python** in `src/kiro_crew/deploy/`
+(it shells to the `aws` CLI with `--profile`). This skill is the **chat-native front
+door** + the **AI-guided one-time setup**. You never read, store, or manage credentials,
+and you never perform an IAM write — the `/deploy` console generates policy text the user
+applies themselves (design Option A).
 
-> **UI entry point:** publishing is initiated from an **artifact's page** (Publish →
-> "Publish to public web (your AWS)"), backed by `POST /api/deploy/deploy`. The core
-> **Artifact Deploy console** at `/deploy` owns profile setup, health checks, pending
-> confirmations, and Manage Sites (Recall/Destroy); it has no static-artifact publish form.
+> **UI entry point (Route B, design §1.1):** publishing is initiated from an **artifact's
+> page** (Publish → "Publish to public web (your AWS)"), backed by `POST /api/deploy/deploy`.
+> The core **Artifact Deploy console** at `/deploy` owns profile setup, health checks,
+> pending confirmations, and Manage Sites (Recall/Destroy); it has no static-artifact
+> publish form. The chat-native path (this skill) still drives the same deploy endpoint,
+> through the preview-only `deploy_artifact` tool.
 
 ## Hard rules (never violate)
 - **Never** run `aws configure`, `aws sso login`, `ada`, or any credential-establishing
@@ -23,7 +26,7 @@ never perform an IAM write — the `/deploy` console generates policy text the u
 - **Never** auto-approve deploy / recall / destroy. Each is per-invocation confirmed.
 - Publishing makes content **world-readable**. Always state this before deploying.
 
-## Backend endpoints (dashboard/core contract)
+## Backend endpoints (dashboard/core contract; do not reinvent the aws flow)
 
 Agents use the MCP `deploy_artifact` tool for previews; they do not self-confirm by
 posting these routes. Profile management, pending confirmation, Recall, and Destroy belong
@@ -58,30 +61,37 @@ config keys; it never writes credential values. Click **Verify access**, which c
 
 ### Step 2 — Permissions (console generates; user applies)
 The console calls `GET /api/deploy/iam-policy`, shows the JSON, and tells the user to
-apply it themselves to a dedicated role/identity. For fullstack it also emits the required
-`kirocrew-deploy-app-boundary` policy. You do **not** apply IAM. A second read-only Verify
-check still means "access reachable, not fully verified — first deploy is the real test."
+apply it themselves (AWS console or their own `aws iam` command) on a dedicated
+role/identity. For fullstack it also emits the required `kirocrew-deploy-app-boundary`
+policy. Offer only: **"I'll apply it myself"** (the only apply path) / **"Explain it"**.
+You do **not** apply IAM. A second read-only Verify check still means "access reachable,
+not fully verified — first deploy is the real test."
 
 ### Step 3 — Done
-Confirm the core registry contains the profile name + region only (plus display-only
-account/verification metadata). Offer to preview the first static artifact.
+Confirm config is saved (profile name + region only). Offer to publish the first artifact.
 
 ## Deploy flow (MCP preview, human execution)
 
 1. For `widget`, `html`, or `markdown`, call `deploy_artifact` with `site_id` and
    `artifact_slug`. For a built static directory, use `local_dir`; a `webapp` artifact's
    text is only a summary and is rejected as `artifact_slug`.
-2. The tool calls the preview path **without** `confirm` or `override_scan`. It never
+2. The tool calls the preview path **without** `confirm` or `override_scan` → you get a
+   preview that states the **public** nature + a pre-publish scan summary. It never
    creates infrastructure. A clean preview or overridable non-credential scan finding is
    stored under **Pending confirmations** on `/deploy`.
-3. State that the URL will be world-readable with no authentication, then direct the human
-   to review and confirm there. Credential findings are a hard block; only the dashboard
-   can explicitly override non-credential findings. Never self-confirm.
-4. If confirmation returns `AccessDenied`, surface `missing_statement`; the user updates
-   their generated policy and retries. Deploys are idempotent.
-5. A new distribution returns `status: "InProgress"` and may need up to ~15 minutes to
-   become reachable. Watch **Deployments** on `/deploy`; re-deploys reuse the site and
-   normally go live in seconds.
+3. Show the preview to the user, state that the URL will be world-readable with no
+   authentication, then direct the human to review and confirm there. If the scan
+   blocked, show the flagged findings: credential findings are a hard block, and only the
+   dashboard can explicitly override non-credential findings after the user says publish
+   anyway. Never self-confirm.
+4. On `AccessDenied` (502 with `missing_statement`), tell the user the exact IAM statement
+   to add to the policy, then they re-run (deploys are idempotent).
+5. After a successful **first** deploy (`status: "InProgress"`, `reused: false`), tell the
+   user the site is **provisioning** and can take **up to ~15 minutes** to go live while
+   CloudFront finishes its first global deployment — until then the URL returns a DNS / "site
+   can't be reached" error (this is expected, not a failure). They can watch the live status
+   flip from **In Progress → Deployed** in the **Deployments** card on `/deploy` (or via
+   `GET /api/deploy/list`). Re-deploys to an existing site go live in seconds.
 
 For an app with a backend, this skill is not the fullstack path: the operator must use the
 `artifact-deploy` skill's `scripts/deploy-app.sh`, which places static and API resources
