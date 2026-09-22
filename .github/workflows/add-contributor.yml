@@ -232,22 +232,36 @@ jobs:
           git add README.md
           git commit -m "docs: add new contributors to README"
 
-          # Skip the push when the rolling branch's TREE already matches the
+          # Skip the push when the rolling branch's README already matches the
           # remote branch's tip. Without this, rebuilding from a moved base each
           # day mints a new commit for identical content, and every force-push
           # dismisses the open PR's stale-review approvals and re-runs CI -- which
           # can perpetually starve auto-merge where a human approval is required.
-          # Comparing trees (not commit SHAs) ignores the base rebase, so a push
-          # happens only when the README content actually changed. Fetch the
-          # remote branch first (absent on the first-ever run, hence `|| true`).
+          # Compare the README BLOB, which is the only file this job authors. The
+          # root tree cannot answer the question: `git checkout -B` above rebuilds
+          # the branch from the current base, so the root tree carries every other
+          # tracked file too and differs whenever anything at all lands on the
+          # base, which in an active repository is every day. Fetch the remote
+          # branch first (absent on the first-ever run, hence `|| true`). A remote
+          # branch carrying no README.md leaves that substitution empty, which
+          # compares unequal and pushes -- the safe direction.
+          #
+          # Record the decision in a flag instead of leaving the step: a matching
+          # README means there is nothing to PUSH, not nothing to do. The PR
+          # lookup, the create and the auto-merge arming below all still have to
+          # run, or a rolling branch whose pull request was closed while its
+          # entries were still missing from the base would never get another one.
+          push_needed=true
           git fetch origin "$BRANCH" 2>/dev/null || true
           remote_commit="$(git rev-parse --verify --quiet FETCH_HEAD || true)"
           if [ -n "$remote_commit" ] \
-            && [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "$remote_commit^{tree}")" ]; then
-            echo "Rolling branch tree unchanged; skipping push (no README delta since last run)."
-            exit 0
+            && [ "$(git rev-parse HEAD:README.md)" = "$(git rev-parse "$remote_commit:README.md")" ]; then
+            echo "Rolling branch README unchanged; skipping push (no README delta since last run)."
+            push_needed=false
           fi
-          git push --force-with-lease origin "$BRANCH"
+          if [ "$push_needed" = true ]; then
+            git push --force-with-lease origin "$BRANCH"
+          fi
 
           if gh pr view "$BRANCH" --repo "$REPO" --json state --jq .state 2>/dev/null | grep -q OPEN; then
             echo "PR already open for $BRANCH; updated in place."
