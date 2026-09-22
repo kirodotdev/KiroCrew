@@ -195,7 +195,7 @@ describe("crew webview containment", () => {
     const card = await renderDocked();
     const open = card.querySelector('[data-testid="crew-webview-expand"]');
     expect(open).not.toBeNull();
-    expect(open?.textContent?.trim()).toBe("Open dashboard");
+    expect(open?.textContent?.trim()).toBe("Expand dashboard");
   });
 
   it("caps the docked stat rows so nothing has to be truncated", async () => {

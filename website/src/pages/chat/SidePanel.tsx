@@ -246,11 +246,12 @@ export type SidePanelWithholdable = ViewKind | 'terminal' | 'app'
 export interface SidePanelLeadingTab {
   /** Stable id — the value `usePanelTabs` stores as `activeId` while this tab is
    *  focused. Must not collide with a `TabKind` (`'summary'` is the chat's
-   *  session-summary view; the Members page uses `'crew-summary'`). */
+   *  session-summary view; the Crewmates page uses `'crew-notes'`,
+   *  `'crew-work-log'` and `'crew-dashboard'`). */
   id: string
   title: string
-  /** Strip glyph. A host may pass an identity (the member's avatar) rather than a
-   *  kind glyph — this is the one chip whose icon `KIND_ICON` does not own. */
+  /** Strip glyph. The host owns it — these are the chips whose icon `KIND_ICON`
+   *  does not own. */
   icon: ReactNode
   /** Body, rendered only while the tab is active (it is a query-driven view
    *  like the category tabs, not a mounted editor). */
@@ -306,12 +307,15 @@ interface SidePanelProps {
    *  Members page) omits it; a host whose panel the user opens and dismisses
    *  (ChatPage, and the same page's narrow-window overlay) passes it. */
   onClose?: () => void
-  /** A HOST-OWNED tab pinned AHEAD of the pinned views: non-closable, not
-   *  draggable, never in the + menu, and not stored in the tab bucket — the
-   *  host renders its body. The Crew Members page uses it for the member's
-   *  summary. Its `id` must also be handed to `usePanelTabs` as `leadingId` so
-   *  a fresh strip opens on it and focus can fall back to it. */
-  leadingTab?: SidePanelLeadingTab
+  /** HOST-OWNED tabs pinned AHEAD of the pinned views, in strip order:
+   *  non-closable, not draggable, never in the + menu, and not stored in the
+   *  tab bucket — the host renders each body. The Crewmates page uses three
+   *  (Notes / Work log / Dashboard). Their ids must not collide with a
+   *  `TabKind`, and the same ids must be handed to `usePanelTabs` as
+   *  `leadingIds` so a fresh strip opens on the first one and focus can fall
+   *  back to it. Always labelled: several icon-only chips would be unlabelled
+   *  navigation. */
+  leadingTabs?: readonly SidePanelLeadingTab[]
   /** Extra px the panel must keep clear to its left, on top of the shell's
    *  own reserve (`measureSidePanelReservedW`, which budgets the nav rail and a
    *  minimum chat pane). A host with more siblings in the row — the Members
@@ -471,7 +475,7 @@ export default function SidePanel({
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
-  leadingTab, extraReserveW = 0, hiddenViews, onActiveTabChange,
+  leadingTabs, extraReserveW = 0, hiddenViews, onActiveTabChange,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   // A permanent panel has no close control and answers Escape with nothing —
@@ -557,14 +561,14 @@ export default function SidePanel({
   const visibleTabs = useMemo(() => (hiddenViews ? tabs.filter(t => !isWithheld(t.kind)) : tabs), [tabs, hiddenViews, isWithheld])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
-    if (leadingTab && storedActiveId === leadingTab.id) return storedActiveId
+    if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId
     if (visibleTabs.some(t => t.id === storedActiveId)) return storedActiveId
-    return leadingTab?.id ?? visibleTabs[0]?.id ?? null
-  }, [storedActiveId, visibleTabs, leadingTab])
+    return leadingTabs?.[0]?.id ?? visibleTabs[0]?.id ?? null
+  }, [storedActiveId, visibleTabs, leadingTabs])
   // The fallback is REPORTED to the host, never written back into the store.
   // A host reads what the strip actually shows through `onActiveTabChange`
-  // (the Members page gates the Crew summary's data reads on it), so a stored
-  // focus on a withheld tab cannot leave the summary on its loading placeholders
+  // (the Crewmates page gates each leading tab's data reads on it), so a stored
+  // focus on a withheld tab cannot leave a tab body on its loading placeholders
   // — while the stored focus itself survives. Writing the fallback into the
   // bucket would wipe it: a withdrawal can be TEMPORARY (the Members page
   // withholds every slot view for the moment its thread POST is in flight), and
@@ -733,21 +737,29 @@ export default function SidePanel({
             matches the active chip's corner-piece width, so a piece lands in the
             gap instead of over a neighbour. */}
         <div className="flex items-end gap-2 shrink-0 -mb-px">
-          {/* The host's leading tab, ahead of the pinned views: same pinned
-              chip (icon-only when inactive, no close control), never a
-              Reorder item — it is the strip's identity, not a document. */}
-          {leadingTab && (
-            <TabChip
-              key={leadingTab.id}
-              tab={{ title: leadingTab.title }}
-              icon={leadingTab.icon}
-              active={leadingTab.id === activeId}
-              closable={false}
-              pinned
-              onSelect={() => setActive(leadingTab.id)}
-              onClose={() => {}}
-              testId="side-panel-leading-tab"
-            />
+          {/* The host's leading tabs, ahead of the pinned views: non-closable
+              chips, never Reorder items — they are the strip's identity, not
+              documents. ALWAYS labelled (`pinned={false}`): several icon-only
+              chips would be unlabelled navigation. No `role="tablist"` here —
+              the strip already carries one on the dynamic group, and the
+              pinned chips beside these have never had their own. */}
+          {!!leadingTabs?.length && (
+            <div className="flex items-end gap-2 shrink-0" data-testid="side-panel-leading-tabs">
+              {leadingTabs.map(lt => (
+                <TabChip
+                  key={lt.id}
+                  tab={{ title: lt.title }}
+                  icon={lt.icon}
+                  active={lt.id === activeId}
+                  closable={false}
+                  pinned={false}
+                  host
+                  onSelect={() => setActive(lt.id)}
+                  onClose={() => {}}
+                  testId={`side-panel-leading-tab-${lt.id}`}
+                />
+              ))}
+            </div>
           )}
           {pinnedTabs.map(t => (
             <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
@@ -903,16 +915,16 @@ export default function SidePanel({
       {/* Content area: left + top border (square corner) so the border wraps
           only the content, NOT the tab strip above (which stays borderless). */}
       <div className="flex-1 min-h-0 relative">
-        {/* The host's leading tab body. Mounted only while active, like the
-            category views: it is a query-driven summary, not an editor whose
+        {/* The ACTIVE leading tab's body. Only that one mounts, like the
+            category views: each is a query-driven view, not an editor whose
             buffer a switch would lose. Scrolls itself — the host renders plain
             content, and this keeps the strip pinned above a long body. */}
-        {leadingTab && activeId === leadingTab.id && (
-          <div key={leadingTab.id} className="absolute inset-0 overflow-y-auto" data-testid="side-panel-leading-body">
-            {leadingTab.render()}
+        {leadingTabs?.filter(lt => lt.id === activeId).map(lt => (
+          <div key={lt.id} className="absolute inset-0 overflow-y-auto" data-testid="side-panel-leading-body" data-leading-id={lt.id}>
+            {lt.render()}
           </div>
-        )}
-        {visibleTabs.length === 0 && !leadingTab && (
+        ))}
+        {visibleTabs.length === 0 && !leadingTabs?.length && (
           /* Empty state: launcher — the available views themselves, roomy and
              clickable, instead of a hint pointing at the + menu. */
           <div className="flex items-center justify-center h-full px-6">
@@ -1523,11 +1535,14 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   )
 }
 
-function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, icon, testId }: {
+function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, testId }: {
   /** A stored tab, or — for the host's leading tab — just a title: that chip has
    *  no `kind` (it is not a `PanelTab`) and brings its own `icon`. */
   tab: Pick<PanelTab, 'title'> & Partial<Pick<PanelTab, 'kind' | 'sessionId'>>
   active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; pinned?: boolean
+  /** A host-owned leading chip: always labelled like a document tab, but named
+   *  (aria-label) like a pinned view, since it is the strip's own navigation. */
+  host?: boolean
   /** Overrides the kind-derived glyph. Required when `tab.kind` is absent. */
   icon?: ReactNode
   testId?: string
@@ -1554,7 +1569,7 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // Icon-only pinned chips have no visible text, so give them an explicit
       // accessible name + hover tooltip. Harmless (and a nice tooltip) when the
       // label is also shown.
-      aria-label={pinned ? tab.title : undefined}
+      aria-label={pinned || host ? tab.title : undefined}
       // Labeled chips CSS-truncate at max-w-[240px], so the hover tooltip is
       // the only way to read a long title in full (e.g. an MCP app's
       // server/tool identity, #9868). Icon-only chips need it as their name.

@@ -980,6 +980,152 @@ async def api_member_activity(request: web.Request) -> web.Response:
     )
 
 
+async def api_member_briefing(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/briefing?member=<name> — a crewmate's own notes, read-only.
+
+    Feeds the Crewmates page panel's Notes tab. The briefing
+    (``members/<slug>/briefing.md``) is the crewmate's self-maintained standing
+    notes — an AGENT-written file, curated by the crewmate for its future self.
+    This endpoint reads and never writes, and the panel offers no editor for
+    the file: the dashboard's file viewer reads through a redacting path and
+    its Save writes the buffer back, so any in-dashboard edit of an
+    agent-written file could replace a secret the crewmate wrote in the
+    meantime with its placeholder. The notes are edited where the crewmate
+    writes them, outside the dashboard.
+
+    The text comes from :func:`members.read_member_briefing_bounded` and
+    inherits its total contract: a missing or unreadable file reads as ``""``
+    (the normal state of a fresh crewmate — never a 404), and content past
+    ``MEMBER_BRIEFING_MAX_CHARS`` is cut at the cap with a visible marker
+    (:func:`members.cap_member_briefing`, applied AFTER redaction so the cap
+    cannot split a token past the patterns), which the panel renders as-is so
+    the human sees the same overflow the crewmate is shown. ``supported`` is :func:`members.member_briefing_supported`:
+    on platforms without ``O_NOFOLLOW`` and the pinned ancestor walk the read
+    fails closed to ``""`` and the panel explains that from the flag rather
+    than presenting an empty briefing as "no notes yet". ``updated_ts`` is the
+    file's own mtime (epoch seconds) or ``null`` when there is no file.
+    ``redacted`` and ``truncated`` each say the wire text shows less than the
+    file holds (a secret replaced by its placeholder; a tail past the cap not
+    shown), so the panel can say so above the notes instead of leaving
+    placeholders and a marker unexplained. A successful read leaves a SEL row
+    (``members.briefing.read`` / ``allowed``), as the rules read does.
+
+    ``member`` (query, REQUIRED) is the exact crew name, same posture as the
+    activity endpoint: slugification is lossy, and the exact name is echoed
+    back so the frontend keys its cache by name rather than by a slug two
+    crewmates can share -- and, as on the rules endpoint, the exact name must
+    derive this slug, exist, and be the ONLY crew that derives it: the briefing
+    is one file per slug, so for a colliding slug the notes belong to neither
+    crewmate and the read is refused (409 ``briefing_slug_ambiguous``) rather
+    than shown -- with an Edit -- as one of theirs.
+    """
+    denied = await _deny_app_caller(request, "members.briefing")
+    if denied is not None:
+        return denied
+    # Owner gate, the rules endpoint's boundary: the briefing is the crewmate's
+    # private working memory, written for its owner. Any allowed Slack user can
+    # mint a dashboard session (`!dashboard`), so the app-caller guard alone
+    # would let a non-owner colleague read notes the owner never shared. Gated
+    # before any validation or file IO, so a denial costs no read.
+    owner_denied = await require_owner_dashboard_request(request, "members.briefing.read")
+    if owner_denied is not None:
+        return owner_denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    # The briefing is a PER-SLUG file and the slug is lossy (`Code_Reviewer` and
+    # `code-reviewer` share one), so for a colliding slug the file belongs to
+    # neither crewmate cleanly: showing it as one member's notes -- with an Edit
+    # that saves over it -- would let the two overwrite each other. Same posture
+    # as the rules endpoint: verify the exact member derives this slug, exists,
+    # and is the ONLY one that does; otherwise refuse with a coded answer the
+    # panel turns into a plain sentence. Config read off-loop (file IO).
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    try:
+        if members_mod.member_slug(member, cfg) != slug:
+            return web.json_response(
+                {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+            )
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+        )
+    if member not in cfg.agents:
+        return web.json_response(
+            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+        )
+    if _member_names_for_slug(cfg, slug) != [member]:
+        return web.json_response(
+            {
+                "error": "multiple crews share this slug; their notes would be ambiguous",
+                "code": "briefing_slug_ambiguous",
+            },
+            status=409,
+        )
+
+    supported = members_mod.member_briefing_supported()
+
+    # The pinned, bounded open (text + mtime from one descriptor) is blocking
+    # file IO: one hop off the loop.
+    text, updated_ts, read_bounded = await asyncio.to_thread(
+        members_mod.read_member_briefing_bounded, slug
+    )
+
+    # Same redaction chain as the activity endpoint: the briefing is an
+    # AGENT-written file, so a token the crewmate pasted into its own notes
+    # would otherwise cross this network boundary into the browser verbatim.
+    # Run on the whole BOUNDED buffer, BEFORE the character cap: a redaction
+    # over already-capped text cannot match a token the cap split in two, and
+    # the plaintext half would cross the boundary unmatched. The cap comes
+    # after -- judged on the REDACTED length, so a briefing that only
+    # overflowed before its placeholders shrank it is shown whole -- and drops
+    # a trailing split word for the same reason (the bounded read has an edge
+    # of its own).
+    text, url_hits = _h.redact_exfiltration_urls(text)
+    text, cred_hits = _h.redact_credentials(text)
+    text, truncated = members_mod.cap_member_briefing(text, read_bounded, drop_split_tail=True)
+    # Whether the text on the wire shows less than the file holds, so the panel
+    # can say so above the notes: ``redacted`` when a placeholder replaced a
+    # secret, ``truncated`` when the marker stands in for the tail.
+    redacted = bool(url_hits or cred_hits)
+
+    # Audit the disclosure, as the rules read does: WHO read a crewmate's
+    # private notes matters as much as who was refused, and a denied-only
+    # trail cannot answer "was this boundary disclosed". Best effort -- an
+    # audit must never change the outcome.
+    try:
+        _sel().log_api_access(
+            caller=request.remote or "",
+            operation="members.briefing.read",
+            outcome="allowed",
+            source="dashboard",
+            resources=f"slug={slug}",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for members.briefing.read failed", exc_info=True)
+
+    return web.json_response(
+        {
+            "slug": slug,
+            "member": member,
+            "supported": supported,
+            "text": text,
+            "updated_ts": updated_ts,
+            "redacted": redacted,
+            "truncated": truncated,
+        }
+    )
+
+
 async def api_member_rules_get(request: web.Request) -> web.Response:
     """GET /api/members/{slug}/rules?member=<name> — user-owned permanent rules.
 

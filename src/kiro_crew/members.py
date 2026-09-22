@@ -889,6 +889,132 @@ def member_briefing_supported() -> bool:
     return bool(getattr(os, "O_NOFOLLOW", 0)) and supports_pinned_walk()
 
 
+def _briefing_pinned_target(slug: str) -> tuple[str, str]:
+    """``(resolved members root / slug, BRIEFING_FILE_NAME)`` for the pinned open.
+
+    The ROOT is resolved once (the pinned walk's "caller resolves once"
+    contract) and the member's own directory component is appended LEXICALLY,
+    never resolved: ``member_dir`` resolves ``members/<slug>`` too, and a
+    ``members/<slug>`` swapped for a symlink to a peer's directory would then
+    be followed *before* the walk begins -- the walk pins whatever the link
+    points at and reads the peer's briefing as this member's. Left lexical,
+    that component is opened with ``O_NOFOLLOW`` like every other and a link
+    there is refused, which is the property the agent-writable
+    ``members/<slug>/`` directory needs.
+    """
+    validate_slug(slug)
+    root = members_root().resolve()
+    return str(root / slug), BRIEFING_FILE_NAME
+
+
+MEMBER_BRIEFING_TRUNCATION_MARKER = "\n[... briefing truncated at cap — prune it]"
+
+
+def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
+    """The bounded, UNCAPPED briefing buffer, its mtime, and whether the read hit its bound.
+
+    The read half of :func:`read_member_briefing`, for a caller that must
+    transform the text BEFORE cutting it at :data:`MEMBER_BRIEFING_MAX_CHARS`
+    -- the dashboard's briefing endpoint redacts credentials, and a redaction
+    run over already-capped text cannot match a token the cap split in two:
+    the plaintext prefix would cross the boundary unmatched. The buffer is
+    still bounded by the read itself (``(cap + 2) * 4`` bytes; see
+    :func:`read_member_briefing`), so a token that straddles THAT edge is
+    possible too, which is why :func:`cap_member_briefing` can drop the split
+    tail. The third value is ``True`` when the file ran past the READ bound
+    (the buffer lacks the file's tail); whether the text also runs past the
+    character cap is :func:`cap_member_briefing`'s call, made on the text it
+    is given -- after any transform -- not on the raw length. The mtime is
+    from the same open as the text and ``None`` whenever the text reads as no
+    briefing. Blocking file IO.
+    """
+    try:
+        parent, name = _briefing_pinned_target(slug)
+    except (MemberSlugError, OSError, RuntimeError):
+        return "", None, False
+    byte_cap = (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
+    if not member_briefing_supported():
+        # Fail closed (see the docstring): without O_NOFOLLOW and the pinned
+        # ancestor walk there is no race-free way to refuse a symlink on an
+        # agent-writable path.
+        return "", None, False
+    try:
+        fd = open_in_pinned_parent(
+            parent,
+            name,
+            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            mode=0o600,
+            what="member briefing",
+        )
+    except (PinnedPathRefusal, OSError):
+        # Missing file/dir, a symlink refused anywhere on the pinned walk
+        # (``members/<slug>`` itself included) or the leaf, or any unreadable
+        # state — all read as "no briefing yet".
+        return "", None, False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            # A FIFO, device or socket is never a briefing; reading one can
+            # block or misbehave, so it reads as "no briefing yet".
+            return "", None, False
+        data = os.read(fd, byte_cap + 1)
+    except OSError:
+        return "", None, False
+    finally:
+        os.close(fd)
+    mtime = float(st.st_mtime)
+    truncated_bytes = len(data) > byte_cap
+    if truncated_bytes:
+        # The cut can split a multi-byte character; the tail is being
+        # truncated anyway, so drop the partial character rather than failing
+        # the whole read over it.
+        text = data[:byte_cap].decode("utf-8", errors="ignore").strip()
+    else:
+        try:
+            text = data.decode("utf-8").strip()
+        except UnicodeError:
+            return "", None, False
+    return text, mtime, truncated_bytes
+
+
+def cap_member_briefing(
+    text: str, read_bounded: bool, *, drop_split_tail: bool = False
+) -> tuple[str, bool]:
+    """Cut ``text`` at :data:`MEMBER_BRIEFING_MAX_CHARS` with the visible marker.
+
+    Returns the text and whether it was cut. ``read_bounded`` is the third
+    value of :func:`read_member_briefing_bounded`: when the read hit its byte
+    bound the buffer lacks the file's tail, so the marker is owed even when
+    what remains fits the cap. Otherwise the cut happens only when the text
+    GIVEN runs past the cap -- measured here, on the text as it is now, so a
+    caller that redacted the buffer first (the dashboard endpoint) is judged
+    on the redacted length: a briefing that only overflowed before its
+    placeholders shrank it is shown whole, with no marker and no word lost.
+
+    With ``drop_split_tail`` the cut also removes the trailing run of
+    non-whitespace characters, so the shown text never ends in the FIRST HALF
+    of a word the cap split: every credential the redaction chain knows is
+    such a run, and a token that straddles the cut (either the character cap
+    or the bounded read's own edge) would otherwise cross the wire as an
+    unmatched plaintext prefix. At most one word of the shown tail is lost to
+    it; a briefing with no whitespace at all in its first cap's worth of
+    characters reads as the marker alone, which is the fail-closed answer.
+    The prompt path keeps the plain cut: the member reads its own file, and
+    the marker is what tells it to prune.
+    """
+    text = text.strip()
+    if not read_bounded and len(text) <= MEMBER_BRIEFING_MAX_CHARS:
+        return text, False
+    head = text[:MEMBER_BRIEFING_MAX_CHARS]
+    if drop_split_tail:
+        stripped = head.rstrip()
+        cut = len(stripped)
+        while cut > 0 and not stripped[cut - 1].isspace():
+            cut -= 1
+        head = stripped[:cut].rstrip()
+    return head + MEMBER_BRIEFING_TRUNCATION_MARKER, True
+
+
 def read_member_briefing(slug: str) -> str:
     """Return a member's briefing text capped for injection, or ``""``.
 
@@ -914,7 +1040,10 @@ def read_member_briefing(slug: str) -> str:
       alone is not enough, because the member's own directory
       (``members/<slug>/``) is agent-writable too, and swapping IT for a link
       redirects the whole traversal while the leaf open still finds an
-      ordinary file (the same ancestor-swap shape the pinned walk exists to close).
+      ordinary file. That is why the walk starts from the resolved members
+      ROOT with ``<slug>`` appended lexically (:func:`_briefing_pinned_target`)
+      rather than from :func:`member_dir`, whose own ``resolve()`` would follow
+      such a link before the walk could refuse it.
       ``O_NONBLOCK`` makes a FIFO open return immediately instead of waiting
       for a writer (both at open time — no check-then-open race); ``fstat``
       then rejects anything that is not a regular file. Where the pinned walk
@@ -930,57 +1059,8 @@ def read_member_briefing(slug: str) -> str:
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
-    try:
-        path = member_briefing_path(slug)
-    except (MemberSlugError, OSError, RuntimeError):
-        return ""
-    byte_cap = (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
-    if not member_briefing_supported():
-        # Fail closed (see the docstring): without O_NOFOLLOW and the pinned
-        # ancestor walk there is no race-free way to refuse a symlink on an
-        # agent-writable path.
-        return ""
-    try:
-        # ``path.parent`` comes from :func:`member_dir`, which resolves and
-        # containment-checks it — the "caller resolves once" contract of the
-        # pinned walk. The walk then refuses any component swapped for a link
-        # after that resolution, ``members/<slug>/`` included.
-        fd = open_in_pinned_parent(
-            str(path.parent),
-            path.name,
-            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-            mode=0o600,
-            what="member briefing",
-        )
-    except (PinnedPathRefusal, OSError):
-        # Missing file/dir, a symlink refused anywhere on the pinned walk
-        # (ancestor or leaf), or any unreadable state — all read as "no
-        # briefing yet".
-        return ""
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            # A FIFO, device or socket is never a briefing; reading one can
-            # block or misbehave, so it reads as "no briefing yet".
-            return ""
-        data = os.read(fd, byte_cap + 1)
-    except OSError:
-        return ""
-    finally:
-        os.close(fd)
-    truncated_bytes = len(data) > byte_cap
-    if truncated_bytes:
-        # The cut can split a multi-byte character; the tail is being
-        # truncated anyway, so drop the partial character rather than failing
-        # the whole read over it.
-        text = data[:byte_cap].decode("utf-8", errors="ignore").strip()
-    else:
-        try:
-            text = data.decode("utf-8").strip()
-        except UnicodeError:
-            return ""
-    if truncated_bytes or len(text) > MEMBER_BRIEFING_MAX_CHARS:
-        return text[:MEMBER_BRIEFING_MAX_CHARS] + "\n[... briefing truncated at cap — prune it]"
-    return text
+    text, _mtime, read_bounded = read_member_briefing_bounded(slug)
+    return cap_member_briefing(text, read_bounded)[0]
 
 
 def record_activity(

@@ -327,8 +327,8 @@ logged, or fail with none.
   `configure-aws-credentials` -- verify branch changes through the nightly after merge
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
-- **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 24 smoke plus
-  3 nightly-only scenarios). A non-PASS night opens or updates the single open
+- **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
+  4 nightly-only scenarios). A non-PASS night opens or updates the single open
   issue labelled `gui-test-report`.
 
 ### Locally

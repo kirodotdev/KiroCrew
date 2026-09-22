@@ -57,6 +57,7 @@ SHIPPED_SMOKE = {
     "taskrunner-projects-page-compose",
 }
 SHIPPED = SHIPPED_SMOKE | {
+    "crewmate-panel-tabs",
     "knowledge-add-folder-source-and-scan",
     "members-dm-hello",
     "members-private-memory-keeps-thread",
@@ -182,7 +183,11 @@ class TestShippedScenarios:
                 "sidebar-rail-collapse-expand",
             ],
             "search": ["search-everywhere-jump-to-setting"],
-            "members": ["members-dm-hello", "members-private-memory-keeps-thread"],
+            "members": [
+                "crewmate-panel-tabs",
+                "members-dm-hello",
+                "members-private-memory-keeps-thread",
+            ],
             "capabilities": [
                 "capabilities-agents-list-and-open-editor",
                 "capabilities-skills-filter-and-open-builtin",
@@ -592,7 +597,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 35 scenarios (32 smoke / 3 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 36 scenarios (32 smoke / 4 nightly)._"
             in md
         )
         assert (

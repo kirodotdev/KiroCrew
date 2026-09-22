@@ -3824,6 +3824,30 @@ export const api = {
     fetch(
       '/api/members/' + encodeURIComponent(slug) + '/panel?member=' + encodeURIComponent(member),
     ).then(j) as Promise<{ panel: CrewPanelMeta | null; html: string | null }>,
+  // The crewmate's self-maintained briefing markdown. Read-only from the UI
+  // (no editor: the file is agent-written and edited where the crewmate keeps
+  // it). `member` is the exact crew name (slugs are lossy).
+  memberBriefing: (slug: string, member: string) =>
+    fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/briefing?member=' + encodeURIComponent(member),
+    ).then(j) as Promise<{
+      slug: string
+      member: string
+      /** Whether the platform can read the file safely (false on Windows). */
+      supported: boolean
+      /** Markdown content, or empty string when the crewmate has not written notes yet. */
+      text: string
+      /** Last-modified timestamp, or null when no notes file exists yet. */
+      updated_ts: number | null
+      /** The text above was redacted on the way out (a secret-like string or an
+       *  exfiltration URL replaced by its placeholder); the panel says so above
+       *  the notes. */
+      redacted: boolean
+      /** The file ran past the briefing cap, so the text above ends in the
+       *  truncation marker instead of the tail; the panel says so above the
+       *  notes. */
+      truncated: boolean
+    }>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

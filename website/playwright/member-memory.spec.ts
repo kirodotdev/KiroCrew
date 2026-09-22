@@ -356,14 +356,14 @@ test('an empty private memory opens its exact member conversation and reuses the
 
   const panelToggle = page.getByTestId('member-panel-toggle')
   if (await panelToggle.isVisible()) await panelToggle.click()
-  await page.getByTestId('side-panel-leading-tab').click()
-  const summary = page.getByTestId('member-crew-summary')
-  const memoryStatus = summary.getByText('This member uses Member memory (V2).', { exact: true })
-  await expect(memoryStatus).toBeVisible()
-  const manageMemory = summary.getByRole('button', { name: 'Manage memory', exact: true })
-  await manageMemory.scrollIntoViewIfNeeded()
-  await expect(memoryStatus).toBeInViewport({ ratio: 1 })
-  await expect(manageMemory).toBeInViewport({ ratio: 1 })
+  // The panel opens on the crewmate's own tabs (Notes / Work log / Dashboard);
+  // the memory binding is a setting and lives on the crew editor only (asserted
+  // below in the editor case), so the panel body must not restate it.
+  await page.getByTestId('side-panel-leading-tab-crew-notes').click()
+  const notes = page.getByTestId('member-notes')
+  await expect(notes).toBeVisible()
+  await expect(notes.getByText(`${owner.name} hasn't written any notes yet.`, { exact: true })).toBeVisible()
+  await expect(page.getByTestId('side-panel-leading-body').getByText(/member memory/i)).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-members-status.png'), fullPage: false, animations: 'disabled' })
 
   // The roster reads dm.json from disk, so this checks the saved binding rather

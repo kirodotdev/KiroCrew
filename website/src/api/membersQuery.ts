@@ -55,6 +55,17 @@ export const membersRosterQuery = {
 export const memberActivityQueryKey = (slug: string, member: string) =>
   ['member-activity', slug, member] as const
 
+/** Query key for a member's briefing markdown (Notes tab). Keyed by slug and
+ *  exact name: slugs are lossy, so two names sharing a slug have distinct
+ *  briefings. Nested under `['kirocrew-agents']` like the roster: whether the
+ *  briefing is one crewmate's to show and edit is a fact about the REGISTRY
+ *  (a second crew deriving the same slug turns the read into a 409), so the
+ *  same `refresh` frame that refetches the roster must revalidate cached
+ *  notes -- otherwise a panel opened before the collision keeps stale text
+ *  and an enabled Edit over a file that is now shared. */
+export const memberBriefingQueryKey = (slug: string, member: string) =>
+  ['kirocrew-agents', 'member-briefing', slug, member] as const
+
 /**
  * The outcome of the last thread open for one member — what
  * POST /api/members/{slug}/thread answered. Written by the open mutation
