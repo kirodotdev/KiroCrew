@@ -211,16 +211,13 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             site: reservation
             for site in {
                 ("chat_folders.py", "api_chat_slot_mode"),
-                ("chat_handlers.py", "api_chat_slot_agent"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
+                ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),
-                ("chat_handlers.py", "api_chat_slot_model"),
                 ("chat_handlers.py", "api_chat_slot_note"),
-                ("chat_handlers.py", "api_chat_slot_reasoning_effort"),
                 ("chat_handlers.py", "api_chat_slot_reset_conversation"),
                 ("chat_handlers.py", "api_chat_slot_resume"),
-                ("chat_handlers.py", "api_chat_slot_workspace"),
                 ("chat_handlers.py", "api_chat_slots_cleanup"),
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "stop_slot_turn"),
