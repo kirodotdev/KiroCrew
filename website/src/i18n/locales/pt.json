@@ -13903,6 +13903,12 @@
         "backfill_moved_many": "{{count}} sessões movidas para a pasta {{folder}}.",
         "backfill_moved_one": "{{count}} sessão movida para a pasta {{folder}}.",
         "backfill_moved_other": "{{count}} sessões movidas para a pasta {{folder}}.",
+        "backfill_move_back_many": "Mova de volta manualmente {{count}} sessões.",
+        "backfill_move_back_one": "Mova de volta manualmente {{count}} sessão.",
+        "backfill_move_back_other": "Mova de volta manualmente {{count}} sessões.",
+        "backfill_stranded_many": "Mova de volta manualmente {{count}} sessões de uma execução anterior.",
+        "backfill_stranded_one": "Mova de volta manualmente {{count}} sessão de uma execução anterior.",
+        "backfill_stranded_other": "Mova de volta manualmente {{count}} sessões de uma execução anterior.",
         "backfill_show_all": "Mostrar as {{count}}",
         "backfill_show_fewer": "Mostrar menos",
         "backfill_none": "Nada a mover. Todas as sessões já estão numa pasta ou foram colocadas por você.",
@@ -13921,7 +13927,7 @@
         "backfill_failed_all_one": "Não foi possível mover {{count}} sessão. Clique novamente para tentar de novo.",
         "backfill_failed_all_many": "Não foi possível mover {{count}} sessões. Clique novamente para tentar de novo.",
         "backfill_failed_all_other": "Não foi possível mover {{count}} sessões. Clique novamente para tentar de novo.",
-        "backfill_folder_gone": "A pasta {{folder}} foi removida enquanto isto era executado. Estas sessões já tinham sido arquivadas nela. Agora estão de novo sem pasta na barra lateral e têm de ser movidas à mão.",
+        "backfill_folder_gone": "A pasta {{folder}} foi removida enquanto isto era executado. Estas sessões já tinham sido arquivadas nela. Agora estão de volta na barra lateral, fora de qualquer pasta, e têm de ser movidas à mão.",
         "backfill_folder_gone_nothing_filed": "A pasta {{folder}} foi removida enquanto isto era executado, por isso nada foi arquivado. Primeiro salve estas configurações para criá-la novamente."
       },
       "browserPanel": {

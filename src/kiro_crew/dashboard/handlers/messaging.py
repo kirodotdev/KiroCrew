@@ -4342,13 +4342,20 @@ async def api_channel_folder_backfill(request: web.Request) -> web.Response:
             host = platform.node().split(".")[0]
         except Exception:
             host = ""
+        # It also states the reader's own situation first. A remote viewer IS
+        # looking at a dashboard, so "open the dashboard there" read as circular
+        # to a blind reader who then stopped; "this same page on <host>" tells
+        # them what to do with the name.
         where = (
             f"{host}, the computer that hosts this dashboard"
             if host
             else "the computer that hosts this dashboard"
         )
+        there = f"on {host}" if host else "there"
         return _deny(
-            f"Filing runs only on {where}. Open the dashboard there and click again.",
+            "You are viewing this page from another computer. "
+            f"Filing runs only on {where}. "
+            f"Open this same page {there} and click again.",
             "read_only_remote",
             status=403,
         )

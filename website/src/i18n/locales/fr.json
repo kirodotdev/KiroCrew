@@ -13903,6 +13903,12 @@
         "backfill_moved_many": "{{count}} sessions déplacées vers le dossier {{folder}}.",
         "backfill_moved_one": "{{count}} session déplacée vers le dossier {{folder}}.",
         "backfill_moved_other": "{{count}} sessions déplacées vers le dossier {{folder}}.",
+        "backfill_move_back_many": "Remets à la main {{count}} sessions à leur place.",
+        "backfill_move_back_one": "Remets à la main {{count}} session à sa place.",
+        "backfill_move_back_other": "Remets à la main {{count}} sessions à leur place.",
+        "backfill_stranded_many": "Remets à la main {{count}} sessions d'une exécution précédente à leur place.",
+        "backfill_stranded_one": "Remets à la main {{count}} session d'une exécution précédente à sa place.",
+        "backfill_stranded_other": "Remets à la main {{count}} sessions d'une exécution précédente à leur place.",
         "backfill_show_all": "Afficher les {{count}}",
         "backfill_show_fewer": "Afficher moins",
         "backfill_none": "Rien à déplacer. Chaque session est déjà dans un dossier ou a été classée par vous.",
@@ -13921,7 +13927,7 @@
         "backfill_failed_all_one": "{{count}} session n'a pas pu être déplacée. Cliquez à nouveau pour réessayer.",
         "backfill_failed_all_many": "{{count}} sessions n'ont pas pu être déplacées. Cliquez à nouveau pour réessayer.",
         "backfill_failed_all_other": "{{count}} sessions n'ont pas pu être déplacées. Cliquez à nouveau pour réessayer.",
-        "backfill_folder_gone": "Le dossier {{folder}} a été supprimé pendant l'exécution. Ces sessions y avaient déjà été classées. Elles sont de nouveau non classées dans la barre latérale et doivent être déplacées à la main.",
+        "backfill_folder_gone": "Le dossier {{folder}} a été supprimé pendant l'exécution. Ces sessions y avaient déjà été classées. Elles sont de retour dans la barre latérale, hors de tout dossier, et doivent être déplacées à la main.",
         "backfill_folder_gone_nothing_filed": "Le dossier {{folder}} a été supprimé pendant l'exécution, donc rien n'a été classé. Enregistrez d'abord ces paramètres pour le recréer."
       },
       "browserPanel": {

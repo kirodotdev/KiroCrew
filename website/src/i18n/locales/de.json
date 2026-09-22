@@ -13709,6 +13709,10 @@
         "backfill_running": "Wird einsortiert...",
         "backfill_moved_one": "{{count}} Sitzung in den Ordner {{folder}} verschoben.",
         "backfill_moved_other": "{{count}} Sitzungen in den Ordner {{folder}} verschoben.",
+        "backfill_move_back_one": "Verschiebe {{count}} Sitzung von Hand zurück.",
+        "backfill_move_back_other": "Verschiebe {{count}} Sitzungen von Hand zurück.",
+        "backfill_stranded_one": "Verschiebe {{count}} Sitzung aus einem früheren Durchlauf von Hand zurück.",
+        "backfill_stranded_other": "Verschiebe {{count}} Sitzungen aus einem früheren Durchlauf von Hand zurück.",
         "backfill_show_all": "Alle {{count}} anzeigen",
         "backfill_show_fewer": "Weniger anzeigen",
         "backfill_none": "Nichts zu verschieben. Jede Sitzung liegt bereits in einem Ordner oder wurde von Ihnen einsortiert.",
@@ -13726,7 +13730,7 @@
         "verified_and_saved": "Mit {{channel}} verifiziert und gespeichert.",
         "backfill_failed_all_one": "{{count}} Sitzung konnte nicht verschoben werden. Klicken Sie erneut, um es zu wiederholen.",
         "backfill_failed_all_other": "{{count}} Sitzungen konnten nicht verschoben werden. Klicken Sie erneut, um es zu wiederholen.",
-        "backfill_folder_gone": "Der Ordner {{folder}} wurde entfernt, während dies lief. Diese Sitzungen waren dort bereits einsortiert. Sie stehen in der Seitenleiste wieder ohne Ordner und müssen von Hand verschoben werden.",
+        "backfill_folder_gone": "Der Ordner {{folder}} wurde entfernt, während dies lief. Diese Sitzungen waren dort bereits einsortiert. Sie stehen jetzt wieder in der Seitenleiste, außerhalb jedes Ordners, und müssen von Hand verschoben werden.",
         "backfill_folder_gone_nothing_filed": "Der Ordner {{folder}} wurde entfernt, während dies lief, daher wurde nichts einsortiert. Speichern Sie diese Einstellungen zuerst, um ihn neu zu erstellen."
       },
       "browserPanel": {

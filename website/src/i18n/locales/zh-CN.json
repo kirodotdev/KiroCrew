@@ -13515,6 +13515,8 @@
         "backfill_existing_desc": "此设置开启前的会话会留在原处。点击可将其中未归档的移入侧边栏中名为“{{folder}}”的文件夹。每个移动过的会话都会列在下方，在它的菜单里选“移动到文件夹…”即可放回。",
         "backfill_running": "正在归档…",
         "backfill_moved_other": "已将 {{count}} 个会话移入 {{folder}} 文件夹。",
+        "backfill_move_back_other": "请手动把 {{count}} 个会话放回原处。",
+        "backfill_stranded_other": "请手动把上一次运行移动的 {{count}} 个会话放回原处。",
         "backfill_show_all": "显示全部 {{count}} 个",
         "backfill_show_fewer": "收起",
         "backfill_none": "无需移动。每个会话都已在文件夹中，或由你自己放置。",
@@ -13531,7 +13533,7 @@
         "sdk_install_unsupported": "此网关的 Python 无法安装额外的包，因此无法在此添加 {{package}}。请从 pip 能够安装的 Python 环境中启动网关。",
         "verified_and_saved": "已通过 {{channel}} 验证并保存。",
         "backfill_failed_all_other": "有 {{count}} 个会话无法移动。请再次点击重试。",
-        "backfill_folder_gone": "{{folder}} 文件夹在运行期间被删除。这些会话此前已被放入其中。它们在侧边栏中重新变为未归档，需要手动移动。",
+        "backfill_folder_gone": "{{folder}} 文件夹在运行期间被删除。这些会话此前已被放入其中。它们现在回到了侧边栏，不在任何文件夹中，需要手动移动。",
         "backfill_folder_gone_nothing_filed": "{{folder}} 文件夹在运行期间被删除，因此没有放入任何内容。请先保存此设置以重新创建。"
       },
       "browserPanel": {

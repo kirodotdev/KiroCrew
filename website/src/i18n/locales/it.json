@@ -13903,6 +13903,12 @@
         "backfill_moved_many": "{{count}} sessioni spostate nella cartella {{folder}}.",
         "backfill_moved_one": "{{count}} sessione spostata nella cartella {{folder}}.",
         "backfill_moved_other": "{{count}} sessioni spostate nella cartella {{folder}}.",
+        "backfill_move_back_many": "Riporta a mano {{count}} sessioni al loro posto.",
+        "backfill_move_back_one": "Riporta a mano {{count}} sessione al suo posto.",
+        "backfill_move_back_other": "Riporta a mano {{count}} sessioni al loro posto.",
+        "backfill_stranded_many": "Riporta a mano {{count}} sessioni di un'esecuzione precedente al loro posto.",
+        "backfill_stranded_one": "Riporta a mano {{count}} sessione di un'esecuzione precedente al suo posto.",
+        "backfill_stranded_other": "Riporta a mano {{count}} sessioni di un'esecuzione precedente al loro posto.",
         "backfill_show_all": "Mostra tutte le {{count}}",
         "backfill_show_fewer": "Mostra meno",
         "backfill_none": "Niente da spostare. Ogni sessione è già in una cartella o l'hai collocata tu.",
@@ -13921,7 +13927,7 @@
         "backfill_failed_all_one": "Non è stato possibile spostare {{count}} sessione. Fai clic di nuovo per riprovare.",
         "backfill_failed_all_many": "Non è stato possibile spostare {{count}} sessioni. Fai clic di nuovo per riprovare.",
         "backfill_failed_all_other": "Non è stato possibile spostare {{count}} sessioni. Fai clic di nuovo per riprovare.",
-        "backfill_folder_gone": "La cartella {{folder}} è stata rimossa durante l'esecuzione. Queste sessioni erano già state archiviate al suo interno. Ora sono di nuovo senza cartella nella barra laterale e devono essere spostate a mano.",
+        "backfill_folder_gone": "La cartella {{folder}} è stata rimossa durante l'esecuzione. Queste sessioni erano già state archiviate al suo interno. Ora sono di nuovo nella barra laterale, fuori da ogni cartella, e devono essere spostate a mano.",
         "backfill_folder_gone_nothing_filed": "La cartella {{folder}} è stata rimossa durante l'esecuzione, quindi non è stato archiviato nulla. Salva prima queste impostazioni per ricrearla."
       },
       "browserPanel": {

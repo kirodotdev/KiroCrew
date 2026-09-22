@@ -8228,6 +8228,10 @@
         "backfill_running": "Filing...",
         "backfill_moved_one": "Moved {{count}} session into the {{folder}} folder.",
         "backfill_moved_other": "Moved {{count}} sessions into the {{folder}} folder.",
+        "backfill_move_back_one": "Move {{count}} session back by hand.",
+        "backfill_move_back_other": "Move {{count}} sessions back by hand.",
+        "backfill_stranded_one": "Move {{count}} session from an earlier run back by hand.",
+        "backfill_stranded_other": "Move {{count}} sessions from an earlier run back by hand.",
         "backfill_show_all": "Show all {{count}}",
         "backfill_show_fewer": "Show fewer",
         "backfill_none": "Nothing to move. Every session is already in a folder, or you placed it yourself.",
@@ -8239,7 +8243,7 @@
         "backfill_untitled": "Untitled {{channel}} session",
         "backfill_failed_all_one": "Could not move {{count}} session. Click again to retry.",
         "backfill_failed_all_other": "Could not move {{count}} sessions. Click again to retry.",
-        "backfill_folder_gone": "The {{folder}} folder was removed while this ran. These sessions had already been filed into it. They are unfiled in the sidebar again and must be moved by hand.",
+        "backfill_folder_gone": "The {{folder}} folder was removed while this ran. These sessions had already been filed into it. They are back in the sidebar, outside any folder, and must be moved by hand.",
         "backfill_folder_gone_nothing_filed": "The {{folder}} folder was removed while this ran, so nothing was filed. Save these settings to create it again first."
       },
       "browserPanel": {

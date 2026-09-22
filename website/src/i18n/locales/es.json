@@ -13903,6 +13903,12 @@
         "backfill_moved_many": "{{count}} sesiones movidas a la carpeta {{folder}}.",
         "backfill_moved_one": "{{count}} sesión movida a la carpeta {{folder}}.",
         "backfill_moved_other": "{{count}} sesiones movidas a la carpeta {{folder}}.",
+        "backfill_move_back_many": "Mueve a mano {{count}} sesiones de vuelta.",
+        "backfill_move_back_one": "Mueve a mano {{count}} sesión de vuelta.",
+        "backfill_move_back_other": "Mueve a mano {{count}} sesiones de vuelta.",
+        "backfill_stranded_many": "Mueve a mano {{count}} sesiones de una ejecución anterior de vuelta.",
+        "backfill_stranded_one": "Mueve a mano {{count}} sesión de una ejecución anterior de vuelta.",
+        "backfill_stranded_other": "Mueve a mano {{count}} sesiones de una ejecución anterior de vuelta.",
         "backfill_show_all": "Mostrar las {{count}}",
         "backfill_show_fewer": "Mostrar menos",
         "backfill_none": "Nada que mover. Cada sesión ya está en una carpeta o la colocaste tú.",
@@ -13921,7 +13927,7 @@
         "backfill_failed_all_one": "No se pudo mover {{count}} sesión. Haz clic de nuevo para reintentar.",
         "backfill_failed_all_many": "No se pudieron mover {{count}} sesiones. Haz clic de nuevo para reintentar.",
         "backfill_failed_all_other": "No se pudieron mover {{count}} sesiones. Haz clic de nuevo para reintentar.",
-        "backfill_folder_gone": "La carpeta {{folder}} se eliminó mientras esto se ejecutaba. Estas sesiones ya se habían archivado en ella. Ahora vuelven a estar sin archivar en la barra lateral y hay que moverlas a mano.",
+        "backfill_folder_gone": "La carpeta {{folder}} se eliminó mientras esto se ejecutaba. Estas sesiones ya se habían archivado en ella. Ahora están de vuelta en la barra lateral, fuera de cualquier carpeta, y hay que moverlas a mano.",
         "backfill_folder_gone_nothing_filed": "La carpeta {{folder}} se eliminó mientras esto se ejecutaba, así que no se archivó nada. Primero guarda estos ajustes para volver a crearla."
       },
       "browserPanel": {

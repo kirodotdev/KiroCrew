@@ -13515,6 +13515,8 @@
         "backfill_existing_desc": "이 설정을 켜기 전의 세션은 그대로 남습니다. 정리되지 않은 세션을 사이드바의 ‘{{folder}}’ 이름의 폴더로 옮깁니다. 옮긴 세션은 아래에 하나씩 나열되며, 그 세션 메뉴의 ‘폴더로 이동…’으로 되돌릴 수 있습니다.",
         "backfill_running": "정리 중…",
         "backfill_moved_other": "세션 {{count}}개를 {{folder}} 폴더로 옮겼습니다.",
+        "backfill_move_back_other": "세션 {{count}}개를 직접 되돌리세요.",
+        "backfill_stranded_other": "이전 실행에서 옮긴 세션 {{count}}개를 직접 되돌리세요.",
         "backfill_show_all": "{{count}}개 모두 보기",
         "backfill_show_fewer": "간략히 보기",
         "backfill_none": "옮길 것이 없습니다. 모든 세션이 이미 폴더에 있거나 직접 배치했습니다.",
@@ -13531,7 +13533,7 @@
         "sdk_install_unsupported": "이 게이트웨이의 Python은 추가 패키지를 설치할 수 없으므로 여기에서 {{package}}을(를) 추가할 수 없습니다. pip로 설치할 수 있는 Python 환경에서 게이트웨이를 실행하세요.",
         "verified_and_saved": "{{channel}}에서 확인되어 저장되었습니다.",
         "backfill_failed_all_other": "세션 {{count}}개를 옮기지 못했습니다. 다시 시도하려면 클릭하세요.",
-        "backfill_folder_gone": "{{folder}} 폴더가 실행 중에 삭제되었습니다. 이 세션들은 이미 그 안에 정리되어 있었습니다. 사이드바에서 다시 정리되지 않은 상태이며 직접 옮겨야 합니다.",
+        "backfill_folder_gone": "{{folder}} 폴더가 실행 중에 삭제되었습니다. 이 세션들은 이미 그 안에 정리되어 있었습니다. 지금은 사이드바에서 어느 폴더에도 속하지 않은 상태로 돌아갔으며 직접 옮겨야 합니다.",
         "backfill_folder_gone_nothing_filed": "{{folder}} 폴더가 실행 중에 삭제되어 아무것도 정리되지 않았습니다. 먼저 이 설정을 저장해 다시 만드세요."
       },
       "browserPanel": {

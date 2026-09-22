@@ -117,6 +117,13 @@ def test_denies_non_loopback(monkeypatch: Any) -> None:
     # which computer that is".
     assert "studio-mini, the computer that hosts this dashboard" in body["error"], body["error"]
     assert "studio-mini.lan" not in body["error"], body["error"]
+    # And it opens with the reader's situation and ends with what to do with the
+    # name: a remote viewer IS looking at a dashboard, so "open the dashboard
+    # there" alone read as circular to a blind reader who then stopped.
+    assert body["error"].startswith("You are viewing this page from another computer."), body[
+        "error"
+    ]
+    assert "Open this same page on studio-mini and click again." in body["error"], body["error"]
 
 
 def test_remote_refusal_survives_a_nameless_host(monkeypatch: Any) -> None:
@@ -133,7 +140,8 @@ def test_remote_refusal_survives_a_nameless_host(monkeypatch: Any) -> None:
     resp = asyncio.run(mod.api_channel_folder_backfill(_mocked(b'{"namespace": "slack"}')))
     assert resp.status == 403
     error = json.loads(resp.body)["error"]
-    assert error.startswith("Filing runs only on the computer that hosts this dashboard."), error
+    assert "Filing runs only on the computer that hosts this dashboard." in error, error
+    assert error.endswith("Open this same page there and click again."), error
 
     def _raise() -> str:
         raise OSError("no hostname")
@@ -142,7 +150,7 @@ def test_remote_refusal_survives_a_nameless_host(monkeypatch: Any) -> None:
     resp = asyncio.run(mod.api_channel_folder_backfill(_mocked(b'{"namespace": "slack"}')))
     assert resp.status == 403
     error = json.loads(resp.body)["error"]
-    assert error.startswith("Filing runs only on the computer that hosts this dashboard."), error
+    assert "Filing runs only on the computer that hosts this dashboard." in error, error
     assert json.loads(resp.body)["code"] == "read_only_remote"
 
 

@@ -375,6 +375,14 @@ describe('ChannelFolderBackfill', () => {
     expect(screen.getByText('Standup')).toBeTruthy()
     expect(screen.getByText('Release plan')).toBeTruthy()
     expect(screen.getByTestId('backfill-result')).toBeTruthy()
+    // The headline over the names is an instruction from the start, not the
+    // green success line: the note just said those sessions fell back out of
+    // the folder, so "Moved 2 sessions into the Slack folder" under it would
+    // assert the state the note denies. And no glyph beside it -- a check mark
+    // is the success claim, and an arrow read as a control that does the move.
+    expect(screen.getByText(/Move 2 sessions back by hand\./)).toBeTruthy()
+    expect(screen.queryByText(/Moved 2 sessions/)).toBeNull()
+    expect(screen.getByTestId('backfill-result').querySelector('p[role="status"] svg')).toBeNull()
   })
 
   it('names the count when every write failed and nothing moved', async () => {
@@ -640,23 +648,37 @@ describe('ChannelFolderBackfill', () => {
 
     fireEvent.click(screen.getByRole('button'))
     expect(await screen.findByText('Standup')).toBeTruthy()
-    // On the CURRENT run the failure count still renders.
+    // On the CURRENT run the failure count still renders, and the headline is
+    // already the instruction (without the "earlier run" demarcation).
     expect(screen.getByTestId('backfill-write-failures')).toBeTruthy()
+    expect(screen.getByText(/Move 2 sessions back by hand\./)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button'))
     expect(await screen.findByText('Retro')).toBeTruthy()
 
     // The first run's names are still on the card, with the note that explains
     // why they are listed at all.
-    const stranded = screen.getByTestId('backfill-stranded')
+    const stranded = screen.getByTestId('backfill-stranded-result')
     expect(stranded.textContent).toContain('Standup')
     expect(stranded.textContent).toContain('Release plan')
     expect(stranded.textContent).toMatch(/removed while this ran/i)
     expect(stranded.textContent).not.toContain('Retro')
+    // Its headline is an instruction, not the success line it started with: the
+    // note above says those sessions fell back out of the folder, and a green
+    // "Moved 2 sessions into the Slack folder" under it would assert the state
+    // the note denies. The count and the "earlier run" demarcation both live in
+    // that one sentence.
+    expect(stranded.textContent).toMatch(/Move 2 sessions from an earlier run back by hand\./)
+    expect(stranded.textContent).not.toMatch(/Moved 2 sessions/)
+    expect(screen.queryByText(/Move 2 sessions back by hand\./)).toBeNull()
+    expect(screen.getAllByText(/Moved \d+ session/)).toHaveLength(1)
     // The current run renders as itself, ABOVE the kept receipt.
     const current = screen.getByTestId('backfill-result')
     expect(current.textContent).toContain('Retro')
     expect(current.textContent).not.toContain('Standup')
+    // A plain success line keeps its check mark; the kept instruction has none.
+    expect(current.querySelector('p[role="status"] svg')).toBeTruthy()
+    expect(stranded.querySelector('p[role="status"] svg')).toBeNull()
     expect(current.compareDocumentPosition(stranded) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // A kept receipt does not repeat its counts: its failed and remaining
     // sessions are exactly what the click that just happened retried, so the
@@ -703,6 +725,40 @@ describe('ChannelFolderBackfill', () => {
     expect(screen.getAllByTestId('backfill-stranded-result')).toHaveLength(2)
     expect(screen.getByText('Standup')).toBeTruthy()
     expect(screen.getByText('Release plan')).toBeTruthy()
+    expect(screen.getAllByText(/Move 1 session from an earlier run back by hand\./)).toHaveLength(2)
+  })
+
+  it('keeps the same node when a receipt becomes stranded', async () => {
+    // Continuity, not just persistence: the receipt the reader just watched must
+    // be the one that slides down under the next run. A remount into a different
+    // container reads as a different list arriving, which is the hard swap the
+    // UI rule forbids. Same DOM element before and after is the mechanism that
+    // makes the slide one element's motion.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(
+          200,
+          report({
+            moved: [{ key: 'slack:1', title: 'Standup', label: 'Slack' }],
+            reason: 'folder_gone',
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        response(200, report({ moved: [{ key: 'slack:3', title: 'Retro', label: 'Slack' }] })),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Standup')).toBeTruthy()
+    const before = screen.getByTestId('backfill-result')
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(await screen.findByText('Retro')).toBeTruthy()
+
+    expect(screen.getByTestId('backfill-stranded-result')).toBe(before)
   })
 
   it('drops a first receipt that clicking again can reproduce', async () => {
@@ -727,7 +783,7 @@ describe('ChannelFolderBackfill', () => {
     fireEvent.click(screen.getByRole('button'))
     expect(await screen.findByText('Retro')).toBeTruthy()
 
-    expect(screen.queryByTestId('backfill-stranded')).toBeNull()
+    expect(screen.queryByTestId('backfill-stranded-result')).toBeNull()
     expect(screen.queryByText(/removed while this ran/i)).toBeNull()
     expect(screen.queryByTestId('backfill-write-failures')).toBeNull()
   })
@@ -801,7 +857,7 @@ describe('backfill copy is consistent across plural variants', () => {
     return s.slice(0, i).trim().split(/\s+/).slice(-2).join(' ')
   }
 
-  for (const base of ['backfill_moved', 'backfill_failed_all']) {
+  for (const base of ['backfill_moved', 'backfill_failed_all', 'backfill_move_back', 'backfill_stranded']) {
     it(`${base}: every locale's variants agree on placeholders and the folder phrase`, () => {
       const checked: string[] = []
       for (const [locale, catalog] of Object.entries(CATALOGS)) {
