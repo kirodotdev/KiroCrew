@@ -66,7 +66,7 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
   }
 }
 
-export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent }: {
+export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent }: {
   slotKey: string
   crewmate?: CrewmateIdentity
   dispatch: AppDispatch
@@ -81,6 +81,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   paneAgentName: string
   pendingQuestion: ReturnType<typeof pendingQuestionFor>
   markCrewmateSent: (sendId: string) => void
+  /** Speaks the sent message through the transcript's live region (`useTranscriptAnnouncement`). */
+  announceSent?: (markdown: string) => void
 }) {
   const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
   const project = paneSlot?.project
@@ -293,6 +295,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
       dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, pastes: bubblePastes }))
     }
+    // Spoken at the send, as on ChatPage: a user row at the tail is also what a
+    // still-running session looks like on first load.
+    announceSent?.(displayTxt)
     const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the
     // transcript exactly as ChatPage does after its own optimistic append: the
@@ -412,7 +417,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, announceSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

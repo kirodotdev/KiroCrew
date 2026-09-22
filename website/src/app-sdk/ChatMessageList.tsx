@@ -174,6 +174,9 @@ export interface TranscriptMount {
   followOutput?: boolean
   /** Where the list opens with no saved anchor. Default 'bottom'. */
   initialPlacement?: 'top' | 'bottom'
+  /** Text for the transcript's one live region (`useTranscriptAnnouncement`).
+   *  Absent: the region stays silent. */
+  announcement?: string
 }
 
 export type { TranscriptEarlierPaging, VirtualTranscriptHandle }
@@ -539,6 +542,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         earlier={transcript.earlier}
         onTopReached={transcript.onTopReached}
         prefetchStartIndex={transcript.prefetchStartIndex}
+        announcement={transcript.announcement}
         isRowHidden={hiddenRow != null ? isRowHidden : undefined}
         hiddenRowStripUncovered={hiddenRow?.stripUncovered === true}
       />

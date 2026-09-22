@@ -546,6 +546,9 @@ export interface AssistantBubbleOptions {
   /** Show the reply's action row without hover, for a host whose playback the
    *  browser blocked (the recovery notice points at More → Read aloud). */
   revealActions?: boolean
+  /** Who the reply's offscreen speaker heading names (a crewmate's chat: the
+   *  crewmate). Absent: the product name, as on the main chat. */
+  speakerName?: string
 }
 
 /**
@@ -620,6 +623,7 @@ export function renderAssistantBubble(
       revealActions={opts.revealActions}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
       redactionSlot={opts.redactionSlot}
+      speakerName={opts.speakerName}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}

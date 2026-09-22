@@ -5542,6 +5542,9 @@
       "clear_context_cleared_roles": "Cleared for {{roles}}."
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "workflowRunCard": {
         "cancel": "Cancel",
         "save_help": "Keep the exact workflow from this completed run in your global library.",
@@ -5625,6 +5628,7 @@
         "copied": "Copied!",
         "raw_markdown": "Show raw markdown",
         "rendered_view": "Rendered view",
+        "speaker_heading": "{{productName}}",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
         "switch_to_rendered_view": "Switch to rendered view",
         "use_as_plan_count": "Use as Plan ({{count}} steps)",
@@ -6114,6 +6118,7 @@
         "copied": "Copied",
         "copy_failed": "Copy failed",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecting the running turn — not yet confirmed.",
+        "speaker_heading": "You",
         "steering": "Steering…",
         "steer_unsend": "Unsend",
         "steer_edit": "Edit in message box",

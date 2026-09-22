@@ -12606,6 +12606,9 @@
       "topic": "Sujet"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}} : {{text}}"
+      },
       "activityViewer": {
         "activity": "Activité",
         "approval_needed": "Approbation requise",
@@ -12721,6 +12724,7 @@
         "copied_as_rich_text": "Copié en texte enrichi",
         "copied_as_markdown": "Copié en Markdown",
         "speak_message": "Lire le message à voix haute",
+        "speaker_heading": "{{productName}}",
         "steered": "Réorienté",
         "switch_to_raw_markdown_view": "Passer à la vue Markdown brut",
         "switch_to_rendered_view": "Passer à la vue rendue",
@@ -13530,6 +13534,7 @@
         "edit_resend": "Modifier et renvoyer",
         "send": "Envoyer",
         "send_enter": "Envoyer (Enter)",
+        "speaker_heading": "Toi",
         "steered_into_the_running_turn": "Réorienté dans le tour en cours",
         "pin_message": "Épingler le message",
         "unpin_message": "Désépingler le message",

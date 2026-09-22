@@ -12341,6 +12341,9 @@
       "topic": "টপিক"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "activityViewer": {
         "activity": "অ্যাক্টিভিটি",
         "approval_needed": "অনুমোদন প্রয়োজন",
@@ -12455,6 +12458,7 @@
         "copied_as_rich_text": "রিচ টেক্সট হিসেবে কপি হয়েছে",
         "copied_as_markdown": "Markdown হিসেবে কপি হয়েছে",
         "speak_message": "মেসেজ পড়ে শোনান",
+        "speaker_heading": "{{productName}}",
         "steered": "স্টিয়ার করা হয়েছে",
         "switch_to_raw_markdown_view": "মূল markdown ভিউতে যাও",
         "switch_to_rendered_view": "রেন্ডার করা ভিউতে যাও",
@@ -13218,6 +13222,7 @@
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
         "send": "পাঠান",
         "send_enter": "পাঠান (Enter)",
+        "speaker_heading": "তুমি",
         "steered_into_the_running_turn": "চলমান টার্নে স্টিয়ার করা হয়েছে",
         "pin_message": "বার্তা পিন করুন",
         "unpin_message": "বার্তা আনপিন করুন",

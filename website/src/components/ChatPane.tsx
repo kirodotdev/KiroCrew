@@ -51,6 +51,7 @@ import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useSessionPalette } from '../hooks/useSessionPalette'
+import { useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
@@ -646,8 +647,14 @@ export default function ChatPane({
   } = useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
 
 
+  // Text for the transcript's one live region, the same decision ChatPage
+  // makes; a crewmate's replies are spoken under the crewmate's name.
+  const paneTail = messages[messages.length - 1]
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    paneTail, paneTail?.role === 'streaming', crewmate ? (crewmate.label || crewmate.name) : undefined,
+  )
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({
-    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
+    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
   // A browser hand-back note no agent op was waiting for is the person's next
@@ -941,6 +948,7 @@ export default function ChatPane({
             onArtifactOpen={onArtifactOpen}
             transcript={{
               sessionId: `pane:${slotKey}`,
+              announcement,
               scrollerRef,
               onScroll: onScrollPin,
               onAtBottomChange: setIsAtBottom,

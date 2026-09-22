@@ -133,12 +133,36 @@ describe('scroll shell: the scroller element contract', () => {
     expect(scroller()).toContain("overscrollBehavior: 'contain'")
   })
 
-  it('is an accessible live region wired to the pin-scroll handler', () => {
-    expect(scroller()).toContain("aria-label={i18nT('pages.chatPage.chat_messages')}")
-    expect(scroller()).toContain('aria-live="polite"')
+  it('names the scroller but does NOT make it a live region', () => {
+    // The opening tag only — the sr-only announcer that DOES carry aria-live is
+    // a child, and slicing to `onScroll=` is what keeps this pin honest about
+    // which element the attribute sits on.
+    const openingTag = between('ref={scrollerRef}', 'onScroll={onScroll}')
+    expect(openingTag).toContain("aria-label={i18nT('pages.chatPage.chat_messages')}")
+    // Load-bearing ABSENCE. The rows under this element are virtualized, so
+    // scrolling inserts and removes DOM here; a live region cannot tell those
+    // insertions from a new message and re-announces rows already spoken.
+    // Restoring aria-live here is the regression this pin exists to catch.
+    // Matched as an ATTRIBUTE (`aria-live=`) so the prose above the element,
+    // which has to name the attribute to explain the absence, does not read as
+    // the attribute itself.
+    expect(openingTag).not.toContain('aria-live=')
+    expect(openingTag).not.toContain('role=')
     // PAGE-owned wiring: the single scroll controller's handler reaches the
     // scroller no matter which file renders the element.
     expect(SRC).toContain('onScrollPin}')
+  })
+
+  it('carries exactly one live region, outside the virtualized rows', () => {
+    // Before the header spacer, so it is a stable child the virtualizer never
+    // unmounts — a remount would re-announce text the reader already heard.
+    const beforeRows = between('onScroll={onScroll}', '{/* Header spacer */}')
+    expect(beforeRows).toContain('className="sr-only" aria-live="polite" aria-atomic="true"')
+    expect(beforeRows).toContain("{announcement ?? ''}")
+    // PAGE-owned wiring, same seam as `onScrollPin}` above: the region is inert
+    // unless the page actually feeds it, and nothing else here would notice the
+    // prop being dropped at the call site.
+    expect(SRC).toContain('announcement={announcement}')
   })
 })
 

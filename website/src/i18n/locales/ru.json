@@ -12871,6 +12871,9 @@
       "topic": "Тема"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "activityViewer": {
         "activity": "Активность",
         "approval_needed": "Требуется подтверждение",
@@ -12987,6 +12990,7 @@
         "copied_as_rich_text": "Скопировано как форматированный текст",
         "copied_as_markdown": "Скопировано как Markdown",
         "speak_message": "Озвучить сообщение",
+        "speaker_heading": "{{productName}}",
         "steered": "Скорректировано",
         "switch_to_raw_markdown_view": "Переключиться на исходный markdown",
         "switch_to_rendered_view": "Переключиться на отрисованный вид",
@@ -13842,6 +13846,7 @@
         "edit_resend": "Изменить и отправить",
         "send": "Отправить",
         "send_enter": "Отправить (Enter)",
+        "speaker_heading": "Вы",
         "steered_into_the_running_turn": "Направлено в выполняющийся ход",
         "pin_message": "Закрепить сообщение",
         "unpin_message": "Открепить сообщение",

@@ -740,6 +740,9 @@ export function createTranscriptRenderers(
               redactionSlot: o.revealSlot,
               onSpeak: o.onSpeak,
               revealActions: o.revealActions,
+              // The heading inside the bubble names the same speaker as the
+              // group around it, not the product.
+              speakerName: crewmate.label || crewmate.name,
             })
             if (bubble === null) return null
             return ctx.row(
