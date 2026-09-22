@@ -6884,6 +6884,7 @@
         "decisions_history_off": "This takes effect once the main Jev switch is on.",
         "decisions_scope_is_the_ok": "The switch below is the OK this needs.",
         "decisions_what_compaction_keep": "Scores which of the session's tool calls a compaction would keep. Measured only — the compaction itself is unchanged.",
+        "decisions_what_memory_recall": "Drops the recalled memories that do not help, when the assistant asks its own memory a question. It can only remove them, never add one.",
         "decisions_api_key_replace": "Replace key",
         "decisions_api_key_remove": "Remove key",
         "decisions_api_key_remove_confirm": "Removing the key cannot be undone — the vault does not hand a value back, so you would have to paste a new one.",

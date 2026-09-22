@@ -11509,6 +11509,7 @@
         "decisions_history_off": "Ce réglage prend effet lorsque l'interrupteur principal Jev est activé.",
         "decisions_scope_is_the_ok": "L'interrupteur ci-dessous est l'accord qui manque ici.",
         "decisions_what_compaction_keep": "Évalue quels appels d'outils de la session une compaction garderait. Mesure seulement — la compaction elle-même ne change pas.",
+        "decisions_what_memory_recall": "Écarte les souvenirs rappelés qui n'aident pas, lorsque l'assistant interroge sa propre mémoire. Il peut seulement en retirer — jamais en ajouter un.",
         "decisions_api_key_replace": "Remplacer la clé",
         "decisions_api_key_remove": "Retirer la clé",
         "decisions_api_key_remove_confirm": "Retirer la clé est irréversible : le coffre ne rend aucune valeur, il faudrait donc en coller une nouvelle.",

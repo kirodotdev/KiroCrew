@@ -476,12 +476,6 @@ export interface DecisionPointData {
    * server-side so the row and the gate cannot disagree.
    */
   status: string
-  /**
-   * `config.json` paths this point's behaviour depends on which the card
-   * deliberately offers no control for. Printed as a pointer so a reader is not
-   * left to assume the card is the whole story.
-   */
-  config_keys: string[]
 }
 
 /** Which side of a logged decision a reader's verdict is about. */

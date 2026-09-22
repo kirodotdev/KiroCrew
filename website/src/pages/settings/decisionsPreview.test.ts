@@ -254,20 +254,20 @@ describe('readPoints', () => {
       readPoints({
         enabled: true,
         points: [
-          { id: 'skills.select', needs_scope: null, status: 'active', config_keys: ['skills.max_triggered'] },
-          { id: 'tool.risk', needs_scope: 'tool_args', status: 'needs_scope', config_keys: [] },
+          { id: 'skills.select', needs_scope: null, status: 'active' },
+          { id: 'tool.risk', needs_scope: 'tool_args', status: 'needs_scope' },
         ],
       }),
     ).toEqual([
-      { id: 'skills.select', needsScope: null, status: 'active', configKeys: ['skills.max_triggered'] },
-      { id: 'tool.risk', needsScope: 'tool_args', status: 'needs_scope', configKeys: [] },
+      { id: 'skills.select', needsScope: null, status: 'active' },
+      { id: 'tool.risk', needsScope: 'tool_args', status: 'needs_scope' },
     ])
   })
 
   it('keeps a point this build has no label for, so a new one is never hidden', () => {
     const rows = readPoints({ points: [{ id: 'invented.point', status: 'active' }] })
     expect(rows).toEqual([
-      { id: 'invented.point', needsScope: null, status: 'active', configKeys: [] },
+      { id: 'invented.point', needsScope: null, status: 'active' },
     ])
   })
 
@@ -285,15 +285,8 @@ describe('readPoints', () => {
     // verbatim: the chip resolves it to OFF, and rewriting it here would lose the word
     // a reader greps the log for.
     expect(rows).toEqual([
-      { id: 'a.b', needsScope: null, status: 'invented', configKeys: [] },
+      { id: 'a.b', needsScope: null, status: 'invented' },
     ])
-  })
-
-  it('keeps only the config paths that are strings, and drops an empty one', () => {
-    const rows = readPoints({
-      points: [{ id: 'a.b', config_keys: ['x.y', '', 3, null, 'z.w'] }],
-    })
-    expect(rows[0].configKeys).toEqual(['x.y', 'z.w'])
   })
 })
 

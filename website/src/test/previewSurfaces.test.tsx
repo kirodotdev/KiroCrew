@@ -434,35 +434,77 @@ describe('Settings > Developer > Feature Previews', () => {
     // present on either side of the toggle by design.
     const { container } = renderTab()
     /**
-     * The Decisions card is EXCLUDED, by the card frame the switch sits in.
+     * The Decisions card is INCLUDED, subtree and all.
      *
-     * It is not one of the four localStorage previews and it owns real buttons of its
-     * own — a credential field's reveal/replace controls, and a row per decision point
-     * — none of which is an ingress to a page. Counting them here would make this
-     * census fail for a card whose own states `decisionsCard.test.tsx` pins, and the
-     * census exists to catch an ingress LINK drifting back onto the crew card.
+     * In the state this test renders — governance permitting, consent off, no stored
+     * credential — that card draws no buttons at all: its point rows are
+     * `role="tab"`, and the credential's reveal and replace controls exist only once a
+     * key is stored. So excluding its frame subtracted an empty set and left the census
+     * blind to the largest card on the tab for no benefit.
      *
-     * Resolved lazily rather than once: the card is not drawn until the governance
-     * read lands, so before that there is no frame and nothing to subtract — which is
-     * the same answer, because its buttons are not there either.
+     * Counting it is what makes this a ratchet rather than decoration: a button
+     * appearing anywhere in that subtree in this state fails here, which is exactly the
+     * ingress drift the census exists to catch. A future state that legitimately draws
+     * one belongs in `decisionsCard.test.tsx`, which pins the card's own states.
      */
-    const decisionsFrame = () =>
-      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.card-glow') ?? null
     const realButtons = () =>
       Array.from(
         container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'),
-      ).filter(el => !decisionsFrame()?.contains(el))
-    expect(realButtons()).toHaveLength(0)
+      )
+    /**
+     * The Decisions card is WALKED, not allowed for.
+     *
+     * Its subtree is asserted as an exact set, so a button appearing there fails here --
+     * and so does a second copy of one already expected. A name filter over the whole
+     * tab would have done neither: it went unscoped, so the same name on another card
+     * disappeared from the census too, and it bounded no count.
+     *
+     * The two it draws once settled: the hand-off on its read-failure notice (this tab
+     * stubs no API, so the card's reads fail here) and the credential field's reveal.
+     * Neither navigates. A third belongs in the expected set with a reason, never behind
+     * a blanket allowance -- and because the set is exact, a duplicate of one of these
+     * fails too, which a name filter could not catch.
+     */
+    const nameOf = (b: Element) =>
+      (b.textContent?.trim() || b.getAttribute('aria-label') || '?').trim()
+    const decisionsFrame = () =>
+      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.card-glow') ?? null
+    const decisionsButtons = () =>
+      Array.from(
+        decisionsFrame()?.querySelectorAll(
+          'button:not([data-testid="feature-preview-intro-button"])',
+        ) ?? [],
+      )
+        .map(nameOf)
+        .sort()
+    // Outside that card, unfiltered and unchanged: this is the ingress property.
+    const ingressButtons = () =>
+      realButtons()
+        .filter(el => !decisionsFrame()?.contains(el))
+        .map(nameOf)
+        .sort()
+    expect(ingressButtons()).toEqual([])
     await act(async () => {
       screen.getByRole('switch', { name: /^crew members$/i }).click()
     })
-    expect(realButtons()).toHaveLength(0)
+    expect(ingressButtons()).toEqual([])
+    // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
+    // these -- fails, which a name allowance could not do.
+    // The Decisions subtree, exactly, once its reads have settled. Awaited rather than
+    // sampled: the card draws only the credential reveal until its reads land and adds
+    // the hand-off on the read-failure notice after, so a bare expect reads whichever
+    // moment it hit. A button this set does not name never converges, so it fails here.
+    await waitFor(() => {
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+    })
     // The webhooks card still HAS its link, so this is an asymmetry on purpose
     // rather than the ingress mechanism having been broken for both.
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
-    expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
+    expect(ingressButtons()).toEqual(['Open Webhooks'])
+    // And the card beside it still draws only its own two.
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
   })
 
   it('renders the section header and the section-wide caveat once, above the cards', () => {

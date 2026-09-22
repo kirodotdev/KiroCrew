@@ -133,8 +133,6 @@ export interface DecisionPointRow {
   needsScope: string | null
   /** One of the three statuses above. An id this build does not know reads as `off`. */
   status: string
-  /** `config.json` paths the panel prints a pointer to rather than controlling. */
-  configKeys: string[]
 }
 
 /**
@@ -164,9 +162,6 @@ export function readPoints(body: unknown): DecisionPointRow[] {
       id,
       needsScope: typeof row?.needs_scope === 'string' && row.needs_scope ? row.needs_scope : null,
       status: typeof row?.status === 'string' ? row.status : POINT_OFF,
-      configKeys: Array.isArray(row?.config_keys)
-        ? row.config_keys.filter((k): k is string => typeof k === 'string' && k.length > 0)
-        : [],
     })
   }
   return rows

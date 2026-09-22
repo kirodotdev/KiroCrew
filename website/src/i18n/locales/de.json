@@ -11351,6 +11351,7 @@
         "decisions_history_off": "Dies wird wirksam, sobald der Jev-Hauptschalter eingeschaltet ist.",
         "decisions_scope_is_the_ok": "Der Schalter darunter ist die Zustimmung, die hier fehlt.",
         "decisions_what_compaction_keep": "Bewertet, welche Tool-Aufrufe der Sitzung eine Verdichtung behalten würde. Nur zur Messung — die Verdichtung selbst bleibt unverändert.",
+        "decisions_what_memory_recall": "Verwirft die abgerufenen Erinnerungen, die nicht helfen, wenn der Assistent seinen eigenen Speicher abfragt. Kann nur entfernen — niemals eine hinzufügen.",
         "decisions_api_key_replace": "Schlüssel ersetzen",
         "decisions_api_key_remove": "Schlüssel entfernen",
         "decisions_api_key_remove_confirm": "Das Entfernen lässt sich nicht rückgängig machen — der Tresor gibt keinen Wert zurück, du müsstest also einen neuen einfügen.",

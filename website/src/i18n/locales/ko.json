@@ -11193,6 +11193,7 @@
         "decisions_history_off": "Jev 기본 스위치를 키면 적용됩니다.",
         "decisions_scope_is_the_ok": "아래 스위치가 여기서 필요한 동의입니다.",
         "decisions_what_compaction_keep": "세션의 어떤 툴 호출을 압축이 남길지 점수를 냅니다. 측정만 하며 압축 자체는 그대로입니다.",
+        "decisions_what_memory_recall": "어시스턴트가 자체 기억에 질문할 때 도움이 되지 않는 기억을 걸러냅니다. 제거만 하며 새로 추가하지는 않습니다.",
         "decisions_api_key_replace": "키 교체",
         "decisions_api_key_remove": "키 삭제",
         "decisions_api_key_remove_confirm": "키 삭제는 되돌릴 수 없습니다. 보관함은 값을 돌려주지 않으니 새로 붙여 넣어야 합니다.",

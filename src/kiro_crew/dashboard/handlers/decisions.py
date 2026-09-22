@@ -184,7 +184,7 @@ def _points(state: dict, *, permits: bool) -> list[dict]:
     """One row per decision point this build ships, for the card's overview list.
 
     Projected from the seam's own registry (``gate.DECISION_POINT_NAMES``,
-    ``gate.POINT_SCOPE_KEYS``, ``gate.POINT_CONFIG_KEYS``) rather than
+    ``gate.POINT_SCOPE_KEYS``) rather than
     authored here or in the frontend: a build that ships another point lists it with
     no edit on either side, and the set the card draws cannot disagree with the set
     the gate will answer for. The card holds a LABEL per id, the same arrangement
@@ -242,8 +242,6 @@ def _points(state: dict, *, permits: bool) -> list[dict]:
                 "needs_scope": scope,
                 "status": status,
                 # Paths the card prints as a pointer rather than offering a control
-                # for; see ``gate.POINT_CONFIG_KEYS``.
-                "config_keys": list(_gate.POINT_CONFIG_KEYS.get(name, ())),
             }
         )
     return rows
@@ -708,14 +706,11 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         # is a revocation. One expression decides both what a pin refuses and what the
         # row says happened, which is the only way the two cannot drift into a refused
         # write the log calls something else.
-        # A scope-only write gets its own word: it names no switch, so neither
-        # "granted" nor "revoked" describes it, and an auditor reconstructing when
-        # egress started must not be handed a grant row for it.
-        outcome=(
-            "scoped"
-            if scope_only
-            else _consent_write_verb(enabled, tool_args, compaction, memory_text, budget_asserts)
-        ),
+        # A scope-only write is judged by the same rule rather than given a word of
+        # its own: one word for every scope write collapses a GRANT and a REVOCATION
+        # into the same row, and which way a scope moved is the fact an auditor
+        # reconstructing when egress started actually needs.
+        outcome=_consent_write_verb(enabled, tool_args, compaction, memory_text, budget_asserts),
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
             f"history_budget_chars={consent.consented_history_budget(state)} "

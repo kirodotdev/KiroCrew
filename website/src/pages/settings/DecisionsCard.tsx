@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
+import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
 import { AlertTriangle, CircleDot } from 'lucide-react'
 
 import { api } from '../../api/client'
@@ -131,6 +133,19 @@ const POINT_PANEL_ID = 'decisions-point-panel'
 const EGRESS_NOTE_ID = 'decisions-egress-note'
 const BACKEND_NOTE_ID = 'decisions-backend-note'
 const BUCKET_INPUT_ID = 'decisions-bucket-slider'
+/**
+ * The registry entries that live INSIDE the shared block's disclosure.
+ *
+ * Settings search highlights a control and then strips the `highlight` param, so a
+ * target behind a closed <details> is a link that reports success and shows nothing,
+ * with no way to retry. These two open it. Resolved through the same legacy-id rewrite
+ * the highlight hook applies, so a bookmark saved against an older label still lands.
+ */
+const DISCLOSED_SETTING_IDS = new Set([
+  'developer.jev-api-key',
+  'developer.earlier-conversation-one-decision-may-carry-in-characters',
+])
+
 /** The one notice any failed write on this card renders into. */
 const SAVE_ERROR_TESTID = 'decisions-save-error'
 
@@ -144,6 +159,14 @@ const SECRET_PREVIEW = '••••••••'
 
 export function DecisionsCard() {
   const qc = useQueryClient()
+  // Whether settings search is pointing at a control inside the shared block. Read
+  // here rather than in an effect: the disclosure has to be open on the FIRST paint,
+  // because the highlight hook probes the DOM and gives up.
+  const [searchParams] = useSearchParams()
+  const highlightTarget = searchParams.get('highlight')
+  const disclosureTargeted =
+    highlightTarget !== null &&
+    DISCLOSED_SETTING_IDS.has(resolveLegacyHighlightId(highlightTarget))
   // `capabilities.decisions`, resolved server-side and reported by the endpoint the
   // dashboard already fetches. FAIL CLOSED on `=== true`: an absent field is an
   // older gateway or a read that has not landed, and neither is permission to offer
@@ -277,7 +300,11 @@ export function DecisionsCard() {
   // Every read the card draws from anywhere. The vault index and the advertised model
   // list are AUXILIARY: they decide what the shared block and the tier pickers may
   // offer, and neither is needed to turn the seam off.
-  const readFailed = consentReadFailed || secretsFailed || modelsQ.isError
+  // A 404 on the consent route is a READ that did not answer too, so it joins this
+  // rather than rendering a note of its own outside the notice: one predicate, one
+  // notice. Its MESSAGE differs, because "could not read, reload" is not true of it.
+  const readFailed =
+    consentReadFailed || secretsFailed || modelsQ.isError || backendMissing
   const loading = configQ.isLoading || consentQ.isLoading
   const frozen = loading || readFailed || !view.supported
   // The main switch is held ONLY by the reads it needs. Holding it on an auxiliary
@@ -311,6 +338,9 @@ export function DecisionsCard() {
     'compaction.keep': i18nT(
       'pages.developer.featurePreviewsTab.decisions_what_compaction_keep',
     ),
+    'memory.recall': i18nT(
+      'pages.developer.featurePreviewsTab.decisions_what_memory_recall',
+    ),
   }
   const STATUS_WORD: Record<string, string> = {
     [POINT_ACTIVE]: i18nT('pages.developer.featurePreviewsTab.decisions_status_active'),
@@ -327,14 +357,6 @@ export function DecisionsCard() {
     tool_args: i18nT('pages.developer.featurePreviewsTab.decisions_tool_args_desc'),
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction_desc'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text_desc'),
-  }
-  // A label per config PATH the card points at instead of controlling. Keyed by the
-  // path itself, so the sentence belongs to the setting rather than to the point that
-  // happens to name it.
-  const POINTER_TEXT: Record<string, string> = {
-    'skills.max_triggered': i18nT(
-      'pages.developer.featurePreviewsTab.decisions_pointer_skills_max_triggered',
-    ),
   }
   const TIER_LABEL: Record<string, string> = {
     simple: i18nT('pages.developer.featurePreviewsTab.decisions_tier_simple'),
@@ -420,6 +442,19 @@ export function DecisionsCard() {
       >
         {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
       </p>
+      {/* The sampling share, stated in BOTH switch states and OUTSIDE the disclosure.
+        * The decisions module spec under docs/system-specs/modules pins it there: the
+        * shipped default is 100, so "every session" is what a reader is agreeing to, and
+        * they have to see it before they flip the switch. Behind a closed disclosure it
+        * is a fact they do not see -- the same argument that keeps the egress note above
+        * out. The SLIDER stays in the shared block; this is the fact, not the control. */}
+      {view.supported && (
+        <p className="text-[12px] text-muted">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_bucket_hint', {
+            percent: fmtPercent(bucket / 100),
+          })}
+        </p>
+      )}
       {/* WHERE the messages go, as a fact beside the switch: consent is given for an
           address, and the gate holds the config to that address afterwards. Mono and
           untranslated — it is a URL a reader may compare against their provider. */}
@@ -449,19 +484,25 @@ export function DecisionsCard() {
           <span>{i18nT('pages.developer.featurePreviewsTab.decisions_endpoint_moved')}</span>
         </p>
       )}
-      {backendMissing && (
-        <p id={BACKEND_NOTE_ID} className="text-[12px] text-muted">
-          {i18nT('pages.developer.featurePreviewsTab.decisions_backend_required')}
-        </p>
-      )}
       {/* A failed READ discards nothing: every control below is drawn from server
-          state and there is no draft to lose, so the hand-off is on. */}
+          state and there is no draft to lose, so the hand-off is on.
+
+          A gateway with no consent route is the one read failure that gets its own
+          words and NO hand-off: the copy already names the exact step (update, from
+          Settings > Releases), an agent cannot shorten it, and "reload to try again"
+          would send a reader round a loop that cannot succeed. It keeps the note id so
+          the switch's aria-describedby resolves to whichever message is drawn. */}
       {readFailed && (
         <ErrorNotice
           variant="inline"
           className="mt-1"
-          askAgent
-          message={i18nT('pages.developer.featurePreviewsTab.decisions_config_unavailable')}
+          id={backendMissing ? BACKEND_NOTE_ID : undefined}
+          askAgent={!backendMissing}
+          message={i18nT(
+            backendMissing
+              ? 'pages.developer.featurePreviewsTab.decisions_backend_required'
+              : 'pages.developer.featurePreviewsTab.decisions_config_unavailable',
+          )}
         />
       )}
       {(consentMut.isError || scopeMut.isError || configMut.isError || budgetMut.isError || secretMut.isError || secretDelMut.isError) && (
@@ -487,7 +528,10 @@ export function DecisionsCard() {
         />
       )}
       {view.supported && (
-        <details className="mt-1 rounded-md border border-border bg-bg-accent px-2.5 py-1.5">
+        <details
+          className="mt-1 rounded-md border border-border bg-bg-accent px-2.5 py-1.5"
+          open={disclosureTargeted || undefined}
+        >
           <summary className="cursor-pointer text-[12px] font-medium text-text">
             {i18nT('pages.developer.featurePreviewsTab.decisions_global')}
           </summary>
@@ -565,13 +609,6 @@ export function DecisionsCard() {
               <label htmlFor={BUCKET_INPUT_ID} className="text-[13px] font-semibold text-text">
                 {i18nT('pages.developer.featurePreviewsTab.decisions_bucket_label')}
               </label>
-              <div className="text-[12px] text-muted">
-                {/* Through the format seam: Latin digits and a `%` are wrong for bn,
-                    and a bare template would follow the browser's locale. */}
-                {i18nT('pages.developer.featurePreviewsTab.decisions_bucket_hint', {
-                  percent: fmtPercent(bucket / 100),
-                })}
-              </div>
               <input
                 id={BUCKET_INPUT_ID}
                 // The caption above is already this control's programmatic label
@@ -808,7 +845,6 @@ export function DecisionsCard() {
                     onTierChange={(tier, value) =>
                       configMut.mutate({ path: `${DECISIONS_MODEL_ROUTE_PATH}.${tier}`, value })
                     }
-                    pointerText={POINTER_TEXT}
                   />
                 </Suspense>
               )}

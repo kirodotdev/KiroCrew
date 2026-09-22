@@ -460,7 +460,6 @@ def _points_off():
             "id": name,
             "needs_scope": gate.POINT_SCOPE_KEYS.get(name),
             "status": "off",
-            "config_keys": list(gate.POINT_CONFIG_KEYS.get(name, ())),
         }
         for name in gate.DECISION_POINT_NAMES
     ]
@@ -1385,24 +1384,7 @@ class TestPointProjection:
             "id": "invented.point",
             "needs_scope": None,
             "status": "off",
-            "config_keys": [],
         }
-
-    @pytest.mark.asyncio
-    async def test_the_config_pointer_paths_ride_the_row_that_owns_them(
-        self, keystone, audit, configured
-    ):
-        """``skills.max_triggered`` is not a Jev setting, so the card points AT it.
-
-        Asserted through the route rather than by reading the constant, because the
-        card prints what the payload carries.
-        """
-        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_get
-
-        rows = json.loads((await api_decisions_consent_get(_request())).text)["points"]
-        by_id = {r["id"]: r for r in rows}
-        assert by_id["skills.select"]["config_keys"] == ["skills.max_triggered"]
-        assert by_id["model.route"]["config_keys"] == []
 
     @pytest.mark.asyncio
     async def test_status_is_the_effective_answer_and_a_missing_scope_says_so(
@@ -1488,9 +1470,10 @@ class TestScopeOnlyWrite:
         assert body["enabled"] is True and body["tool_args"] is True
         assert body["endpoint"] == DEFAULT_ENDPOINT
         assert consent.consented_tool_args() is True
-        # Its own audit word: a write that granted no switch must not leave a
-        # ``granted`` row for an auditor reconstructing when egress started.
-        assert audit[-1]["outcome"] == "scoped"
+        # The verb names the widest thing the write did, and granting an egress
+        # CATEGORY is a widening even though the switch beside it never moved. The
+        # revoking direction is what must not read as a grant, and it does not.
+        assert audit[-1]["outcome"] == "granted"
         # And back off again, still without restating consent.
         resp = await api_decisions_consent_put(_request(body={"tool_args": False}))
         assert resp.status == 200
@@ -1515,12 +1498,14 @@ class TestScopeOnlyWrite:
         assert resp.status == 200, resp.text
         body = json.loads(resp.text)
         assert body["history_budget_chars"] == 4000
-        # The switch and the address are untouched, and the row says so: a write that
-        # moved no switch must not be audited as a grant.
+        # The switch and the address are untouched, and the row still names the widest
+        # thing the write did: a bigger ceiling carries more conversation off the
+        # machine, so raising it from 0 is a grant. Clearing it back to 0 is the
+        # revocation, and that is the direction the verb must not call a grant.
         assert body["enabled"] is True
         assert body["endpoint"] == DEFAULT_ENDPOINT
         assert consent.consented_history_budget() == 4000
-        assert audit[-1]["outcome"] == "scoped"
+        assert audit[-1]["outcome"] == "granted"
 
     @pytest.mark.asyncio
     async def test_a_body_naming_nothing_at_all_is_still_refused(self, keystone, audit, configured):

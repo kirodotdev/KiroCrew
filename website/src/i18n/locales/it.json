@@ -11509,6 +11509,7 @@
         "decisions_history_off": "Ha effetto quando l'interruttore principale di Jev è attivo.",
         "decisions_scope_is_the_ok": "L'interruttore qui sotto è il consenso che manca.",
         "decisions_what_compaction_keep": "Valuta quali chiamate agli strumenti della sessione una compattazione terrebbe. Solo misurazione: la compattazione non cambia.",
+        "decisions_what_memory_recall": "Scarta i ricordi recuperati che non aiutano, quando l'assistente interroga la propria memoria. Può solo rimuoverli: mai aggiungerne uno.",
         "decisions_api_key_replace": "Sostituisci la chiave",
         "decisions_api_key_remove": "Rimuovi la chiave",
         "decisions_api_key_remove_confirm": "Rimuovere la chiave non si può annullare: la cassaforte non restituisce alcun valore, quindi dovresti incollarne una nuova.",

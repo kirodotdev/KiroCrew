@@ -90,6 +90,12 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   DECISIONS_SETTING_ID,
   'developer.jev-api-key',
   'developer.earlier-conversation-one-decision-may-carry-in-characters',
+  // The per-point consent switches. Declared in `settingsManual` because the card draws
+  // them from one component labelled by scope, so the extractor cannot see them -- but
+  // they are the card's rows and the fleet ceiling withdraws them with it.
+  'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
+  'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction',
+  'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
 ])
 
 /** The governance answers the search needs, as the two surfaces resolve them. */

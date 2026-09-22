@@ -11509,6 +11509,7 @@
         "decisions_history_off": "Isto passa a valer quando o interruptor principal do Jev está ligado.",
         "decisions_scope_is_the_ok": "O botão abaixo é o consentimento que falta aqui.",
         "decisions_what_compaction_keep": "Pontua quais chamadas de ferramenta da sessão uma compactação manteria. Só medição — a compactação em si não muda.",
+        "decisions_what_memory_recall": "Descarta as lembranças recuperadas que não ajudam, quando o assistente consulta a própria memória. Só pode removê-las — nunca adicionar uma.",
         "decisions_api_key_replace": "Substituir a chave",
         "decisions_api_key_remove": "Remover a chave",
         "decisions_api_key_remove_confirm": "Remover a chave não pode ser desfeito: o cofre não devolve nenhum valor, então você teria de colar uma nova.",

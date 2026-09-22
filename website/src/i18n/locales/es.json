@@ -11509,6 +11509,7 @@
         "decisions_history_off": "Esto surte efecto una vez que el interruptor principal de Jev está activado.",
         "decisions_scope_is_the_ok": "El interruptor de abajo es el consentimiento que falta aquí.",
         "decisions_what_compaction_keep": "Puntúa cuáles de las llamadas a herramientas de la sesión conservaría una compactación. Solo se mide: la compactación en sí no cambia.",
+        "decisions_what_memory_recall": "Descarta los recuerdos recuperados que no ayudan, cuando el asistente consulta su propia memoria. Solo puede quitarlos: nunca añadir uno.",
         "decisions_api_key_replace": "Reemplazar la clave",
         "decisions_api_key_remove": "Quitar la clave",
         "decisions_api_key_remove_confirm": "Quitar la clave no se puede deshacer: la bóveda no devuelve ningún valor, así que tendrías que pegar una nueva.",

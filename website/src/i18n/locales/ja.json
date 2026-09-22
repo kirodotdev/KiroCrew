@@ -11193,6 +11193,7 @@
         "decisions_history_off": "これは、Jev のメインスイッチをオンにすると有効になります。",
         "decisions_scope_is_the_ok": "下のスイッチが、ここで必要な同意です。",
         "decisions_what_compaction_keep": "セッションのどのツール呼び出しを圧縮が残すかを採点します。測定のみで、圧縮そのものは変わりません。",
+        "decisions_what_memory_recall": "アシスタントが自身の記憶に問い合わせたとき、役に立たない記憶を除きます。除くだけで、記憶を追加することはありません。",
         "decisions_api_key_replace": "キーを置き換える",
         "decisions_api_key_remove": "キーを削除",
         "decisions_api_key_remove_confirm": "キーの削除は取り消せません。保管庫は値を返さないので、新しいものを貼り付け直すことになります。",

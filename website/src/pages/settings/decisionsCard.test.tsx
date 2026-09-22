@@ -63,12 +63,12 @@ const pointsOf = (
   const status = (scope: string | null) =>
     !enabled ? 'off' : scope && !granted[scope] ? 'needs_scope' : 'active'
   return [
-    { id: 'skills.select', needs_scope: null, status: status(null), config_keys: ['skills.max_triggered'] },
-    { id: 'tool.risk', needs_scope: 'tool_args', status: status('tool_args'), config_keys: [] },
-    { id: 'message.steer', needs_scope: null, status: status(null), config_keys: [] },
-    { id: 'model.route', needs_scope: null, status: status(null), config_keys: [] },
-    { id: 'compaction.keep', needs_scope: 'compaction', status: status('compaction'), config_keys: [] },
-    { id: 'memory.recall', needs_scope: 'memory_text', status: status('memory_text'), config_keys: [] },
+    { id: 'skills.select', needs_scope: null, status: status(null) },
+    { id: 'tool.risk', needs_scope: 'tool_args', status: status('tool_args') },
+    { id: 'message.steer', needs_scope: null, status: status(null) },
+    { id: 'model.route', needs_scope: null, status: status(null) },
+    { id: 'compaction.keep', needs_scope: 'compaction', status: status('compaction') },
+    { id: 'memory.recall', needs_scope: 'memory_text', status: status('memory_text') },
   ]
 }
 
@@ -400,7 +400,7 @@ describe('Decisions (Jev) preview card', () => {
     // point must reach a reader with no edit on this side.
     stubGateway(
       consentOf(true, {
-        points: [{ id: 'invented.point', needs_scope: null, status: 'active', config_keys: [] }],
+        points: [{ id: 'invented.point', needs_scope: null, status: 'active' }],
       }),
     )
     renderSection()

@@ -11193,6 +11193,7 @@
         "decisions_history_off": "开启 Jev 主开关后生效。",
         "decisions_scope_is_the_ok": "下面的开关就是这里需要的同意。",
         "decisions_what_compaction_keep": "为压缩会保留哪些工具调用打分。仅作测量，压缩本身不变。",
+        "decisions_what_memory_recall": "当助手查询自己的记忆时，剔除那些没有帮助的记忆。只会移除，绝不会新增。",
         "decisions_api_key_replace": "更换密钥",
         "decisions_api_key_remove": "删除密钥",
         "decisions_api_key_remove_confirm": "删除密钥无法撤销：保险库不会返回值，你得重新粘贴一个新的。",

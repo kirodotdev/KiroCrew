@@ -37,6 +37,41 @@ export function connectionsOAuthClientEntryId(slug: string): string {
  * locale.
  */
 export const SETTINGS_MANUAL: ManualSettingEntry[] = [
+  // The Decisions (Jev) card's three per-point consent switches.
+  //
+  // Declared here rather than extracted because the card draws them from ONE component
+  // on whichever point's panel is open, labelled from a map keyed by the scope the
+  // gateway says that point needs -- so there is no literal label prop for the walker to
+  // read. The ids are the ones the flat card's extracted entries carried, so a bookmark
+  // or a palette history entry saved against them still resolves.
+  //
+  // Every one is GOVERNED: each id is also in `settingsSearchCore.DECISIONS_SETTING_IDS`,
+  // so a search that KNOWS `capabilities.decisions` is denied offers none of them, and a
+  // user with the feature available can still find the switch they are looking for.
+  {
+    id: 'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
+    labelKey: 'pages.developer.featurePreviewsTab.decisions_tool_args',
+    descriptionKey: 'pages.developer.featurePreviewsTab.decisions_tool_args_desc',
+    tab: 'developer',
+    type: 'toggle',
+    occurrence: 1,
+  },
+  {
+    id: 'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction',
+    labelKey: 'pages.developer.featurePreviewsTab.decisions_compaction',
+    descriptionKey: 'pages.developer.featurePreviewsTab.decisions_compaction_desc',
+    tab: 'developer',
+    type: 'toggle',
+    occurrence: 1,
+  },
+  {
+    id: 'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
+    labelKey: 'pages.developer.featurePreviewsTab.decisions_memory_text',
+    descriptionKey: 'pages.developer.featurePreviewsTab.decisions_memory_text_desc',
+    tab: 'developer',
+    type: 'toggle',
+    occurrence: 1,
+  },
   {
     // Override of the one primitive the extractor DOES see in SecurityPanel:
     // without `section=apps` the deep link lands on the security rail with the

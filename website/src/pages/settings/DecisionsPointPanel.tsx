@@ -51,7 +51,6 @@ export interface DecisionsPointPanelProps {
   tiersDisabled: boolean
   onTierChange: (tier: string, value: string) => void
   /** A sentence per `config.json` path this card points at instead of controlling. */
-  pointerText: Record<string, string>
 }
 
 export function DecisionsPointPanel({
@@ -70,7 +69,6 @@ export function DecisionsPointPanel({
   inheritLabel,
   tiersDisabled,
   onTierChange,
-  pointerText,
 }: DecisionsPointPanelProps) {
   return (
     <>
@@ -141,14 +139,19 @@ export function DecisionsPointPanel({
             />
           )
         })}
-      {/* Settings this card does NOT offer a control for, named by their path. A reader
-          must not have to assume the card is the whole story, and a path is what they
-          grep config.json for. */}
-      {row.configKeys.map(path => (
-        <p key={path} className="text-[12px] text-muted m-0">
-          {pointerText[path] ?? path}
+      {/* The one setting this card does NOT offer a control for, on the one point that
+          has one. A reader must not have to assume the card is the whole story, and the
+          sentence names the `config.json` path they would grep for.
+
+          A literal on this point rather than a per-row registry: one entry threaded
+          through the payload, the reader and a props map to print one line is machinery
+          the single case does not pay for. A second point needing one is when a map
+          earns its place. */}
+      {row.id === 'skills.select' && (
+        <p className="text-[12px] text-muted m-0">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_pointer_skills_max_triggered')}
         </p>
-      ))}
+      )}
     </>
   )
 }
