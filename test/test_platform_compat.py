@@ -5386,6 +5386,184 @@ def test_root_owned_path_declines_a_symlink_loop(tmp_path, monkeypatch):
     assert platform_compat._is_root_owned_path(str(first)) is False
 
 
+def _hop_chain(tmp_path):
+    """``trusted/aws -> writable/hop -> trusted/real``: the mid-chain hop shape."""
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = trusted / "real"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = writable / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "aws"
+    entry.symlink_to(middle)
+    return entry, middle, writable, target
+
+
+def _symlinked_component_chain(tmp_path):
+    """``prefix/bin -> holder/bin``, entry ``prefix/bin/aws``: the symlinked-directory shape."""
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    real_bin = holder / "bin"
+    real_bin.mkdir()
+    leaf = real_bin / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    (prefix / "bin").symlink_to(real_bin)
+    return prefix / "bin" / "aws", prefix, holder, leaf
+
+
+def test_traversed_components_of_a_symlink_free_path_is_its_lexical_chain(tmp_path):
+    """Without a symlink the walk names exactly ``resolved.parents`` plus the target.
+
+    This is the measurement behind "strictly widening": a caller that asked its
+    question over the lexical chain asks it over the very same directories here
+    whenever no symlink is involved, in root-first order with the target last.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX path semantics
+        pytest.skip("POSIX path semantics")
+
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    leaf = (holder / "aws").resolve()
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+
+    assert platform_compat.traversed_components(leaf) == [*reversed(leaf.parents), leaf]
+    assert platform_compat.traversed_components(str(leaf)) == [*reversed(leaf.parents), leaf]
+
+
+def test_traversed_components_visits_a_hop_in_the_middle_of_a_chain(tmp_path):
+    """Both endpoints' chains are named AND the directory holding the hop.
+
+    Neither ``realpath`` then ``.parents`` nor a lexical walk over the entry names
+    ``writable``; the component walk records it because it reads it. The symlinks
+    themselves are absent: their mode is meaningless and the directory holding
+    them governs their replacement.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, middle, writable, target = _hop_chain(tmp_path)
+    resolved = target.resolve()
+
+    components = platform_compat.traversed_components(entry)
+
+    assert components is not None
+    assert components[-1] == resolved
+    assert writable.resolve() in components
+    assert set(resolved.parents) <= set(components), "every lexical ancestor of the target"
+    assert set(entry.resolve().parents) <= set(components)
+    assert middle not in components and entry not in components
+    assert len(components) == len(set(components)), "each directory once"
+
+
+def test_traversed_components_visits_both_sides_of_a_symlinked_directory_component(tmp_path):
+    """``prefix/bin -> holder/bin``: the link's own parent AND the target's parent are named.
+
+    A lexical walk over the entry names ``prefix`` and never ``holder``; a lexical
+    walk over the collapsed path names ``holder`` and never ``prefix``. Either
+    directory's owner can choose what the entry resolves to, so both are here.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, prefix, holder, leaf = _symlinked_component_chain(tmp_path)
+
+    components = platform_compat.traversed_components(entry)
+
+    assert components is not None
+    assert components[-1] == leaf.resolve()
+    assert prefix.resolve() in components
+    assert holder.resolve() in components
+    assert (holder / "bin").resolve() in components
+    assert prefix / "bin" not in components, "the symlink itself is not a component"
+
+
+def test_traversed_components_is_none_on_a_symlink_loop(tmp_path):
+    """A cycle answers ``None``, never a partial list: unknown is not a shorter walk."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    assert platform_compat.traversed_components(first) is None
+
+
+def test_traversed_components_is_none_when_a_link_cannot_be_read(tmp_path, monkeypatch):
+    """An ``OSError`` mid-walk is ``None``: the caller decides what unknown means."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, _middle, _writable, _target = _hop_chain(tmp_path)
+
+    def broken_readlink(path, *a, **kw):
+        raise OSError(errno.EIO, "readlink failed")
+
+    monkeypatch.setattr(os, "readlink", broken_readlink)
+
+    assert platform_compat.traversed_components(entry) is None
+
+
+def test_root_owned_path_is_the_root_owned_predicate_over_the_walk(tmp_path, monkeypatch):
+    """The predicate is unchanged by the split: it is ``_root_owned_entry`` over the walk.
+
+    Both evasion shapes and a tight chain agree with that composition, and the
+    refusals stay refusals: the walk finds the one directory left as the test
+    user's in each shape and the predicate declines it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    hop_entry, _middle, writable, _target = _hop_chain(tmp_path)
+    component_entry, _prefix, holder, _leaf = _symlinked_component_chain(tmp_path)
+    tight_dir = tmp_path / "tight"
+    tight_dir.mkdir()
+    tight = tight_dir / "aws"
+    tight.write_text("#!/bin/sh\nexit 0\n")
+    tight.chmod(0o755)
+    loose = {os.path.realpath(str(writable)), os.path.realpath(str(holder))}
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) in loose:
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+
+    for entry, expected in ((hop_entry, False), (component_entry, False), (tight, True)):
+        components = platform_compat.traversed_components(entry)
+        assert components is not None
+        composed = all(platform_compat._root_owned_entry(str(c)) for c in components)
+        assert composed is expected
+        assert platform_compat._is_root_owned_path(str(entry)) is expected
+
+
 def test_root_owned_path_declines_a_symlink_into_a_writable_directory(tmp_path, monkeypatch):
     """The realpath pass is load-bearing too, for a reason the literal pass cannot see.
 

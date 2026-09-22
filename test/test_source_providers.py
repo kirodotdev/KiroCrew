@@ -644,7 +644,6 @@ def test_provider_executable_rejects_binary_owned_by_another_user(
     foreign_stat = github_runner.os.stat_result([*list(real_stat)[:4], 4242, *list(real_stat)[5:]])
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [])
     monkeypatch.setattr(github_runner.Path, "stat", lambda _path: foreign_stat)
 
     with pytest.raises(ValueError, match="owned by another user"):
@@ -671,7 +670,7 @@ def test_provider_executable_rejects_world_writable_parent(monkeypatch, tmp_path
     parent.chmod(0o777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     with pytest.raises(ValueError, match="executable parent is world-writable"):
         source._validate_provider_executable(str(executable))
@@ -692,7 +691,7 @@ def test_provider_executable_tolerates_a_sticky_world_writable_parent(
     parent.chmod(0o1777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     assert source._validate_provider_executable(str(executable)) == str(executable.resolve())
 
@@ -718,12 +717,114 @@ def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
         return real_stat(path)
 
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "traversed_components",
+        lambda _path: [parent, executable.resolve()],
+    )
     monkeypatch.setattr(github_runner.Path, "stat", fake_stat)
     monkeypatch.setattr(github_runner.os, "access", lambda _path, mode: mode == github_runner.os.X_OK)
 
     with pytest.raises(ValueError, match="executable parent is not root-owned"):
         source._validate_provider_executable(str(executable))
+
+
+def test_provider_executable_relaxed_mode_declines_a_writable_hop_in_the_middle_of_a_chain(
+    monkeypatch, tmp_path
+) -> None:
+    """``trusted/gh -> writable/hop -> trusted/real-gh``: the hop's directory decides.
+
+    Both ENDPOINTS' directory chains are tight, so two lexical chains over the
+    endpoints (the resolved path's parents, the original's parents) never name
+    ``writable`` and accept the chain end to end. The component walk reads
+    ``writable`` to follow the hop, so it is checked like any other parent.
+    """
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = trusted / "real-gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = writable / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "gh"
+    entry.symlink_to(middle)
+    writable.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="executable parent is world-writable"):
+        github_runner.validate_provider_executable(str(entry))
+
+
+def test_provider_executable_relaxed_mode_declines_a_writable_ancestor_of_a_symlinked_component(
+    monkeypatch, tmp_path
+) -> None:
+    """``prefix/bin -> holder/bin``: the target's own parent ``holder`` is checked.
+
+    The resolved path's own lexical chain names ``holder``, so this pins a
+    refusal the component walk must keep rather than a gap it closes.
+    """
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    real_bin = holder / "bin"
+    real_bin.mkdir()
+    leaf = real_bin / "gh"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    (prefix / "bin").symlink_to(real_bin)
+    holder.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="executable parent is world-writable"):
+        github_runner.validate_provider_executable(str(prefix / "bin" / "gh"))
+
+
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
+def test_provider_executable_relaxed_mode_still_accepts_a_chain_through_tight_directories(
+    monkeypatch, tmp_path
+) -> None:
+    """The widening is strictly a widening: the same hop chain through directories
+    that pass the policy is accepted, so an ordinary symlinked install (Homebrew's
+    ``bin/gh -> ../Cellar/...``, a ``/usr/local/bin`` link into ``/opt``) gains no
+    new refusal."""
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    hops = tmp_path / "hops"
+    hops.mkdir()
+    target = trusted / "real-gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = hops / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "gh"
+    entry.symlink_to(middle)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    assert github_runner.validate_provider_executable(str(entry)) == str(target.resolve())
+
+
+def test_provider_executable_refuses_a_chain_the_walk_cannot_enumerate(
+    monkeypatch, tmp_path
+) -> None:
+    """A walk that answers ``None`` is a refusal, never a shorter parent list."""
+    executable = tmp_path / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner.platform_compat, "traversed_components", lambda _path: None)
+
+    with pytest.raises(ValueError, match="executable hierarchy is not accessible"):
+        github_runner.validate_provider_executable(str(executable))
 
 
 def test_redact_provider_data_recurses_through_external_strings() -> None:

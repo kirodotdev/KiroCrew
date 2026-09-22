@@ -76,6 +76,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # The profile is named, with no attachment path, and applied by systemd. Keep the
@@ -632,7 +634,9 @@ def default_exec_path() -> str | None:
     return value or None
 
 
-def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) -> str | None:
+def _substitutable_by_others(
+    resolved: Path, expected_uid: int | None = None, *, candidate: Path | None = None
+) -> str | None:
     """Explain how another local user could take over *resolved*, or None.
 
     The prefix denylist above is a good *message* for the common cases, but it is
@@ -641,6 +645,13 @@ def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) ->
     sail past it, and an attachment there lets any local user drop in their own
     executable and inherit the userns grant. This is the check that actually
     delivers the property the denylist only approximates.
+
+    *candidate* is the spelling the operator gave, before resolution. The walk
+    enumerates from it (:func:`kiro_crew.platform_compat.traversed_components`),
+    so a symlink hop in the middle of the chain and a symlinked directory
+    component's own parent are inspected along with the collapsed path's
+    ancestors. Omitted, the walk starts at *resolved*, which for a symlink-free
+    path is the same set of directories.
 
     Two rules, mirroring :func:`_resolve_trusted`'s existing test for tools this
     module hands to sudo (``st_mode & 0o022``), so the module applies one standard
@@ -718,7 +729,18 @@ def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) ->
             "copy of the app, or ship a packaged profile if you are confining a "
             "system-wide install."
         )
-    for component in (resolved, *resolved.parents):
+    # Every directory the walk from the spelling the operator gave to *resolved*
+    # actually reads, plus the target — not the lexical ancestors of the collapsed
+    # path, which never name a symlink hop in the middle of a chain nor a
+    # symlinked directory component's own parent, and either is a directory whose
+    # owner chooses what the attachment ends up granting. Closest to the target
+    # first, so the message names the most specific offending component.
+    walked = platform_compat.traversed_components(candidate if candidate is not None else resolved)
+    if walked is None:
+        return f"{resolved} could not be inspected (its path could not be walked component by component)"
+    if walked[-1] != resolved:
+        return f"{resolved} could not be inspected (the path resolved inconsistently)"
+    for component in reversed(walked):
         try:
             info = component.stat()
         except OSError as exc:
@@ -819,7 +841,7 @@ def validate_exec_path(raw: str, expected_uid: int | None = None) -> tuple[Path 
             "match more paths than intended, so rename the file or move it to a "
             "path without those characters.",
         )
-    takeover = _substitutable_by_others(resolved, expected_uid=expected_uid)
+    takeover = _substitutable_by_others(resolved, expected_uid=expected_uid, candidate=candidate)
     if takeover:
         return (None, takeover)
     return (resolved, "")

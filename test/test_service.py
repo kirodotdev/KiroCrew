@@ -3200,7 +3200,9 @@ def durable_dir(tmp_path, monkeypatch):
     from kiro_crew.service import apparmor as aa
 
     monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
-    monkeypatch.setattr(aa, "_substitutable_by_others", lambda _p, expected_uid=None: None)
+    monkeypatch.setattr(
+        aa, "_substitutable_by_others", lambda _p, expected_uid=None, candidate=None: None
+    )
     return tmp_path
 
 
@@ -3563,6 +3565,115 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         assert problem is not None
         assert "uid 4242" in problem
         assert "not by you" in problem
+
+    @staticmethod
+    def _tight_except(monkeypatch, base, loose):
+        """Every component reads as mode-tight (no ``0o022``) except *loose* (``0o777``).
+
+        Ancestors above *base* read as root's, the way :func:`_trust_ancestors_above`
+        pins them, so a temp root owned by a third account on the host does not
+        decide the verdict; the fixtures under *base* keep their real owner.
+        """
+        # ``os.path.realpath`` rather than ``Path.resolve``: a non-strict resolve
+        # calls ``stat`` on its result, which would re-enter this fake.
+        loose_real = os.path.realpath(loose)
+        ancestors = {str(parent) for parent in Path(os.path.realpath(base)).parents}
+        real_stat = Path.stat
+
+        def fake_stat(self, **kwargs):
+            info = real_stat(self, **kwargs)
+            real = os.path.realpath(self)
+            mode = info.st_mode | 0o022 if real == loose_real else info.st_mode & ~0o022
+            uid = 0 if real in ancestors else info.st_uid
+            return os.stat_result((mode, info.st_ino, info.st_dev, info.st_nlink, uid) + tuple(info)[5:])
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+    def test_a_writable_hop_in_the_middle_of_a_chain_is_refused(self, tmp_path, monkeypatch):
+        """``trusted/app -> loose/hop -> trusted/real``: the hop's directory is walked.
+
+        Both endpoints' chains are tight; only the directory holding the hop is
+        writable, and a lexical chain over the collapsed path never names it.
+        """
+        from kiro_crew.service import apparmor as aa
+
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        loose = tmp_path / "loose"
+        loose.mkdir()
+        real = trusted / "real.AppImage"
+        real.write_text("#!/bin/sh\n")
+        hop = loose / "hop"
+        hop.symlink_to(real)
+        app = trusted / "kirocrew.AppImage"
+        app.symlink_to(hop)
+        monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
+        self._tight_except(monkeypatch, tmp_path, loose)
+
+        resolved, problem = aa.validate_exec_path(str(app))
+
+        assert resolved is None
+        assert "group- or world-writable" in problem
+        assert str(loose.resolve()) in problem, "must name the offending component"
+
+    def test_a_writable_parent_of_a_symlinked_component_is_refused(self, tmp_path, monkeypatch):
+        """``prefix/bin -> holder/bin``: ``prefix`` holds the link and is walked.
+
+        The collapsed path's chain runs ``holder/bin``, ``holder``, ... and never
+        names ``prefix``, whose owner can re-point ``bin`` wholesale.
+        """
+        from kiro_crew.service import apparmor as aa
+
+        prefix = tmp_path / "prefix"
+        prefix.mkdir()
+        real_bin = tmp_path / "holder" / "bin"
+        real_bin.mkdir(parents=True)
+        leaf = real_bin / "kirocrew.AppImage"
+        leaf.write_text("#!/bin/sh\n")
+        (prefix / "bin").symlink_to(real_bin)
+        monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
+        self._tight_except(monkeypatch, tmp_path, prefix)
+
+        resolved, problem = aa.validate_exec_path(str(prefix / "bin" / "kirocrew.AppImage"))
+
+        assert resolved is None
+        assert "group- or world-writable" in problem
+        assert str(prefix.resolve()) in problem, "must name the offending component"
+
+    def test_a_chain_through_tight_directories_is_still_accepted(self, tmp_path, monkeypatch):
+        """Strictly a widening: the hop shape with every directory tight is accepted."""
+        from kiro_crew.service import apparmor as aa
+
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        hops = tmp_path / "hops"
+        hops.mkdir()
+        real = trusted / "real.AppImage"
+        real.write_text("#!/bin/sh\n")
+        hop = hops / "hop"
+        hop.symlink_to(real)
+        app = trusted / "kirocrew.AppImage"
+        app.symlink_to(hop)
+        monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
+        self._tight_except(monkeypatch, tmp_path, tmp_path / "nothing-is-loose")
+
+        resolved, problem = aa.validate_exec_path(str(app))
+
+        assert problem == ""
+        assert resolved == real.resolve()
+
+    def test_a_walk_that_cannot_be_enumerated_is_refused(self, tmp_path, monkeypatch):
+        """``None`` from the walk is a refusal that says so, never a shorter chain."""
+        from kiro_crew.service import apparmor as aa
+
+        app = tmp_path / "kirocrew.AppImage"
+        app.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(aa.platform_compat, "traversed_components", lambda _path: None)
+
+        problem = aa._substitutable_by_others(app.resolve(), candidate=app)
+
+        assert problem is not None
+        assert "could not be inspected" in problem
 
 
 @posix_only

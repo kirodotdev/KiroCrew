@@ -2943,7 +2943,7 @@ def _root_owned_entry(path: str) -> bool:
     Not to be confused with :func:`path_writable_by_current_user`, which answers
     the opposite question ("could this account write it") over two LEXICAL chains
     and rounds unknown to writable. That shape cannot see a mid-chain symlink hop,
-    which is why :func:`_is_root_owned_path` resolves component by component and
+    which is why :func:`_is_root_owned_path` walks :func:`traversed_components` and
     calls this per entry instead of delegating wholesale.
 
     ``os.stat`` rather than ``os.lstat`` on purpose: every caller has already
@@ -2965,48 +2965,57 @@ def _root_owned_entry(path: str) -> bool:
     return True
 
 
-def _is_root_owned_path(path: str) -> bool:
-    """True when nothing on the way to *path*'s target is another uid's to change.
+def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
+    """Every directory a component-by-component walk to *path* passes through, then the target.
 
-    Resolves *path* one COMPONENT at a time and validates every directory the walk
-    actually passes through, expanding each symlink it meets — a component's as
-    much as the final name's — and then validating the directories on the target's
-    side too.
+    Resolves *path* one COMPONENT at a time, expanding each symlink it meets — a
+    directory component's as much as the final name's — and records every
+    directory the walk actually reads, on the original side and on each expanded
+    target's side alike, followed by the final resolved target. Visit order, each
+    entry once. No ownership or permission question is asked here: this is the
+    ENUMERATION that any executable-trust predicate must ask its question over,
+    kept separate so that callers with different questions ("root's alone to
+    change", "not another uid's", "not writable by this process") share the walk
+    rather than each spelling a weaker one.
 
-    Two weaker shapes were tried here first and both were bypassable, which is why
-    it is written this way rather than more briefly:
+    Two shorter shapes were tried for this enumeration and both were bypassable,
+    which is why every caller must use this one rather than either:
 
     * ``realpath`` and then walk the result collapses the chain, so
-      ``/usr/local/bin/aws -> /tmp/link -> /usr/bin/aws`` is accepted with ``/tmp``
-      — the one directory where the retarget happens — never looked at;
-    * walking ``os.path.dirname`` lexically misses a symlinked COMPONENT, because
-      ``os.stat`` follows symlinks while ``dirname`` does not: for
-      ``/usr/local/bin -> /opt/x/bin`` the target's own parent ``/opt/x``, which
-      can replace it wholesale, is never visited.
+      ``/usr/local/bin/aws -> /tmp/link -> /usr/bin/aws`` yields ``/usr/bin`` and
+      its ancestors with ``/tmp`` — the one directory where the retarget
+      happens — never named;
+    * walking ``os.path.dirname`` / ``Path.parents`` lexically misses a symlinked
+      COMPONENT, because ``os.stat`` follows symlinks while ``dirname`` does not:
+      for ``/usr/local/bin -> /opt/x/bin`` the target's own parent ``/opt/x``,
+      which can replace it wholesale, is never visited.
 
-    A directory has to be root-owned with no group or world write bit, because
-    replacing an entry needs write on its DIRECTORY rather than on the entry, and a
-    group-writable directory is writable by more than root whoever owns it. The
-    final target has to satisfy the same rule as a file, since a writable regular
-    file can be edited in place without touching any directory. Symlinks met on the
-    way are deliberately not checked themselves: their mode is meaningless (0777 on
+    Every lexical ancestor of the fully resolved target is in the result (the
+    walk builds the target's path one directory at a time, and each directory is
+    recorded before a name is joined onto it), so a question asked over this list
+    is asked over a superset of ``resolved.parents`` plus the target. Symlinks
+    met on the way are deliberately absent: their mode is meaningless (0777 on
     Linux) and they cannot be edited in place, only replaced, which the directory
-    holding them already governs.
+    holding them — present in the result — already governs.
 
-    POSIX semantics. Windows callers do not reach it (:func:`trusted_aws_bin`
-    answers ``None`` there before the gate).
+    POSIX path semantics (``os.sep``-rooted); Windows callers keep their own
+    ACL-driven chains and must not route through here.
 
-    Any ``OSError``, and any path needing more than :data:`_MAX_SYMLINK_HOPS`
-    expansions, answers ``False``. The fail direction is "decline", never "assume".
+    ``None`` on any ``OSError`` and on any path needing more than
+    :data:`_MAX_SYMLINK_HOPS` expansions. The fail direction is "could not
+    enumerate", never a shorter list: a caller that treats ``None`` as anything
+    but a refusal is answering a question it did not ask.
     """
-    if not os.path.isabs(path):
-        path = os.path.abspath(path)
+    text = os.fspath(path)
+    if not os.path.isabs(text):
+        text = os.path.abspath(text)
     # Reversed, so `pop()` yields the next component and a symlink's own components
     # can be pushed on to be consumed before the rest of the original path.
-    pending = path.split(os.sep)
+    pending = text.split(os.sep)
     pending.reverse()
     resolved = os.sep
     hops = 0
+    visited: dict[str, None] = {}
     while pending:
         name = pending.pop()
         if name in ("", os.curdir):
@@ -3014,30 +3023,53 @@ def _is_root_owned_path(path: str) -> bool:
         if name == os.pardir:
             resolved = os.path.dirname(resolved)
             continue
-        # About to read `resolved` as a directory, so it must be one nobody but
-        # root can change. Checked here rather than after descending, so the
-        # target side of an expanded symlink is covered by the same line.
-        if not _root_owned_entry(resolved):
-            return False
+        # About to read `resolved` as a directory, so it is one the walk depends
+        # on. Recorded here rather than after descending, so the target side of
+        # an expanded symlink is covered by the same line.
+        visited[resolved] = None
         candidate = os.path.join(resolved, name)
         try:
             is_link = os.path.islink(candidate)
         except OSError:
-            return False
+            return None
         if not is_link:
             resolved = candidate
             continue
         hops += 1
         if hops > _MAX_SYMLINK_HOPS:
-            return False
+            return None
         try:
             target = os.readlink(candidate)
         except OSError:
-            return False
+            return None
         if os.path.isabs(target):
             resolved = os.sep
         pending.extend(reversed(target.split(os.sep)))
-    return _root_owned_entry(resolved)
+    visited[resolved] = None
+    return [Path(component) for component in visited]
+
+
+def _is_root_owned_path(path: str) -> bool:
+    """True when nothing on the way to *path*'s target is another uid's to change.
+
+    :func:`_root_owned_entry` asked over :func:`traversed_components` — every
+    directory the walk reads and the final target. A directory has to be
+    root-owned with no group or world write bit, because replacing an entry needs
+    write on its DIRECTORY rather than on the entry, and a group-writable
+    directory is writable by more than root whoever owns it. The final target has
+    to satisfy the same rule as a file, since a writable regular file can be
+    edited in place without touching any directory.
+
+    POSIX semantics. Windows callers do not reach it (:func:`trusted_aws_bin`
+    answers ``None`` there before the gate).
+
+    A walk that cannot be enumerated (``None``) answers ``False``. The fail
+    direction is "decline", never "assume".
+    """
+    components = traversed_components(path)
+    if components is None:
+        return False
+    return all(_root_owned_entry(str(component)) for component in components)
 
 
 def _local_aws_bin_candidate() -> str | None:
