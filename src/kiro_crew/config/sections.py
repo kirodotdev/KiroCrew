@@ -1049,6 +1049,26 @@ class AgentConfig:
             "operator answers yes.",
         ),
     )
+    sandbox_docker: bool = field(
+        default=False,
+        metadata=_meta(
+            "Docker-Confined Adapter",
+            "When true, the OpenCode ACP adapter spawns inside a Docker "
+            "container instead of directly on the host. The container mounts "
+            "the session workspace (read-write, so the agent can edit files), "
+            "a persistent state dir under the data home (read-write, so "
+            "sessions survive), and -- when present -- the operator's OpenCode "
+            "config dir and auth file (read-only, so the adapter resolves the "
+            "same settings and can sign in); no other host path -- in "
+            "particular no credential home -- is visible inside, which is the "
+            "OS boundary the enforced-harness credential mask needs on a host "
+            "with no native Crew sandbox backend (Windows). Default false on "
+            "every platform: the operator opts in explicitly, and the image "
+            "(kirocrew-opencode, built from the shipped Dockerfile) plus a "
+            "reachable Docker daemon are required or the session is refused "
+            "rather than started unfenced.",
+        ),
+    )
     apps_allow_third_party: bool = field(
         default=False,
         metadata=_meta(

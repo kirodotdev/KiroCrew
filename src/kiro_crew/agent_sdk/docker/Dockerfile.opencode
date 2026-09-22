@@ -1,0 +1,47 @@
+# Confinement image for the OpenCode ACP harness (see agent_sdk/docker_sandbox.py).
+#
+# Built ONCE by the operator, never pulled at session start:
+#   docker build -t kirocrew-opencode:latest \
+#     -f src/kiro_crew/agent_sdk/docker/Dockerfile.opencode \
+#     src/kiro_crew/agent_sdk/docker
+#
+# The image carries ONLY the adapter plus the tools an agent session needs
+# (bash/coreutils from the base, git, ssh for git-over-ssh, ripgrep for file
+# search, python3/pip for script tools, curl/jq for fetches, unzip/zip for
+# archives, procps/file for process inspection, CA certs for model TLS).
+# Credential isolation does NOT come from this image -- it comes from what the
+# spawn does NOT mount: the container receives the session workspace and (when
+# present) the operator's opencode auth.json read-only, and no other host path.
+# Pinned to the verified release; bump with --build-arg
+# OPENCODE_NPM_TAG=<version> and rebuild after checking `opencode --version`
+# on the host matches. The default deliberately does NOT track npm `latest`:
+# an untracked adapter drift is exactly how a host/client version skew reaches
+# a session as an opaque failure instead of a build step.
+ARG OPENCODE_NPM_TAG=1.18.32
+FROM node:22-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        file \
+        git \
+        jq \
+        openssh-client \
+        procps \
+        python3 \
+        python3-pip \
+        ripgrep \
+        unzip \
+        zip \
+    && rm -rf /var/lib/apt/lists \
+    && npm install -g "opencode-ai@${OPENCODE_NPM_TAG}" \
+    && npm cache clean --force \
+    && opencode --version \
+    && python3 --version \
+    && curl --version | head -1
+
+ENV HOME=/root
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["opencode", "acp"]

@@ -32,6 +32,7 @@
         "sandbox": "auto",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
+        "sandbox_docker": false,
         "apps_allow_third_party": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
@@ -394,6 +395,20 @@
       "tags": [],
       "label": "Allow Unsandboxed Execution",
       "help": "When true, allow agent subprocesses to execute without any sandbox backend (fail-open). When false, wrap_argv raises if no sandbox backend is available and mode is not 'off', preventing unsandboxed execution entirely (fail-closed). This is distinct from sandbox_allow_no_isolation which only controls warning severity — this field controls whether execution proceeds at all. A LOADED config carries the effective policy: the loader resolves an undeclared key through config.loader.unsandboxed_exec_platform_default() — allow on Windows, which has no backend that any operator action could install, and fail-closed everywhere else, where a missing backend is broken or one profile away from working. A declared value always wins in both directions, and a governance sandbox.min_level floor outranks the declaration. The resolution is folded into the VALUE rather than keyed on key presence so a full-document save() — which serializes every field — cannot turn 'never decided' into a declared lockdown. This dataclass default stays platform-independent so the committed config-schema snapshot is identical on every platform; the one caller that writes a document from a directly constructed config (the first-run default write in cli_server) resolves the platform default explicitly before saving. `kirocrew setup` surfaces the decision on a backend-less host, offering the opt-in where the default is fail-closed and stating the exposure plus offering the opt-out where it is allow, and writes nothing unless the operator answers yes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.sandbox_docker",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Docker-Confined Adapter",
+      "help": "When true, the OpenCode ACP adapter spawns inside a Docker container instead of directly on the host. The container mounts the session workspace (read-write, so the agent can edit files), a persistent state dir under the data home (read-write, so sessions survive), and -- when present -- the operator's OpenCode config dir and auth file (read-only, so the adapter resolves the same settings and can sign in); no other host path -- in particular no credential home -- is visible inside, which is the OS boundary the enforced-harness credential mask needs on a host with no native Crew sandbox backend (Windows). Default false on every platform: the operator opts in explicitly, and the image (kirocrew-opencode, built from the shipped Dockerfile) plus a reachable Docker daemon are required or the session is refused rather than started unfenced.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

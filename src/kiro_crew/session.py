@@ -1915,6 +1915,7 @@ class SessionManager:
         "agent.sandbox",
         "agent.sandbox_allow_no_isolation",
         "agent.sandbox_allow_unsandboxed_exec",
+        "agent.sandbox_docker",
         "agent.member_acp_backend",
         # The warm pool's agent is `session.pool_agent or agent.default_agent`, and
         # WarmPoolState.agent is captured once, so the default is a factory input.

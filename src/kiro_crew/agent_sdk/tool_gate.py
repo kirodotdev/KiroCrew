@@ -63,6 +63,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     Routing,
     gate_probe_command_for,
@@ -433,7 +434,12 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     Native Windows has no Crew OS sandbox backend that can apply the mask, so the
     refusal there names that limitation and points at Kiro CLI rather than at
     ``agent.sandbox``: changing the configured tier cannot enable a backend this
-    host does not have. The generic set-standard-or-strict remedy is kept for
+    host does not have. The one exception on any platform is a Docker-confined
+    OpenCode session (``agent.sandbox_docker`` with a reachable Linux-container
+    daemon and the built image): the container boundary IS the mask there --
+    only the workspace, the sandbox state dir, and (when present) the read-only
+    config dir and auth file are mounted -- so the session is permitted and the
+    spawn site wraps it. The generic set-standard-or-strict remedy is kept for
     hosts where a backend can exist. Neither message consults
     ``sandbox_allow_unsandboxed_exec``.
     """
@@ -451,6 +457,32 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     # with its credential mask dropped.
     if credential_mask_applies(mode):
         return
+    # Docker-confined OpenCode is the permitted path, not an exception to the
+    # verdict above: the container mounts only the workspace and the auth file,
+    # so the mask the verdict demands IS applied, by the container boundary
+    # rather than by a Crew wrapper. One shared resolver with the spawn site,
+    # so the two cannot disagree about the verdict. Local import, same leaf
+    # reason as above; the resolver never raises (fail-closed).
+    from kiro_crew.agent_sdk.docker_sandbox import (
+        check_docker_sandbox,
+        resolve_adapter_confinement,
+    )
+
+    if resolve_adapter_confinement(backend, mode) == "docker":
+        logger.warning(
+            "%s is running Docker-confined: only the session workspace, the "
+            "sandbox state dir, and -- when present -- the read-only OpenCode "
+            "config dir and auth file are mounted into the container, and no "
+            "other host credential path is visible inside.",
+            label_for(backend),
+        )
+        return
+    # Name the unmet piece so the refusal is actionable: the operator should
+    # not have to guess whether the flag, the daemon or the image is missing.
+    if backend == ACP_BACKEND_OPENCODE:
+        docker_detail = check_docker_sandbox() or "re-check failed"
+    else:
+        docker_detail = "Docker confinement is implemented for OpenCode only"
     # Platform copy only: the verdict above already decided the session cannot
     # start. Recommending standard/strict is advice that cannot succeed on native
     # Windows, where Crew has no OS sandbox backend to apply the mask.
@@ -459,8 +491,20 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
             "{} cannot run on native Windows because Kiro Crew has no supported OS "
             "sandbox backend here to protect credential files; changing agent.sandbox "
             "cannot enable it. Select Kiro CLI in Settings → Agent Backend and start "
-            "a new session.".format(label_for(backend))
+            "a new session, or confine {} in Docker (agent.sandbox_docker). "
+            "Docker status: {}.".format(label_for(backend), label_for(backend), docker_detail)
         )
+    raise ToolGateUnroutable(
+        "{} routes tool calls through an enforced permission route whose "
+        "compensating control is an OS-level credential mask, but this session would "
+        "spawn it unsandboxed -- either agent.sandbox is 'off', or no sandbox backend "
+        "is available and agent.sandbox_allow_unsandboxed_exec is set -- so the mask "
+        "is never applied and the adapter's credential reads are unfenced. Set "
+        "agent.sandbox to 'standard' or 'strict' ON A HOST WITH A WORKING BACKEND to "
+        "select this harness, confine it in Docker (agent.sandbox_docker), or select "
+        "a harness whose tool calls reach the gate directly. "
+        "Docker status: {}.".format(label_for(backend), docker_detail)
+    )
     raise ToolGateUnroutable(
         "{} routes tool calls through an enforced permission route whose "
         "compensating control is an OS-level credential mask, but this session would "

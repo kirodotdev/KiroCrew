@@ -1843,6 +1843,7 @@ class AgentConfig:
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
     sandbox: str = "auto"          # default "auto" (namespace on Linux, seatbelt on macOS; delegates to kiro-cli's internal sandbox on macOS when enabled); "off" skips Kiro Crew's sandbox
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
+    sandbox_docker: bool = False  # Docker-confine the OpenCode adapter: container mounts the session workspace (rw), a persistent state dir under the data home (rw), and -- when present -- the opencode config dir and auth file (ro); no other host credential path is visible inside. Explicit opt-in, default false everywhere; Linux-container daemon + built kirocrew-opencode image required or the session is refused, never started unfenced. Live (session factory re-derives on change)
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown

@@ -2577,6 +2577,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
                 unsandboxed_exec_platform_default(),
             )
         ),
+        sandbox_docker=bool(agent_data.get("sandbox_docker", False)),
         apps_allow_third_party=_safe_bool(agent_data.get("apps_allow_third_party", False), False),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]

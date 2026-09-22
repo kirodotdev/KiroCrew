@@ -189,7 +189,7 @@ from kiro_crew.agent import (
     require_fresh_derived_spec,
     require_unchanged_derived_spec,
 )
-from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk import docker_sandbox, host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
@@ -5026,6 +5026,13 @@ class AcpClient:
         # env section applies it; holding it here is what keeps that section a plain
         # in-memory read rather than a second place that knows the mechanism.
         self._opencode_config_content = ""
+        # Wire-path override for a Docker-confined session: the ``cwd`` the
+        # session/new|load frames carry must name the path INSIDE the container
+        # (``CONTAINER_WORKDIR``), because a host path (``C:\\...``) names
+        # nothing on the container's filesystem and the harness fails the
+        # request. Resolved in the opencode spawn arm; None everywhere else, so
+        # every other harness keeps sending the host work dir.
+        self._docker_wire_cwd: str | None = None
         # The launcher pi-acp is told to run in place of ``pi``, resolved in the
         # pi spawn arm and read back there before the first prompt; the env
         # section applies it.
@@ -6118,7 +6125,15 @@ class AcpClient:
         merged[setting_key] = value
         return json.dumps(merged)
 
-    def _verify_opencode_routing(self, argv: list[str], config_content: str) -> tuple[str, str]:
+    def _verify_opencode_routing(
+        self,
+        argv: list[str],
+        config_content: str,
+        docker_confine: bool = False,
+        docker_auth_file: str | None = None,
+        docker_state_dir: str | None = None,
+        docker_config_dir: str | None = None,
+    ) -> tuple[str, str]:
         """Read the harness's OWN resolved permission back, and report any issue.
 
         This is the half that makes the routing VERIFIED rather than seeded. The
@@ -6148,7 +6163,10 @@ class AcpClient:
         resolution on this harness can load project plugins. An unwrapped child
         would read the very credential homes the mask exists to deny it, moments
         before the masked session spawn. The caller wraps because it is the async
-        side and has the resolved mask in hand.
+        side and has the resolved mask in hand. In Docker mode (``docker_confine``)
+        the host wrap is a passthrough and the container wrap is applied HERE,
+        from the same env the session spawn translates, so the read-back vouches
+        for the exact confined process the session will run.
 
         Blocking (spawns a short-lived child); callers run it off the loop.
         """
@@ -6170,11 +6188,26 @@ class AcpClient:
         )
         env["PATH"] = augmented_path(env.get("PATH", ""))
         env[_ENV_OPENCODE_CONFIG_CONTENT] = config_content
+        run_env: dict[str, str] | None = env
+        if docker_confine:
+            # The container argv carries the SAME translated env the session
+            # spawn will carry (same mounts, same -e set): the read-back vouches
+            # for the confined process, not a host twin of it. The `docker` CLI
+            # itself inherits the gateway env.
+            argv = docker_sandbox.docker_argv(
+                adapter_args=(OPENCODE_BIN, *_OPENCODE_CONFIG_READBACK_ARGS),
+                work_dir=self._spawn_work_dir,
+                container_env=docker_sandbox.container_env_from(env),
+                auth_file=docker_auth_file,
+                state_dir=docker_state_dir,
+                config_dir=docker_config_dir,
+            )
+            run_env = None
         try:
             completed = subprocess_mod.run(
                 argv,
                 cwd=self._spawn_work_dir,
-                env=env,
+                env=run_env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -7718,6 +7751,13 @@ class AcpClient:
         # failure point in service of an adapter (harness-parity H13).
         adapter_hidden_dirs: tuple[str, ...] = ()
         adapter_expose: tuple[str, ...] = ()
+        # Docker confinement for the arm below. False for every harness the
+        # resolver does not name, so the shared tail's translate step stays a
+        # no-op off those paths.
+        docker_confine = False
+        docker_auth_file: str | None = None
+        docker_state_dir: str | None = None
+        docker_config_dir: str | None = None
 
         if self._is_claude:
             # Fold the requested model onto the exact spelling claude-agent-acp
@@ -7826,6 +7866,43 @@ class AcpClient:
                 _sandbox_preflight, self.backend, self._sandbox_mode
             )
             adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
+            # One shared verdict with the preflight gate above: "native" keeps the
+            # established wrap path, "docker" containerizes the read-back and the
+            # session below, and "refused" fails the session here -- confinement
+            # that flapped between the gate and this line never downgrades into
+            # an unfenced host spawn. Off-loop: the resolver probes the daemon,
+            # UNCACHED here (the gate may trust its 60s verdict cache for speed,
+            # but this verdict is the security one, so it re-probes fresh).
+            adapter_confinement = await asyncio.to_thread(
+                docker_sandbox.resolve_adapter_confinement,
+                self.backend,
+                self._sandbox_mode,
+                False,
+            )
+            if adapter_confinement == "refused":
+                raise AcpToolGateUnroutable(
+                    "OpenCode confinement is unavailable: neither the OS credential "
+                    "mask nor Docker confinement (agent.sandbox_docker) holds for "
+                    "this session. No adapter starts unfenced -- retry once Docker "
+                    "is reachable and the image is built, or select a harness whose "
+                    "tool calls reach the gate directly."
+                )
+            if adapter_confinement == "docker":
+                docker_confine = True
+                docker_auth_file = await asyncio.to_thread(docker_sandbox.host_auth_file)
+                docker_config_dir = await asyncio.to_thread(docker_sandbox.host_config_dir)
+                docker_state_dir = await asyncio.to_thread(docker_sandbox.ensure_sandbox_state_dir)
+                self._docker_wire_cwd = docker_sandbox.CONTAINER_WORKDIR
+            # No `else:` here by design, spelled as a reset-then-set: the
+            # structural pins in test_acp_opencode_backend.py split the arm on
+            # the 8-space `else:` substring, so a nested `else:` would truncate
+            # the arm they inspect. Reset first (a respawned client may have
+            # carried a previous verdict), then set above when confined.
+            if adapter_confinement != "docker":
+                self._docker_wire_cwd = None
+                docker_auth_file = None
+                docker_config_dir = None
+                docker_state_dir = None
             # The routing seed, and the READ-BACK that is what this harness's Routing
             # member promises. OFF-LOOP: the read-back spawns a short-lived child, and
             # a synchronous spawn on the gateway loop is the stall this path guards
@@ -7851,6 +7928,10 @@ class AcpClient:
                     self._verify_opencode_routing,
                     readback_argv,
                     self._opencode_config_content,
+                    docker_confine=docker_confine,
+                    docker_auth_file=docker_auth_file,
+                    docker_state_dir=docker_state_dir,
+                    docker_config_dir=docker_config_dir,
                 )
             finally:
                 # wrap_argv leaves a launcher/profile file the child consumes at
@@ -8353,6 +8434,23 @@ class AcpClient:
         # syscalls that must not run on the loop. Guarded: the sandbox temp
         # file is live, so a cancellation here must not orphan it.
         await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
+
+        if docker_confine:
+            # Containerize the fully-built spawn: the env above is final
+            # (scrubbed, seeded, remapped), so the -e set names the exact process
+            # the read-back verified. Fail-closed with no fallback: a daemon or
+            # image that vanished since the arm resolved makes `docker run` exit
+            # non-zero rather than starting the adapter on the host. No harness
+            # identity test here by design -- the flag is only ever true for the
+            # one harness the resolver names, so the shared path gains no branch
+            # on any harness id.
+            argv = docker_sandbox.session_argv(
+                work_dir=self._spawn_work_dir,
+                scrubbed_env=env,
+                auth_file=docker_auth_file,
+                state_dir=docker_state_dir,
+                config_dir=docker_config_dir,
+            )
 
         # Process-group isolation for clean tree-kill. Pass both flags explicitly
         # (NOT via **dict unpack — that breaks mypy's Popen overload resolution on
@@ -9040,7 +9138,10 @@ class AcpClient:
         ``settings.local.json`` at all.
         """
         new_params: dict = {
-            "cwd": await self._session_work_dir(),
+            # Docker-confined sessions name the container path on the wire; the
+            # host work dir names nothing inside the container. `or` keeps the
+            # shared path await-free when set and byte-identical otherwise.
+            "cwd": self._docker_wire_cwd or await self._session_work_dir(),
             # kiro-cli loads servers from --agent; a harness in
             # ACP_BACKENDS_SESSION_MCP_ARRAY must be told here -- it reads no
             # agent spec of its own, so this array is the whole MCP surface of
@@ -9244,7 +9345,8 @@ class AcpClient:
                 try:
                     load_params: dict = {
                         "sessionId": resume_sid,
-                        "cwd": await self._session_work_dir(),
+                        # Same container-path translation as session/new above.
+                        "cwd": self._docker_wire_cwd or await self._session_work_dir(),
                         # kiro-cli gets its servers via --agent; a session-array
                         # backend must receive them here as well -- a resumed
                         # session re-declares its whole MCP surface or comes back

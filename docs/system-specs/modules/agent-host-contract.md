@@ -277,6 +277,26 @@ remedy stays for hosts where a backend can exist (Linux user namespaces, macOS
 Windows Crew delegates to Kiro's own sandbox. The unsandboxed-exec opt-in is
 not a recovery path and is not named.
 
+**Docker confinement (OpenCode only).** Where no Crew backend exists, an
+explicit `agent.sandbox_docker=true` with a reachable Linux-container Docker
+daemon and the built `kirocrew-opencode` image is the other permitted path
+(`agent_sdk/docker_sandbox.py`): the adapter -- the config read-back child and
+the session child alike -- spawns as `docker run --rm -i` with ONLY the
+session workspace (read-write), the sandbox state dir under the data home
+(read-write, so sessions survive `--rm` runs), and -- when present -- the
+operator's OpenCode config dir and auth file (read-only) mounted, so the
+container boundary carries the credential mask the refused path demands.
+`enforce_sandbox_floor` and the spawn site resolve one shared verdict
+(`resolve_adapter_confinement`), and the spawn re-probes fresh instead of
+trusting the gate's verdict cache, so a daemon or image that disappears
+between the two fails the session instead of downgrading it to an unfenced
+host spawn; where the native Crew mask applies, the native wrap wins and the
+flag is inert. Resource ceilings the cgroup scope cannot provide on such hosts
+ride on the container (`--pids-limit`, `--memory`, tmpfs `/tmp`); capabilities
+are dropped (`--cap-drop ALL`, `no-new-privileges`). Temp/scratch pointers are
+re-pinned inside (`/tmp`, `/tmp/kirocrew-scratch`); SSH keys and agent sockets
+are never mounted.
+
 **A provider must declare:** whether it self-sandboxes and how that is detected,
 its nesting compatibility, its delegation predicate, and any additional paths its
 credentials occupy. An unknown provider defaults to *not* self-sandboxing.

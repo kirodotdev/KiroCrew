@@ -300,6 +300,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/client.py::_verify_opencode_routing",
+        # The Docker-confinement probes. THREE fixed argv -- two `docker info`
+        # formats (ServerVersion reachability, OSType Linux-container check)
+        # and `docker image inspect <image>` -- with no shell and a 15s
+        # timeout, run off the event loop with a 60s verdict cache the spawn
+        # site bypasses with fresh probes. Nothing is
+        # agent-influenced: the image ref is a module constant and the probe
+        # takes no arguments from any session. They CANNOT route through the
+        # sandbox chokepoint: they decide whether a confinement backend exists
+        # at all, so routing them would be circular (the same reason the userns
+        # probe below is listed). The confined `docker run` itself introduces
+        # no new site: it reuses the session Popen and the read-back run with a
+        # rewritten argv.
+        "agent_sdk/docker_sandbox.py::_run_docker",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three
