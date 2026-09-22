@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -26,6 +28,26 @@ from kiro_crew.cron_script import (
     run_command_sandboxed,
     run_script_sandboxed,
 )
+
+_CGROUP_TEST_SLICE = "kirocrew-agents-test.slice"
+
+
+def _cgroup_envelope(inner: list[str]) -> list[str]:
+    return [
+        "/usr/bin/systemd-run",
+        "--user",
+        "--scope",
+        "-q",
+        f"--slice={_CGROUP_TEST_SLICE}",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "MemoryMax=512M",
+        "-p",
+        "MemorySwapMax=0",
+        "--",
+        *inner,
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -221,6 +243,25 @@ class TestRunCommandSandboxed:
         with patch("subprocess.Popen", return_value=mock_proc):
             result = run_command_sandboxed("boom")
         assert result["output"].endswith("stderr:\nshort failure")
+
+    def test_file_not_found_provenance_is_opt_in(self):
+        """Direct callers keep the structured error API; the gateway can ask
+        for the original ENOENT so it can classify install ownership."""
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/interpreter")
+        with patch("kiro_crew.cron_script.popen_limited", side_effect=missing):
+            result = run_command_sandboxed("boom")
+
+        assert result["status"] == "error"
+        assert result["exit_code"] == -1
+        assert "/missing/interpreter" in result["output"]
+
+        with (
+            patch("kiro_crew.cron_script.popen_limited", side_effect=missing),
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            run_command_sandboxed("boom", _propagate_file_not_found=True)
+
+        assert raised.value is missing
 
 
 class TestCronSandboxUnavailableIsStructuredNotRaised:
@@ -1752,6 +1793,800 @@ class TestRunScriptSandboxedErrorPaths:
         assert result["status"] == "error"
         assert "segfault" in result.get("error", "")
 
+    def test_missing_interpreter_is_raised_before_macos_wrapper_can_mask_it(
+        self, tmp_path
+    ):
+        """sandbox-exec success cannot turn an inner interpreter ENOENT into a run.
+
+        The mocked child is the exact macOS envelope: sandbox-exec itself would
+        start, then report the vanished inner interpreter through stderr and a
+        non-zero return code. The pre-wrap check must raise the typed, pathful
+        ENOENT before either the wrapper or child is reached.
+        """
+        from kiro_crew import cron_script
+
+        missing = tmp_path / "pruned-install" / "bin" / "python3.12"
+        masked = MagicMock()
+        masked.returncode = 1
+        masked.communicate.return_value = (
+            "",
+            f"sandbox-exec: execvp {missing}: No such file or directory",
+        )
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(missing)),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(["/usr/bin/sandbox-exec", str(missing)], None),
+            ) as wrapped,
+            patch("subprocess.Popen", return_value=masked) as popen,
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert raised.value.filename == str(missing)
+        wrapped.assert_not_called()
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "diagnostic_template",
+        [
+            "sandbox-exec: execvp {interpreter}: No such file or directory",
+            "sandbox-exec: execvp() of '{interpreter}' failed: No such file or directory",
+        ],
+        ids=["plain-path", "apple-quoted-path"],
+    )
+    def test_macos_wrapper_retypes_interpreter_pruned_after_preflight(
+        self, tmp_path, diagnostic_template
+    ):
+        """A post-stat sandbox-exec ENOENT retains the managed path."""
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before wrap", encoding="utf-8")
+        profile = tmp_path / "Seatbelt profile with spaces.sb"
+        profile.write_text("(allow default)", encoding="utf-8")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            diagnostic_template.format(interpreter=interpreter) + "\n",
+        )
+
+        def _prune_then_wrap(argv, **_kwargs):
+            assert argv[0] == str(interpreter)
+            interpreter.unlink()
+            return (
+                [
+                    "/usr/bin/env",
+                    "-u",
+                    "AWS_SECRET_ACCESS_KEY",
+                    "KIROCREW_SANDBOX_ACTIVE=1",
+                    "KIROCREW_SANDBOX_LEVEL=cc",
+                    "/usr/bin/sandbox-exec",
+                    "-f",
+                    str(profile),
+                    *argv,
+                ],
+                str(profile),
+            )
+
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch("kiro_crew.cron_script.wrap_argv", side_effect=_prune_then_wrap),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: argv,
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited", return_value=mock_proc
+            ) as popen,
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert raised.value.filename == str(interpreter)
+        popen.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "evidence_byte",
+        [pytest.param(b"\x01", id="started-child"), pytest.param(b"\x02", id="malformed")],
+    )
+    def test_macos_started_or_malformed_evidence_cannot_forge_no_start(
+        self, tmp_path, evidence_byte
+    ):
+        """Exact Seatbelt stderr is not no-start proof after any foreign evidence."""
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before child start", encoding="utf-8")
+        profile = tmp_path / "Seatbelt profile.sb"
+        profile.write_text("(allow default)", encoding="utf-8")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            f"sandbox-exec: execvp {interpreter}: No such file or directory\n",
+        )
+
+        def start_then_forge(_argv, **kwargs):
+            (ack_fd,) = kwargs["pass_fds"]
+            os.write(ack_fd, evidence_byte)
+            interpreter.unlink()
+            return mock_proc
+
+        def seatbelt_wrap(argv, **_kwargs):
+            return (
+                [
+                    "/usr/bin/env",
+                    "KIROCREW_SANDBOX_ACTIVE=1",
+                    "KIROCREW_SANDBOX_LEVEL=cc",
+                    "/usr/bin/sandbox-exec",
+                    "-f",
+                    str(profile),
+                    *argv,
+                ],
+                str(profile),
+            )
+
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch("kiro_crew.cron_script.wrap_argv", side_effect=seatbelt_wrap),
+            patch("kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv),
+            patch("kiro_crew.cron_script.popen_limited", side_effect=start_then_forge),
+        ):
+            result = run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert result["status"] == "error"
+        assert result["error"].endswith("No such file or directory")
+
+    @pytest.mark.parametrize(
+        "diagnostic_template",
+        [
+            "Failed to find executable {interpreter}: No such file or directory",
+            "Failed to execute {interpreter}: No such file or directory",
+        ],
+        ids=["find", "execute"],
+    )
+    def test_cgroup_wrapper_retypes_script_interpreter_pruned_after_wrap(
+        self, tmp_path, diagnostic_template
+    ):
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before cgroup", encoding="utf-8")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            diagnostic_template.format(interpreter=interpreter) + "\n",
+        )
+
+        def prune_then_scope(inner: list[str]) -> list[str]:
+            assert inner[0] == str(interpreter)
+            interpreter.unlink()
+            return _cgroup_envelope(inner)
+
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                side_effect=lambda argv, **_kwargs: (
+                    [str(interpreter), "/namespace.py", *argv],
+                    None,
+                ),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=prune_then_scope,
+            ),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+            patch(
+                "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                side_effect=lambda name: (
+                    "/usr/bin/systemd-run" if name == "systemd-run" else None
+                ),
+            ),
+            patch(
+                "kiro_crew.sandbox._agents_slice_name",
+                return_value=_CGROUP_TEST_SLICE,
+            ),
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert raised.value.filename == str(interpreter)
+
+    def test_cgroup_wrapper_retypes_command_interpreter_pruned_after_wrap(self, tmp_path):
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before cgroup", encoding="utf-8")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            f"Failed to execute {interpreter}: No such file or directory\n",
+        )
+
+        def prune_then_scope(inner: list[str]) -> list[str]:
+            assert inner[0] == str(interpreter)
+            interpreter.unlink()
+            return _cgroup_envelope(inner)
+
+        with (
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch(
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value="/bin/sh",
+            ),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                side_effect=lambda argv, **_kwargs: (
+                    [str(interpreter), "/namespace.py", *argv],
+                    None,
+                ),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=prune_then_scope,
+            ),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+            patch(
+                "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                side_effect=lambda name: (
+                    "/usr/bin/systemd-run" if name == "systemd-run" else None
+                ),
+            ),
+            patch(
+                "kiro_crew.sandbox._agents_slice_name",
+                return_value=_CGROUP_TEST_SLICE,
+            ),
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            run_command_sandboxed(
+                "echo hello",
+                job_id="j1",
+                _propagate_file_not_found=True,
+            )
+
+        assert raised.value.filename == str(interpreter)
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="descriptor acknowledgement is POSIX-only")
+    def test_controlled_launcher_acknowledges_once_then_hides_and_closes_fd(self, monkeypatch):
+        from kiro_crew import cron_script
+
+        read_fd, write_fd = os.pipe()
+        try:
+            monkeypatch.setenv(cron_script._CGROUP_START_ACK_FD_ENV, str(write_fd))
+            cron_script._acknowledge_child_start()
+
+            assert os.read(read_fd, 1) == cron_script._CGROUP_START_ACK_BYTE
+            assert cron_script._CGROUP_START_ACK_FD_ENV not in os.environ
+            with pytest.raises(OSError):
+                os.fstat(write_fd)
+        finally:
+            os.close(read_fd)
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="pass_fds is a POSIX subprocess contract")
+    def test_ack_is_absent_when_original_managed_inner_cannot_exec(self, tmp_path):
+        from kiro_crew import cron_script
+
+        read_fd, write_fd = os.pipe()
+        missing_inner = tmp_path / "removed-managed-runtime"
+        env = os.environ.copy()
+        env[cron_script._CGROUP_START_ACK_FD_ENV] = str(write_fd)
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    cron_script._CGROUP_START_ACK_LAUNCHER,
+                    str(missing_inner),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=tmp_path,
+                pass_fds=(write_fd,),
+                start_new_session=True,
+                text=False,
+            )
+            os.close(write_fd)
+            write_fd = -1
+            proc.communicate(timeout=5)
+            acknowledgement = os.read(read_fd, 1)
+        finally:
+            if write_fd >= 0:
+                os.close(write_fd)
+            os.close(read_fd)
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.communicate(timeout=5)
+
+        assert proc is not None
+        assert proc.returncode != 0
+        assert acknowledgement == b""
+
+    @pytest.mark.parametrize("kind", ["script", "command"])
+    def test_started_cgroup_child_cannot_forge_interpreter_enoent(self, tmp_path, kind):
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before child start", encoding="utf-8")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            f"Failed to execute {interpreter}: No such file or directory\n",
+        )
+
+        def started_child(_argv, **kwargs):
+            (ack_fd,) = kwargs["pass_fds"]
+            os.write(ack_fd, cron_script._CGROUP_START_ACK_BYTE)
+            interpreter.unlink()
+            return mock_proc
+
+        with (
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch(
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value="/bin/sh",
+            ),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                side_effect=lambda argv, **_kwargs: (
+                    [str(interpreter), "/namespace.py", *argv],
+                    None,
+                ),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda inner: _cgroup_envelope(inner),
+            ),
+            patch("kiro_crew.cron_script.popen_limited", side_effect=started_child),
+            patch(
+                "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                side_effect=lambda name: (
+                    "/usr/bin/systemd-run" if name == "systemd-run" else None
+                ),
+            ),
+            patch(
+                "kiro_crew.sandbox._agents_slice_name",
+                return_value=_CGROUP_TEST_SLICE,
+            ),
+        ):
+            if kind == "script":
+                result = run_script_sandboxed("/user/crons/job.py:run", "j1")
+            else:
+                result = run_command_sandboxed(
+                    "echo hello",
+                    job_id="j1",
+                    _propagate_file_not_found=True,
+                )
+
+        assert result["status"] == "error"
+        assert "No such file or directory" in result.get("error", result.get("output", ""))
+
+    @pytest.mark.parametrize("outcome", ["success", "error", "cancel", "timeout"])
+    def test_command_closes_cgroup_start_evidence_on_every_exit(self, outcome):
+        from kiro_crew import cron_script
+
+        evidence = MagicMock()
+        evidence.popen_kwargs.return_value = {}
+        evidence.collect.return_value = None
+        evidence.inner_argv = ("/managed/python", "/namespace.py")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0 if outcome == "success" else 1
+        if outcome == "timeout":
+            mock_proc.communicate.side_effect = cron_script.subprocess.TimeoutExpired(
+                ["command"],
+                1,
+            )
+        else:
+            mock_proc.communicate.return_value = (
+                "ok" if outcome == "success" else "",
+                "ordinary failure",
+            )
+
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value="/bin/sh",
+            ),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                side_effect=lambda argv, **_kwargs: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script._with_cgroup_start_evidence",
+                side_effect=lambda argv, _inner, _env: (list(argv), evidence),
+            ),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+            patch(
+                "kiro_crew.cron_script._finish_spawn",
+                return_value=outcome == "cancel",
+            ),
+            patch("kiro_crew.cron_script._kill_proc_group"),
+            patch("kiro_crew.cron_script._drain_after_kill"),
+        ):
+            run_command_sandboxed("echo hello")
+
+        evidence.close_parent_writer.assert_called_once_with()
+        evidence.close.assert_called_once_with()
+
+    def test_spawn_failure_closes_all_start_evidence(self):
+        evidence = MagicMock()
+        evidence.popen_kwargs.return_value = {"pass_fds": (123,)}
+        evidence.inner_argv = ("/managed/python", "/namespace.py")
+        with (
+            patch("kiro_crew.cron_script._resolve_command_shell", return_value="/bin/sh"),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                side_effect=lambda argv, **_kwargs: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script._with_managed_start_evidence",
+                side_effect=lambda argv, _inner, _env, _cleanup, _interpreter: (
+                    list(argv),
+                    evidence,
+                ),
+            ),
+            patch("kiro_crew.cron_script.popen_limited", side_effect=OSError("spawn failed")),
+        ):
+            result = run_command_sandboxed("echo hello")
+
+        assert result["status"] == "error"
+        evidence.close_parent_writer.assert_not_called()
+        evidence.close.assert_called_once_with()
+
+    def test_cgroup_start_evidence_closes_owned_descriptors_idempotently(self):
+        from kiro_crew import cron_script
+
+        owned = {101, 102}
+        closed: list[int] = []
+        real_close = os.close
+
+        def record_close(fd):
+            if fd in owned:
+                closed.append(fd)
+                return
+            real_close(fd)
+
+        evidence = cron_script._CgroupStartEvidence(
+            read_fd=101,
+            write_fd=102,
+        )
+        with patch("kiro_crew.cron_script.os.close", side_effect=record_close):
+            evidence.close()
+            evidence.close()
+
+        assert closed == [102, 101]
+
+    def test_cgroup_start_evidence_wraps_only_the_trusted_envelope(self):
+        from kiro_crew import cron_script
+        from kiro_crew.sandbox import cgroup_scope_inner_argv
+
+        inner = ["/managed/python", "/namespace.py", "/bin/sh", "-c", "echo hi"]
+        clean_env: dict[str, str] = {}
+        with (
+            patch(
+                "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                side_effect=lambda name: (
+                    "/usr/bin/systemd-run" if name == "systemd-run" else None
+                ),
+            ),
+            patch(
+                "kiro_crew.sandbox._agents_slice_name",
+                return_value=_CGROUP_TEST_SLICE,
+            ),
+        ):
+            scoped, evidence = cron_script._with_cgroup_start_evidence(
+                _cgroup_envelope(inner),
+                inner,
+                clean_env,
+            )
+            plain, no_evidence = cron_script._with_cgroup_start_evidence(
+                inner,
+                inner,
+                {},
+            )
+            parsed_inner = cgroup_scope_inner_argv(scoped)
+        try:
+            assert parsed_inner == tuple(inner)
+            assert evidence.inner_argv == tuple(inner)
+            assert scoped == _cgroup_envelope(inner)
+            (write_fd,) = evidence.popen_kwargs()["pass_fds"]
+            assert clean_env[cron_script._CGROUP_START_ACK_FD_ENV] == str(write_fd)
+            assert plain == inner
+            assert no_evidence.popen_kwargs() == {}
+            assert no_evidence.collect() is None
+        finally:
+            evidence.close()
+            no_evidence.close()
+
+    def test_start_evidence_wraps_only_exact_managed_seatbelt_envelope(self):
+        from kiro_crew import cron_script
+
+        interpreter = "/managed/python"
+        profile = "/managed/profile.sb"
+        inner = [
+            "/usr/bin/env",
+            "KIROCREW_SANDBOX_ACTIVE=1",
+            "KIROCREW_SANDBOX_LEVEL=cc",
+            "/usr/bin/sandbox-exec",
+            "-f",
+            profile,
+            interpreter,
+            "/managed/launcher.py",
+        ]
+        clean_env: dict[str, str] = {}
+        scoped, evidence = cron_script._with_managed_start_evidence(
+            inner,
+            inner,
+            clean_env,
+            profile,
+            interpreter,
+        )
+        try:
+            assert scoped == inner
+            assert evidence.inner_argv == tuple(inner)
+            (write_fd,) = evidence.popen_kwargs()["pass_fds"]
+            assert clean_env[cron_script._CGROUP_START_ACK_FD_ENV] == str(write_fd)
+        finally:
+            evidence.close()
+
+        malformed = [
+            ([*inner, "/usr/bin/sandbox-exec"], profile, interpreter),
+            (inner, "/different/profile.sb", interpreter),
+            (inner, profile, "/different/python"),
+        ]
+        for argv, cleanup_path, expected_interpreter in malformed:
+            foreign_env: dict[str, str] = {}
+            unchanged, no_evidence = cron_script._with_managed_start_evidence(
+                argv,
+                argv,
+                foreign_env,
+                cleanup_path,
+                expected_interpreter,
+            )
+            try:
+                assert unchanged == argv
+                assert no_evidence.popen_kwargs() == {}
+                assert cron_script._CGROUP_START_ACK_FD_ENV not in foreign_env
+            finally:
+                no_evidence.close()
+
+    @pytest.mark.parametrize(
+        "control",
+        [
+            "live-target",
+            "lookalike-diagnostic",
+            "user-path",
+            "non-enoent",
+            "untrusted-wrapper",
+            "uncgrouped",
+        ],
+    )
+    def test_command_does_not_retype_unconfirmed_cgroup_enoent(self, tmp_path, control):
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "managed install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live", encoding="utf-8")
+        user_path = tmp_path / "user" / "missing-command"
+        diagnostic = f"Failed to execute {interpreter}: No such file or directory"
+        if control == "lookalike-diagnostic":
+            diagnostic += " (reported by child)"
+        elif control == "user-path":
+            diagnostic = f"Failed to execute {user_path}: No such file or directory"
+        elif control == "non-enoent":
+            diagnostic = f"Failed to execute {interpreter}: Permission denied"
+
+        inner: list[str] = []
+
+        def wrap(argv, **_kwargs):
+            inner[:] = [str(interpreter), "/namespace.py", *argv]
+            return list(inner), None
+
+        def scope(scoped_inner: list[str]) -> list[str]:
+            if control != "live-target":
+                interpreter.unlink()
+            if control == "uncgrouped":
+                return scoped_inner
+            envelope = _cgroup_envelope(scoped_inner)
+            if control == "untrusted-wrapper":
+                envelope[0] = str(tmp_path / "systemd-run")
+            return envelope
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = ("", diagnostic + "\n")
+        with (
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch(
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value="/bin/sh",
+            ),
+            patch("kiro_crew.cron_script.wrap_argv", side_effect=wrap),
+            patch("kiro_crew.cron_script.cgroup_scope_argv", side_effect=scope),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+            patch(
+                "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                side_effect=lambda name: (
+                    "/usr/bin/systemd-run" if name == "systemd-run" else None
+                ),
+            ),
+            patch(
+                "kiro_crew.sandbox._agents_slice_name",
+                return_value=_CGROUP_TEST_SLICE,
+            ),
+        ):
+            result = run_command_sandboxed(
+                "echo hello",
+                job_id="j1",
+                _propagate_file_not_found=True,
+            )
+
+        assert result["status"] == "error"
+        assert result["exit_code"] == 127
+
+    def test_live_interpreter_cannot_spoof_macos_exec_failure(self, tmp_path):
+        """Exact stderr is insufficient while the managed runtime is live."""
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "live install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("still live", encoding="utf-8")
+        profile = tmp_path / "profile.sb"
+        profile.write_text("(allow default)", encoding="utf-8")
+        wrapped = [
+            "/usr/bin/env",
+            "KIROCREW_SANDBOX_ACTIVE=1",
+            "KIROCREW_SANDBOX_LEVEL=cc",
+            "/usr/bin/sandbox-exec",
+            "-f",
+            str(profile),
+            str(interpreter),
+            "/launcher.py",
+        ]
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = (
+            "",
+            f"sandbox-exec: execvp {interpreter}: No such file or directory",
+        )
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(wrapped, str(profile)),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: argv,
+            ),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+        ):
+            result = run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert result["status"] == "error"
+        assert result["error"].endswith("No such file or directory")
+
+    def test_unrelated_execvp_path_is_not_retyped_after_pruning(self, tmp_path):
+        """A vanished runtime cannot excuse ENOENT naming a user path."""
+        from kiro_crew import cron_script
+
+        interpreter = tmp_path / "pruned install" / "Python Runtime"
+        interpreter.parent.mkdir()
+        interpreter.write_text("live before wrap", encoding="utf-8")
+        profile = tmp_path / "profile.sb"
+        profile.write_text("(allow default)", encoding="utf-8")
+        unrelated = tmp_path / "user scripts" / "missing helper"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 127
+        mock_proc.communicate.return_value = (
+            "",
+            f"sandbox-exec: execvp {unrelated}: No such file or directory",
+        )
+
+        def _prune_then_wrap(argv, **_kwargs):
+            interpreter.unlink()
+            return (
+                [
+                    "/usr/bin/env",
+                    "KIROCREW_SANDBOX_ACTIVE=1",
+                    "KIROCREW_SANDBOX_LEVEL=cc",
+                    "/usr/bin/sandbox-exec",
+                    "-f",
+                    str(profile),
+                    *argv,
+                ],
+                str(profile),
+            )
+
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/user/crons/job.py", "run"),
+            ),
+            patch.object(cron_script.sys, "executable", str(interpreter)),
+            patch("kiro_crew.cron_script.wrap_argv", side_effect=_prune_then_wrap),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: argv,
+            ),
+            patch("kiro_crew.cron_script.popen_limited", return_value=mock_proc),
+        ):
+            result = run_script_sandboxed("/user/crons/job.py:run", "j1")
+
+        assert result["status"] == "error"
+        assert str(unrelated) in result["error"]
+
+    def test_live_interpreter_keeps_a_real_sandbox_error_as_a_failure(self):
+        """Control: only interpreter absence is retyped; sandbox refusal is not."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 71
+        mock_proc.communicate.return_value = (
+            "",
+            "sandbox-exec: sandbox_apply: Operation not permitted",
+        )
+        with (
+            patch(
+                "kiro_crew.cron_script.resolve_script_path",
+                return_value=("/f.py", "run"),
+            ),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(["/usr/bin/sandbox-exec", "python3"], None),
+            ),
+            patch("subprocess.Popen", return_value=mock_proc),
+        ):
+            result = run_script_sandboxed("/f.py:run", "j2", "")
+
+        assert result["status"] == "error"
+        assert "Operation not permitted" in result["error"]
+
     def test_bad_json_output(self, tmp_path):
         """Lines 337-338: stdout is not valid JSON."""
         mock_proc = MagicMock()
@@ -2534,6 +3369,38 @@ class TestKillBroadcastGuard:
         finally:
             _RUNNING_PROCS.pop("flagleak", None)
             _CANCELLED_PROC_JOBS.discard("flagleak")
+
+    def test_escalation_thread_start_failure_does_not_erase_delivered_sigterm(
+        self,
+    ):
+        from kiro_crew import cron_script
+
+        proc = MagicMock()
+        proc.pid = 2**22 + 54322
+        proc.poll.return_value = None
+        cron_script._RUNNING_PROCS["threadfail"] = proc
+        escalation = MagicMock()
+        escalation.start.side_effect = RuntimeError("out of threads")
+        try:
+            with (
+                patch.object(cron_script, "_resolve_safe_pgid", return_value=4321),
+                patch.object(cron_script.os, "killpg") as killpg,
+                patch.object(
+                    cron_script.threading,
+                    "Thread",
+                    return_value=escalation,
+                ),
+                patch.object(cron_script, "_kill_proc_group") as kill_group,
+            ):
+                assert cron_script.kill_running_process("threadfail") is True
+
+            killpg.assert_called_once_with(4321, cron_script.signal.SIGTERM)
+            kill_group.assert_called_once_with(proc)
+            assert "threadfail" in cron_script._CANCELLED_PROC_JOBS
+            proc.terminate.assert_not_called()
+        finally:
+            cron_script._RUNNING_PROCS.pop("threadfail", None)
+            cron_script._CANCELLED_PROC_JOBS.discard("threadfail")
 
 
 class TestResolveInternalSecret:

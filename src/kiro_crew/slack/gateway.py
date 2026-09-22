@@ -298,6 +298,7 @@ from kiro_crew.platform.update_governance import (
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
+    CHILD_START_ACK_FD_ENV,
     SandboxUnavailableError,
     create_subprocess_limited,
     ensure_agents_slice_limits,
@@ -896,6 +897,171 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     return HookManager(scoped)
 
 
+def _running_install_was_pruned() -> bool:
+    """Whether an update removed every path that can launch this version.
+
+    A managed-install promotion may unlink the old interpreter and package
+    tree while this gateway still drains from mapped memory. Requiring both
+    paths to be absent distinguishes that handoff from an unrelated missing
+    working directory, launcher, or user binary, which must remain a real
+    cron failure.
+    """
+    return not Path(sys.executable).is_file() and not Path(__file__).is_file()
+
+
+def _enoent_names_this_install(exc: FileNotFoundError) -> bool:
+    """Whether the missing path belongs to this (replaced) install.
+
+    A pruned install must only excuse launches that failed on the install's
+    OWN vanished files (interpreter, launcher, package tree). A user script
+    or provider binary deleted while the install happens to be pruned is
+    still a real job failure and must keep raising.
+    """
+    missing = exc.filename
+    if not missing:
+        # A pathless ENOENT (e.g. resolve_script_path() refusing a missing
+        # user script) names nothing install-owned: treat it as a real
+        # failure. Launch-path failures on the replaced install always
+        # carry the missing file's path.
+        return False
+    # Two containment roots, both concrete: the interpreter prefix (the
+    # launch interpreter lives under it) and this module's own package tree
+    # (a sibling of sys.prefix in versioned installs, so neither implies
+    # the other). Deliberately NOT sys.prefix's parent, which degrades to
+    # '/' or '/usr' on non-versioned layouts and would excuse everything.
+    roots = (Path(sys.prefix), Path(__file__).resolve().parents[2])
+    target = Path(missing)
+    for root in roots:
+        try:
+            if target.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _pruned_install_owns_enoent(exc: FileNotFoundError) -> bool:
+    """Classify one launch ENOENT using a single worker-thread probe."""
+    return _running_install_was_pruned() and _enoent_names_this_install(exc)
+
+
+async def _await_pruned_handoff(operation: "asyncio.Task[bool]") -> bool:
+    """Drain submitted handoff work before propagating caller cancellation."""
+    caller_task = asyncio.current_task()
+    caller_cancelled = False
+    while not operation.done():
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            caller_cancelled = True
+        except BaseException:
+            # The owned task completed exceptionally. Observe it below through
+            # result(), after arbitrating a same-turn caller cancellation.
+            break
+    caller_cancelled = caller_cancelled or bool(
+        caller_task is not None and caller_task.cancelling()
+    )
+    try:
+        result = operation.result()
+    except BaseException:
+        if caller_cancelled:
+            raise asyncio.CancelledError from None
+        raise
+    if caller_cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+async def _record_pruned_launch_skip(job: CronJob, cron_svc: "CronService | None" = None) -> None:
+    """Book a launch skipped by a pruned install as never-started.
+
+    The exact cron occurrence is published under the store lock before this
+    drained process is quiesced. Once that off-loop write is submitted, caller
+    cancellation waits for its actual outcome: durable handoff completes every
+    ownership fence before cancellation is re-raised, while failure keeps the
+    local fallback and queued retry live.
+    """
+    job.last_status = "error"
+    job.last_error = "Launch skipped: the running install was replaced by an update"
+    job.run_never_started = True
+    # Leave the schedule exactly as owed as it was: _execute neither
+    # advances last_run_ts nor durably disables an at-job when this is set,
+    # so the replacement gateway retries the job as if this launch never
+    # happened.
+    job.keep_overdue = True
+    occurrence_id: str | None = None
+    if job.schedule.kind == "cron":
+        now = time.time()
+        if cron_svc is not None:
+            occurrence_id = cron_svc.occurrence_for_pruned_launch(job, now)
+        else:
+            occurrence_id = CronService._cron_occurrence_at(job, now)
+        if occurrence_id is not None:
+            if cron_svc is None:
+                job.set_owed_occurrence(occurrence_id)
+                return
+
+            async def _persist_and_settle() -> bool:
+                try:
+                    persisted = await cron_svc.persist_owed_occurrence(job.id, occurrence_id)
+                except BaseException:
+                    # Preserve the fallback merge input on an exceptional
+                    # persistence implementation, but never quiesce.
+                    job.set_owed_occurrence(occurrence_id)
+                    raise
+                if not persisted:
+                    # No durable handoff means no quiesce: the queued intent and
+                    # local marker feed the fallback result merge on this process.
+                    job.set_owed_occurrence(occurrence_id)
+                    return False
+                # The replacement gateway can consume this durable occurrence as
+                # soon as publication returns. The drained run must not later
+                # merge its stale status or republish the occurrence over that
+                # successor. Record this on the service's per-run token as well
+                # as the callback object: persistence may have replaced the hot
+                # CronJob instance, while cancel/reap resolve terminal state
+                # through the new instance.
+                cron_svc.relinquish_run_result_merges(job.id)
+                job._result_merge_relinquished = True  # type: ignore[attr-defined]
+                # A real service may have updated this exact hot object while it
+                # persisted; a reloaded service may instead own a different
+                # object. Keep the callback copy useful for fallback merging,
+                # but select by identity so newer sibling debt is not overwritten.
+                local_owed_fire = job.owed_occurrence()
+                covered_owed_fire = cron_svc._newer_owed_occurrence(local_owed_fire, occurrence_id)
+                if covered_owed_fire != local_owed_fire:
+                    job.set_owed_occurrence(covered_owed_fire)
+                job.enabled = False
+                cron_svc.quiesce_pruned(job.id)
+                return True
+
+            operation = asyncio.create_task(_persist_and_settle())
+            if not await _await_pruned_handoff(operation):
+                return
+            return
+    # On this drained gateway every launch fails the same way forever, and
+    # a job left enabled while still due (which keep_overdue guarantees)
+    # would refire in a zero-delay loop -- flooding history and contending
+    # the store lock against the replacement gateway. Two quiesce layers:
+    # the snapshot object is disabled for the CURRENT tick, and the
+    # service's pruned-quiesce registry excludes the id from every FUTURE
+    # due-scan -- necessary because each tick's _sync() replaces the job
+    # list with fresh disk copies (enabled=True on disk by design, so the
+    # replacement gateway retries), which would resurrect a per-object
+    # disable. Neither layer is persisted; user_paused is untouched.
+    # Every/at jobs, and cron snapshots with no matching occurrence, need no
+    # occurrence write before handoff. They still transfer this run token's
+    # result ownership before either local quiesce layer, or the isolated
+    # runner's finally could publish stale status over replacement-owned state.
+    # No-service paths deliberately retain their fallback merge ownership.
+    if cron_svc is not None:
+        cron_svc.relinquish_run_result_merges(job.id)
+        job._result_merge_relinquished = True  # type: ignore[attr-defined]
+    job.enabled = False
+    if cron_svc is not None:
+        cron_svc.quiesce_pruned(job.id)
+
+
 class _GateTally:
     """Tool-gate outcomes accumulated over one cron run.
 
@@ -1162,6 +1328,10 @@ async def _await_cron_fire_time_gate(
 #: never screened -- so every name here is one whose VALUE decides how the run is
 #: governed rather than what it does:
 #:
+#: * ``_KIROCREW_CRON_START_ACK_FD`` is a parent-owned descriptor channel.
+#:   The verified cron launcher injects it only after environment scrubbing;
+#:   accepting it from ``job.env`` lets app input crash the pre-confinement
+#:   launcher parser or impersonate launch protocol state.
 #: * ``KIROCREW_APPROVAL_MODE`` is re-injected by the caller when the job's own
 #:   VALIDATED ``approval_mode`` is "auto"; delivered through ``job.env`` instead,
 #:   it auto-approves an interactive cron's ``spawn_run`` subagents.
@@ -1198,6 +1368,7 @@ async def _await_cron_fire_time_gate(
 #: and ``KIROCREW_HOME`` as one variable.
 _CRON_RESERVED_ENV_KEYS: frozenset[str] = frozenset(
     {
+        CHILD_START_ACK_FD_ENV,
         "KIROCREW_APPROVAL_MODE",
         "KIROCREW_SECURITY_POLICY",
         "KIROCREW_ADMISSION_POLICY",
@@ -4520,18 +4691,28 @@ class GatewayOrchestrator:
                     # (it is already captured in job.command), but the governance
                     # POLICY it was vetted against can tighten during the queue
                     # wait, and the gate above ran before that wait.
-                    result = await run_in_cron_pool(
-                        _vet_at_claim_then,
-                        handoff,
-                        job,
-                        run_command_sandboxed,
-                        job.command,
-                        cmd_timeout,
-                        job.id,
-                        job.secret_env,
-                        job.secret_env_pin,
-                        timeout=_claim_backstop(job, cmd_timeout),
-                    )
+                    try:
+                        result = await run_in_cron_pool(
+                            _vet_at_claim_then,
+                            handoff,
+                            job,
+                            run_command_sandboxed,
+                            job.command,
+                            cmd_timeout,
+                            job.id,
+                            job.secret_env,
+                            job.secret_env_pin,
+                            True,
+                            timeout=_claim_backstop(job, cmd_timeout),
+                        )
+                    except FileNotFoundError as enoent:
+                        if not await asyncio.to_thread(_pruned_install_owns_enoent, enoent):
+                            raise
+                        logger.info(
+                            "Command cron launch skipped because the running install was replaced"
+                        )
+                        await _record_pruned_launch_skip(job, self.cron_svc)
+                        return None
                     if result.get("status") == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
                         # bookkeeping/history — no failure counting, no delivery.
@@ -4878,26 +5059,39 @@ class GatewayOrchestrator:
                     # runs inside the worker, after the wait, so the decision
                     # holds at the moment of use.  It shares the backstop below,
                     # which is why it must stay short.
-                    result = await run_in_cron_pool(
-                        _vet_at_claim_then,
-                        handoff,
-                        job,
-                        run_script_sandboxed,
-                        job.script,
-                        job.id,
-                        job.message,
-                        script_timeout,
-                        job.secret_env,
-                        job.secret_env_pin,
-                        delivery_fingerprint(
-                            job.session_key,
-                            job.silent,
-                            job.channel or "",
-                            job.thread_ts or "",
-                        ),
-                        self._live_internal_secret,
-                        timeout=_claim_backstop(job, script_timeout),
-                    )
+                    try:
+                        result = await run_in_cron_pool(
+                            _vet_at_claim_then,
+                            handoff,
+                            job,
+                            run_script_sandboxed,
+                            job.script,
+                            job.id,
+                            job.message,
+                            script_timeout,
+                            job.secret_env,
+                            job.secret_env_pin,
+                            delivery_fingerprint(
+                                job.session_key,
+                                job.silent,
+                                job.channel or "",
+                                job.thread_ts or "",
+                            ),
+                            self._live_internal_secret,
+                            timeout=_claim_backstop(job, script_timeout),
+                        )
+                    except FileNotFoundError as enoent:
+                        if not await asyncio.to_thread(_pruned_install_owns_enoent, enoent):
+                            raise
+                        # The replacement gateway owns the next wake. Record
+                        # the launch as never-started so the scheduler neither
+                        # counts a success nor deletes a due one-shot, and no
+                        # auto-pause strike is spent on a healthy job.
+                        logger.info(
+                            "Script cron launch skipped because the running install was replaced"
+                        )
+                        await _record_pruned_launch_skip(job, self.cron_svc)
+                        return None
                     status = result.get("status", "error")
                     if status == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
@@ -5270,10 +5464,11 @@ class GatewayOrchestrator:
 
             async def _acquire_with_model_fallback(
                 key: str, agent_id: str | None
-            ) -> "tuple[LLMProvider, bool, bool, bool]":
+            ) -> "tuple[LLMProvider, bool, bool, bool] | None":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded)."""
+                Returns (client, is_new, resumed, downgraded), or ``None`` when
+                this gateway's runtime was pruned during an update."""
 
                 assert self.sessions is not None
                 from kiro_crew.execution_context import bind_session_execution
@@ -5295,39 +5490,50 @@ class GatewayOrchestrator:
                         strictest((admitted_mode, modes.get(key, "persistent"))) or "persistent"
                     )
                 try:
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        model=job.model or None,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, False
-                except Exception as model_exc:
-                    if not job.model:
+                    try:
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            model=job.model or None,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, False
+                    except Exception as model_exc:
+                        if not job.model:
+                            raise
+                        # Only fall back when the failure plausibly implicates the
+                        # pinned model; unrelated session-creation errors (provider
+                        # spawn, missing factory, transient I/O) must propagate so
+                        # they are not misreported as a model downgrade.
+                        _err = str(model_exc).lower()
+                        if "model" not in _err and job.model.lower() not in _err:
+                            raise
+                        logger.warning(
+                            "Cron '%s': model %r unavailable (%s); retrying with default",
+                            job.name,
+                            job.model,
+                            model_exc,
+                        )
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, True
+                except FileNotFoundError as enoent:
+                    if not await asyncio.to_thread(_pruned_install_owns_enoent, enoent):
                         raise
-                    # Only fall back when the failure plausibly implicates the
-                    # pinned model; unrelated session-creation errors (provider
-                    # spawn, missing factory, transient I/O) must propagate so
-                    # they are not misreported as a model downgrade.
-                    _err = str(model_exc).lower()
-                    if "model" not in _err and job.model.lower() not in _err:
-                        raise
-                    logger.warning(
-                        "Cron '%s': model %r unavailable (%s); retrying with default",
-                        job.name,
-                        job.model,
-                        model_exc,
+                    # Do not pair this old gateway's in-memory protocol and
+                    # package paths with the newly promoted interpreter. The
+                    # replacement gateway will launch a single-version child.
+                    logger.info(
+                        "Agent cron launch skipped because the running install was replaced"
                     )
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, True
+                    return None
 
             def _annotate_model_downgrade(text: str) -> str:
                 # job.model is LLM-controllable via MCP; redact before it
@@ -5347,7 +5553,7 @@ class GatewayOrchestrator:
                 # Run-scoped: a sequence where one agent got a tool through has
                 # done work, even if a later agent was blocked outright.
                 _gate = _GateTally()
-                for agent in agents:
+                for agent_index, agent in enumerate(agents):
                     agent_session_key = f"cron:{job.id}:{agent}"
                     if self.cron_svc is not None:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
@@ -5369,9 +5575,30 @@ class GatewayOrchestrator:
                         _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
 
                     try:
-                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, agent
-                        )
+                        acquired = await _acquire_with_model_fallback(agent_session_key, agent)
+                        if acquired is None:
+                            if self.cron_svc is not None:
+                                self.cron_svc.clear_active_session_key(job.id, agent_session_key)
+                            if _prompt_dispatched:
+                                # A prior agent in this sequence already ran --
+                                # its side effects exist. Never-started would
+                                # retain the one-shot and REPLAY that completed
+                                # work on the replacement gateway, so record a
+                                # normal failed run instead: the strike and
+                                # error message surface the partial completion
+                                # to the operator rather than silently rerunning.
+                                job.clear_carried_result()
+                                job.last_status = "error"
+                                job.last_error = (
+                                    "Agent sequence interrupted by an install update after "
+                                    f"'{agents[agent_index - 1]}' completed; not retried "
+                                    "automatically to avoid duplicating finished work"
+                                )
+                                job.record_failure()
+                                return None
+                            await _record_pruned_launch_skip(job, self.cron_svc)
+                            return None
+                        client, is_new, _resumed, _downgraded = acquired
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
                         # Publish this turn's session identity so managed MCP
@@ -5550,9 +5777,13 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, cron_agent or None
-                )
+                acquired = await _acquire_with_model_fallback(session_key, cron_agent or None)
+                if acquired is None:
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id, session_key)
+                    await _record_pruned_launch_skip(job, self.cron_svc)
+                    return None
+                client, is_new, _resumed, _model_downgraded = acquired
                 _acquired = True
                 # Same identity publish as the sequential site above — the
                 # single-agent cron turn must publish its pidfile mapping or

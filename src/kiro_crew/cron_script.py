@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import json
@@ -52,9 +53,11 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    CHILD_START_ACK_FD_ENV,
     CRON_SCRIPT_CHILD_ENV,
     SandboxUnavailableError,
     cgroup_scope_argv,
+    cgroup_scope_inner_argv,
     popen_limited,
     run_limited,
     wrap_argv,
@@ -68,13 +71,23 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
+# Parent-only descriptor channel authenticating that a cgroup child reaches
+# its original controlled launcher before any user payload.
+_CGROUP_START_ACK_FD_ENV = CHILD_START_ACK_FD_ENV
+
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
 # of OS sandbox mode. The OS sandbox can fall back to backend "none" (e.g.
 # macOS >= 26, see sandbox._probe_sandbox_exec), so env scrubbing is the only
 # guaranteed control on those hosts. _AGENT_DENIED_ENV_KEYS = Slack tokens +
 # KIROCREW_OWNER_ID; KIROCREW_INTERNAL_SECRET is handed to scripts via a 0600
 # temp file instead of the env (defense-in-depth item 4).
-_CRON_ENV_DENY: frozenset[str] = frozenset({"KIROCREW_INTERNAL_SECRET", *_AGENT_DENIED_ENV_KEYS})
+_CRON_ENV_DENY: frozenset[str] = frozenset(
+    {
+        "KIROCREW_INTERNAL_SECRET",
+        _CGROUP_START_ACK_FD_ENV,
+        *_AGENT_DENIED_ENV_KEYS,
+    }
+)
 
 
 #: Env-var names carrying operator-granted vault secrets IN THIS PROCESS.
@@ -941,7 +954,32 @@ def kill_running_process(job_id: str) -> bool:
         if proc.poll() is None:
             _kill_proc_group(proc)
 
-    threading.Thread(target=_escalate, name=f"cron-cancel-{job_id}", daemon=True).start()
+    try:
+        threading.Thread(
+            target=_escalate,
+            name=f"cron-cancel-{job_id}",
+            daemon=True,
+        ).start()
+    except Exception:
+        # SIGTERM was already delivered, but an ignored SIGTERM would leave the
+        # executor-owned child alive forever because cancelling its asyncio
+        # future cannot stop the thread. Preserve the non-raising terminal path
+        # while falling back immediately to the same broadcast-guarded whole-
+        # tree SIGKILL the delayed worker would have used.
+        try:
+            _kill_proc_group(proc)
+        except Exception:
+            logger.warning(
+                "Cancel: immediate SIGKILL fallback failed for cron %s",
+                job_id,
+                exc_info=True,
+            )
+        logger.warning(
+            "Cancel: SIGTERM sent for cron %s but the SIGKILL escalation "
+            "thread could not start; immediate fallback attempted",
+            job_id,
+            exc_info=True,
+        )
     logger.info("Cancel: sent SIGTERM to subprocess group of cron %s (pid %d)", job_id, proc.pid)
     return True
 
@@ -1739,6 +1777,227 @@ def _publish_script_session_token(clean_env: dict[str, str], job_id: str) -> str
     return token
 
 
+_CGROUP_START_ACK_BYTE = b"\x01"
+# Compatibility exec-only shim. The original controlled child owns
+# acknowledgement after this inner exec succeeds.
+_CGROUP_START_ACK_LAUNCHER = "import os, sys\n" "os.execv(sys.argv[1], sys.argv[1:])\n"
+
+
+def _acknowledge_child_start() -> None:
+    """Signal from an already-started controlled child, then hide and close the fd."""
+    fd_text = os.environ.pop(_CGROUP_START_ACK_FD_ENV, "")
+    if not fd_text:
+        return
+    fd = int(fd_text)
+    try:
+        if os.write(fd, _CGROUP_START_ACK_BYTE) != len(_CGROUP_START_ACK_BYTE):
+            raise OSError("short child-start acknowledgement write")
+    finally:
+        os.close(fd)
+
+
+@dataclass
+class _CgroupStartEvidence:
+    """Parent-owned proof that a verified managed child reached its launcher."""
+
+    read_fd: int | None = None
+    write_fd: int | None = None
+    inner_argv: tuple[str, ...] = ()
+
+    def popen_kwargs(self) -> dict[str, Any]:
+        """Return the descriptor inheritance needed by the controlled launcher."""
+        if self.write_fd is None:
+            return {}
+        return {"pass_fds": (self.write_fd,)}
+
+    def close_parent_writer(self) -> None:
+        """Close the parent's writer as soon as Popen finishes or raises."""
+        fd, self.write_fd = self.write_fd, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def collect(self) -> bool | None:
+        """Return True/False for authenticated start/no-start, None if unknown."""
+        fd, self.read_fd = self.read_fd, None
+        if fd is None:
+            return None
+        try:
+            try:
+                evidence = os.read(fd, len(_CGROUP_START_ACK_BYTE))
+            except BlockingIOError:
+                return False
+            if not evidence:
+                return False
+            return True if evidence == _CGROUP_START_ACK_BYTE else None
+        except OSError:
+            logger.warning(
+                "Cron cgroup child-start evidence could not be read; "
+                "interpreter ENOENT reconstruction disabled",
+                exc_info=True,
+            )
+            return None
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        """Close every still-owned pipe descriptor, idempotently."""
+        self.close_parent_writer()
+        fd, self.read_fd = self.read_fd, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _attach_child_start_evidence(
+    inner_argv: list[str],
+    clean_env: dict[str, str],
+) -> _CgroupStartEvidence:
+    """Create descriptor evidence after a caller authenticates its wrapper."""
+    evidence = _CgroupStartEvidence(inner_argv=tuple(inner_argv))
+    try:
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(read_fd, False)
+    except OSError:
+        for fd in locals().get("read_fd"), locals().get("write_fd"):
+            if isinstance(fd, int):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        logger.warning(
+            "Cron child-start evidence pipe could not be created; "
+            "interpreter ENOENT reconstruction disabled",
+            exc_info=True,
+        )
+        return evidence
+
+    clean_env[_CGROUP_START_ACK_FD_ENV] = str(write_fd)
+    evidence.read_fd = read_fd
+    evidence.write_fd = write_fd
+    return evidence
+
+
+def _with_cgroup_start_evidence(
+    scoped_argv: list[str],
+    inner_argv: list[str],
+    clean_env: dict[str, str],
+) -> tuple[list[str], _CgroupStartEvidence]:
+    """Attach parent-owned start evidence only to this trusted cgroup envelope."""
+    if cgroup_scope_inner_argv(scoped_argv) != tuple(inner_argv):
+        return scoped_argv, _CgroupStartEvidence(inner_argv=tuple(inner_argv))
+    return scoped_argv, _attach_child_start_evidence(inner_argv, clean_env)
+
+
+def _sandbox_exec_inner_argv(
+    wrapped_argv: tuple[str, ...],
+    cleanup_path: str | None,
+) -> tuple[str, ...] | None:
+    """Return an exact Kiro Crew Seatbelt envelope's inner argv, if verified."""
+    if not cleanup_path:
+        return None
+    sandbox_exec = "/usr/bin/sandbox-exec"
+    if wrapped_argv.count(sandbox_exec) != 1:
+        return None
+    sandbox_index = wrapped_argv.index(sandbox_exec)
+    command_index = sandbox_index + 3
+    if (
+        wrapped_argv[sandbox_index + 1 : command_index] != ("-f", cleanup_path)
+        or len(wrapped_argv) <= command_index
+    ):
+        return None
+    return wrapped_argv[command_index:]
+
+
+def _with_managed_start_evidence(
+    scoped_argv: list[str],
+    inner_argv: list[str],
+    clean_env: dict[str, str],
+    cleanup_path: str | None,
+    interpreter: str,
+) -> tuple[list[str], _CgroupStartEvidence]:
+    """Attach evidence only to an exact cgroup or managed Seatbelt envelope."""
+    inner = tuple(inner_argv)
+    if tuple(scoped_argv) == inner:
+        seatbelt_inner = _sandbox_exec_inner_argv(inner, cleanup_path)
+        if seatbelt_inner is not None and seatbelt_inner[:1] == (interpreter,):
+            return scoped_argv, _attach_child_start_evidence(inner_argv, clean_env)
+    return _with_cgroup_start_evidence(scoped_argv, inner_argv, clean_env)
+
+
+def _cgroup_scope_missed_interpreter(
+    scoped_argv: tuple[str, ...],
+    inner_argv: tuple[str, ...],
+    interpreter: str,
+    stderr: str,
+    child_started: bool | None,
+) -> bool:
+    """Whether the trusted cgroup envelope lost its managed launch target."""
+    if child_started is not False:
+        return False
+    if not interpreter or not inner_argv or inner_argv[0] != interpreter:
+        return False
+    if cgroup_scope_inner_argv(list(scoped_argv)) != inner_argv:
+        return False
+    detail = stderr.rstrip("\r\n")
+    if detail not in (
+        f"Failed to find executable {interpreter}: No such file or directory",
+        f"Failed to execute {interpreter}: No such file or directory",
+    ):
+        return False
+    try:
+        os.stat(interpreter)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _sandbox_exec_missed_interpreter(
+    wrapped_argv: tuple[str, ...],
+    cleanup_path: str | None,
+    interpreter: str,
+    stderr: str,
+    child_started: bool | None,
+) -> bool:
+    """Whether Seatbelt failed to exec this process's vanished interpreter.
+
+    ``sandbox-exec`` reports an inner ``execvp`` failure through its own stderr
+    and exit status, so :class:`subprocess.Popen` cannot raise the original
+    ``FileNotFoundError``. Keep the reconstruction as narrow as that lost
+    exception: require authenticated evidence that the controlled Python child
+    never started, the exact trusted wrapper layout returned by
+    :func:`wrap_argv`, the exact interpreter path in both argv and one known
+    diagnostic spelling, and a post-exit observation that the path is absent.
+    """
+    if child_started is not False or not interpreter:
+        return False
+    inner_argv = _sandbox_exec_inner_argv(wrapped_argv, cleanup_path)
+    if inner_argv is None or inner_argv[:1] != (interpreter,):
+        return False
+    detail = stderr.rstrip("\r\n")
+    if detail not in (
+        f"sandbox-exec: execvp {interpreter}: No such file or directory",
+        f"sandbox-exec: execvp() of '{interpreter}' failed: No such file or directory",
+    ):
+        return False
+    try:
+        os.stat(interpreter)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def run_script_sandboxed(
     script_path: str,
     job_id: str,
@@ -1779,6 +2038,21 @@ def run_script_sandboxed(
     """
 
     file_path_str, func_name = resolve_script_path(script_path)
+
+    # Resolve the user-owned script first so its own ENOENT keeps its provenance.
+    # Then verify the interpreter while the script worker is still outside the
+    # sandbox wrapper. On macOS the outer executable is sandbox-exec: it can start
+    # successfully after this managed interpreter has been pruned, masking the
+    # inner exec failure as an ordinary non-zero result. Raising the ENOENT here
+    # preserves the install-owned filename for the gateway's narrow handoff gate.
+    try:
+        os.stat(sys.executable)
+    except FileNotFoundError as exc:
+        # os.stat normally supplies the filename. Assign it explicitly because
+        # this typed exception crosses the worker boundary and its exact path is
+        # what prevents a user script, cwd, or command failure being excused.
+        exc.filename = sys.executable
+        raise
 
     import_dir_str = os.path.dirname(file_path_str)
     resolved_secret_env: dict[str, str] = {}
@@ -1853,6 +2127,8 @@ def run_script_sandboxed(
             "import base64, json, os, types\n"
         )
     launcher = prelude + (
+        "from kiro_crew.cron_script import _acknowledge_child_start\n"
+        "_acknowledge_child_start()\n"
         # A granted run receives {body_b64, secrets} over STDIN, before any
         # other work: the verified bytes are executed directly (no pathname to
         # swap between verification and exec), and the secrets enter
@@ -1915,6 +2191,7 @@ def run_script_sandboxed(
         suffix=".py", prefix="kirocrew_cron_", dir=pinned_dir if stdin_payload else None
     )
     sandbox_cleanup: str | None = None
+    cgroup_start_evidence = _CgroupStartEvidence()
     # Resolve the dial port ONCE: the credential written below and the
     # _KIROCREW_DIAL_PORT the child dials must come from the same resolution, or a
     # --port auto bind between two resolutions would pair a credential with the
@@ -2068,7 +2345,16 @@ def run_script_sandboxed(
         # gh -- scripts that never call gh are unaffected either way.
         clean_env.update(prevalidated_gh_env())
 
+        sandbox_wrapper_argv = tuple(sandboxed_argv)
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
+        sandboxed_argv, cgroup_start_evidence = _with_managed_start_evidence(
+            sandboxed_argv,
+            list(sandbox_wrapper_argv),
+            clean_env,
+            sandbox_cleanup,
+            sys.executable,
+        )
+        cgroup_wrapper_argv = tuple(sandboxed_argv)
         # The spawn-in-flight window makes popen_limited's interpreter-ENOENT
         # backoff cancellable: without it a cancel arriving mid-backoff is
         # recorded nowhere, and the retry runs the cancelled job anyway.
@@ -2113,7 +2399,9 @@ def run_script_sandboxed(
                 # decoding is what their shell does, and it is what this call
                 # did before the encoding gate was satisfied by pinning it.
                 text=True,  # subprocess-encoding: locale
+                **cgroup_start_evidence.popen_kwargs(),
             )
+            cgroup_start_evidence.close_parent_writer()
         except Exception:
             # No child exists, so a cancel recorded against this spawn can never
             # be signalled -- clear it here rather than let it leak into the next
@@ -2147,7 +2435,26 @@ def run_script_sandboxed(
         if cancelled:
             return {"status": "cancelled", "error": "Cancelled by user"}
 
+        cgroup_child_started = cgroup_start_evidence.collect()
         if proc.returncode != 0 and not stdout.strip():
+            if _sandbox_exec_missed_interpreter(
+                sandbox_wrapper_argv,
+                sandbox_cleanup,
+                sys.executable,
+                stderr,
+                cgroup_child_started,
+            ) or _cgroup_scope_missed_interpreter(
+                cgroup_wrapper_argv,
+                cgroup_start_evidence.inner_argv,
+                sys.executable,
+                stderr,
+                cgroup_child_started,
+            ):
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    os.strerror(errno.ENOENT),
+                    sys.executable,
+                )
             # Report the TERMINAL stderr context, not the head. A process that
             # dies hard leaves its diagnosis LAST -- the traceback is the final
             # thing written -- while whatever a startup path logged first (a
@@ -2219,6 +2526,7 @@ def run_script_sandboxed(
         # exception the scheduler cannot attribute to this job.
         return {"status": "error", "error": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}"}
     finally:
+        cgroup_start_evidence.close()
         retract_session_token(script_session_token)
         Path(launcher_path).unlink(missing_ok=True)
         Path(secret_path).unlink(missing_ok=True)
@@ -2341,10 +2649,16 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    _propagate_file_not_found: bool = False,
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
     Returns: {"status": "ok"|"error"|"cancelled", "output": "...", "exit_code": N}
+
+    ``_propagate_file_not_found`` is an internal gateway seam. Direct callers
+    retain the structured error result, while the gateway asks for the original
+    exception so it can distinguish a pruned managed install from a missing user
+    command or pathless ENOENT.
 
     ``secret_env``/``secret_env_pin`` exist only as a fail-closed guard:
     secret grants apply to SCRIPT jobs exclusively (a pin over the command
@@ -2409,6 +2723,7 @@ def run_command_sandboxed(
     # this function entirely — the scheduler's caller saw a bare exception
     # instead of a job it could mark failed, so the remedy never reached the user.
     sandbox_cleanup: str | None = None
+    cgroup_start_evidence = _CgroupStartEvidence()
     try:
         # Inside the claim (see above) AND inside the try: the probe can raise on
         # a host with no OS sandbox backend, and that has to reach the handlers
@@ -2429,8 +2744,17 @@ def run_command_sandboxed(
             }
         argv = [shell, "-c", command]
         sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        sandbox_wrapper_argv = tuple(sandboxed_argv)
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
+        sandboxed_argv, cgroup_start_evidence = _with_managed_start_evidence(
+            sandboxed_argv,
+            list(sandbox_wrapper_argv),
+            clean_env,
+            sandbox_cleanup,
+            sys.executable,
+        )
+        cgroup_wrapper_argv = tuple(sandboxed_argv)
         if _spawn_cancelled(job_id):
             # Cancelled while the probe above sat in its interpreter-ENOENT
             # backoff. Report it WITHOUT spawning: not launching is the entire
@@ -2463,7 +2787,9 @@ def run_command_sandboxed(
                 # decoding is what their shell does, and it is what this call
                 # did before the encoding gate was satisfied by pinning it.
                 text=True,  # subprocess-encoding: locale
+                **cgroup_start_evidence.popen_kwargs(),
             )
+            cgroup_start_evidence.close_parent_writer()
         except Exception:
             # See the script path: no child exists, so clear any recorded cancel
             # rather than let it leak into this job's next run.
@@ -2512,6 +2838,23 @@ def run_command_sandboxed(
                 "output": "Cancelled by user",
                 "exit_code": proc.returncode,
             }
+        cgroup_child_started = cgroup_start_evidence.collect()
+        if (
+            proc.returncode != 0
+            and not output.strip()
+            and _cgroup_scope_missed_interpreter(
+                cgroup_wrapper_argv,
+                cgroup_start_evidence.inner_argv,
+                sys.executable,
+                stderr_out,
+                cgroup_child_started,
+            )
+        ):
+            raise FileNotFoundError(
+                errno.ENOENT,
+                os.strerror(errno.ENOENT),
+                sys.executable,
+            )
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
@@ -2536,8 +2879,11 @@ def run_command_sandboxed(
             "exit_code": -1,
         }
     except Exception as exc:
+        if _propagate_file_not_found and isinstance(exc, FileNotFoundError):
+            raise
         return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}
     finally:
+        cgroup_start_evidence.close()
         if spawn_claimed:
             # Left this function without ever reaching _finish_spawn or
             # _abandon_spawn -- an early return or a raised error. Release the

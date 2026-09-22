@@ -301,16 +301,12 @@ def test_record_from_dict_ignores_extra_keys() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_job_returns_false_when_already_executing() -> None:
+async def test_run_job_returns_false_when_already_executing(tmp_path: Path) -> None:
     from kiro_crew.cron import CronJob, CronService
 
-    svc = CronService.__new__(CronService)
+    svc = CronService(base_dir=tmp_path)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]
     svc._executing = {"j1"}
-    svc._job_run_meta = {}
-    svc._running_tasks = {}
-    svc._loop = None
-    svc._file = None
 
     with patch.object(svc, "_synced_snapshot", lambda include_disabled=True: list(svc._jobs)):
         result = await svc.run_job("j1")
@@ -318,22 +314,18 @@ async def test_run_job_returns_false_when_already_executing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_job_stores_manual_trigger_meta() -> None:
+async def test_run_job_stores_manual_trigger_meta(tmp_path: Path) -> None:
     from kiro_crew.cron import CronJob, CronService
 
-    svc = CronService.__new__(CronService)
+    svc = CronService(base_dir=tmp_path)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]
-    svc._executing = set()
-    svc._job_run_meta = {}
-    svc._running_tasks = {}
-    svc._loop = None
-    svc._file = None
 
     async def fake_run(job):
         pass
 
-    with patch.object(svc, "_run_job_isolated", side_effect=fake_run), patch.object(
-        svc, "_synced_snapshot", lambda include_disabled=True: list(svc._jobs)
+    with (
+        patch.object(svc, "_run_job_isolated", side_effect=fake_run),
+        patch.object(svc, "_synced_snapshot", lambda include_disabled=True: list(svc._jobs)),
     ):
         await svc.run_job("j1")
 

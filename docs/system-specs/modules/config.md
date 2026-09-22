@@ -30,6 +30,23 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+## Timezone publication authority
+
+Every successful config load publishes the resolved default timezone through an
+ordered in-memory snapshot so cron and display paths never read `config.json` on
+the event loop. The lock-free authority read returns one immutable `(timezone,
+generation)` pair. Accepted publications that change the timezone advance the
+semantic generation, including both legs of an A → B → A sequence; accepted
+same-timezone publications keep it stable, and older load tickets cannot publish.
+Cron uses the pair as compare-and-set authority around inherited debt validation,
+persistence, admission, and run-token minting. Each exact inherited occurrence
+admitted to a run retains that full pair until its run token retires, so a
+drained runtime arbitrates replacement completion under the capture-time zone;
+a later default change, including A → B → A, cannot reinterpret that occurrence. A fresh inherited boundary is calculated and
+retained under one authority pair; if a publication change makes the earlier
+due snapshot fail that captured calendar, the scheduler retires the provisional
+run token without launching. Explicit-zone jobs keep their own authority.
+
 ## Orchestration prompt contract
 
 `config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and

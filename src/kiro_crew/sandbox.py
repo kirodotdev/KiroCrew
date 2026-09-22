@@ -6092,6 +6092,15 @@ import os
 import stat
 import tempfile
 
+_start_ack_fd_text = os.environ.pop({CHILD_START_ACK_FD_ENV!r}, "")
+if _start_ack_fd_text:
+    _start_ack_fd = int(_start_ack_fd_text)
+    try:
+        if os.write(_start_ack_fd, b"\\x01") != 1:
+            raise OSError("short child-start acknowledgement write")
+    finally:
+        os.close(_start_ack_fd)
+
 # Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
 # FIRST-TIME stdlib import reads module files off disk, and once the child has
 # entered its user+mount namespaces that read can be denied by the host's LSM
@@ -7979,6 +7988,7 @@ def _sandbox_env_scrub_keys(
     so the two paths can never scrub different sets.
     """
     prefixes = list(_SENSITIVE_ENV_PREFIXES)
+    prefixes.extend(_RESERVED_AGENT_ENV_KEYS)
     if sandbox_level in ("cc", "strict"):
         prefixes.extend(_AGENT_DENIED_ENV_KEYS)
     if strip_python_env:
@@ -9898,6 +9908,16 @@ def detect_backend(config_mode: str = "auto") -> str:
     return _backend
 
 
+#: Optional parent-created descriptor used by controlled launchers to attest
+#: that their original managed Python process has started. A launcher removes
+#: and closes it before execing any user-controlled payload.
+CHILD_START_ACK_FD_ENV = "_KIROCREW_CRON_START_ACK_FD"
+
+#: Parent-only launch protocol keys that agent, app, and MCP environment
+#: overlays must never supply. Trusted cron launchers inject these only after
+#: the agent environment has been scrubbed and the wrapper has been verified.
+_RESERVED_AGENT_ENV_KEYS: tuple[str, ...] = (CHILD_START_ACK_FD_ENV,)
+
 #: Env marker the cron *script* launcher sets on its child -- the one way to tell
 #: that child apart at a spawn site every caller shares.
 CRON_SCRIPT_CHILD_ENV = "_KIROCREW_CRON_SCRIPT_CHILD"
@@ -11202,7 +11222,9 @@ async def wrap_argv_async(
 # at the parent level too means the guarantee holds even on the opted-in
 # ``sandbox_allow_unsandboxed_exec`` fail-open path where no launcher runs.
 # Prefix match via ``startswith`` (mirrors the launcher's ENV_PREFIXES check).
-_SPAWN_SCRUB_ENV_PREFIXES: list[str] = list(_SENSITIVE_ENV_PREFIXES) + list(_AGENT_DENIED_ENV_KEYS)
+_SPAWN_SCRUB_ENV_PREFIXES: list[str] = (
+    list(_SENSITIVE_ENV_PREFIXES) + list(_AGENT_DENIED_ENV_KEYS) + list(_RESERVED_AGENT_ENV_KEYS)
+)
 
 
 def scrub_env(
@@ -11228,11 +11250,13 @@ def scrub_env(
 
 
 def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
-    """Return a copy of *env* with gateway-owned channel credentials removed.
+    """Return a copy of *env* with agent-denied keys removed.
 
     Drops every key matching ``_AGENT_DENIED_ENV_KEYS`` — the Slack/WeCom/
     Telegram tokens and owner id that ``config/loader.load_credentials()`` seeds
-    into ``os.environ`` for trusted children only.
+    into ``os.environ`` for trusted children only — plus
+    ``_RESERVED_AGENT_ENV_KEYS``, whose values belong to parent-created launch
+    protocols and must never come from an agent, app, or MCP environment overlay.
 
     This is the PARENT-level complement to the OS-sandbox launcher scrub. The
     launcher (``namespace_argv`` / ``sandbox_exec_argv``) only strips these keys
@@ -11251,9 +11275,8 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
     vars must survive the parent scrub. Prefix match via ``startswith`` mirrors
     the launcher's ENV_PREFIXES check.
     """
-    return {
-        k: v for k, v in env.items() if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)
-    }
+    denied_prefixes = (*_AGENT_DENIED_ENV_KEYS, *_RESERVED_AGENT_ENV_KEYS)
+    return {k: v for k, v in env.items() if not any(k.startswith(p) for p in denied_prefixes)}
 
 
 def scrub_agent_subprocess_env(
@@ -12182,6 +12205,53 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--",
         *argv,
     ]
+
+
+def cgroup_scope_inner_argv(argv: list[str]) -> tuple[str, ...] | None:
+    """Return the inner argv only for this process's trusted cgroup envelope."""
+    systemd_run = platform_compat.trusted_system_bin("systemd-run")
+    if not systemd_run or len(argv) < 12 or argv[0] != systemd_run:
+        return None
+    if argv[1:5] != [
+        "--user",
+        "--scope",
+        "-q",
+        f"--slice={_agents_slice_name()}",
+    ]:
+        return None
+    try:
+        separator = argv.index("--", 5)
+    except ValueError:
+        return None
+    properties = argv[5:separator]
+    if len(properties) % 2:
+        return None
+    seen: dict[str, str] = {}
+    allowed = {"TasksMax", "MemoryMax", "MemorySwapMax", "CPUWeight", "CPUQuota"}
+    for index in range(0, len(properties), 2):
+        if properties[index] != "-p":
+            return None
+        name, separator_text, value = properties[index + 1].partition("=")
+        if not separator_text or name not in allowed or name in seen:
+            return None
+        seen[name] = value
+    if not {"TasksMax", "MemoryMax", "MemorySwapMax"}.issubset(seen):
+        return None
+    if seen["MemorySwapMax"] != "0":
+        return None
+    numeric = seen["TasksMax"]
+    memory = seen["MemoryMax"]
+    weight = seen.get("CPUWeight")
+    quota = seen.get("CPUQuota")
+    if not re.fullmatch(r"[1-9][0-9]*", numeric):
+        return None
+    if not re.fullmatch(r"[1-9][0-9]*M", memory):
+        return None
+    if weight is not None and not re.fullmatch(r"[1-9][0-9]*", weight):
+        return None
+    if quota is not None and not re.fullmatch(r"[1-9][0-9]*%", quota):
+        return None
+    return tuple(argv[separator + 1 :])
 
 
 # ── aggregate ceiling on the parent slice ──
