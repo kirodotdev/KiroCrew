@@ -6,9 +6,11 @@
 # with its name, a status label, a one-line value proposition, a
 # "Documentation" link and a "Connect" button, and the search box narrows the
 # gallery client-side. On the seeded target nothing is authorized, so every card
-# reads "Not connected". "MCP Servers" is the table of configured servers; the
-# `rich` seed ships no `mcp.json` and the isolated agent home has none either,
-# so the table shows its heading with a zero count and its empty row.
+# reads "Not connected". "MCP Servers" is the table of configured servers. The
+# `rich` seed ships no `mcp.json`, but the gateway writes its own managed
+# servers (`kirocrew-core`, `kirocrew-cron`, ...) into the agent config on boot,
+# so the table always lists those rows; how many managed servers there are is a
+# release detail, so the scenario reads the two stable names, not the count.
 #
 # Both reads are the whole scenario. Connecting a service needs a real OAuth
 # provider and is out of scope. Enabling or disabling a server would need a
@@ -29,7 +31,7 @@ user_story: >-
   As a crew operator, I want to install, enable and scope MCP servers, so that
   agents get exactly the tools they need.
 docs_url: docs/system-specs/modules/connections.md
-summary: Search the Services gallery for Linear, then open the MCP Servers sub-tab and read its empty table
+summary: Search the Services gallery for Linear, then open the MCP Servers sub-tab and read its built-in rows
 preconditions:
   seed: rich
   members: [nova-sky]
@@ -46,13 +48,17 @@ steps:
     card, "Linear", whose status reads "Not connected" and whose text starts with "Read your
     Linear issues". Read it, then leave it as it is.
   - >-
-    Click the "MCP Servers" sub-tab. The pane changes to a heading that reads "MCP Servers (0)"
-    with "Add Custom" and "Add Server" buttons at its right, and a card holding a filter box
-    ("Filter servers or tools…") and a table whose columns are Name, the product name, Globals,
-    Status, Tools and Actions.
+    Click the "MCP Servers" sub-tab. The pane changes to a heading that reads "MCP Servers"
+    followed by a count in parentheses, "Add Custom" and "Add Server" buttons at its right,
+    and a table (Name, Globals, Status, Tools, Actions) listing the gateway's own servers,
+    among them "kirocrew-core" and "kirocrew-cron". Do not toggle, edit or remove any row.
 expectations:
-  - The "MCP Servers" sub-tab is highlighted and the heading reads "MCP Servers (0)".
-  - The servers table has no server rows; its only body row reads "No MCP servers configured".
+  - >-
+    The "MCP Servers" sub-tab is highlighted and the heading reads "MCP Servers" followed by
+    a count in parentheses that is greater than zero (the exact number does not matter).
+  - >-
+    The servers table has rows named "kirocrew-core" and "kirocrew-cron" (other rows may be
+    present; their Status text does not matter).
   - The "Add Custom" and "Add Server" buttons are visible at the right of the heading.
   - >-
     In the screenshot taken right after you typed "Linear", the Services grid showed exactly

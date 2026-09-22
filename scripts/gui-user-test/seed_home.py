@@ -6,8 +6,13 @@ Copies a named fixture (``kiro_crew.seed``, the same code path as
 renders as a fully onboarded install with a crew roster:
 
 * ``dashboard.onboarded`` / ``import_onboarded`` -> true (no setup wizard);
-* ``agents.<slug>`` for every ``--member`` (the Crew Members page reads the
-  roster from ``config.agents``; the fixtures ship none).
+* ``agents.default`` first, then ``agents.<slug>`` for every ``--member`` (the
+  Crew Members page reads the roster from ``config.agents``; the fixtures ship
+  none). ``default`` is written explicitly because the fixtures' seeded sessions
+  name it as their agent: the config loader only materializes it when
+  ``agents`` is empty, and adding a member here makes it non-empty, so without
+  this row every seeded session fails to send with "Crew Member 'default' is
+  unavailable".
 
 Run with ``KIROCREW_HOME`` pointing at an EMPTY scratch directory. The seed
 module refuses the real data home, so this cannot touch an operator's install.
@@ -64,11 +69,20 @@ def main(argv: list[str] | None = None) -> int:
     dashboard["onboarded"] = True
     cfg["import_onboarded"] = True
     agents = cfg.setdefault("agents", {})
+    default_kiro_agent = cfg.get("agent", {}).get("default_agent", "kirocrew")
+    agents.setdefault(
+        "default",
+        {
+            "kiro_agent": default_kiro_agent,
+            "workspace": cfg.get("default_workspace", "default"),
+            "memory_store": "default",
+        },
+    )
     for slug in args.member:
         agents.setdefault(
             slug,
             {
-                "kiro_agent": cfg.get("agent", {}).get("default_agent", "kirocrew"),
+                "kiro_agent": default_kiro_agent,
                 "workspace": cfg.get("default_workspace", "default"),
                 "description": f"{_display_name(slug)} -- seeded crew member for the GUI user test.",
             },
