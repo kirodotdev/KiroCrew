@@ -4749,9 +4749,10 @@ def _restore_everything_from_rollback(
 ) -> list[str]:
     """Undo the mutation phase, target by target, using *targets* as the granularity.
 
-    The recovery half of replace-mode atomicity. Undoing the whole saved set returns the
-    data home to one coherent generation regardless of how far the pass got. Recovering
-    only the item that failed is what leaves memory half-old and half-new.
+    The recovery half of replace-mode atomicity. Undoing every target the mutation phase
+    reached returns the replaced state to one coherent generation regardless of how far
+    the pass got. Recovering only the item that failed is what leaves memory half-old and
+    half-new.
 
     **Granularity is the invariant, and it is exactly *targets*.** Every entry is a
     declared relative path, and recovery touches nothing else. Walking the rollback
@@ -4763,14 +4764,14 @@ def _restore_everything_from_rollback(
 
     Three cases per target, and the third is why *installed* exists:
 
-    * **Saved** — put it back, clearing only that path.
+    * **Saved, and this run reached it** — put it back, clearing only that path.
     * **Not saved, and this run installed it** — it did not exist before, so the copy the
       restore created is REMOVED. That is what "no pre-restore state" restores to.
-    * **Not saved, and this run never reached it** — LEFT ALONE. Absence of a saved copy
-      does not mean absence of prior state: a file is saved by MOVING it aside at the
-      moment of its own mutation, so a failure partway through the phase leaves every
-      later target untouched and unsaved. Removing those deletes the operator's own data
-      that this restore never so much as opened, which is the opposite of recovery.
+    * **This run never reached it** — LEFT ALONE, whether or not phase one saved a copy.
+      Whole-tree rollback copies are taken before any mutation, so a later target can have
+      a saved copy even though the restore never opened it. Putting that old copy back
+      would overwrite a dashboard write that landed after phase one. Core files are saved
+      by moving them aside at their own mutation point, but the same ledger rule applies.
 
     Best-effort per target, and it says so per target: a recovery that aborts on its
     first problem strands the rest, and by this point the operator's own data is what is
@@ -4785,6 +4786,15 @@ def _restore_everything_from_rollback(
     print(f"↩️  Restoring the previous state from {backup} ...")
     failed: list[str] = []
     for rel in sorted(set(targets)):
+        # Phase one saves every whole tree before any mutation. A saved copy therefore
+        # proves only that the tree existed at the phase-one snapshot, not that this run
+        # later touched its live target. A dashboard write can land there while an earlier
+        # component is being replaced; if that earlier replacement fails, restoring this
+        # older saved copy would delete the concurrent write from a tree the restore never
+        # opened. The mutation ledger is the ownership proof for both saved and unsaved
+        # targets, so later targets are left exactly as they stand.
+        if rel not in installed:
+            continue
         saved = store_backup if rel == MEMORY_STORES_DIR_NAME and store_backup else backup / rel
         target = mc / rel
         try:

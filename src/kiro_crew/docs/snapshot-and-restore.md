@@ -210,6 +210,9 @@ into `memory_stores/.member-backups/pre-restore-<timestamp>/` inside the data ho
 where agents cannot read them. Other components go into `pre-restore-<timestamp>/`
 at the data-home root. The saved paths are printed, so a wrong-snapshot restore
 is recoverable. If rollback cannot finish, the failure report names both locations.
+Rollback restores only paths whose mutation actually began. A phase-one copy of a
+later, untouched tree is not written back over live data that arrived while an earlier
+component was being replaced.
 
 ### What merge does per component
 
