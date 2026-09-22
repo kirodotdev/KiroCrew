@@ -437,11 +437,15 @@ function createGatewaySupervisor({
     });
   }
 
+  // The Windows OS probes take the factory's injected execFile, exactly as the
+  // POSIX ones do; production passes the real child_process.execFile.
+  const winListenPids = (p) => windowsListenPids(p, { execFileFn: execFile });
+
   function probeGatewayPortOwner(probePort) {
     if (IS_WIN) {
       return classifyPortOwner(probePort, {
-        getListenPids: windowsListenPids,
-        getCommand: windowsProcessCommand,
+        getListenPids: winListenPids,
+        getCommand: (p) => windowsProcessCommand(p, { execFileFn: execFile }),
         isKirocrew: isTrustedWindowsGatewayCommand,
         log: glog,
       });
@@ -474,7 +478,7 @@ function createGatewaySupervisor({
     return snapshotPortPids({
       port: probePort,
       isWindows: IS_WIN,
-      getWindowsPids: windowsListenPids,
+      getWindowsPids: winListenPids,
       getPosixPids: lsofListenPids,
     });
   }
@@ -511,6 +515,53 @@ function createGatewaySupervisor({
       if (Date.now() - start > maxWaitMs) return false;
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
+  }
+
+  // Only macOS can quit the other family's app for the user (quitOtherApp is
+  // AppleScript-only), so everywhere else this conflict was a dead end: an
+  // aborted launch, then a second launch after a manual quit. Offer that quit as
+  // a resumable step instead. It adds NO termination capability: the probes only
+  // observe, and the prompt is reachable only after a LOCAL owner is known.
+  const MANUAL_QUIT_ROUNDS = 3;
+
+  async function resolveConflictByManualQuit(other, otherVersion) {
+    // Port free is not lock free: an uncapturable listener must refuse, not read
+    // as "already exited" and race gateway.lock. Stricter than unverifiedIncumbent
+    // (Windows-only): reaching this prompt proved the probe names PIDs here.
+    const incumbentPids = await snapshotGatewayPortPids(PORT);
+    if (incumbentPids === null) {
+      glog(`takeover (manual): could not capture the incumbent PID on :${PORT} — refusing a respawn that could race gateway.lock`);
+      return "probe-failed";
+    }
+    for (let round = 1; round <= MANUAL_QUIT_ROUNDS; round += 1) {
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        title: `${other.displayName} is running`,
+        message: `${other.displayName} (${otherVersion}) is already running with your Kiro Crew data.`,
+        detail: round === 1
+          ? `Quit ${other.displayName}, then choose “I quit it — Retry”.`
+          : `${other.displayName} was still running a moment ago. Quit it, then choose “I quit it — Retry”.`,
+        buttons: ["I quit it — Retry", "Cancel"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (response !== 0) return "abort";
+      sendStatus(`Waiting for ${other.displayName} to quit…`);
+      if (await waitForPortFree()) {
+        glog(`takeover (manual): ${other.appName} released :${PORT} — proceeding to spawn`);
+        await waitForIncumbentExit(incumbentPids, "takeover (manual)");
+        return "spawn";
+      }
+      glog(`takeover (manual): ${other.appName} still holds :${PORT} after retry ${round}/${MANUAL_QUIT_ROUNDS}`);
+    }
+    glog(`takeover (manual): ${other.appName} never released :${PORT} — aborting this launch`);
+    await dialog.showMessageBox({
+      type: "error",
+      message: `${other.displayName} is still running.`,
+      detail: `This launch was cancelled. Quit ${other.displayName}, then open this app again.`,
+      buttons: ["OK"],
+    });
+    return "abort";
   }
 
   async function resolveGatewayConflict(rebindDepth = 0) {
@@ -580,18 +631,20 @@ function createGatewaySupervisor({
     const other = FAMILY_META[decision.otherFamily];
     glog(`gateway on :${PORT} is owned by ${other.appName} (${decision.otherVersion}) — prompting for takeover`);
     const canTakeover = processObj.platform === "darwin";
+    if (!canTakeover) {
+      glog(`canTakeover=false on ${processObj.platform} — no supported way to quit ${other.appName} from here; offering a manual-quit retry`);
+      return resolveConflictByManualQuit(other, decision.otherVersion);
+    }
     const { response } = await dialog.showMessageBox({
       type: "warning",
       title: `${other.displayName} is running`,
       message: `${other.displayName} (${decision.otherVersion}) is already running with your Kiro Crew data.`,
-      detail: canTakeover
-        ? `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName} and continue here?`
-        : `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName}, then reopen this app.`,
-      buttons: canTakeover ? [`Quit ${other.displayName} & Continue`, "Cancel"] : ["OK"],
+      detail: `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName} and continue here?`,
+      buttons: [`Quit ${other.displayName} & Continue`, "Cancel"],
       defaultId: 0,
-      cancelId: canTakeover ? 1 : 0,
+      cancelId: 1,
     });
-    if (!canTakeover || response !== 0) return "abort";
+    if (response !== 0) return "abort";
     sendStatus(`Waiting for ${other.displayName} to quit…`);
     await quitOtherApp(other.appName);
     if (!(await waitForPortFree())) {
