@@ -617,6 +617,23 @@ jobs:
               "security-scope-review.yml|Security Scope Review"
             )
           fi
+          # ONE stable token marks EVERY pending this job publishes because a
+          # READ failed, rather than because a lane is genuinely still owed. The
+          # two are opposites for the self-heal sweep: a lane-pending is
+          # reproducible, so a recompute re-derives the same verdict, while a
+          # read-failure pending is not, so a recompute whose reads succeed
+          # resolves it outright. Only the description crosses to the sweep, so
+          # the token rides there -- FIRST, because the API caps a description
+          # at 140 characters and cuts the tail.
+          #
+          # A token, not a sentence: pr-readiness-sweep.yml matches this literal,
+          # and a sentence match recognises only the one phrasing it is written
+          # against, so a read-failure pending worded differently is stranded at
+          # pending with nothing but a push able to clear it. Every read-failure
+          # pending sets read_failure=true, and test_pr_readiness_sweep.py fails
+          # a site that does not.
+          READ_FAILURE_TOKEN="[read-failed]"
+          read_failure=false
           passed=()
           pending=()
           failed=()
@@ -1025,11 +1042,17 @@ jobs:
               } > "$RUNNER_TEMP/pr-readiness-summary.md"
               exit 0
             fi
+            # The token below is LOAD-BEARING, not decoration: it is the only
+            # thing that tells this pending apart from a lane-pending, and
+            # pr-readiness-sweep.yml matches it to decide that age alone may
+            # re-fire a recompute here. Keep it FIRST, ahead of the prose,
+            # because the API caps a description at 140 characters and cuts the
+            # tail. test_pr_readiness_sweep.py pins the pair.
             {
               echo "state=could_not_evaluate"
               echo "label=readiness: checking"
               echo "status_state=pending"
-              echo "description=Readiness could not be evaluated (transient GitHub API failure); it will be re-evaluated"
+              echo "description=$READ_FAILURE_TOKEN Readiness could not be evaluated (transient GitHub API failure); it will be re-evaluated"
             } >> "$GITHUB_OUTPUT"
             {
               echo "### PR Readiness: could not be evaluated"
@@ -1078,6 +1101,9 @@ jobs:
           # `ok=false` means the record set could not be established, which is
           # UNKNOWN and therefore `pending`: a transient comments/permission API
           # failure must never red the required status (issue #2753's class).
+          # It is a READ failure, so it is stamped: the sweep may then clear it
+          # on age, which is the only signal it has, because a recompute whose
+          # reads succeed resolves it while lane state says nothing about it.
           case "${DISPOSITION_OK:-}" in
             true)
               while IFS= read -r violation; do
@@ -1087,6 +1113,7 @@ jobs:
               ;;
             false)
               pending+=("disposition records could not be read")
+              read_failure=true
               ;;
           esac
 
@@ -1132,6 +1159,14 @@ jobs:
             # classification and no state that resolves or blocks; the same
             # `waiting[]` that sets the count sets the names.
             count="${#waiting[@]}"
+            # A read-failure pending reaches the sweep through this generic
+            # description too, so the token leads this one as well, and the
+            # names budget below pays for it so the total still fits the cap.
+            prefix=""
+            if [ "$read_failure" = "true" ]; then
+              prefix="$READ_FAILURE_TOKEN "
+            fi
+            names_budget=$(( 70 - ${#prefix} ))
             names=""
             shown=0
             for item in "${waiting[@]}"; do
@@ -1146,13 +1181,13 @@ jobs:
               # exceed the 140-char commit-status limit. The count prefix runs
               # to ~35 chars and the suffix to ~11, so a 70-char names budget
               # leaves margin for both.
-              if [ "${#candidate}" -gt 70 ]; then
+              if [ "${#candidate}" -gt "$names_budget" ]; then
                 break
               fi
               names="$candidate"
               shown=$(( shown + 1 ))
             done
-            description="$count readiness check(s) still pending"
+            description="$prefix$count readiness check(s) still pending"
             if [ -n "$names" ]; then
               description="$description; waiting on $names"
               remaining=$(( count - shown ))

@@ -213,6 +213,47 @@ jobs:
             date -u -d "$newest" +%s 2>/dev/null || echo 0
           }
 
+          # Whether a `pending` verdict is a READ-FAILURE pending.
+          #
+          # pr-readiness.yml publishes one whenever a read-only API call keeps
+          # failing after its bounded retries: the revision's state is unknown,
+          # so it writes a non-terminal pending rather than a red. Those
+          # publishes happen at the END of the job, so they can land after every
+          # check on the head has already completed -- which makes them the
+          # pending shape the check-after-verdict test below can never find
+          # evidence for. Age is their only signal, and a recompute genuinely
+          # resolves them, because the next run's reads succeed.
+          #
+          # The discriminator is the status DESCRIPTION, which the GraphQL scan
+          # does not carry. Read here rather than added to the scan so the cost
+          # falls only on a pending the evidence test is about to skip: a head
+          # whose pending carries later check evidence never reaches this call,
+          # and neither does any non-pending verdict.
+          #
+          # Matched on ONE TOKEN the publisher stamps on every such pending, and
+          # at the FRONT, because the API caps a description at 140 characters
+          # and truncates the tail. A token rather than a sentence: the
+          # publisher writes these pendings from more than one site and their
+          # prose differs, so matching prose recognises one site and strands the
+          # rest. test_pr_readiness_sweep.py pins this literal against the
+          # publisher's, and fails a publisher site that forgets the stamp.
+          #
+          # Fails CLOSED toward the evidence test: an unreadable description
+          # answers "not a read failure", which skips the nudge. A missed rescue
+          # costs one sweep interval; the opposite default would re-fire every
+          # ordinary lane-pending whenever the read broke.
+          READ_FAILURE_TOKEN="[read-failed]"
+          readiness_is_read_failure() {
+            local sha="$1" description
+            description="$(gh api "repos/$REPO/commits/$sha/status" \
+              --jq "[.statuses[]? | select(.context == \"$STATUS_CONTEXT\")][0].description // empty" \
+              2>/dev/null || echo "")"
+            case "$description" in
+              "$READ_FAILURE_TOKEN"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
           # Every open PR with its head SHA, last-activity time, readiness
           # status and check-run evidence -- one JSON line each, read over
           # GraphQL by .github/scripts/readiness_sweep_scan.py.
@@ -368,6 +409,17 @@ jobs:
                 # check at all is left alone for the same reason: its lanes are
                 # still owed, and each completion event recomputes.
                 #
+                # One CLASS of pending is exempt, and it is the exception that
+                # keeps this test from stranding anything: a pending the
+                # publisher stamps as a read failure. Those are published at the
+                # end of a job whose reads broke, so they can post-date every
+                # check on the head and hold no later evidence by construction,
+                # while a recompute resolves them outright. They keep the
+                # age-based retry, which is their only signal -- see
+                # readiness_is_read_failure above. The evidence test therefore
+                # applies to a verdict derived from lane state, which is the
+                # shape a recompute cannot change.
+                #
                 # The lanes cannot be re-run by this sweep -- it dispatches the
                 # aggregator only, never a gate -- and the aggregator's own
                 # status now NAMES them, so the author reads which lane is
@@ -392,12 +444,16 @@ jobs:
                 # rescue's own republish carries the same check below the new
                 # floor and the nudge happens at most once.
                 if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
-                  echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
-                    "check completed within ${publish_lag_seconds}s of it being published;" \
-                    "a recompute would re-derive the same verdict, so not re-firing."
-                  continue
+                  if ! readiness_is_read_failure "$sha"; then
+                    echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
+                      "check completed within ${publish_lag_seconds}s of it being published;" \
+                      "a recompute would re-derive the same verdict, so not re-firing."
+                    continue
+                  fi
+                  reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
+                else
+                  reason="pending for ${age}s (> ${stale_seconds}s) with a check completed later at $newest_check"
                 fi
-                reason="pending for ${age}s (> ${stale_seconds}s) with a check completed later at $newest_check"
                 ;;
               failure)
                 # A TERMINAL verdict can go stale too, and this is the case the
