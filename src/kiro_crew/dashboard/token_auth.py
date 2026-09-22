@@ -2178,6 +2178,44 @@ def effective_request_app(state: object, request: web.Request) -> str:
     )
 
 
+#: Request key under which the chat folder/tag gate
+#: (``handlers/_shared.py``'s ``private_chat_route_refusal``) stamps the VERIFIED
+#: member principal (``member:<store>``) when it admits a member caller. The
+#: constant lives HERE, the lowest layer, so the gate that writes it and
+#: :func:`folder_principal` that reads it share one key and cannot drift.
+MEMBER_CHAT_PRINCIPAL_KEY = "member_chat_principal"
+
+
+def folder_principal(state: object, request: web.Request) -> str:
+    """The principal that owns a folder written by *request*, or ``""``.
+
+    The generalisation of :func:`effective_request_app` from "which app" to
+    "which non-person principal", so the chat-folder tree fence
+    (``chat_folders``' ``owner_app`` comparisons) can be one uniform check
+    across app AND crew-member callers instead of two:
+
+    * an APP caller -> its bare app name, EXACTLY what
+      :func:`effective_request_app` returns and what ``owner_app`` has always
+      stored, so every folder written before members existed keeps its meaning
+      and no migration is needed;
+    * an admitted crew MEMBER caller -> ``"member:<store>"``, read from the
+      principal the gate already stamped on the VERIFIED scope (never a second
+      config read on the event loop, never a body value). App names are
+      validated identifiers that never begin ``member:``, so the two principal
+      spaces cannot collide;
+    * the person -> ``""`` (absent/empty ``owner_app``), unchanged.
+
+    Ordering matters: the app claim is checked FIRST. A member never carries an
+    app claim (``request["app"]`` is set only for a resolved app), so the two
+    arms are mutually exclusive, but checking the app first keeps an app's
+    principal byte-identical to what it was.
+    """
+    app = effective_request_app(state, request)
+    if app:
+        return app
+    return str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+
+
 def _cron_job_owner(jobs: object, job_id: str) -> str:
     """The app that created a cron job, or ``""`` (person-created, or no such job).
 

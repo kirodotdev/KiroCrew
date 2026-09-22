@@ -109,13 +109,14 @@ async def _private_caller_refusal(request: web.Request) -> web.Response | None:
     # is a different predicate and stays there. All reads run off the loop in one
     # hop and fail closed on an unreadable config, so this gate never opens wider
     # than the two switches behind it.
-    from kiro_crew.members import is_member_session_key
-
     session_key = _read_session_key(request)
 
     def _caller_is_member_and_reachable() -> bool:
-        is_member = is_member_session_key(session_key) or sc._store_is_member_owned(scope)
-        return is_member and (sc.member_dispatch_enabled() or sc.session_control_enabled())
+        # The SHARED predicate the chat folder/tag gate also uses
+        # (``handlers/_shared.py``'s ``private_chat_route_refusal``), so the two
+        # surface gates cannot drift on who a member is or when the surface is
+        # reachable for it.
+        return sc.member_admitted_to_scoped_surface(session_key, scope)
 
     if await asyncio.to_thread(_caller_is_member_and_reachable):
         # Admitted AS A MEMBER. Record that on the request so the route carries it

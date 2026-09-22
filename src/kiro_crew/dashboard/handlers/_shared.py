@@ -32,6 +32,7 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
+    MEMBER_CHAT_PRINCIPAL_KEY,
     _b64url_decode,
     required_peer_key_unverified,
 )
@@ -651,7 +652,148 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
             and slot.memory_store == scope
         ):
             return None
+    # A crew member is admitted to the chat FOLDER and TAG routes it needs to
+    # organise its own worker sessions (session_create with folder=,
+    # chat_folder_file_self, chat_tag_assign), and to the read-only session LIST
+    # its folder tools use to resolve its own slot -- the surface session-control
+    # already opens to the same members. This is COARSE admission only: it lets
+    # the caller reach the handler, whose own per-resource fence
+    # (``chat_folders``/``chat_tags``' ``owner_app``/``folder_principal`` for the
+    # tree, ``member_owns_slot`` for filing/tagging and the session-list filter,
+    # ``_refuse_vocabulary_write`` for the shared tag list) is what decides which
+    # folder or session it may touch or see. Every OTHER ``/api/chat/*`` route
+    # keeps the owner-only refusal below.
+    if await _member_admitted_to_chat_folder_tag_route(request, scope):
+        return None
     return await private_owner_surface_refusal(request, "chat.control")
+
+
+#: Methods a crew-member caller is admitted for on the chat folder/tag routes.
+#: The path is matched STRUCTURALLY by :func:`_admitted_chat_route_methods`
+#: against the exact registered patterns, never by a raw prefix, so a sibling
+#: literal that shares a prefix (``/api/chat/folders/reorder``,
+#: ``/api/chat/tag-columns``) is NOT admitted and keeps the owner-only refusal.
+#:
+#: The admitted VERBS are exactly the ones a member may actually do -- a verb
+#: whose handler has no member fence is not admitted here, so the gate can never
+#: forward a request the fence would have to refuse (or, worse, one no fence
+#: covers). Concretely: a member creates folders and renames/reparents its OWN
+#: (POST + PATCH on the tree), but does NOT delete folders (delete is refused for
+#: every agent principal); it READS the shared tag vocabulary (GET) but does NOT
+#: coin/rename/delete tags (``chat_tags.api_chat_tag_delete`` has no
+#: vocabulary fence at all, so admitting DELETE would let a member remove a
+#: shared tag); it files/tags only its own or created sessions. The per-handler
+#: ownership fence (``owner_app``/``folder_principal`` for the tree,
+#: ``member_owns_slot`` for filing/tagging, ``_refuse_vocabulary_write`` for tag
+#: creation/rename) is still the authoritative gate; this set just refuses to
+#: forward anything outside a member's real capability.
+_MEMBER_CHAT_FOLDERS_METHODS = frozenset({"GET", "POST"})
+_MEMBER_CHAT_FOLDER_ID_METHODS = frozenset({"PATCH"})
+#: The reorder (sibling-position) leg of a folder move; its handler fences every
+#: row to the caller's own folder, so a member renumbers only what it owns.
+_MEMBER_CHAT_FOLDER_REORDER_METHODS = frozenset({"POST"})
+_MEMBER_CHAT_TAGS_METHODS = frozenset({"GET"})
+_MEMBER_CHAT_SLOT_FOLDER_METHODS = frozenset({"PATCH"})
+_MEMBER_CHAT_SLOT_TAGS_METHODS = frozenset({"PUT"})
+#: The session LIST is admitted read-only: the folder/tag MCP tools
+#: (chat_folder_file_self / chat_folder_move_session / chat_folder_tree) read it
+#: to resolve the caller's own slot. ``api_chat_slots`` filters the response for
+#: a member to its own + created sessions (the same set the tree read shows), so
+#: admitting GET here does not widen what a member can enumerate.
+_MEMBER_CHAT_SLOTS_METHODS = frozenset({"GET"})
+
+
+def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
+    """The methods a member is admitted for on *path*, or ``None`` if not admitted.
+
+    Structural, path-shape matching that mirrors the routes registered in
+    ``routes/sessions.py`` / ``routes/chat.py`` EXACTLY. A trailing single
+    segment on ``/folders/`` is a folder id (``{id}``); the reserved literal
+    ``/api/chat/folders/reorder`` and every ``/api/chat/tag-*`` are deliberately
+    excluded. ``/api/chat/tags/{id}`` is NOT admitted for any method -- a member
+    neither renames nor deletes shared tags -- so its DELETE (which has no
+    vocabulary fence) is refused at the gate. ``/api/chat/slots`` is the session
+    LIST only; a deeper ``/api/chat/slots/<slot>/...`` sub-resource other than
+    the fenced ``/folder`` and ``/tags`` writes is NOT matched here.
+    """
+    if path in ("/api/chat/folders", "/api/chat/folders/"):
+        return _MEMBER_CHAT_FOLDERS_METHODS
+    if path in ("/api/chat/tags", "/api/chat/tags/"):
+        return _MEMBER_CHAT_TAGS_METHODS
+    if path in ("/api/chat/slots", "/api/chat/slots/"):
+        return _MEMBER_CHAT_SLOTS_METHODS
+    if path == "/api/chat/folders/reorder":
+        # The sibling-position half of a folder MOVE. Admitted so a member's
+        # combined reparent (PATCH /folders/{id}) + reorder does not commit only
+        # the reparent and leave positioning half-applied. The reorder handler
+        # fences every row to the caller's own folder (``folder_principal`` +
+        # ``_subtree_holds_foreign_folder``), so a member can renumber only its
+        # own folders.
+        return _MEMBER_CHAT_FOLDER_REORDER_METHODS
+    id_part = _single_id_segment(path, "/api/chat/folders/")
+    if id_part is not None and id_part != "reorder":
+        return _MEMBER_CHAT_FOLDER_ID_METHODS
+    slot = _single_id_segment(path, "/api/chat/slots/", suffix="/folder")
+    if slot is not None:
+        return _MEMBER_CHAT_SLOT_FOLDER_METHODS
+    slot = _single_id_segment(path, "/api/chat/slots/", suffix="/tags")
+    if slot is not None:
+        return _MEMBER_CHAT_SLOT_TAGS_METHODS
+    return None
+
+
+def _single_id_segment(path: str, prefix: str, *, suffix: str = "") -> str | None:
+    """The single path segment between *prefix* and *suffix*, or ``None``.
+
+    Returns the segment only when *path* is exactly ``prefix<seg>suffix`` with a
+    non-empty ``seg`` that itself contains no ``/`` -- so a deeper path (a
+    sub-resource of ``{id}``/``{slot}``) does NOT match the one-segment route.
+    """
+    if not path.startswith(prefix):
+        return None
+    rest = path[len(prefix) :]
+    if suffix:
+        if not rest.endswith(suffix):
+            return None
+        rest = rest[: -len(suffix)]
+    if not rest or "/" in rest:
+        return None
+    return rest
+
+
+async def _member_admitted_to_chat_folder_tag_route(request: web.Request, scope: str) -> bool:
+    """Whether this verified-scope caller is a member reaching an admitted route.
+
+    ``scope`` is the store :func:`internal_memory_scope` already resolved and
+    VERIFIED for this request. Admission is the SHARED member predicate
+    (``session_control.member_admitted_to_scoped_surface``) the session-control
+    gate uses, restricted to the exact ``(method, path shape)`` pairs
+    :func:`_admitted_chat_route_methods` recognises. The config reads inside the
+    predicate are blocking, so the whole test runs off the loop in one hop and
+    fails closed.
+    """
+    allowed = _admitted_chat_route_methods(request.path)
+    if allowed is None or request.method not in allowed:
+        return False
+    from kiro_crew.dashboard import session_control as sc
+
+    session_key = request.headers.get("X-Session-Key", "").strip()
+
+    def _admit() -> bool:
+        return sc.member_admitted_to_scoped_surface(session_key, scope)
+
+    if not await asyncio.to_thread(_admit):
+        return False
+    # Carry the VERIFIED member principal onto the request so the handler's
+    # ownership fence (``chat_folders.folder_principal`` / ``member_owns_slot``)
+    # reads it WITHOUT a second, loop-blocking config read after the body-parse
+    # await -- the same "decide once on the verified scope, carry it" discipline
+    # the session-control gate applies with ``precomputed_ownership_fenced``.
+    try:
+        request[MEMBER_CHAT_PRINCIPAL_KEY] = f"member:{scope}" if scope else ""
+    except TypeError:  # a request double without item assignment
+        pass
+    return True
 
 
 async def member_scope_denied_refusal(operation: str) -> web.Response:

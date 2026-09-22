@@ -36,6 +36,7 @@ from kiro_crew.dashboard.create_rate_limit import TAG_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
 from kiro_crew.dashboard.token_auth import (
+    MEMBER_CHAT_PRINCIPAL_KEY,
     app_owns_transcript,
     effective_request_app,
     refuse_unattributable_caller,
@@ -395,17 +396,21 @@ async def api_chat_tags(request: web.Request) -> web.Response:
 def _refuse_vocabulary_write(
     state: DashboardState, request: web.Request, operation: str
 ) -> web.Response | None:
-    """The two refusals every write to the SHARED tag vocabulary applies first.
+    """The refusals every write to the SHARED tag vocabulary applies first.
 
-    Tags are one vocabulary with no owner: a folder an app creates is the app's
-    own (``chat_folders._folder_owner_app``), but a tag an app coins or renames
-    lands in the person's list with nothing to tell it apart. So an app-scoped
-    caller may not write the vocabulary. Decided HERE, on the middleware's
-    validated claim, so the rule holds for every transport — the
-    ``chat_tag_create`` / ``chat_tag_update`` MCP tools included — rather than
-    only where a tool layer chooses to restate it. The unattributable-caller
-    refusal (:func:`token_auth.refuse_unattributable_caller`) runs first, for the
-    reason its docstring gives.
+    Tags are one vocabulary with no owner: a folder an app or member creates is
+    that principal's own (``chat_folders._folder_owner_app``), but a tag it coins
+    or renames lands in the person's list with nothing to tell it apart. So NO
+    non-person principal may write the vocabulary -- neither an app nor an
+    admitted crew member. A member still READS the vocabulary (``GET
+    /api/chat/tags``) and ASSIGNS existing tags to its own or created sessions
+    (``PUT /api/chat/slots/{slot}/tags``); it just cannot coin, rename or delete
+    the shared labels. Decided HERE, on the middleware's validated claim (app)
+    and the gate's stamped principal (member), so the rule holds for every
+    transport -- the ``chat_tag_create`` / ``chat_tag_update`` MCP tools included
+    -- rather than only where a tool layer chooses to restate it. The
+    unattributable-caller refusal (:func:`token_auth.refuse_unattributable_caller`)
+    runs first, for the reason its docstring gives.
 
     Returns the refusal response, or ``None`` when the write may proceed.
     """
@@ -423,6 +428,21 @@ def _refuse_vocabulary_write(
         )
         return web.json_response(
             {"error": "apps cannot write shared tags", "code": "app_forbidden"}, status=403
+        )
+    # A crew member carries no app claim, so the app guard above is a no-op for
+    # it. The gate stamped its verified principal; refuse a vocabulary write the
+    # same way, since the shared-list argument is identical for a member.
+    member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    if member_principal.startswith("member:"):
+        sel().log_api_access(
+            caller=member_principal,
+            operation=operation,
+            outcome="denied",
+            source="member_isolation",
+            error="members cannot write shared tags",
+        )
+        return web.json_response(
+            {"error": "agents cannot write shared tags", "code": "app_forbidden"}, status=403
         )
     return None
 
@@ -945,6 +965,16 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     # rule when absent — never from the body. A caller whose tab closed mid-call
     # is refused first: its derived app would be "" and read as the person.
     refused = refuse_unattributable_caller(state, request, "chat.slot_tags")
+    if refused is not None:
+        return refused
+    # Member ownership, beside the app fence and for the same reason it lives in
+    # ``chat_folders.api_chat_slot_folder``: a member carries no app claim, so
+    # the app guard below is a no-op for it and would let it tag ANY session.
+    # Lazy import avoids a module-load cycle (session_control imports
+    # chat_folders). A non-member caller makes this a no-op.
+    from kiro_crew.dashboard.chat_folders import member_slot_write_refused
+
+    refused = member_slot_write_refused(state, request, slot, "chat.slot_tags")
     if refused is not None:
         return refused
     request_app = effective_request_app(state, request)

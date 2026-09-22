@@ -174,7 +174,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "folder never moves anything — file sessions into it with "
                 "chat_folder_move_session. An app agent may create at the top level "
                 "or inside a folder it created itself, and the new folder belongs to "
-                "it; creating inside one of the person's folders is refused."
+                "it; creating inside one of the person's folders is refused. A crew "
+                "member follows the same rule: it owns the folders it creates and "
+                "may nest only under its own."
             ),
             "inputSchema": {
                 "type": "object",
@@ -212,7 +214,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "the anchor. An app agent may move only a folder it created itself, "
                 "and only to the top level or under another of its own; positioning "
                 "is refused outright when it would renumber siblings the app does "
-                "not own."
+                "not own. A crew member is bound by the same own-folders-only rule."
             ),
             "inputSchema": {
                 "type": "object",
@@ -250,7 +252,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "folder id or human path — the folder must already exist "
                 "(chat_folder_create makes one). Metadata only: the session keeps its "
                 "transcript, model, and any running turn. ARCHIVED (history) sessions "
-                "cannot be moved — revive one into the sidebar first, then call this."
+                "cannot be moved — revive one into the sidebar first, then call this. "
+                "An app agent may file only its own sessions; a crew member may file "
+                "only a session it owns or created."
             ),
             "inputSchema": {
                 "type": "object",
@@ -318,7 +322,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "``status`` marks it a status tag (one a Trello-style column can "
                 "filter on). Create only — rename, recolor or reflag with chat_tag_update; "
                 "this server can never delete a tag, so nothing here can lose a label "
-                "the person put on a session."
+                "the person put on a session. An app agent and a crew member cannot "
+                "write the shared vocabulary at all (a coined tag has no owner in the "
+                "person's list); they read it with chat_tag_list and assign existing "
+                "tags with chat_tag_assign."
             ),
             "inputSchema": {
                 "type": "object",
@@ -346,7 +353,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "and columns filtering on it keep filtering on it — a rename changes "
                 "the label people see, nothing else. This server can create and "
                 "update tags but never delete one, so nothing here can lose a label "
-                "the person put on a session."
+                "the person put on a session. An app agent and a crew member cannot "
+                "write the shared vocabulary; they assign existing tags with "
+                "chat_tag_assign instead."
             ),
             "inputSchema": {
                 "type": "object",
@@ -377,7 +386,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "with the current list instead of overwriting their click; re-read and "
                 "retry. Metadata only: the transcript, model and any running turn are "
                 "untouched. ARCHIVED (history) sessions cannot be tagged — revive one "
-                "into the sidebar first."
+                "into the sidebar first. An app agent may tag only its own sessions; "
+                "a crew member may tag only a session it owns or created."
             ),
             "inputSchema": {
                 "type": "object",

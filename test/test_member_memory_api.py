@@ -1223,7 +1223,10 @@ def test_history_tools_preserve_retention_without_member_confidentiality(
     [
         ("/api/chat", "POST"),
         ("/api/chat/slots", "POST"),
-        ("/api/chat/slots", "GET"),
+        # GET /api/chat/slots is NOT here: a crew member is admitted to the
+        # read-only session LIST (its folder tools resolve their own slot with
+        # it), and api_chat_slots filters the response to the member's own +
+        # created sessions. The create/relabel routes below stay refused.
         ("/api/chat/slots/alice/agent", "POST"),
         ("/api/chat/slots/alice/resume", "POST"),
     ],

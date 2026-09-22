@@ -21,8 +21,10 @@ from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     KNOWN_INTERNAL_CALLERS,
+    MEMBER_CHAT_PRINCIPAL_KEY,
     app_owns_transcript,
     effective_request_app,
+    folder_principal,
     refuse_unattributable_caller,
     request_origin,
 )
@@ -445,7 +447,15 @@ def _audit_origin(request: web.Request) -> tuple[str, str]:
 
 
 async def api_chat_folders(request: web.Request) -> web.Response:
-    """GET /api/chat/folders — list all project folders (with archived-session counts)."""
+    """GET /api/chat/folders — list project folders (with archived-session counts).
+
+    Person and app callers see the WHOLE tree, exactly as before (an app files
+    its own sessions into the person's folders, so it needs to see them). A crew
+    MEMBER caller sees only the folders it OWNS -- the chat gate stamped its
+    verified principal, and the tree it can reshape is the tree it should read,
+    so its view matches its write authority instead of exposing the person's
+    organisation.
+    """
     state: DashboardState = request.app["state"]
     # _folders_with_history_counts walks the on-disk session list (a synchronous
     # filesystem scan) that is user-triggered (every GET) and scales with the
@@ -455,6 +465,9 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     # stay responsive and could otherwise be starved by frequent polling.
     loop = asyncio.get_running_loop()
     folders = await loop.run_in_executor(subprocess_executor(), _folders_with_history_counts, state)
+    member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    if member_principal.startswith("member:"):
+        folders = [f for f in folders if _folder_owner_app(f) == member_principal]
     return web.json_response(folders)
 
 
@@ -540,19 +553,67 @@ def _refuse_unattributable_caller(
     return refuse_unattributable_caller(state, request, "chat.folder_write")
 
 
-def _folder_owner_app(folder: dict[str, Any]) -> str:
-    """The app that owns *folder*, or ``""`` when the person owns it.
+def member_slot_write_refused(
+    state: DashboardState, request: web.Request, slot: Any, operation: str
+) -> web.Response | None:
+    """403/404 when a crew-MEMBER caller may not file/tag *slot*, else ``None``.
 
-    The single place the storage rule is expressed: a folder created by an app
-    carries that app in ``owner_app``, and **an absent or empty key reads as the
-    person's**. That default is what makes this a field addition rather than a
-    migration — every folder written before the field existed is the person's,
-    which is exactly what it was.
+    The member analogue of the ``_app`` / ``app_owns_transcript`` fence the two
+    slot-write handlers (``api_chat_slot_folder`` and
+    ``chat_tags.api_chat_slot_tags``) apply to APP callers, and it MUST run
+    beside that app fence: a member carries NO app claim, so
+    ``effective_request_app`` returns ``""`` for it and the app fence's
+    ``if request_app`` guard is falsy -- without this a member would reach the
+    handler (the gate admits it) and file or tag ANY session. Shared by both
+    handlers so filing and tagging cannot drift on which sessions a member owns.
+
+    A member is recognised by the principal the chat gate stamped on the
+    VERIFIED scope (``token_auth.MEMBER_CHAT_PRINCIPAL_KEY``); a non-member
+    caller (person, app) makes this a no-op and the app fence beside it decides.
+    An admitted member may write ONLY a slot it owns for filing:
+    :func:`session_control.member_owns_slot` -- its own session or one it
+    created. Anything else is the same indistinguishable 404 the app fence
+    returns, so the route is not an existence oracle for sessions the member
+    cannot see.
+    """
+    principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    if not principal.startswith("member:"):
+        return None
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    from kiro_crew.dashboard import session_control as sc
+
+    if sc.member_owns_slot(state, slot, caller_key):
+        return None
+    sel().log_api_access(
+        caller=principal,
+        operation=operation,
+        outcome="denied",
+        source="member_isolation",
+        resources=f"slot={getattr(slot, 'key', '')}",
+        error="member can only file or tag its own or created sessions",
+    )
+    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+
+def _folder_owner_app(folder: dict[str, Any]) -> str:
+    """The principal that owns *folder*, or ``""`` when the person owns it.
+
+    The single place the storage rule is expressed. A folder created by a
+    non-person principal carries that principal in ``owner_app``:
+
+    * an APP -> its bare app name (unchanged; every folder written before crew
+      members reached this surface keeps its meaning, so this stayed a field
+      addition rather than a migration); and
+    * an admitted crew MEMBER -> ``"member:<store>"`` (see
+      ``token_auth.folder_principal``). App names are validated identifiers that
+      never begin ``member:``, so the two principal spaces cannot collide.
+
+    An absent or empty key reads as the person's, exactly as before.
 
     Ownership decides only the tree-shaping verbs (create-into, rename,
-    reparent, delete). Reads stay whole: an app sees the person's folders and
-    can file its OWN sessions into one (``api_chat_slot_folder``), which is the
-    case a per-app namespace would have cost.
+    reparent, delete). Reads stay whole for apps (an app sees the person's
+    folders); a member's reads are scoped to its own folders and sessions (see
+    ``api_chat_folders``).
     """
     return str(folder.get("owner_app") or "")
 
@@ -903,10 +964,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             )
         folder_tags = clean_tags
     # Never from the body: a caller that could name its own owner could name
-    # someone else's. Written only when an app is calling, so the person's rows
-    # keep the shape they have on disk today and "absent means the person"
-    # stays the one representation (see _folder_owner_app).
-    request_app = _effective_request_app(state, request)
+    # someone else's. Written only when a NON-PERSON principal is calling (an
+    # app -> its bare name; an admitted crew member -> ``member:<store>``), so
+    # the person's rows keep the shape they have on disk today and "absent means
+    # the person" stays the one representation (see _folder_owner_app).
+    request_app = folder_principal(state, request)
     parent_id = str(body.get("parent_id") or "")
     try:
         folder = await create_folder_record(
@@ -965,7 +1027,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     folder = next((f for f in state._folders if f["id"] == fid), None)
     if not folder:
         return web.json_response({"error": "not found"}, status=404)
-    request_app = _effective_request_app(state, request)
+    request_app = folder_principal(state, request)
     try:
         body = await request.json()
     except Exception:
@@ -1309,7 +1371,7 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
-    request_app = _effective_request_app(state, request)
+    request_app = folder_principal(state, request)
     body, body_err = await read_bounded_json(request, max_bytes=_MAX_REORDER_BODY_BYTES)
     if body_err is not None:
         return body_err
@@ -1713,6 +1775,12 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # A caller whose tab closed mid-call is refused first: its derived app
     # would be "" and read as the person (the same guard the tree writes apply).
     if (refusal := refuse_unattributable_caller(state, request, "chat.slot_folder")) is not None:
+        return refusal
+    # Member ownership, beside the app fence and for the same reason: a member
+    # carries no app claim, so the app guard below is a no-op for it and would
+    # let it file ANY session. This refuses a member filing a session that is
+    # not its own or created; a non-member caller makes it a no-op.
+    if (refusal := member_slot_write_refused(state, request, slot, "chat.slot_folder")) is not None:
         return refusal
     request_app = _effective_request_app(state, request)
     if request_app and getattr(slot, "_app", "") != request_app:
