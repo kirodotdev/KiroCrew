@@ -104,9 +104,17 @@ for `bypassPermissions` and for `acceptEdits` on the operations it covers.
 rules do not have to come from the operator. The SDK reads `.claude/settings.json`
 from the **project directory** — the `project` setting source is enabled for default
 options — so a cloned repository can carry allow rules its author wrote. Crew's public
-core passes nothing that would change this: no permission mode
-(`AcpClient._permission_mode` is stored and never read), no `settingSources`
-restriction, no `PreToolUse` hook, and no settings seed.
+core passes no `settingSources` restriction and no `PreToolUse` hook, so it closes
+none of it.
+
+A session can now OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
+resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
+`permissions.defaultMode`, which puts Claude's own classifier in charge of approving
+tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call` and
+writes no SEL record, exactly as a project allow rule does. Only the literal value
+`auto` resolves, a backend that seeds no settings file resolves to nothing, and with
+no opt-in no `defaultMode` is written at all. The audit half of that trade is tracked
+in #12744.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any

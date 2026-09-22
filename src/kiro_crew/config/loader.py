@@ -43,6 +43,7 @@ from kiro_crew import (
     platform_compat,
     windows_acl,
 )
+from kiro_crew.agent_sdk.backends import resolve_cc_permission_mode
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 
@@ -5507,6 +5508,11 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            # Per-session opt-in for the claude backend's own permission
+            # classifier. NAMED rather than left to ``**_kwargs`` on purpose: a
+            # caller passing it into the catch-all would be swallowed here and
+            # the session would spawn on the backend's default with no error.
+            permission_mode: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -5629,6 +5635,7 @@ class KiroCrewConfig:
                 tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
+                permission_mode=resolve_cc_permission_mode(permission_mode, _backend),
             )
 
         return _acp

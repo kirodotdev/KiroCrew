@@ -180,6 +180,7 @@ seam). Both already existed; neither gained a member here.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, FrozenSet, Mapping, Set
@@ -1513,6 +1514,53 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
 # one pinned environment variable, and its model travels as a config option, so a
 # warm-pool claim that switches model leaves nothing anywhere to re-seed.
 ACP_BACKENDS_SEED_LOCAL_SETTINGS = frozenset({ACP_BACKEND_CLAUDE})
+
+#: Operator lever for the permission mode a seeded session runs under, read by
+#: :func:`resolve_cc_permission_mode`. One name and one resolver, so a per-session
+#: lever and an operator-wide one cannot disagree about the same session.
+CC_PERMISSION_MODE_ENV = "KIROCREW_CC_PERMISSION_MODE"
+
+
+def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None:
+    """The ``permissions.defaultMode`` a session seeds, or ``None`` to seed nothing.
+
+    Two opt-ins, one answer: the caller's own per-session request (the dashboard
+    slot's Auto intent) first, then :data:`CC_PERMISSION_MODE_ENV` for an operator
+    who wants every session on the backend's classifier. ``None`` leaves the
+    seeded ``settings.local.json`` without a ``defaultMode`` key at all, which is
+    the backend's own per-tool default -- so with nothing asking, nothing widens.
+
+    Fail-closed in both axes. A backend that seeds no per-session settings file
+    gets ``None``, asked of :data:`ACP_BACKENDS_SEED_LOCAL_SETTINGS` rather than of
+    the backend id, so a future seeding adapter joins the set instead of editing
+    this. And ``auto`` EXACTLY is the only value that resolves: a typo, a stray
+    space, a stale value or an inherited ``bypassPermissions`` resolves to ``None``
+    rather than to a wider surface than the one it names.
+
+    An unrecognised value is not silently dropped, because that is the failure this
+    whole path was reported for: a lever an operator believes is set, doing nothing,
+    with every other signal reading healthy. It warns and names what it read.
+    """
+    # Function-scope import, not module-scope: this module is on the load path of
+    # ``KiroCrewConfig.load()`` and stays free of ``kiro_crew.acp`` there (see the
+    # import-light note in ``kiro_crew.acp_backends``; ``test_acp_capability_sets_leaf``
+    # pins it in a subprocess).
+    from kiro_crew.acp.types import CC_PERMISSION_MODE_AUTO
+
+    if backend not in ACP_BACKENDS_SEED_LOCAL_SETTINGS:
+        return None
+    requested = explicit or os.environ.get(CC_PERMISSION_MODE_ENV) or ""
+    if requested == CC_PERMISSION_MODE_AUTO:
+        return CC_PERMISSION_MODE_AUTO
+    if requested:
+        logger.warning(
+            "permission mode %r is not recognised (only %r is); this session runs on "
+            "the backend's own per-tool default",
+            requested,
+            CC_PERMISSION_MODE_AUTO,
+        )
+    return None
+
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index
 # key, NOT a provider-identity check (see agent_sdk.provider_identity, note 3): a
