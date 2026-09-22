@@ -541,10 +541,22 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
     matches = [a for a in adv if _normalize_advertised_key(a) == want]
     if not matches:
         return model_id
-    matches.sort(
-        key=lambda a: (0 if ("[1m]" in a.lower() or _has_1m_token(a.lower())) else 1, len(a))
-    )
-    return matches[0]
+    return preferred_advertised_spelling(matches)
+
+
+def preferred_advertised_spelling(matches: Sequence[str]) -> str:
+    """The one advertised spelling to send when several fold to one model.
+
+    A 1M-window variant wins over a base one, then the shortest spelling wins,
+    so a bare pin tightens onto the versioned id rather than collapsing to the
+    base window. This is the tie-break :func:`resolve_wire_model_id` has always
+    applied; it is a function so :func:`kiro_crew.acp.client.resolve_pin_spelling`
+    can apply the SAME one when its :func:`catalog_key` fold finds several
+    candidates -- two orderings would let the wire and the display pick
+    different spellings for one pin. ``""`` when *matches* is empty.
+    """
+    ordered = sorted(matches, key=lambda a: (0 if _is_1m_id(a) else 1, len(a)))
+    return ordered[0] if ordered else ""
 
 
 # ── Precomputed indices (built once; the registry is immutable after import) ──

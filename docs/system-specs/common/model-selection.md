@@ -91,11 +91,11 @@ So PRESENCE is taken from any of three sources while ABSENCE is never proof on i
 own:
 
 - the `advertised` list this session's harness sent, which is the freshest and
-  sometimes the only source. `kiro` and `kas` are NOT members of
-  `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, so nothing ever fills the `acp`
-  advertised cache; without a live list a kiro session could not tell a foreign
-  pin from a native one, and the wire sites pass theirs for exactly that reason.
-- the cross-session advertised cache for that namespace.
+  sometimes the only source; the wire sites pass theirs for exactly that reason.
+- the cross-session advertised cache for that namespace. `kiro` and `kas` are NOT
+  members of `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, so no `session/new` payload
+  fills the `acp` bucket; `GET /api/models` fills it from the `chat --list-models`
+  catalog instead, the same rows that seed the window authority.
 - the static index, but ONLY where the id round-trips through `to_provider_id` to
   itself. An entry can be an ALIAS folding onto a different model — kiro serves
   `claude-haiku-4.5` while the `claude_code` index maps that spelling to Sonnet —
@@ -139,16 +139,36 @@ pass it in, so they decide from fresher evidence than the factory can. That spli
 is deliberate: the factory gives breadth across every surface, the wire sites add
 freshness.
 
-The split has a limit, and it is asymmetric by backend. For a backend in
-`ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the cache carries a warm list, so the
-factory and the chip reach the same verdict the wire does. For `kiro` and `kas`
-the `acp` cache stays cold, so the catalogs alone cannot call any pin foreign: the
-chip and the factory keep a pin from another harness, and only the wire — holding
-the live `session/new` list — withholds it. No turn runs the wrong model, because
-every send is a wire decision. The chip can still name one until the session
-starts. Closing that needs a warm `acp` list from kiro's own ground truth, the
-`chat --list-models` cache, rather than from a `session/new` payload the registry
-attributes to `claude-agent-acp`.
+The cache is warm for every backend, but from two different sources. For a
+backend in `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the client captures the
+`session/new` list. For `kiro` and `kas` the `acp` bucket is filled by
+`GET /api/models` from the `chat --list-models` catalog — the UNFILTERED rows,
+before the deprecation and entitlement narrowing, because a deprecated or
+unentitled id is still a kiro id and dropping it would make a native pin read as
+foreign. That source is kiro's own ground truth and is deliberately NOT a
+`session/new` payload: the registry attributes that payload to `claude-agent-acp`,
+and a kiro session's list is scoped to the agent that session started. With the
+bucket warm, the chip and the provider factory reach the same foreign-pin verdict
+the wire does, instead of naming a pin the wire then withholds. The catalog is a
+vocabulary, never an entitlement: `model_scope.pin_applies` reads it only for
+presence and non-emptiness, and the two readers that fold a pin onto an advertised
+spelling (`seed_available_models`, `resolve_wire_model_id`) are gated to the
+advertised-selection backends and never see the `acp` bucket for kiro or kas.
+Entitlement stays with the live `session/new` list (`_entitled_kiro_models`,
+`model_is_unusable`). The cache is cold until the first `GET /api/models` of an
+install, and in that window the catalogs alone cannot call any pin foreign; every
+send is still a wire decision, so no turn runs the wrong model.
+
+The vocabulary side and the spelling side fold ids with ONE function. A pin can be
+native to a harness while spelled in another namespace's provider-id form:
+`global.anthropic.claude-opus-4-8[1m]` folds through `catalog_key` onto kiro's
+advertised `claude-opus-4.8`, so `namespace_vocabulary` calls it native. The wire
+then has to send the ADVERTISED spelling, and `resolve_pin_spelling` answers it:
+after the literal match and the one `<namespace>::` peel miss, it folds both sides
+with the same `catalog_key` and returns the advertised id, tie-breaking several
+candidates through `preferred_advertised_spelling` exactly as `resolve_wire_model_id`
+does. Folding the two sides with different functions is how the entitlement
+warning came to name a spelling problem.
 
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
@@ -185,6 +205,13 @@ A model the user chose reaches the adapter, which raises `AcpModelUnavailable` w
 it refuses every accepted spelling. Never silently swap a model a user picked: the
 substitution is invisible, and the user reads the cheaper model's output as the one they
 asked for.
+
+The two rules disagree in exactly one case, and the disagreement is deliberate: an
+inherited pin the account really can run on this backend, absent from its advertised
+list, and claimed by another namespace's catalog is withheld by the scope rule, while
+an explicit pick of the same id is sent — an inherited pin is a stale value, an
+explicit pick is a live intent. Nothing is written to disk, so the pin returns on
+its own once the cache refreshes with a list that carries it.
 
 ## Where each choice comes from
 

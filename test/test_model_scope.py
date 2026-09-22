@@ -144,6 +144,91 @@ class TestPinApplies:
         assert model_scope.pin_applies(CLAUDE_PIN, "") is True
 
 
+# What kiro's ``chat --list-models`` catalog names, in kiro's own spelling. This
+# is what ``GET /api/models`` feeds into the ``acp`` bucket.
+KIRO_CATALOG = ["auto", "claude-opus-4.8", "claude-sonnet-4.6", "gpt-5.6-terra"]
+# claude's list: one model kiro also serves, one it does not.
+CLAUDE_ONLY_ADVERTISES = [
+    "global.anthropic.claude-opus-4-8[1m]",
+    "global.anthropic.claude-haiku-9[1m]",
+]
+CLAUDE_ONLY_PIN = "global.anthropic.claude-haiku-9[1m]"
+
+
+@pytest.fixture
+def kiro_catalog_warm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``acp`` bucket is warm from the catalog and claude has advertised too."""
+    monkeypatch.setattr(
+        mr,
+        "_ADVERTISED_MODELS",
+        {"acp": list(KIRO_CATALOG), "claude_code": list(CLAUDE_ONLY_ADVERTISES)},
+    )
+
+
+class TestKiroCatalogAsVocabulary:
+    """The warm ``acp`` bucket lets the chip and the factory reach the wire's verdict.
+
+    A warm bucket widens what can be refused, so these measure the other
+    direction too: nothing the account is entitled to on kiro is withheld by
+    the bucket being warm.
+    """
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    def test_a_native_pin_is_kept(self, backend: str, kiro_catalog_warm: None) -> None:
+        assert model_scope.pin_applies("claude-opus-4.8", model_registry_namespace(backend)) is True
+
+    def test_a_native_pin_in_a_foreign_spelling_is_kept_and_resolves(
+        self, kiro_catalog_warm: None
+    ) -> None:
+        # claude's provider-id spelling of a model kiro serves: `catalog_key`
+        # folds it onto the catalog, so it is native, not foreign -- and the
+        # spelling fold answers the advertised id the wire should send. The two
+        # folds agree, which is what makes the cold start name the right cause.
+        from kiro_crew.acp.client import resolve_pin_spelling
+
+        pin = "global.anthropic.claude-opus-4-8[1m]"
+        assert model_scope.pin_applies(pin, "acp") is True
+        assert resolve_pin_spelling(pin, KIRO_CATALOG) == "claude-opus-4.8"
+
+    def test_a_pin_absent_from_the_catalog_and_claimed_elsewhere_is_refused(
+        self, kiro_catalog_warm: None
+    ) -> None:
+        # With a cold bucket this pin survives to the chip and the factory and
+        # only the wire withholds it; the warm bucket gives all three one verdict.
+        assert model_scope.pin_applies(CLAUDE_ONLY_PIN, "acp") is False
+        assert model_scope.pin_applies(CLAUDE_ONLY_PIN, "acp") is (
+            model_scope.pin_applies(CLAUDE_ONLY_PIN, "acp", advertised=["claude-opus-4.8"])
+        )
+
+    def test_a_pin_absent_from_the_catalog_and_claimed_by_nobody_is_kept(
+        self, kiro_catalog_warm: None
+    ) -> None:
+        # Entitled-but-unlisted and unclaimed: a regional profile or a model
+        # newer than the catalog is still the caller's to send.
+        assert model_scope.pin_applies("us.anthropic.model-from-next-year", "acp") is True
+
+    def test_a_catalog_row_the_account_cannot_run_is_still_native(
+        self, kiro_catalog_warm: None
+    ) -> None:
+        # The bucket is a vocabulary, not an entitlement: a native id missing
+        # from this session's live list applies here and takes the entitlement
+        # arm downstream, never the foreign note.
+        assert (
+            model_scope.pin_applies("gpt-5.6-terra", "acp", advertised=["claude-opus-4.8"]) is True
+        )
+
+    def test_the_bucket_is_never_read_as_a_wire_spelling_for_kiro(
+        self, kiro_catalog_warm: None
+    ) -> None:
+        # The two readers that fold a pin onto an advertised spelling are gated
+        # to ACP_BACKENDS_ADVERTISED_MODEL_SELECTION at their call sites; kiro
+        # and kas are not members, so a warm bucket cannot rewrite their wire id.
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+        assert ACP_BACKEND_KAS not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+
+
 class TestVocabularyIsNotEntitlement:
     """A native pin the account cannot run is NOT a foreign pin.
 

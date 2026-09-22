@@ -25,6 +25,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -1936,6 +1937,27 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     return []
 
 
+def _kiro_catalog_ids(rows: list) -> list[str]:
+    """Every model id the ``--list-models`` catalog names, in both spellings.
+
+    The vocabulary feed for the ``acp`` advertised-model cache. Each row names
+    its model twice, ``model_id`` and ``model_name``; the picker's wire value
+    and a stored pin use ``model_name``, the window authority indexes both, so
+    both are collected here and a lookup by either spelling hits. Malformed
+    rows are skipped, never fatal, mirroring ``refresh_kiro_windows``. Order
+    is the catalog's; the cache dedups on ingest.
+    """
+    ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("model_id", "model_name"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.append(value)
+    return ids
+
+
 def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
     """Narrow the ``--list-models`` catalog to what a live session advertises.
 
@@ -2424,6 +2446,26 @@ async def api_models(request: web.Request) -> web.Response:
         if model_registry.refresh_kiro_windows(models):
             await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), model_registry.persist_kiro_windows
+            )
+        # The same rows also warm the ``acp`` advertised-model cache, kiro's
+        # VOCABULARY: which ids are kiro's own, so model_scope can tell a pin
+        # chosen for another harness from one chosen here before any session
+        # exists (the chip and the provider factory judge from the cache; the
+        # wire holds the live list). Fed from the UNFILTERED catalog on
+        # purpose: a deprecated or unentitled row is still a kiro id, and
+        # dropping it here would make model_scope call a native pin foreign.
+        # Entitlement stays with the live ``session/new`` list downstream
+        # (_entitled_kiro_models, model_is_unusable) -- ``--list-models`` is a
+        # catalog and no reader of this cache treats it as more. Sourced here
+        # rather than from any ``session/new`` payload because the registry
+        # attributes that payload to claude-agent-acp and a kiro session's
+        # list is scoped to the agent that session started. Same shape as the
+        # window seed above: in-memory update on the loop, disk persist off it.
+        if model_registry.refresh_advertised_models(
+            model_registry_namespace(ACP_BACKEND_KIRO), _kiro_catalog_ids(models)
+        ):
+            await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), model_registry.persist_advertised_models
             )
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
         models = _entitled_kiro_models(request, models)
