@@ -786,19 +786,22 @@ def test_the_free_text_provenance_fields_are_redacted():
 
 
 @pytest.mark.asyncio
-async def test_a_bundle_the_importer_would_reject_is_not_handed_over(monkeypatch):
-    """A producer must not emit a document its own reader refuses.
+async def test_an_oversized_session_exports_rather_than_being_refused(monkeypatch):
+    """Export is never blocked by size — no producer-side reject preflight.
 
-    Past the importer's bounds the file would download cleanly, cost the user a
-    download, and then be rejected wherever they took it. The bounds are consulted
-    through the validator itself rather than restated, so the two cannot drift.
+    A bundle far past every OLD importer bound (5,000 messages / 20 MB content)
+    exports successfully: the file is handed over, gzipped, with all its messages,
+    because a transfer must never be blocked by size (the owner's decision). The
+    old ``export_bundle_rejected`` refusal is gone.
     """
+    import gzip
+
     oversized = {
         "bundle_version": 2,
         "origin": "mac",
         "title": "huge",
         "agent": "",
-        "messages": [{"role": "user", "content": "x", "ts": ""} for _ in range(5001)],
+        "messages": [{"role": "user", "content": "x" * 4000, "ts": ""} for _ in range(6000)],
     }
 
     async def _huge(*_a, **_k):
@@ -809,27 +812,10 @@ async def test_a_bundle_the_importer_would_reject_is_not_handed_over(monkeypatch
 
     resp = await se.api_chat_slot_export(_request(state))
 
-    assert resp.status == 400
-    body = json.loads(resp.body)
-    assert body["code"] == "export_bundle_rejected"
-    # Which bound was hit is carried in prose and in the audit record, not as a
-    # separate machine-readable field: nothing reads one off the wire.
-    assert "too many messages" in body["error"]
-    assert "importer_code" not in body
-
-
-def test_the_rejection_reason_comes_from_the_importer_itself():
-    from kiro_crew.dashboard.session_transfer import bundle_rejection_reason
-
-    ok = {
-        "bundle_version": 2,
-        "messages": [{"role": "user", "content": "hi", "ts": ""}],
-    }
-    assert bundle_rejection_reason(ok) == ("", "")
-
-    reason, code = bundle_rejection_reason({"bundle_version": 2, "messages": []})
-    assert code == "transfer_bundle_empty"
-    assert reason
+    assert resp.status == 200
+    assert resp.content_type == "application/gzip"
+    round_tripped = json.loads(gzip.decompress(resp.body))
+    assert len(round_tripped["messages"]) == 6000
 
 
 @pytest.mark.asyncio

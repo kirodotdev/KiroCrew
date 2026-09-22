@@ -1499,9 +1499,16 @@ re-reads, so:
 - reaching `/api/chat/slots/import` requires a valid dashboard credential, which
   in practice means a token this hub minted on that host — a peer cannot push a
   session into an instance it has no credential for;
-- bundles are size-bounded before anything is written (5,000 messages, 1 MB per
-  message, 20 MB of content total) and every message's role is checked against
-  `user`/`assistant`;
+- the body is **streamed to disk** on arrival and never held in memory
+  (`_read_bundle_body`), so a session of any size is copied rather than refused —
+  the owner's decision that a transfer is never blocked by size. Validation is
+  STRUCTURAL only (version, that `messages` is a non-empty array of
+  `{role, content}` objects, field types); there is no message-count, per-message
+  or total-content ceiling. The one optional size wall is an operator opt-in,
+  `session_transfer.max_import_bytes` (default `0` = unlimited): when set, a body
+  whose decompressed size exceeds it is refused with `413`. Memory safety comes
+  from the disk write plus the arrival permit, not from that ceiling;
+- every message's role is checked against `user`/`assistant`;
 - assistant content is credential- and exfiltration-redacted on the way in,
   matching the fork path. User turns are left verbatim: redacting what the human
   typed would corrupt their own words;
@@ -1527,42 +1534,42 @@ is unchanged on purpose: the sender is an independently-updated install, so a
 receiver that started demanding compression would refuse every peer that has not
 shipped this yet.
 
-A compressed upload is an amplifier, so the expansion is bounded **while it is
-being produced** rather than measured afterwards — `_gunzip_bounded` decompresses
-in chunks and refuses at `_MAX_DECOMPRESSED_BYTES`, holding at most one chunk
-past the cap.
+**The body streams to disk; it is never held in memory.** The raw body is
+written to a temp file under the crew home a chunk at a time
+(`_stream_request_to_file`), a gzip body is stream-decompressed to a second temp
+file (`_gunzip_file`), and only the parse loads the document. Reading
+`request.content` rather than `request.read()` is deliberate: `request.read()` /
+`.post()` / `.json()` buffer the whole body and are the calls aiohttp enforces
+`client_max_size` in, so reading the raw stream bypasses that limit — exactly as
+the streaming multipart upload in `handlers/files.py` streams past the same limit
+under its own bound. A session of any size therefore arrives rather than being
+refused, and memory is bounded by the disk write, not by the body's size.
 
-What makes that ceiling safe is the comparison to the gateway's own body limit,
-not the arithmetic behind it. `client_max_size` is 60 MiB and applies to every
-body, compressed or not, so the PLAIN path can never deliver more than that much
-JSON; the ceiling sits above it, which means the gzip path accepts strictly more
-than the plain path can and a body it refuses is one the plain path refuses too.
-The magnitude is taken from §14.5's own ceilings
-(`_MAX_TOTAL_CHARS + _MAX_LAYER_B_CHARS` plus a structural allowance) so the
-number moves with them, but it is deliberately NOT the worst-case ENCODED width:
-those ceilings count CHARACTERS and `ensure_ascii` renders one non-ASCII
-character as six bytes, so sizing for that case would admit a ~360 MB allocation
-on an authenticated write route to accommodate a bundle `client_max_size` already
-refuses.
+**The only size wall is an operator opt-in, off by default.** `_max_import_bytes`
+reads `session_transfer.max_import_bytes` (default `0` = unlimited); when it is a
+positive byte count, a body whose DECOMPRESSED size exceeds it is refused with
+`413` naming the ceiling. Gzip-bomb safety does not depend on it: the
+stream-to-disk bounds memory regardless (decompression stops one chunk past the
+ceiling when one is set, and writes chunk-by-chunk when it is not), and an
+operator who wants a hard cap on a shared host sets the knob. There is no
+`client_max_size`-comparison invariant any more, because the body is no longer
+read through `client_max_size` at all.
 
-The per-body ceiling bounds ONE request; the sum across concurrent requests is
-what reaches a host, so expansion is also ADMITTED rather than merely started.
-`_expansion_admission` caps how many bodies expand at once and keeps a short
-queue in front; anything past the queue answers `429 transfer_expansion_busy`
+The per-body streaming bounds the ARRIVAL; the sum across concurrent arrivals is
+what reaches a host, so an arrival is also ADMITTED rather than merely started.
+`_expansion_admission` caps how many bundles are resident at once and keeps a
+short queue in front; anything past the queue answers `429 transfer_expansion_busy`
 immediately rather than parking, because a queue that grows without limit is the
 same failure with a delay in front of it.
 
-A permit is held for the whole ARRIVAL, not for the decompression: it is entered
-on an `AsyncExitStack` the handler owns, which is why the arrival is a separate
-function from the route. What has to be bounded is how many decompressed bundles
-are RESIDENT at once, and a bundle is resident — first as bytes, then as the
-parsed document — through validation, redaction and persistence. A permit ending
-at the gunzip would bound the CPU of expansion while leaving that count
-unbounded, which is the sum the admission exists to bound; the cost is
-throughput, since concurrent importers now reach the queue sooner. The plain-JSON
-path takes no permit: it is bounded by the Application's own `client_max_size`
-(60 MiB) and is not amplified, so a peer posting uncompressed cannot be refused
-with `429` by a busy host.
+The permit is held for the whole ARRIVAL, not for the body read: it is entered on
+an `AsyncExitStack` the handler owns, which is why the arrival is a separate
+function from the route. What has to be bounded is how many parsed bundles are
+resident at once — a bundle is resident through validation, redaction and
+persistence — and BOTH body shapes are admitted now, because both stream past
+`client_max_size` and neither is bounded by it any more. The temp files, by
+contrast, are removed as soon as the document is parsed: it is the parsed bundle
+that must be bounded, not the bytes on disk.
 
 A corrupt or truncated stream answers `transfer_invalid_gzip`, distinct from
 `transfer_invalid_json`, because "your file did not survive the trip" and "your
@@ -1833,12 +1840,11 @@ CHANNEL-LINKED slot named by an app token — all three answer the same code,
 because a distinguishable 403 would let an app enumerate slots, or learn which of
 its own slots carry a channel link, across the isolation boundary (CWE-204);
 `400` an incognito or
-temporary session (`export_slot_not_persistent`), one with no visible messages
-(`export_bundle_empty`), or one whose bundle the importer itself would refuse
-(`export_bundle_rejected`, carrying the importer's own code); `503` no consistent
+temporary session (`export_slot_not_persistent`) or one with no visible messages
+(`export_bundle_empty`); `503` no consistent
 view of the transcript could be taken (`export_snapshot_unstable`, retryable);
 `500` any other assembly failure (`export_failed`). SEL-audited as
-`chat.slot_export`.
+`chat.slot_export`. There is no size refusal: a session of any size exports.
 
 **Owning the slot is not owning the transcript.** A channel-linked slot displays a
 conversation that lives on the channel's own session, and `get_or_create_slot`
@@ -1849,14 +1855,13 @@ slot rather than the handler reasoning about the binding — fail closed, becaus
 the cost of being wrong is a foreign conversation leaving the app sandbox. The
 dashboard owner is unaffected, being entitled to both.
 
-**A producer never emits a document its own reader would refuse.** Before
-compressing, the handler runs the bundle through `_validate_bundle` — the
-importer's own validator — and refuses the export if it would be rejected. The
-bounds (5,000 messages, 1 MB per message, 20 MB of content) are therefore
-consulted rather than restated, so the producer and the reader cannot drift apart.
-Only the VERDICT is used: the validated payload is discarded, because validation
-rebuilds a normalised allowlist that would strip the optional keys the export adds
-on purpose.
+**Export is never blocked by size.** There is no producer-side reject preflight:
+a session of any size exports, carrying the FULL conversation and (when the
+operator opted in) the FULL Layer B. The old "refuse a bundle the importer would
+reject" gate is gone, because the importer no longer refuses on size either — the
+two halves agree by both dropping the ceiling, not by consulting one shared bound.
+The only structural refusals left are an empty transcript (`export_bundle_empty`)
+and the non-persistent/ownership guards above.
 
 Three properties worth stating because they are easy to lose:
 

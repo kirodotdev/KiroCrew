@@ -79,7 +79,6 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
-    bundle_rejection_reason,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
@@ -161,8 +160,8 @@ def content_disposition(filename: str) -> str:
 def gzip_bundle(bundle: dict[str, Any]) -> bytes:
     """Serialise *bundle* as gzipped JSON. **Blocking CPU, thread-safe.**
 
-    Offloaded by the caller: a bundle runs to ``session_transfer``'s 20M-char
-    content cap, and both the JSON encode and the deflate over that much text are
+    Offloaded by the caller: a bundle can carry a whole long session, and both the
+    JSON encode and the deflate over that much text are
     far too much CPU to hold the event loop with — the same starvation that stops
     the liveness heartbeat and lets the watchdog exit the gateway.
 
@@ -381,30 +380,6 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         _audit("denied", error="no visible messages")
         return web.json_response(
             {"error": "this session has no messages to export", "code": "export_bundle_empty"},
-            status=400,
-        )
-
-    # A file must not be handed over unless this instance's OWN importer would
-    # accept it. The bounds are the importer's (5 000 messages, 1 MB per message,
-    # 20 MB of content total) and they are consulted through the validator itself
-    # rather than restated here, so the two cannot drift apart.
-    #
-    # Without this, a session past those bounds exports 200 and is then refused
-    # wherever it is taken: a file that looked complete, cost a download, and can
-    # never be installed. Refusing at the producer puts the failure next to the
-    # only party who can act on it.
-    reason, importer_code = bundle_rejection_reason(bundle)
-    if reason:
-        # The importer's own code goes in the AUDIT, not the response body. Nothing
-        # reads it off the wire, and the response already says which bound was hit
-        # in prose -- a machine-readable third copy of the same fact is a field this
-        # code invents and no caller consumes.
-        _audit("denied", error=f"the importer would reject this bundle: {importer_code}")
-        return web.json_response(
-            {
-                "error": f"this session is too large to export: {reason}",
-                "code": "export_bundle_rejected",
-            },
             status=400,
         )
 

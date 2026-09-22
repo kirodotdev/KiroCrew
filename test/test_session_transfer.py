@@ -31,6 +31,20 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolate_import_tmp(tmp_path_factory, monkeypatch):
+    """Point the arrival temp dir at a per-test, auto-cleaned directory.
+
+    Arriving bodies stream to disk before they are parsed; without this they would
+    land under the real crew home. ``tmp_path_factory`` is pytest-managed, so
+    nothing leaks (conftest's tmp-residue watchdog would otherwise flag it)."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    d = tmp_path_factory.mktemp("kc-import")
+    monkeypatch.setattr(st, "_import_tmp_dir", lambda: d)
+
+
 # ── bundle construction ──────────────────────────────────────────────────
 
 
@@ -1014,27 +1028,24 @@ def test_validate_refuses_an_unknown_version_rather_than_guessing():
     assert err.status == 400
 
 
-def test_validate_caps_message_count():
-    many = [{"role": "user", "content": "x", "ts": ""} for _ in range(5_001)]
-    _, err = _validate_bundle(_valid(messages=many))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_too_many_messages"
+def test_validate_imposes_no_size_ceiling():
+    """Validation is STRUCTURAL only — no message count, per-message, or total cap.
 
-
-def test_validate_caps_single_message_length():
-    big = [{"role": "user", "content": "x" * 1_000_001, "ts": ""}]
-    _, err = _validate_bundle(_valid(messages=big))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_message_too_long"
-
-
-def test_validate_caps_total_bundle_size():
-    # 25 messages x 900k chars each trips the 20M total without tripping the
-    # per-message cap.
-    msgs = [{"role": "user", "content": "x" * 900_000, "ts": ""} for _ in range(25)]
-    _, err = _validate_bundle(_valid(messages=msgs))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_bundle_too_large"
+    A transfer is never blocked by size (the owner's decision); memory safety comes
+    from streaming the body to disk on arrival, not from refusing large sessions.
+    A bundle past each ceiling a validator could plausibly enforce (5,000 messages,
+    1 MB/message, 20 MB total) validates cleanly. Each ceiling is crossed by the
+    cheapest input that crosses it, so the fixture stays ~25 MB rather than the
+    gigabytes a naive "every message oversized" fixture would allocate.
+    """
+    filler = "x" * 4_200
+    huge = [{"role": "user", "content": filler, "ts": ""} for _ in range(6_000)]
+    huge.append({"role": "assistant", "content": "y" * 1_100_000, "ts": ""})
+    assert sum(len(m["content"]) for m in huge) > 20_000_000
+    bundle, err = _validate_bundle(_valid(messages=huge))
+    assert err is None
+    assert len(bundle["messages"]) == 6_001
+    assert len(bundle["messages"][-1]["content"]) == 1_100_000
 
 
 def test_validate_truncates_an_overlong_title_instead_of_failing():
@@ -1385,12 +1396,12 @@ async def test_import_persists_every_row_of_a_bundle_over_the_resume_window(monk
     at 0. Applying resume's cap here would silently drop everything past the last
     500 and claim a frozen prefix of rows that were never written -- a
     silent-data-loss regression on the exact "lossy copy" the transfer feature's
-    resume_mode plumbing exists to surface. Bundles carry up to _MAX_MESSAGES
-    (5000) rows in-contract, so >500 is an ordinary input, not an edge.
+    resume_mode plumbing exists to surface. Bundles carry an unbounded number of
+    rows now, so >500 is an ordinary input, not an edge.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    n = 750  # comfortably past the 500 window, well under _MAX_MESSAGES
+    n = 750  # comfortably past the 500 window; no bundle size cap applies
     big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(n)]
     slot = await _run_import(st, monkeypatch, _valid(messages=big), return_slot=True)
 
@@ -1998,30 +2009,18 @@ def test_validate_accepts_a_v2_bundle_with_layer_b():
     assert bundle["layer_b"]["events"] == '{"k":1}\n'
 
 
-#: Stands in for the over-limit Layer B, which the test body materializes from
-#: the production constant. A 40 MB string literal here would be built while the
-#: module is IMPORTED, so every xdist worker pays ~38 MiB during collection and
-#: holds it for the whole session -- the mark keeps its argvalues alive on the
-#: function object. Deriving the length from ``_MAX_LAYER_B_CHARS`` also keeps
-#: the test honest if that limit ever moves.
-_OVERSIZE_LAYER_B = "oversize-layer-b"
-
-
 @pytest.mark.parametrize(
     "layer_b,code",
     [
         ("not a dict", "transfer_layer_b_not_object"),
         ({"envelope": "nope", "events": ""}, "transfer_layer_b_bad_envelope"),
         ({"envelope": {}, "events": 5}, "transfer_layer_b_bad_events"),
-        (_OVERSIZE_LAYER_B, "transfer_layer_b_too_large"),
     ],
 )
 def test_validate_rejects_a_malformed_layer_b(layer_b, code):
-    """Layer B is untrusted peer input and is bounded BEFORE anything is written."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    if layer_b is _OVERSIZE_LAYER_B:
-        layer_b = {"envelope": {}, "events": "x" * (st._MAX_LAYER_B_CHARS + 1)}
+    """Layer B is untrusted peer input and is checked for SHAPE before anything is
+    written. It is not size-capped: the whole body was bounded by the
+    stream-to-disk (and the operator's optional ceiling) before this validator."""
     _, err = _validate_bundle(_valid(layer_b=layer_b))
 
     assert err is not None
@@ -2485,6 +2484,23 @@ def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = Non
     async def _read():
         return payload
 
+    class _FakeContent:
+        """A minimal ``StreamReader`` stand-in exposing ``iter_chunked``.
+
+        The handler streams ``request.content`` to disk rather than calling
+        ``request.read()`` (that is the whole point of the no-size-ceiling change),
+        so the stub has to serve the bytes the way the real StreamReader does. It
+        hands them out in small chunks so the chunk-sniff and the streaming loop
+        are actually exercised.
+        """
+
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        async def iter_chunked(self, n: int):
+            for i in range(0, len(self._data), n):
+                yield self._data[i : i + n]
+
     return SimpleNamespace(
         app={"state": state},
         get=lambda _k, default="": default,
@@ -2492,6 +2508,7 @@ def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = Non
         # ``X-Session-Key`` off them when the auth middleware published no app
         # claim. Empty is the dashboard owner, which is what these tests are.
         headers={},
+        content=_FakeContent(payload),
         read=_read,
     )
 
@@ -2632,50 +2649,24 @@ def _async_value(value):
 # ── Layer B resource + permission bounds ─────────────────────────────────
 
 
-def test_layer_b_cap_is_checked_before_the_file_is_read(monkeypatch, tmp_path):
-    """The cap must bound the ALLOCATION, not merely the result.
+def test_layer_b_is_read_in_full_without_a_size_cap(monkeypatch, tmp_path):
+    """Export carries the FULL Layer B — there is no size cap on the read.
 
-    A post-read ``len()`` check also returns ``None`` for an oversized log, so
-    "returns None" proves nothing on its own -- by then the multi-gigabyte blob
-    is already resident and the gateway has already OOMed. The only observable
-    difference is that the bytes are never read, which is what this pins.
+    The old degradation ("Layer B too large -> transcript-only") is gone: a large
+    context window is copied, not silently dropped, so a resumable session stays
+    resumable however big its context is.
     """
-    from pathlib import Path as _Path
-
     from kiro_crew.dashboard import session_transfer as st
 
-    sid = "oversized"
+    sid = "big"
     (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
-    (tmp_path / f"{sid}.jsonl").write_text("x" * 500, encoding="utf-8")
+    big_events = "".join('{"kind":"Prompt"}\n' for _ in range(50_000))
+    (tmp_path / f"{sid}.jsonl").write_text(big_events, encoding="utf-8")
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
 
-    reads: list[str] = []
-    real_read_text = _Path.read_text
-
-    def _spy(self, *a, **k):
-        reads.append(self.name)
-        return real_read_text(self, *a, **k)
-
-    monkeypatch.setattr(_Path, "read_text", _spy)
-
-    assert st._read_layer_b(sid) is None
-    assert f"{sid}.jsonl" not in reads, "the oversized log was read despite the cap"
-
-
-def test_layer_b_cap_also_covers_the_envelope_read(monkeypatch, tmp_path):
-    """``.json`` is read on the same path and was unbounded too."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    sid = "big-envelope"
-    (tmp_path / f"{sid}.json").write_text(
-        json.dumps({"session_id": sid, "pad": "x" * 500}), encoding="utf-8"
-    )
-    (tmp_path / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
-    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
-
-    assert st._read_layer_b(sid) is None
+    layer_b = st._read_layer_b(sid)
+    assert layer_b is not None
+    assert layer_b["events"] == big_events
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits; Windows uses ACLs")
@@ -3242,14 +3233,14 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
 
     state = _stub_state(st, monkeypatch)
 
-    async def _resolve_then_fill(*_a, **_k):
-        # A concurrent import lands while this one is awaiting.
+    def _resolve_then_fill(_hint):
+        # A concurrent import lands while this one is awaiting agent resolution
+        # (the awaited step between the two cap checks). Runs in a worker thread
+        # via the real ``asyncio.to_thread``; filling a plain dict is GIL-safe.
         state._slots.update({f"s{i}": object() for i in range(500)})
         return ""
 
-    monkeypatch.setattr(st, "asyncio", asyncio)
-    monkeypatch.setattr(st, "_resolve_agent", lambda hint: "")
-    monkeypatch.setattr(asyncio, "to_thread", _resolve_then_fill)
+    monkeypatch.setattr(st, "_resolve_agent", _resolve_then_fill)
 
     resp = await st.api_chat_slot_import(_make_request(state, _valid(agent="some-agent")))
 
@@ -3341,81 +3332,109 @@ async def test_import_still_refuses_plain_garbage_as_bad_json(monkeypatch):
     assert json.loads(resp.body)["code"] == "transfer_invalid_json"
 
 
-def test_gunzip_refuses_a_bomb_while_it_is_still_small(monkeypatch):
-    """The cap bounds the ALLOCATION, not the result.
+def test_gunzip_file_refuses_a_bomb_while_it_is_still_small(monkeypatch, tmp_path):
+    """When the operator sets a ceiling, it bounds the ALLOCATION, not the result.
 
     A ``gzip.decompress`` followed by a ``len()`` check ALSO refuses an oversized
     body — after allocating every byte of it, which on a compression bomb is the
     whole attack. So "it was refused" proves nothing on its own. What is asserted
     here is the quantity actually held when the refusal fires: at most one chunk
-    past the cap. Replace the incremental loop with decompress-then-measure and
+    past the ceiling. Replace the incremental loop with decompress-then-measure and
     this reddens, because the reported size becomes the full expansion.
     """
     import gzip
 
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
     monkeypatch.setattr(st, "_CHUNK_BYTES", 1024)
-    bomb = gzip.compress(b"\0" * (8 * 1024 * 1024))
-    assert len(bomb) < 64 * 1024, "the point of the fixture is that it is tiny"
+    src = tmp_path / "bomb.gz"
+    dst = tmp_path / "bomb.out"
+    src.write_bytes(gzip.compress(b"\0" * (8 * 1024 * 1024)))
+    assert src.stat().st_size < 64 * 1024, "the point of the fixture is that it is tiny"
 
     with pytest.raises(st._BundleTooLarge) as caught:
-        st._gunzip_bounded(bomb)
+        st._gunzip_file(src, dst, limit=4096)
 
     held = caught.value.args[0]
     assert held <= 4096 + 1024, f"held {held} bytes before refusing"
 
 
 @pytest.mark.asyncio
-async def test_import_refuses_an_oversized_compressed_body(monkeypatch):
-    """End to end: the bound is wired to a coded refusal, not only to a helper."""
+async def test_import_refuses_an_oversized_compressed_body_when_the_knob_is_set(monkeypatch):
+    """With the operator ceiling set, an oversized body is a coded ``413``."""
     import gzip
 
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
+    monkeypatch.setattr(st, "_max_import_bytes", lambda: 4096)
     resp = await _run_import(st, monkeypatch, None, gz=gzip.compress(b"\0" * (1024 * 1024)))
 
-    assert resp.status == 400
+    assert resp.status == 413
     assert json.loads(resp.body)["code"] == "transfer_bundle_too_large"
 
 
-def test_the_decompression_cap_never_makes_gzip_stricter_than_plain_json():
-    """The property that makes the cap safe, not the arithmetic behind it.
+@pytest.mark.asyncio
+async def test_import_has_no_size_ceiling_by_default(monkeypatch):
+    """The default (knob = 0) imports a bundle far past every OLD ceiling.
 
-    ``client_max_size`` (60 MiB) bounds EVERY body, compressed or not, so the
-    plain path can never deliver more than that much JSON. As long as the
-    decompressed ceiling is above it, the gzip path accepts strictly more than the
-    plain path ever could -- which is what makes "a bundle this refuses" a bundle
-    that was already unimportable by the only route that existed before.
-
-    Pinned rather than argued, because the arithmetic reads as though the cap
-    tracks the validator's CHARACTER ceilings, and a character ceiling is not a
-    byte ceiling: ``ensure_ascii`` renders one non-ASCII char as six bytes. The
-    number moving with those ceilings is a convenience; this comparison is the
-    guarantee.
+    The old importer refused past 20 MB of content / 40 MB of Layer B / a ~68 MiB
+    decompressed body. With no operator ceiling set, a bundle above all of those
+    imports successfully — the owner's decision that a transfer is never blocked by
+    size.
     """
     from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
 
-    assert st._MAX_DECOMPRESSED_BYTES > st._GATEWAY_CLIENT_MAX_SIZE
-    # And the magnitude still comes from the validator, so the two move together.
-    assert st._MAX_DECOMPRESSED_BYTES == (
-        st._MAX_TOTAL_CHARS + st._MAX_LAYER_B_CHARS + st._JSON_ENVELOPE_SLACK
+    assert st._max_import_bytes() == 0  # default: unlimited
+
+    huge = _valid(
+        messages=[{"role": "user", "content": "x" * 4_000_000, "ts": ""} for _ in range(8)]
     )
+    gz = gzip_bundle(huge)
+    resp = await _run_import(st, monkeypatch, None, gz=gz)
+
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["ok"] is True
 
 
-def test_the_stated_gateway_body_limit_matches_the_gateway():
-    """The restated constant has to be the real one, or the test above proves
-    nothing. Read out of the server module rather than trusted."""
-    from pathlib import Path
+def test_import_never_reads_the_whole_body_into_memory():
+    """Source guard: the arrival path streams and must not buffer the whole body.
 
-    import kiro_crew.dashboard.server as server_mod
-    from kiro_crew.dashboard import session_transfer as st
+    ``request.read()`` / ``.post()`` / ``.json()`` each materialise the entire body
+    in memory AND are the calls aiohttp enforces ``client_max_size`` in — using any
+    of them would both cap the size and defeat the streaming. Assert the handler and
+    its body reader never call them (comments stripped, so a comment mentioning one
+    does not mask a real call).
+    """
+    import ast
+    from pathlib import Path as _Path
 
-    source = Path(server_mod.__file__).read_text(encoding="utf-8")
-    assert "client_max_size=60 * 1024 * 1024" in source
-    assert st._GATEWAY_CLIENT_MAX_SIZE == 60 * 1024 * 1024
+    import kiro_crew.dashboard.session_transfer as st
+
+    tree = ast.parse(_Path(st.__file__).read_text(encoding="utf-8"))
+    targets = {
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"_read_bundle_body", "_stream_request_to_file", "_install_arrived_bundle"}
+    }
+    banned = {"read", "post", "json"}
+    offenders = []
+    for fn in targets:
+        for node in ast.walk(fn):
+            # request.<banned>(...) — an attribute call on a name/attr chain whose
+            # attribute is one of the buffering reads.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in banned
+                and isinstance(node.func.value, (ast.Name, ast.Attribute))
+            ):
+                base = node.func.value
+                base_name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
+                if base_name == "request":
+                    offenders.append(f"{fn.name}: request.{node.func.attr}()")
+    assert not offenders, offenders
 
 
 # ── install from a FILE: the round trip ──────────────────────────────────
@@ -3441,7 +3460,7 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
     release = asyncio.Event()
 
     async def _slow_to_thread(fn, *args):
-        if fn is st._gunzip_bounded:
+        if fn is st._gunzip_file:
             inside["now"] += 1
             inside["peak"] = max(inside["peak"], inside["now"])
             await release.wait()
@@ -3644,17 +3663,18 @@ async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_body_past_the_server_limit_is_told_it_is_too_large(tmp_path):
-    """A body the server refuses by SIZE gets the size answer, not the generic one.
+async def test_a_body_past_the_server_client_max_size_still_imports(tmp_path):
+    """A body larger than the Application's ``client_max_size`` imports successfully.
 
-    ``request.read()`` raises ``HTTPRequestEntityTooLarge`` once the body passes
-    the Application's ``client_max_size``, which is the one read failure whose
-    cause the server KNOWS. Catching it with everything else would answer
-    ``transfer_body_unreadable`` — copy that hedges between "too large" and "the
-    connection dropped" — and send a person whose file is simply too big looking
-    for a network fault. The limit is set small here so the assertion is about
-    the branch and not about moving 60 MiB.
+    The import path streams ``request.content`` to disk instead of calling
+    ``request.read()``, so aiohttp's ``client_max_size`` — which it enforces only in
+    the buffering reads — does not gate it, exactly as the streaming multipart upload
+    path bypasses the same limit. A valid bundle several times the (deliberately
+    tiny) server limit installs successfully rather than being told it is too large,
+    over BOTH transports.
     """
+    import gzip
+
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_state
 
@@ -3664,17 +3684,32 @@ async def test_a_body_past_the_server_limit_is_told_it_is_too_large(tmp_path):
     app["state"] = _make_state(tmp_path)
     app.router.add_post("/api/chat/slots/import", api_chat_slot_import)
 
+    # A valid bundle whose serialised size is far past the 1024-byte server limit.
+    # High-entropy content so the gzip form is also over the limit (a run of one
+    # character would compress to well under 1 KiB and prove nothing about gzip).
+    big = _valid(
+        origin="seedbox",
+        messages=[{"role": "user", "content": os.urandom(40_000).hex(), "ts": ""}],
+    )
+    plain = json.dumps(big).encode()
+    assert len(plain) > 1024
+
     async with TestClient(TestServer(app)) as client:
-        oversized = await client.post(
+        # Plain JSON (the tunnel's shape), past the limit.
+        r_plain = await client.post(
+            "/api/chat/slots/import", data=plain, headers={"Content-Type": "application/json"}
+        )
+        assert r_plain.status == 200, await r_plain.text()
+
+        # Gzip (the exported-file shape); the compressed form is also > 1024.
+        gz = gzip.compress(plain)
+        assert len(gz) > 1024
+        r_gz = await client.post(
             "/api/chat/slots/import",
-            data=b"x" * 4096,
+            data=gz,
             headers={"Content-Type": "application/octet-stream"},
         )
-        assert oversized.status == 400, await oversized.text()
-        payload = await oversized.json()
-
-    assert payload["code"] == "transfer_bundle_too_large", payload
-    assert "size limit" in payload["error"], payload
+        assert r_gz.status == 200, await r_gz.text()
 
 
 # ── arrival provenance filing ────────────────────────────────────────────

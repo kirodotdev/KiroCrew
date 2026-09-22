@@ -75,10 +75,13 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import platform
+import tempfile
 import uuid
 import zlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -86,7 +89,8 @@ from aiohttp import web
 from kiro_crew import __version__, platform_compat
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.config.loader import _raw_config
+from kiro_crew.config.paths import data_home, kiro_sessions_dir
 
 # Layering: chat_handlers' transitive import graph now reaches back into this
 # module (chat_handlers -> remote_adopt -> handlers_instances -> session_transfer),
@@ -140,64 +144,28 @@ BUNDLE_VERSION = 2
 #: conversation.
 _SUPPORTED_BUNDLE_VERSIONS = (1, 2)
 
-#: Per-bundle limits. A bundle arrives from another instance, so it is untrusted
-#: input even though the peer is one the owner configured: these bound the work
-#: a single request can cause before any of it is written to disk.
-_MAX_MESSAGES = 5_000
-_MAX_CONTENT_CHARS = 1_000_000
+#: Structural cap on the title. NOT a size wall: an overlong title is TRUNCATED
+#: to this many characters, never rejected, because a title is a label and losing
+#: its tail costs a reader nothing. Session transfer places no ceiling on message
+#: count or content size — the body streams to disk on arrival, so memory is
+#: bounded by the write rather than by refusing large sessions
+#: (:func:`_read_bundle_body`), and a large session is copied, not blocked.
 _MAX_TITLE_CHARS = 500
-_MAX_TOTAL_CHARS = 20_000_000
 
-#: Cap on the Layer B events blob (``<sid>.jsonl``). Larger than the transcript
-#: cap because Layer B also carries tool/system frames and the full context the
-#: model actually holds, but still bounded: an oversized blob is refused before
-#: anything is written, so a peer cannot make an import exhaust disk or memory.
-_MAX_LAYER_B_CHARS = 40_000_000
-
-#: Structural allowance over the two content ceilings: the keys, quotes, commas
-#: and ``\uXXXX`` escapes a bundle sitting at both ceilings still needs. Named
-#: rather than folded into the total so the derivation below stays readable.
-_JSON_ENVELOPE_SLACK = 8 * 1024 * 1024
-
-#: Ceiling on the DECOMPRESSED request body. A compressed upload is an amplifier
-#: — a megabyte of gzip expands to roughly a gigabyte of repeated bytes — so the
-#: expansion has to be bounded before it is materialised, not after.
+#: How many bodies may be arriving at once, and how many may be waiting to.
 #:
-#: **What makes this safe is the comparison to the gateway's own body limit, not
-#: the arithmetic below.** The Application's ``client_max_size`` is 60 MiB and
-#: applies to every body, compressed or not, so the PLAIN path can never deliver
-#: more than 60 MiB of JSON. This ceiling is above that, which means the gzip path
-#: accepts strictly MORE than the plain path can: a bundle refused here is a
-#: bundle the plain path refuses too.
-#:
-#: The magnitude is taken from the validator's own ceilings —
-#: ``_MAX_TOTAL_CHARS`` of transcript plus ``_MAX_LAYER_B_CHARS`` of Layer B
-#: events, plus envelope slack — so the number moves with them rather than being
-#: chosen freshly. It is deliberately NOT the worst-case ENCODED width: those
-#: ceilings count CHARACTERS, and ``json.dumps(ensure_ascii=True)`` renders one
-#: non-ASCII character as a six-byte ``\uXXXX`` escape, so a bundle that is valid
-#: by character count can be several times larger in bytes. Sizing for that worst
-#: case would mean admitting a ~360 MB allocation on an authenticated write route
-#: to accommodate a session of ~11M CJK characters — which ``client_max_size``
-#: refuses on the plain path anyway. The bound stays where it protects memory, and
-#: the bundle that theoretically loses out is one no route has ever accepted.
-_MAX_DECOMPRESSED_BYTES = _MAX_TOTAL_CHARS + _MAX_LAYER_B_CHARS + _JSON_ENVELOPE_SLACK
-
-#: The gateway Application's own body limit (``dashboard/server.py``), restated so
-#: the invariant above can be tested rather than asserted in prose.
-_GATEWAY_CLIENT_MAX_SIZE = 60 * 1024 * 1024
-
-#: How many bodies may be expanding at once, and how many may be waiting to.
-#:
-#: :data:`_MAX_DECOMPRESSED_BYTES` bounds ONE request; without a concurrency bound
-#: N authenticated requests each hold up to that much — first as bytes, then as
-#: the parsed document — for as long as their arrival takes, and the sum is what
-#: exhausts the host rather than any single body. So a permit covers the whole
-#: arrival, not just the expansion: see :func:`_read_bundle_body`. Two in flight
-#: bounds resident expansion to roughly twice the ceiling; a small queue absorbs
+#: There is no per-body size ceiling any more (arrival streams to disk, so a large
+#: session is copied rather than refused), so this permit is what keeps the SUM
+#: bounded: an arriving bundle is resident — first as the parsed document, then
+#: through redaction and persistence — for as long as its arrival takes, and N
+#: unbounded arrivals at once are what exhaust the host, not any single one. So a
+#: permit covers the whole arrival: see :func:`_read_bundle_body`. Two in flight
+#: bounds resident work to roughly twice one bundle; a small queue absorbs
 #: ordinary bursts (a person installing several files) while anything past it is
 #: refused immediately rather than parked, because a queue that grows without
-#: limit is the same failure with a delay in front of it.
+#: limit is the same failure with a delay in front of it. Streaming to disk bounds
+#: the ARRIVAL itself (bytes never accumulate in memory); this permit bounds how
+#: many parsed bundles are resident at once.
 _MAX_CONCURRENT_EXPANSIONS = 2
 _MAX_QUEUED_EXPANSIONS = 4
 
@@ -208,9 +176,11 @@ _expansion_lock: asyncio.Lock | None = None
 _expansion_slots: asyncio.Semaphore | None = None
 _expansion_waiting = 0
 
-#: Output granularity of the bounded gunzip. Small enough that refusing a bomb
-#: costs one chunk of memory, large enough that a real 60 MiB bundle is a few
-#: hundred iterations rather than a few hundred thousand.
+#: Read/write granularity for streaming the body to disk and for the bounded
+#: gunzip. Small enough that refusing an oversized decompression (when the
+#: operator set a ceiling) costs one chunk of memory, large enough that a real
+#: multi-megabyte bundle is a few hundred iterations rather than a few hundred
+#: thousand.
 _CHUNK_BYTES = 256 * 1024
 
 #: gzip's own framing magic (RFC 1952 §2.3.1). The body format is sniffed from
@@ -227,6 +197,49 @@ _GZIP_MAGIC = b"\x1f\x8b"
 #: these falls back to a guaranteed-consistent inline read rather than shipping a
 #: transcript that might be missing turns.
 _SNAPSHOT_ATTEMPTS = 4
+
+
+def _max_import_bytes() -> int:
+    """Operator ceiling on a DECOMPRESSED import body in bytes; ``0`` = unlimited.
+
+    Default ``0``: the owner's decision is that a transfer is never blocked by
+    size, so out of the box there is no ceiling and a session of any size imports.
+    An operator who wants a hard cap (against a gzip bomb, or to bound disk on a
+    shared host) sets ``config.json -> session_transfer.max_import_bytes`` to a
+    positive byte count; a body whose decompressed size exceeds it is refused with
+    ``413`` naming the ceiling. Read through the same ``_raw_config`` route
+    ``dashboard.max_background_turns`` and ``dashboard.export_include_layer_b`` use;
+    an unreadable, non-numeric or negative value falls back to unlimited rather
+    than failing an import.
+
+    This is the ONLY size wall left, and it is off by default. Memory safety does
+    not depend on it: the body streams to disk on arrival regardless
+    (:func:`_read_bundle_body`), so the ceiling bounds the operator's disk, not the
+    gateway's memory.
+    """
+    try:
+        raw = (_raw_config().get("session_transfer") or {}).get("max_import_bytes", 0)
+        val = int(raw)
+    except Exception:
+        logger.debug(
+            "session_transfer.max_import_bytes config unavailable; treating as unlimited",
+            exc_info=True,
+        )
+        return 0
+    return val if val > 0 else 0
+
+
+def _import_tmp_dir() -> Path:
+    """Where an arriving bundle is streamed to before it is parsed.
+
+    Under the crew data home rather than the system temp, so it inherits the home's
+    own posture and is reclaimed with it, and is created lazily on first use. A
+    function (not a module constant) so a test can point it at an isolated
+    directory, the same lever :func:`kiro_sessions_dir` offers.
+    """
+    d = data_home() / "tmp" / "session-import"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 class SnapshotUnstable(RuntimeError):
@@ -353,44 +366,18 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
     """
     if not sid:
         return None
-    if not sid:
-        return None
     try:
         d = kiro_sessions_dir()
         jf = d / f"{sid}.json"
         lf = d / f"{sid}.jsonl"
         if not jf.exists() or not lf.exists():
             return None
-        # Cap BEFORE the read, not after. ``read_text`` on a multi-gigabyte
-        # tool-output log allocates the whole blob first, so a post-read ``len``
-        # check bounds nothing -- the allocation that OOMs the gateway has
-        # already happened by the time it runs. ``st_size`` is the only bound
-        # available ahead of the allocation, and it covers the ENVELOPE too: that
-        # read is unbounded on the same path, and a session's ``.json`` grows
-        # with its own metadata.
-        #
-        # This makes the ceiling effectively a BYTE cap where the name says
-        # chars. For multibyte text that is strictly tighter -- a 40M-char CJK
-        # log is ~120MB, so it degrades to transcript-only where the char cap
-        # alone would load it -- and that is the correct direction for a limit:
-        # the ceiling has to bound what is actually allocated, and the fallback
-        # is an honest transcript-only copy rather than a crashed gateway. The
-        # char check below stays as the semantic cap.
-        for f in (jf, lf):
-            if f.stat().st_size > _MAX_LAYER_B_CHARS:
-                logger.debug(
-                    "session_transfer: Layer B file %s exceeds the %d-byte cap; "
-                    "sending transcript-only",
-                    f.name,
-                    _MAX_LAYER_B_CHARS,
-                )
-                return None
         envelope = json.loads(jf.read_text(encoding="utf-8"))
         events = lf.read_text(encoding="utf-8")
     except Exception:
         logger.debug("session_transfer: could not read Layer B for sid=%s", sid, exc_info=True)
         return None
-    if not isinstance(envelope, dict) or len(events) > _MAX_LAYER_B_CHARS:
+    if not isinstance(envelope, dict):
         return None
     if not _events_jsonl_is_loadable(events):
         # A crash-truncated source file (kiro-cli killed mid-write) would ship a
@@ -1087,9 +1074,9 @@ def _read_and_assemble(
     history.extend(tail)
     layer_b = _read_layer_b(layer_b_sid)
     if layer_b_sid and layer_b is None:
-        # A sid was MAPPED but its files would not read -- pruned, over the size
-        # cap, or unparseable JSONL. That is context this session genuinely had
-        # and is now giving up, which is the sender's other degradation case: the
+        # A sid was MAPPED but its files would not read -- pruned or unparseable
+        # JSONL. That is context this session genuinely had and is now giving up,
+        # which is the sender's other degradation case: the
         # peer must be told, or the receiving tab shows a full-looking copy with
         # no resumable context behind it. Distinct from ``layer_b_sid == ""``,
         # which means there was never a context to carry.
@@ -1180,32 +1167,6 @@ def _assemble_bundle(
     return bundle
 
 
-def bundle_rejection_reason(bundle: dict[str, Any]) -> tuple[str, str]:
-    """Why THIS instance's own importer would refuse *bundle*, or ``("", "")``.
-
-    Exists so a producer can refuse to hand over a document its own reader would
-    reject. The bounds live in one place -- :func:`_validate_bundle` -- and this
-    runs that same function rather than restating its limits, because a second
-    copy of "5 000 messages, 20 000 000 chars" is a copy that drifts.
-
-    Returns ``(reason, code)`` from the validator's own coded rejection. The
-    validated payload is deliberately DISCARDED: validation rebuilds a normalised
-    allowlist, so shipping its output would silently drop the optional keys a
-    caller added on purpose. Only the verdict is taken.
-    """
-    _, err = _validate_bundle(bundle)
-    if err is None:
-        return "", ""
-    # ``Response.body`` is typed as bytes-or-Payload; the validator always builds a
-    # JSON response, so narrow rather than assume.
-    raw = err.body if isinstance(err.body, (bytes, bytearray)) else b""
-    try:
-        body = json.loads(raw or b"{}")
-    except Exception:  # pragma: no cover - the validator always writes JSON
-        return "the bundle was refused", "transfer_bundle_invalid"
-    return str(body.get("error", "the bundle was refused")), str(body.get("code", ""))
-
-
 def _reject(reason: str, code: str) -> web.Response:
     """Return a 400 validation failure carrying a machine-readable ``code``.
 
@@ -1223,25 +1184,28 @@ def _reject(reason: str, code: str) -> web.Response:
 
 
 class _BundleTooLarge(Exception):
-    """The decompressed body ran past :data:`_MAX_DECOMPRESSED_BYTES`.
+    """The decompressed body ran past the operator's :func:`_max_import_bytes`.
 
-    Its own type, not a size returned alongside the bytes, because the whole
-    point is that the bytes are never produced: the caller has to be able to
-    tell "refused while expanding" apart from "expanded, then measured".
+    Off by default (``0`` = unlimited); raised only when an operator set a positive
+    ceiling and a body exceeds it. Its own type, not a size returned alongside the
+    bytes, because the whole point is that the rest of the body is never produced:
+    decompression refuses while still holding one chunk past the ceiling, so a
+    bomb never materialises. Carries the size seen so the refusal can name it.
     """
 
 
 class _ExpansionBusy(Exception):
-    """Too many bodies are already expanding or waiting to expand."""
+    """Too many bodies are already arriving or waiting to arrive."""
 
 
 @contextlib.asynccontextmanager
 async def _expansion_admission() -> Any:
-    """Admit one decompression, or refuse. **Loop-bound.**
+    """Admit one arrival, or refuse. **Loop-bound.**
 
-    Bounds resident expansion to :data:`_MAX_CONCURRENT_EXPANSIONS` times the
-    per-body ceiling. A caller past the queue limit is refused straight away
-    rather than parked, so the waiting set cannot itself become the allocation.
+    Bounds how many bundles are resident at once to
+    :data:`_MAX_CONCURRENT_EXPANSIONS`. A caller past the queue limit is refused
+    straight away rather than parked, so the waiting set cannot itself become the
+    allocation.
 
     Raises:
         _ExpansionBusy: when the queue is full.
@@ -1267,41 +1231,47 @@ async def _expansion_admission() -> Any:
         _expansion_slots.release()
 
 
-def _gunzip_bounded(raw: bytes) -> bytes:
-    """Gunzip *raw*, refusing past the cap. **Blocking CPU, thread-safe.**
+def _gunzip_file(src: Path, dst: Path, limit: int) -> int:
+    """Stream-decompress the gzip file *src* to *dst*. **Blocking IO+CPU, thread-safe.**
 
-    Decompresses INCREMENTALLY with an output limit rather than calling
-    ``gzip.decompress`` and measuring afterwards. That ordering is the entire
-    protection: a bomb's expansion is refused while it is still a few chunks of
-    output, so the process never holds the gigabyte that measuring-after would
-    require it to allocate first.
+    Reads compressed input and writes decompressed output a chunk at a time, so
+    neither side is ever fully resident: memory is bounded by one chunk and the
+    arrival is bounded by disk. When *limit* is positive the decompressed total is
+    checked as it is produced and decompression stops the instant it passes the
+    ceiling — holding one chunk past it and no more, so a bomb never materialises.
+    ``limit == 0`` means no ceiling, which is the operator's default: a transfer
+    is never blocked by size, and the disk write is what keeps memory bounded.
 
     ``wbits=16 + MAX_WBITS`` selects gzip framing (a bare zlib stream is not
     accepted — the file this reads is what the export endpoint wrote).
 
+    Returns the decompressed byte count.
+
     Raises:
-        _BundleTooLarge: if the output would exceed :data:`_MAX_DECOMPRESSED_BYTES`.
-        zlib.error: if *raw* is not a well-formed gzip stream.
+        _BundleTooLarge: when *limit* > 0 and the output exceeds it.
+        zlib.error: if *src* is not a well-formed, single-member gzip stream.
     """
     dobj = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    out: list[bytes] = []
     produced = 0
-    data = raw
-    while True:
-        chunk = dobj.decompress(data, _CHUNK_BYTES)
-        produced += len(chunk)
-        if produced > _MAX_DECOMPRESSED_BYTES:
-            # Refused HERE, holding one chunk past the cap and not a byte more.
-            raise _BundleTooLarge(produced)
-        out.append(chunk)
-        if dobj.eof:
-            break
-        # Input zlib could not process because the output limit was hit. Empty
-        # means the input ran out instead, which for a stream that has not
-        # reached eof means it was truncated.
-        data = dobj.unconsumed_tail
-        if not data:
-            break
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        while not dobj.eof:
+            block = fin.read(_CHUNK_BYTES)
+            if not block:
+                # Input exhausted before the gzip trailer: a truncated stream.
+                break
+            data = block
+            while data and not dobj.eof:
+                out = dobj.decompress(data, _CHUNK_BYTES)
+                if out:
+                    produced += len(out)
+                    if limit and produced > limit:
+                        # Refused HERE, holding one chunk past the ceiling and not
+                        # a byte more; the rest of the stream is never expanded.
+                        raise _BundleTooLarge(produced)
+                    fout.write(out)
+                # Whatever the output limit left unprocessed this call; empty when
+                # the block was fully consumed, so the outer loop reads more input.
+                data = dobj.unconsumed_tail
     if not dobj.eof:
         raise zlib.error("incomplete gzip stream")
     if dobj.unused_data:
@@ -1309,7 +1279,83 @@ def _gunzip_bounded(raw: bytes) -> bytes:
         # concatenated file is not something this produced; refusing beats
         # decoding the first member and silently dropping the rest.
         raise zlib.error("trailing data after the gzip stream")
-    return b"".join(out)
+    return produced
+
+
+def _load_json_file(path: Path) -> Any:
+    """Parse the JSON document at *path*. **Blocking IO+CPU, thread-safe.**
+
+    Reads BYTES and hands them to ``json.loads`` rather than ``json.load`` on a
+    text handle, so a lone surrogate an exported transcript can legitimately carry
+    (``\\ud800``) round-trips as the same character instead of raising on decode.
+    """
+    with open(path, "rb") as f:
+        return json.loads(f.read())
+
+
+def _rm_import_temps(*paths: Path | None) -> None:
+    """Delete the arrival's temp files. Synchronous so a cancellation cannot skip it."""
+    for p in paths:
+        if p is None:
+            continue
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("session_transfer: could not remove import temp %s", p, exc_info=True)
+
+
+def _too_large_response(seen: int, limit: int) -> web.Response:
+    """A ``413`` naming the operator's ceiling. The status is a literal so the
+    error-code contract can read it statically; the message quotes the config key
+    and the byte ceiling so the operator can act on it."""
+    return web.json_response(
+        {
+            "error": (
+                f"import body exceeds the configured ceiling "
+                f"(session_transfer.max_import_bytes = {limit} bytes; saw at least {seen})"
+            ),
+            "code": "transfer_bundle_too_large",
+        },
+        status=413,
+    )
+
+
+async def _stream_request_to_file(request: web.Request, dst: Path, limit: int) -> tuple[bool, int]:
+    """Stream the request body to *dst* in chunks. Returns ``(is_gzip, bytes_written)``.
+
+    Reads ``request.content`` (the raw ``StreamReader``) and NEVER
+    ``request.read()`` / ``.post()`` / ``.json()``: those buffer the whole body and
+    are the calls aiohttp enforces ``client_max_size`` in, so reading the stream
+    directly is what lets a session of any size arrive (the streaming multipart
+    reader in ``handlers/files.py`` bypasses the same limit the same way). The body
+    lands on disk a chunk at a time, so memory is bounded by the write rather than
+    by the body's size.
+
+    Writes go through a worker thread so a slow filesystem cannot stall the event
+    loop. The format is sniffed from the body's own first two bytes, not
+    ``Content-Type``: the export answers ``application/gzip``, a browser upload of
+    that file sends whatever its platform guesses, and the tunnel sends
+    ``application/json``.
+
+    *limit* is enforced only on the PLAIN path here, where the bytes written are
+    the bundle itself. The gzip path passes its ceiling to :func:`_gunzip_file`
+    instead, because the meaningful size is the DECOMPRESSED one and a bomb is tiny
+    compressed.
+
+    Raises:
+        _BundleTooLarge: when *limit* > 0, the body is plain, and it exceeds it.
+    """
+    is_gzip: bool | None = None
+    total = 0
+    with open(dst, "wb") as fout:
+        async for chunk in request.content.iter_chunked(_CHUNK_BYTES):
+            if is_gzip is None:
+                is_gzip = bytes(chunk[:2]) == _GZIP_MAGIC
+            total += len(chunk)
+            if limit and not is_gzip and total > limit:
+                raise _BundleTooLarge(total)
+            await asyncio.to_thread(fout.write, chunk)
+    return bool(is_gzip), total
 
 
 async def _read_bundle_body(
@@ -1317,113 +1363,115 @@ async def _read_bundle_body(
 ) -> tuple[Any, web.Response | None]:
     """Read the request body as a bundle document. Returns ``(body, error)``.
 
-    Accepts BOTH shapes the two callers actually send, distinguished by the
-    body's own first two bytes:
+    Accepts BOTH shapes the two callers send, distinguished by the body's own first
+    two bytes: **gzip** — the file ``GET /api/chat/slots/{key}/export`` hands the
+    user, byte for byte — and **plain JSON**, what the tunnel's server-to-server
+    ``send_session_bundle`` posts. Sniffing the magic rather than branching on
+    ``Content-Type`` keeps a browser upload, a peer's plain POST and the export file
+    all working without asking any caller to relabel what it already sends.
 
-    * **gzip** — the file ``GET /api/chat/slots/{key}/export`` hands the user,
-      byte for byte. Reading these bytes as ``request.json()`` answers
-      ``transfer_invalid_json``, so accepting the sniffed gzip is what lets the
-      product take back the one file it produces without the user gunzipping it
-      by hand first.
-    * **plain JSON** — what the tunnel's server-to-server ``send_session_bundle``
-      posts. The sending side is an independently-updated install, so accepting
-      plain JSON keeps a peer that posts uncompressed working; demanding
-      compression would break any peer that posts this shape.
+    **The body streams to disk; it is never held in memory.** The raw body is
+    written to a temp file under the crew home a chunk at a time
+    (:func:`_stream_request_to_file`), a gzip body is stream-decompressed to a
+    second temp file (:func:`_gunzip_file`), and only the parse loads the document.
+    Reading ``request.content`` rather than ``request.read()`` is deliberate: it
+    bypasses the Application's ``client_max_size`` — matching the streaming multipart
+    upload path — so a session of any size arrives rather than being refused, which
+    is the owner's decision that a transfer is never blocked by size. Memory safety
+    comes from the disk write and the concurrency permit, not from a size ceiling.
 
-    Sniffing the magic rather than branching on ``Content-Type`` is what makes
-    that work: a browser uploading a ``.gz`` off disk sends whatever its platform
-    guesses, and the format is not the header's to decide when the bytes say it
-    plainly.
+    **The only size wall is an operator opt-in, off by default.**
+    :func:`_max_import_bytes` reads ``session_transfer.max_import_bytes`` (default
+    ``0`` = unlimited); when it is positive a body whose decompressed size exceeds
+    it is refused with ``413`` naming the ceiling. Gzip-bomb safety does not depend
+    on it: the stream-to-disk bounds memory regardless, and an operator who wants a
+    hard cap on a shared host sets the knob.
 
-    Decompression runs off the loop — up to 60 MiB of gzip is real CPU, and this
-    module already offloads its other bulk-CPU pass (``_redact_history_rows``)
-    for the same reason. It is also ADMITTED rather than simply started: the
-    per-body ceiling bounds one request, and the sum across concurrent requests
-    is what reaches a host, so :func:`_expansion_admission` caps how many expand
-    at once and this returns ``429 transfer_expansion_busy`` past the queue.
-
-    The permit is entered on *keep*, the CALLER's stack, so it is still held when
-    this returns. What the bound has to cover is how much decompressed bundle is
-    RESIDENT at once, and a bundle is resident — as bytes, then as the parsed
-    document — until the arrival that consumes it finishes. Releasing on return
-    would leave the count of resident bundles unbounded, which is the sum this
-    exists to bound. It costs throughput: a permit is now held across redaction
-    and persistence, so concurrent importers reach the queue sooner. That is the
-    intended trade, because the alternative bounds the CPU of expansion and not
-    the memory.
+    **The permit spans the whole arrival.** :func:`_expansion_admission` is entered
+    on *keep*, the CALLER's stack, so it is still held when this returns. A parsed
+    bundle stays resident — through validation, redaction and persistence — until
+    the arrival finishes, and N unbounded arrivals at once are the sum the permit
+    bounds; releasing it here would leave that count unbounded. Both body shapes are
+    admitted now, because both stream past ``client_max_size`` and neither is
+    bounded by it any more. The temp files, by contrast, are removed as soon as the
+    document is parsed — it is the parsed bundle that must be bounded, not the bytes
+    on disk.
 
     Args:
-        request: the arriving request; its body is read once.
-        keep: the arrival's own stack, which the expansion permit is entered on.
+        request: the arriving request; its body stream is read once.
+        keep: the arrival's own stack, which the arrival permit is entered on.
     """
     try:
-        raw = await request.read()
-    except web.HTTPRequestEntityTooLarge:
-        # The one body-read failure the server can NAME. aiohttp raises this from
-        # ``read()`` when the body passes the Application's ``client_max_size``,
-        # so the cause is known and ``transfer_bundle_too_large`` already carries
-        # the copy for it in every locale. Answering the generic code here would
-        # hand a person whose file is simply too big a message that hedges
-        # between that and a dropped connection, and send them looking for a
-        # network fault they do not have.
-        #
-        # No byte figure in the reason: the ceiling that fired is the
-        # Application's, which this module does not own, and the sibling
-        # refusal below can quote a size only because that one IS its ceiling.
-        return None, _reject(
-            "request body exceeds the server's body-size limit",
-            "transfer_bundle_too_large",
+        await keep.enter_async_context(_expansion_admission())
+    except _ExpansionBusy:
+        # Retryable and the sender is at no fault, so it gets a status that says
+        # so. 429 rather than 400 for the same reason the slot cap does: the body
+        # was fine, the host is busy.
+        return None, web.json_response(
+            {
+                "error": "too many imports are arriving; please retry",
+                "code": "transfer_expansion_busy",
+            },
+            status=429,
         )
-    except Exception:
-        # What is left is genuinely unattributable: a client that hung up
-        # mid-upload, a malformed transfer encoding. Nothing was written; a
-        # resend is safe.
-        return None, _reject("could not read the request body", "transfer_body_unreadable")
 
-    if raw[:2] == _GZIP_MAGIC:
-        try:
-            # Registered on the CALLER's stack, not held by an ``async with``
-            # here: a decompressed bundle stays resident in parsed form through
-            # redaction and persistence, so releasing the permit when this
-            # function returns would bound only the CPU of expansion and leave
-            # the residency it exists to bound unbounded in count.
-            await keep.enter_async_context(_expansion_admission())
-            raw = await asyncio.to_thread(_gunzip_bounded, raw)
-        except _ExpansionBusy:
-            # Retryable and the sender is at no fault, so it gets a status that
-            # says so. 429 rather than 400 for the same reason the slot cap does:
-            # the body was fine, the host is busy.
-            return None, web.json_response(
-                {
-                    "error": "too many imports are being decompressed; please retry",
-                    "code": "transfer_expansion_busy",
-                },
-                status=429,
-            )
-        except _BundleTooLarge:
-            # A SIZE, not a byte count. This string is rendered verbatim on the
-            # menu row that offered the import, so it is the only copy the person
-            # who picked the file ever sees; "expands past 65 MiB" is something
-            # they can check against the file, and "past 68388608 bytes" is not.
-            ceiling_mib = _MAX_DECOMPRESSED_BYTES // (1024 * 1024)
-            return None, _reject(
-                f"compressed bundle expands past {ceiling_mib} MiB",
-                "transfer_bundle_too_large",
-            )
-        except Exception:
-            # Corrupt or truncated gzip. A DISTINCT code from bad JSON: the
-            # sender needs to know its file did not survive the trip, not go
-            # looking for a syntax error in a document it never wrote by hand.
-            return None, _reject("could not decompress the bundle", "transfer_invalid_gzip")
-
+    limit = _max_import_bytes()
+    tmp_dir = _import_tmp_dir()
+    raw_fd, raw_name = tempfile.mkstemp(dir=str(tmp_dir), suffix=".body")
+    os.close(raw_fd)
+    raw_path = Path(raw_name)
+    dec_path: Path | None = None
     try:
-        return json.loads(raw), None
-    except Exception:
-        return None, _reject("invalid JSON body", "transfer_invalid_json")
+        try:
+            is_gzip, _total = await _stream_request_to_file(request, raw_path, limit)
+        except _BundleTooLarge as too_large:
+            return None, _too_large_response(too_large.args[0], limit)
+        except Exception:
+            # A client that hung up mid-upload, a malformed transfer-encoding.
+            # Nothing durable was created beyond the temp cleaned up below.
+            return None, _reject("could not read the request body", "transfer_body_unreadable")
+
+        src = raw_path
+        if is_gzip:
+            dec_fd, dec_name = tempfile.mkstemp(dir=str(tmp_dir), suffix=".json")
+            os.close(dec_fd)
+            dec_path = Path(dec_name)
+            try:
+                await asyncio.to_thread(_gunzip_file, raw_path, dec_path, limit)
+            except _BundleTooLarge as too_large:
+                return None, _too_large_response(too_large.args[0], limit)
+            except Exception:
+                # Corrupt or truncated gzip. A DISTINCT code from bad JSON: the
+                # sender needs to know its file did not survive the trip, not go
+                # looking for a syntax error in a document it never wrote by hand.
+                return None, _reject("could not decompress the bundle", "transfer_invalid_gzip")
+            src = dec_path
+
+        try:
+            body = await asyncio.to_thread(_load_json_file, src)
+        except Exception:
+            return None, _reject("invalid JSON body", "transfer_invalid_json")
+        return body, None
+    finally:
+        # Synchronous on purpose: a cancellation mid-arrival must still reclaim the
+        # temp files, and awaiting inside a cancelled coroutine's finally is not
+        # dependable. Two local unlinks are microseconds on the loop.
+        _rm_import_temps(raw_path, dec_path)
 
 
 def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
-    """Validate an inbound bundle. Returns ``(bundle, error_response)``."""
+    """Validate an inbound bundle STRUCTURALLY. Returns ``(bundle, error_response)``.
+
+    Checks shape and types only — version, that ``messages`` is a non-empty array
+    of ``{role, content}`` objects with visible roles, and the field types of
+    ``title`` / ``origin`` / ``agent`` / ``layer_b``. It imposes NO size ceiling:
+    a large session is copied, not refused, and memory is bounded upstream by the
+    stream-to-disk in :func:`_read_bundle_body` plus the arrival permit. The one
+    optional size wall (``session_transfer.max_import_bytes``) lives on that
+    streaming path, not here, because it is a byte ceiling on the whole body rather
+    than a shape rule. ``title`` is TRUNCATED, never rejected — a label losing its
+    tail costs a reader nothing.
+    """
     if not isinstance(body, dict):
         return {}, _reject("body must be a JSON object", "transfer_body_not_object")
 
@@ -1442,13 +1490,7 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         return {}, _reject("messages must be an array", "transfer_messages_not_array")
     if not raw_messages:
         return {}, _reject("bundle carries no messages", "transfer_bundle_empty")
-    if len(raw_messages) > _MAX_MESSAGES:
-        return {}, _reject(
-            f"too many messages ({len(raw_messages)} > {_MAX_MESSAGES})",
-            "transfer_too_many_messages",
-        )
 
-    total = 0
     messages: list[dict[str, Any]] = []
     for i, m in enumerate(raw_messages):
         if not isinstance(m, dict):
@@ -1463,17 +1505,6 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         if not isinstance(content, str):
             return {}, _reject(
                 f"message {i} content must be a string", "transfer_message_bad_content"
-            )
-        if len(content) > _MAX_CONTENT_CHARS:
-            return {}, _reject(
-                f"message {i} content too long ({len(content)} > {_MAX_CONTENT_CHARS})",
-                "transfer_message_too_long",
-            )
-        total += len(content)
-        if total > _MAX_TOTAL_CHARS:
-            return {}, _reject(
-                f"bundle too large (> {_MAX_TOTAL_CHARS} chars of content)",
-                "transfer_bundle_too_large",
             )
         ts = m.get("ts", "")
         messages.append({"role": role, "content": content, "ts": ts if isinstance(ts, str) else ""})
@@ -1502,8 +1533,10 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
     }
 
     # Layer B is optional: absent on a v1 bundle, or on a session that never had
-    # a kiro-cli context. When present it must be well-formed and bounded before
-    # anything is written to disk — the same untrusted-input stance as messages.
+    # a kiro-cli context. When present it must be well-formed — the same
+    # untrusted-input stance as messages — but it is not size-capped here: the
+    # whole body was already bounded by the stream-to-disk (and the operator's
+    # optional ceiling) before it reached this validator.
     layer_b = body.get("layer_b")
     if layer_b is not None:
         if not isinstance(layer_b, dict):
@@ -1516,11 +1549,6 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
             )
         if not isinstance(events, str):
             return {}, _reject("layer_b.events must be a string", "transfer_layer_b_bad_events")
-        if len(events) > _MAX_LAYER_B_CHARS:
-            return {}, _reject(
-                f"layer_b too large (> {_MAX_LAYER_B_CHARS} chars)",
-                "transfer_layer_b_too_large",
-            )
         validated["layer_b"] = {"envelope": env, "events": events}
 
     return validated, None
@@ -1687,8 +1715,8 @@ async def _install_arrived_bundle(
     # ``_rehydrate_slot_title`` (idempotent). Per-MESSAGE redaction is NOT done
     # here: the receive-side rows are content-redacted just below, in one
     # off-loop ``_redact_history_rows`` pass before construction, so a second
-    # pass would double the regex cost over up to _MAX_TOTAL_CHARS of peer
-    # content for no persisted difference. User turns stay verbatim there,
+    # pass would double the regex cost over the whole of a large peer transcript
+    # for no persisted difference. User turns stay verbatim there,
     # matching fork.
     source_title = bundle["title"] or "Untitled"
     source_title, _ = redact_exfiltration_urls(source_title)
@@ -1700,8 +1728,8 @@ async def _install_arrived_bundle(
 
     # Normalise the bundle turns to the row shape the materialiser hydrates from.
     # Build the receive-side rows (dict construction, no GIL-held regex), then
-    # content-redact them OFF THE LOOP before construction. Redaction at the
-    # transfer bounds (~20M chars) is ~1s of GIL-held regex, so it runs in a
+    # content-redact them OFF THE LOOP before construction. Redaction over a large
+    # transcript is heavy GIL-held regex, so it runs in a
     # thread where it yields freely and — critically — BEFORE any slot exists, so
     # a stall here is only a stall, not a window on a half-built slot. The
     # materialiser is then synchronous and does no content redaction. This is the
