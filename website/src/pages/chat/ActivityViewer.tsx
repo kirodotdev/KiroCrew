@@ -32,6 +32,7 @@ import GitPanel from '../../components/GitPanel'
 import { fmtDateFields } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
+import { fmtCredits } from '../../i18n/format'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -200,6 +201,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // the progress row had, so the same fallback answers it. This is not a redesign
   // of the header, only a refusal to leave the recovered state anonymous.
   const identity = a.agent || (a.id ? `agent #${a.id.slice(-6)}` : '')
+  const terminalCredits = isDone && typeof a.credits === 'number' && Number.isFinite(a.credits) && a.credits > 0
+    ? a.credits
+    : null
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -275,17 +279,30 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{shownElapsed}</span>}
+        {!isPending && <span
+          data-testid="subagent-run-stats"
+          className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
+        >{shownElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
-      {/* Input (task). Gated on the task itself: an entry recovered from an
-          incremental frame has none, and the header over an empty block reads as
-          a task that is blank rather than one not yet known. */}
-      {!collapsed && a.task && (
+      {/* A recovered terminal entry can have usage but no task yet. Keep the
+          usage visible while withholding an empty input block. */}
+      {!collapsed && (a.task || (isDone && !isNative)) && (
         <div className="px-3 pt-1 pb-2">
-          <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
-          <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
+          {isDone && !isNative && (
+            <div data-testid="subagent-credit-usage" className="text-[12px] text-muted font-mono tabular-nums break-words mb-2">
+              {terminalCredits === null
+                ? i18nT('pages.chat.activityViewer.credits_not_reported')
+                : i18nT('pages.chat.activityViewer.credits_used', {
+                    credits: fmtCredits(terminalCredits),
+                  })}
+            </div>
+          )}
+          {a.task && <>
+            <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
+            <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
+          </>}
         </div>
       )}
       {/* Approval buttons for pending */}

@@ -9514,6 +9514,8 @@
         "changes": "变更",
         "clear": "清除",
         "complete": "已完成",
+        "credits_not_reported": "未报告额度使用情况",
+        "credits_used": "已使用 {{credits}} 额度",
         "dismiss_done_count": "忽略已完成（{{count}}）",
         "error": "错误",
         "input": "输入",

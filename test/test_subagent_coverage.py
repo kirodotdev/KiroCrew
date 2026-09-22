@@ -23,7 +23,7 @@ import pytest
 
 from conftest import absent_sysconf
 from kiro_crew import subagent as sa
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent import SubagentDelivery, SubagentInfo, SubagentManager
 
 # ── Fixtures / builders ───────────────────────────────────────────────────
 
@@ -1366,7 +1366,8 @@ class TestNotifyInjectionFailed:
         """Skipping the delivery also releases what the run was holding.
 
         Leaving ``_digest_held_at`` set would let the next expiry sweep arm the flush
-        this run's own suppression exists to prevent, and leaving ``_digest_settle_ids``
+        this run's own suppression exists to prevent, and leaving
+        ``_digest_settle_deliveries``
         on the record would leave its held siblings with an ungated delivery. The
         siblings are marked, not tombstoned: their results never reached a parent, so
         orphan reconciliation must still be able to find them.
@@ -1375,7 +1376,10 @@ class TestNotifyInjectionFailed:
         info = _info(parent_session_key="dash:1")
         info.done = False
         info._digest_held_at = 1.0
-        info._digest_settle_ids = ["sib-1", "sib-2"]
+        info._digest_settle_deliveries = [
+            SubagentDelivery("sib-1", 1.0, 0.1),
+            SubagentDelivery("sib-2", 2.0, 0.2),
+        ]
         mgr._agents[info.id] = info
         mgr._teardown_cancelled_ids.add(info.id)
 
@@ -1387,7 +1391,7 @@ class TestNotifyInjectionFailed:
         )
 
         assert info._digest_held_at == 0.0
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
         assert "sib-1" in mgr._teardown_cancelled_ids
         assert "sib-2" in mgr._teardown_cancelled_ids
         mgr._on_done.assert_not_awaited()
@@ -2122,29 +2126,32 @@ class TestAnnounceDigestFlush:
     async def test_settles_holds_after_clean_handoff(self) -> None:
         mgr = _manager(on_done=AsyncMock())
         info = _info(batch_id="w1")
-        info._digest_settle_ids = ["m1", "m2"]
+        info._digest_settle_deliveries = [
+            SubagentDelivery("m1", 1.0, 0.1),
+            SubagentDelivery("m2", 2.0, 0.2),
+        ]
         with patch.object(sa, "mark_delivered") as mark:
             await mgr._announce_digest_flush(info)
         assert [c[0][0] for c in mark.call_args_list] == ["m1", "m2"]
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
 
     @pytest.mark.asyncio
     async def test_routing_failure_leaves_holds_unsettled(self) -> None:
         mgr = _manager(on_done=AsyncMock(side_effect=RuntimeError("route down")))
         info = _info(batch_id="w1")
-        info._digest_settle_ids = ["m1"]
+        info._digest_settle_deliveries = [SubagentDelivery("m1", 1.0, 0.1)]
         with patch.object(sa, "mark_delivered") as mark:
             await mgr._announce_digest_flush(info)
         mark.assert_not_called()
-        assert info._digest_settle_ids == ["m1"]
+        assert [d.agent_id for d in info._digest_settle_deliveries] == ["m1"]
 
     def test_settle_swallows_tombstone_failure(self) -> None:
         mgr = _manager()
         info = _info()
-        info._digest_settle_ids = ["m1"]
+        info._digest_settle_deliveries = [SubagentDelivery("m1", 1.0, 0.1)]
         with patch.object(sa, "mark_delivered", side_effect=OSError):
             mgr._settle_digest_holds(info)
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
 
 
 class TestAnnounceRejection:

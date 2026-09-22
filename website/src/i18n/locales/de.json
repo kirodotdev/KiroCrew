@@ -9647,6 +9647,8 @@
         "changes": "Änderungen",
         "clear": "Leeren",
         "complete": "Abgeschlossen",
+        "credits_not_reported": "Credit-Nutzung nicht gemeldet",
+        "credits_used": "{{credits}} Credits verwendet",
         "dismiss_done_count": "Abgeschlossene schließen ({{count}})",
         "error": "Fehler",
         "input": "Eingabe",

@@ -9780,6 +9780,8 @@
         "changes": "Cambios",
         "clear": "Borrar",
         "complete": "Completado",
+        "credits_not_reported": "Uso de créditos no informado",
+        "credits_used": "Se usaron {{credits}} créditos",
         "dismiss_done_count": "Descartar completados ({{count}})",
         "error": "Error",
         "input": "Entrada",

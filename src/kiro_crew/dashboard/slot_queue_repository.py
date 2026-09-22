@@ -8,7 +8,10 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.subagent import SubagentDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -576,14 +579,18 @@ class SlotQueueRepository:
         self,
         owner: Any,
         content: str,
-        agent_ids: list[str],
+        deliveries: list[SubagentDelivery],
     ) -> None:
         """Remember which agents a queued completion still owes delivery."""
-        if not content or not agent_ids:
+        if not content or not deliveries:
             return
         key = self._delivery_key(content)
         owed = owner._subagent_delivery_pending.setdefault(key, [])
-        owed.extend(agent_id for agent_id in agent_ids if agent_id not in owed)
+        known = {delivery.agent_id for delivery in owed}
+        for delivery in deliveries:
+            if delivery.agent_id not in known:
+                owed.append(delivery)
+                known.add(delivery.agent_id)
         # Only the consuming row may settle an entry.  A turn tail can dequeue
         # its successor before the current settlement callback runs, so sweeping
         # merely because content left the queue would lose the successor's debt.
@@ -596,9 +603,11 @@ class SlotQueueRepository:
             self._delivery_key(content) in owner._subagent_delivery_pending for content in contents
         )
 
-    def take_pending_subagent_deliveries(self, owner: Any, contents: list[str]) -> list[str]:
+    def take_pending_subagent_deliveries(
+        self, owner: Any, contents: list[str]
+    ) -> list[SubagentDelivery]:
         """Claim delivery marks in consumed-row order and forget only those rows."""
-        claimed: list[str] = []
+        claimed: list[SubagentDelivery] = []
         for content in contents:
             claimed.extend(owner._subagent_delivery_pending.pop(self._delivery_key(content), []))
         return claimed

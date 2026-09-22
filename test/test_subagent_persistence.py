@@ -751,6 +751,13 @@ class TestMarkDelivered:
         assert ts["recovery_action"] == "delivered"
         assert ts["result_available"] is True
 
+    def test_preserves_terminal_usage(self, agent_root):
+        create_agent_folder("mv-usage", task="t")
+        mark_delivered("mv-usage", elapsed=12.5, credits=0.75)
+        ts = json.loads((agent_root / "mv-usage" / "tombstone.json").read_text(encoding="utf-8"))
+        assert ts["elapsed"] == 12.5
+        assert ts["credits"] == 0.75
+
     def test_delivered_excluded_from_orphans(self, agent_root):
         create_agent_folder("mv2", task="t")
         mark_delivered("mv2")
@@ -1796,7 +1803,13 @@ class TestSpawnStatusReadsFromAgentFolder:
 
         create_agent_folder("disk_agent", task="disk task")
         write_result_chunk("disk_agent", "disk result")
-        write_tombstone("disk_agent", cause="gateway_restart", recovery_action="delivered")
+        write_tombstone(
+            "disk_agent",
+            cause="gateway_restart",
+            recovery_action="delivered",
+            elapsed=12.5,
+            credits=1.25,
+        )
 
         # subagents must be truthy (not None/empty) but missing the agent_id
         subagents = MagicMock()
@@ -1815,6 +1828,32 @@ class TestSpawnStatusReadsFromAgentFolder:
         assert "disk result" in body["result"]
         assert "gateway_restart" in body["error"]
         assert "started" in body
+        assert body["elapsed"] == 12.5
+        assert body["credits"] == 1.25
+
+    @pytest.mark.asyncio
+    async def test_api_spawn_status_legacy_disk_record_omits_usage(self, agent_root):
+        """Pre-feature state files stay honest instead of inventing zero usage."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_status
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        create_agent_folder("legacy_agent", task="legacy task")
+        write_result_chunk("legacy_agent", "legacy result")
+        subagents = MagicMock()
+        subagents.get = MagicMock(return_value=None)
+        request = MagicMock()
+        request.match_info = {"agent_id": "legacy_agent"}
+        request.query = {}
+        request.app = {"state": MagicMock(subagents=subagents)}
+
+        resp = await api_spawn_status(request)
+        body = json.loads(resp.body)
+
+        assert resp.status == 200
+        assert "elapsed" not in body
+        assert "credits" not in body
 
     @pytest.mark.asyncio
     async def test_api_spawn_status_404_when_not_on_disk(self, agent_root):

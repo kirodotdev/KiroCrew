@@ -142,6 +142,7 @@ def _stop_reason(info: SubagentInfo) -> str:
 @pytest.mark.parametrize("continuation", [False, True])
 async def test_run_execution_publication_is_off_loop(monkeypatch, continuation):
     from kiro_crew import execution_context, subagent_persistence
+    from kiro_crew.subagent import _RunCreditAccounting
 
     manager = _manager()
     manager.dependency_coordinator_async = AsyncMock(return_value=None)
@@ -172,7 +173,9 @@ async def test_run_execution_publication_is_off_loop(monkeypatch, continuation):
     monkeypatch.setattr(execution_context, "read_session_execution", read)
     monkeypatch.setattr(execution_context, "bind_session_execution", bind)
     with pytest.raises(Published):
-        await asyncio.wait_for(manager._run_events._run_inner_impl(info, key), 10)
+        await asyncio.wait_for(
+            manager._run_events._run_inner_impl(info, key, _RunCreditAccounting(info)), 10
+        )
     assert [operation[0] for operation in operations] == (
         ["read", "bind"] if continuation else ["bind"]
     )
