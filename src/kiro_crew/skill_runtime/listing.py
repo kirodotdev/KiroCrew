@@ -68,6 +68,8 @@ def _readable_frontmatter(
     within: str | None,
     mtime: float | None = None,
     canonical_root: str | None = None,
+    max_bytes: int | None = None,
+    refusal_reasons: list[str] | None = None,
 ) -> dict[str, str] | None:
     """Frontmatter for a READER, or ``None`` when the row must be dropped.
 
@@ -89,7 +91,12 @@ def _readable_frontmatter(
     """
     try:
         return loader._cached_frontmatter(
-            skill_file, mtime=mtime, within=within, canonical_root=canonical_root
+            skill_file,
+            mtime=mtime,
+            within=within,
+            canonical_root=canonical_root,
+            max_bytes=max_bytes,
+            refusal_reasons=refusal_reasons,
         )
     except UnicodeDecodeError as exc:
         _warn_unreadable_skill(
@@ -169,6 +176,8 @@ def list_skills(
     project_dir: str | Path | None = None,
     *,
     _entries: list[_ScopedSkillEntry] | None = None,
+    _max_file_bytes: int | None = None,
+    _refused: dict[str, str] | None = None,
 ) -> list[dict]:
     """Return per-skill metadata for the dashboard's Skills page.
 
@@ -201,16 +210,26 @@ def list_skills(
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     started = time.monotonic()
-    cached_metadata = loader._search_index.metadata_snapshot() if loader._search_index else {}
-    snapshot_done = time.monotonic()
-    changed_metadata: list[tuple[str, str, dict]] = []
-    skill_reads = 0
-    skills: list[dict] = []
     entries = (
         [sk._ScopedSkillEntry(*entry) for entry in loader._iter_visible(project_dir)]
         if _entries is None
         else _entries
     )
+    walk_done = time.monotonic()
+    # A bounded caller passes its admitted entries; read only their rows so
+    # the metadata table is never loaded past the caller's cap.
+    if not loader._search_index:
+        cached_metadata: dict[str, tuple[str, dict]] = {}
+    elif _entries is None:
+        cached_metadata = loader._search_index.metadata_snapshot()
+    else:
+        cached_metadata = loader._search_index.metadata_snapshot(
+            [str(entry.path) for entry in entries]
+        )
+    snapshot_done = time.monotonic()
+    changed_metadata: list[tuple[str, str, dict]] = []
+    skill_reads = 0
+    skills: list[dict] = []
     # Fingerprints from a walk THIS PROCESS performed, when it has performed
     # one. They let a warm build skip the stat it would otherwise take purely to
     # decide whether the persisted metadata is still good — an O(N) syscall pass
@@ -226,7 +245,7 @@ def list_skills(
 
     def read_entry(
         entry: _ScopedSkillEntry,
-    ) -> tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int] | None:
+    ) -> tuple[dict[str, str] | None, int, str, tuple[str, str, dict] | None, int] | None:
         """Read one row's metadata; ``None`` means the row is dropped.
 
         The unconfined read is strict on purpose (writers share it and must
@@ -239,7 +258,8 @@ def list_skills(
         that one row is dropped with one warning naming the file, and every
         other row is listed. Uncaught, one such file takes the whole index with
         it: ``GET /api/skills`` answers 500 and every chat turn's context build
-        fails.
+        fails. A row the bounded read refused for size comes back with
+        ``None`` metadata so the caller can count it as oversized.
         """
         name, skill_file, project_root, mapping_root = entry
         fingerprint = ""
@@ -281,12 +301,19 @@ def list_skills(
             else:
                 reads += 1
                 loader._fm_cache.pop(str(skill_file), None)
+                reasons: list[str] = []
                 meta_or_none = loader._readable_frontmatter(
                     skill_file,
                     within=None,
                     mtime=mtime,
                     canonical_root=mapping_root,
+                    max_bytes=_max_file_bytes,
+                    refusal_reasons=reasons,
                 )
+                if "size_cap" in reasons:
+                    # The bounded read refused it: nothing of the file is
+                    # retained, cached or persisted as this row's metadata.
+                    return None, size_bytes, "", None, reads
                 if meta_or_none is None:
                     return None
                 meta = meta_or_none
@@ -300,7 +327,7 @@ def list_skills(
     def rows() -> Iterator[
         tuple[
             _ScopedSkillEntry,
-            tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int] | None,
+            tuple[dict[str, str] | None, int, str, tuple[str, str, dict] | None, int] | None,
         ]
     ]:
         if len(entries) < sk._CATALOG_READ_BATCH:
@@ -319,9 +346,13 @@ def list_skills(
             continue  # one unreadable file, already warned about; the index goes on
         meta, size_bytes, fingerprint, changed, reads = read
         name, skill_file, project_root, mapping_root = entry
+        skill_reads += reads
+        if meta is None:
+            if _refused is not None:
+                _refused[name] = "oversized"
+            continue
         if changed is not None:
             changed_metadata.append(changed)
-        skill_reads += reads
         if sk._html_skill_refused(meta, skill_file):
             continue
         skills.append(
@@ -366,10 +397,11 @@ def list_skills(
             if row["path"] in changed_paths:
                 row["metadata_indexed"] = False
     logger.debug(
-        "skill catalog: %.2fms total, %.2fms snapshot, %.2fms scan, "
+        "skill catalog: %.2fms total, %.2fms walk, %.2fms snapshot, %.2fms scan, "
         "%.2fms read/assemble, %.2fms persist, %d rows, %d metadata reads",
         (time.monotonic() - started) * 1000,
-        (snapshot_done - started) * 1000,
+        (walk_done - started) * 1000,
+        (snapshot_done - walk_done) * 1000,
         (scanned - snapshot_done) * 1000,
         (assembled - scanned) * 1000,
         (time.monotonic() - assembled) * 1000,
