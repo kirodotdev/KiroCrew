@@ -95,3 +95,47 @@ def test_both_acp_transports_send_client_info_name() -> None:
         assert '"clientInfo": {"name": CLIENT_NAME' in text, rel
         # The flat key kiro-cli ignores must not come back.
         assert '"clientName": CLIENT_NAME' not in text, rel
+
+
+def test_client_version_is_the_package_version() -> None:
+    """The version in `clientInfo` must be the package's, not a literal of its own.
+
+    A hand-maintained literal here is a second version number with no bumper.
+    It had one: `CLIENT_VERSION` sat at `"0.1.2"` from the commit that introduced
+    it while the product shipped 0.2.0 through 0.8.0, so every Crew-driven
+    session of every release reported the same version to the agent host and its
+    `acp_client_version` telemetry could not split Crew traffic by release at all.
+
+    Binding it to `__version__` is also what makes it track the two places the
+    version really moves: a release lane rewriting the literal in
+    `kiro_crew/__init__.py`, and a repackager's `BUILD_VERSION` stamp, which that
+    module resolves at import before any reader copies the attribute.
+    """
+    import kiro_crew
+    from kiro_crew.acp import client
+
+    assert client.CLIENT_VERSION == kiro_crew.__version__
+
+
+def test_client_identity_is_declared_once_for_both_transports() -> None:
+    """`runtime` must re-export the identity pair, never re-declare it.
+
+    Both transports send ONE `clientInfo` object built from these two names, so a
+    second pair of literals in `runtime.py` is free to report a different client
+    to the same host. That is not hypothetical: the flat-`clientName` regression
+    survived precisely because the two transports each owned a copy of the
+    handshake, so one was correct while the other was silently unnamed.
+
+    Checked on source as well as by identity because an equal-but-separate
+    literal passes the value check on the day it is written and drifts later.
+    """
+    from kiro_crew.acp import client, runtime
+
+    assert runtime.CLIENT_NAME is client.CLIENT_NAME
+    assert runtime.CLIENT_VERSION is client.CLIENT_VERSION
+
+    text = (Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py").read_text(
+        encoding="utf-8"
+    )
+    assert "CLIENT_NAME = " not in text
+    assert "CLIENT_VERSION = " not in text

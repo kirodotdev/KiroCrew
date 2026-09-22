@@ -38,7 +38,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpError, AcpToolGateUnroutable
+from kiro_crew.acp.client import (
+    CLIENT_NAME,
+    CLIENT_VERSION,
+    AcpError,
+    AcpToolGateUnroutable,
+)
 from kiro_crew.acp.harness import codex as harness_mod
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness.base import SpawnContext, TeardownPolicy
@@ -212,9 +217,12 @@ def _initialize_params(adapter: CodexHarness) -> dict[str, Any]:
 
     Assembled here rather than on the harness because the runtime owns
     ``clientInfo``: what a harness decides is the version and the capabilities.
+    ``CLIENT_NAME``/``CLIENT_VERSION`` are imported rather than spelled out so
+    this fixture keeps matching the real handshake; the version is the package's
+    and moves every release.
     """
     return {
-        "clientInfo": {"name": "kirocrew", "version": "0.1.2"},
+        "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
         "protocolVersion": adapter.protocol_version,
         "clientCapabilities": adapter.client_capabilities,
     }

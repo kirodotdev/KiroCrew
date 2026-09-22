@@ -957,10 +957,17 @@ _ENTITLEMENT_PROBE_TTL_SECS = 20.0
 # Re-exported from the module that owns the resolver, not re-declared. A second literal
 # here is free to drift from the name the spawn actually uses, and the reclaim sweep
 # projects its marker set from the same registry the owner's value is asserted against.
-from kiro_crew.acp.client import KIRO_CLI_BIN  # noqa: E402  (re-export, not a new name)
+# ``CLIENT_NAME``/``CLIENT_VERSION`` ride along for the same reason: BOTH transports
+# send them in one ``clientInfo`` object, so a second pair here would be free to
+# report a different client to the same host -- which is exactly how the flat
+# ``clientName`` regression stayed invisible on one transport while the other was
+# correct.
+from kiro_crew.acp.client import (  # noqa: E402  (re-export, not a new name)
+    CLIENT_NAME,
+    CLIENT_VERSION,
+    KIRO_CLI_BIN,
+)
 
-CLIENT_NAME = "kirocrew"
-CLIENT_VERSION = "0.1.2"
 # Re-exported, not re-declared. Each host's ACP revision and its own ``acp``
 # subcommand belong to that host's harness, which is what the handshake now
 # reads; a second copy here would be free to drift from the value actually sent,
