@@ -3,14 +3,11 @@
 import codecs
 import os
 import re
+import time
 from pathlib import Path
 
+from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
 from kiro_crew.security import is_sensitive_path
-
-try:
-    import pdfplumber
-except ImportError:
-    pdfplumber = None  # type: ignore[assignment]
 
 try:
     from pptx import Presentation  # type: ignore[import-untyped]
@@ -64,6 +61,16 @@ def _read_error(exc: Exception) -> tuple[str, dict]:
     never becomes an item.
     """
     return f'Error reading file: {exc}', {'format': 'error', 'error': str(exc)}
+
+
+#: Characters of text one PDF may contribute to the index. Ingest has no request
+#: deadline the way file-grep does, so the caps are the whole bound on what a
+#: document can cost: text here, pages via ``PDF_MAX_PAGES``, wall time below,
+#: and memory/CPU in the extractor child's rlimit profile.
+_PDF_MAX_CHARS = 4_000_000
+#: Wall-clock ceiling for one PDF's extraction. Generous next to the child's own
+#: 60 CPU-second limit, since a document can also wait on I/O.
+_PDF_WALL_SECS = 120.0
 
 
 def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
@@ -134,27 +141,34 @@ class FileReader:
             return _read_error(e)
 
     def _read_pdf(self, path: str) -> tuple[str, dict]:
-        if pdfplumber is None:
+        """Extract a PDF through the memory-bounded child (``kiro_crew.pdf_extract``).
+
+        The file handle is the child's stdin, so the bytes that were
+        sensitive-path-checked are the bytes parsed, and never a copy through this
+        process. A child stopped by its ceiling -- memory, CPU, or the wall clock
+        -- is the same ``format: 'error'`` sentinel as any other unreadable file:
+        ``IngestionPipeline.ingest_file`` records it against the source and the
+        scan continues. Text cut at the character or page cap is indexed and
+        marked ``truncated``.
+        """
+        if not pdfplumber_available():
             return _missing_dep('PDF', 'pdfplumber')
         try:
-            with pdfplumber.open(path) as pdf:
-                pages: list[str] = []
-                for page in pdf.pages:
-                    try:
-                        pages.append(page.extract_text() or '')
-                    finally:
-                        # pdfplumber caches the parsed layout on each Page. Release
-                        # it before parsing the next page so large PDFs do not keep
-                        # every page's layout resident until the document closes.
-                        # Page.close() also clears the text-map cache when available;
-                        # pdfplumber 0.10 only exposes flush_cache().
-                        close_page = getattr(page, 'close', None)
-                        if close_page is None:
-                            close_page = page.flush_cache
-                        close_page()
-                return '\n'.join(pages), {'format': 'pdf', 'page_count': len(pages)}
-        except Exception as e:
+            with open(path, 'rb') as fh:
+                outcome = extract_pdf_segments(
+                    fh,
+                    max_chars=_PDF_MAX_CHARS,
+                    max_pages=PDF_MAX_PAGES,
+                    deadline=time.monotonic() + _PDF_WALL_SECS,
+                )
+        except OSError as e:
             return _read_error(e)
+        if outcome.failure is not None:
+            return _read_error(RuntimeError(f'PDF extraction failed: {outcome.failure}'))
+        meta: dict = {'format': 'pdf', 'page_count': outcome.pages}
+        if outcome.truncated:
+            meta['truncated'] = True
+        return '\n'.join(text for _label, text in outcome.segments), meta
 
     def _read_pptx(self, path: str) -> tuple[str, dict]:
         if Presentation is None:

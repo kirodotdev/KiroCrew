@@ -330,6 +330,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # deliberately, so a path resolves in the child to what it resolves to in
         # the parent.
         "subprocess_pool/executor.py::_spawn",
+        # The PDF extractor child: ONE fixed argv, ``sys.executable -P -m
+        # kiro_crew.pdf_extract_child --max-chars=N --max-pages=M`` with both
+        # numbers module constants of the two callers (file-grep, knowledge
+        # ingest). The untrusted input -- the document -- travels on stdin, never
+        # on argv, cwd or env, and the env is ``scrub_env()``. It is spawned
+        # through ``popen_limited`` under ``RLIMIT_PROFILE_EXTRACTOR``, whose
+        # fixed ``RLIMIT_AS`` is the containment this spawn exists to add:
+        # ``pdfplumber`` commits a page's whole character list before any caller
+        # can measure it, so the memory bound has to sit one process down.
+        "pdf_extract.py::extract_pdf_segments",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

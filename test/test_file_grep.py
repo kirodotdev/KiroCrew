@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
 from kiro_crew.dashboard.handlers import files as f
@@ -555,29 +556,55 @@ class TestDocumentPass:
         assert "WIDGET" in hit["preview"]
 
     @pytest.mark.asyncio
-    async def test_a_pdf_is_not_searched_at_all(self, tmp_path):
-        """PDF is deliberately OUT of the document pass, and that needs pinning.
+    async def test_a_pdf_reports_the_page_it_matched(self, tmp_path):
+        root = tmp_path / "papers"
+        root.mkdir()
+        (root / "paper.pdf").write_bytes(text_pdf("the WIDGET plan on page one"))
+        payload = await _grep(root, "widget")
+        hit = next(r for r in payload["results"] if r["file"].endswith("paper.pdf"))
+        assert hit["label"] == "page 1"
+        assert "WIDGET" in hit["preview"]
+        assert payload["truncated"] is False
+        assert payload["skipped_docs"] == 0
 
-        Its text extraction has no memory ceiling this process can enforce:
-        `pdfplumber` exposes no length limit and the allocation is the parsed
-        character list itself, so any check runs after the memory is committed. A
-        25 MB input can decompress to orders of magnitude more text.
+    @pytest.mark.asyncio
+    async def test_a_flate_bomb_pdf_is_skipped_and_the_search_still_answers(self, tmp_path, caplog):
+        """The bound this pass depends on: one page past the ceiling is a SKIP.
 
-        Without `.pdf` in `_GREP_DOC_EXTS` a PDF is not a document to this pass,
-        and both engines then skip it as binary -- ripgrep by its own detection,
-        the python walk by its NUL sniff. Asserted rather than assumed, because
-        "no hit" is also what a silently broken extractor produces: the .docx
-        beside it must still be found, so this cannot pass by finding nothing.
+        The extractor runs in a child under ``RLIMIT_AS``, so the inflate that
+        would have been this process's memory is refused there and reported as a
+        ``memory`` failure. The pass counts the document in ``skipped_docs`` and
+        marks the answer partial -- and still answers, with the .docx beside the
+        bomb found, so this cannot pass by finding nothing. The log line names
+        the failure kind: ``memory``, not ``timeout``, which is what tells the
+        ceiling firing apart from the deadline giving up on a child still
+        inflating.
         """
         root = tmp_path / "mixed"
         root.mkdir()
-        # A real PDF header plus a NUL, which is what makes both engines treat it
-        # as binary. The query appears in it verbatim.
+        (root / "bomb.pdf").write_bytes(flate_bomb_pdf())
+        _write_docx(root / "spec.docx", ["the WIDGET decision"])
+
+        with caplog.at_level("WARNING", logger=f.logger.name):
+            payload = await _grep(root, "WIDGET")
+        assert _files(payload) == {"spec.docx"}
+        assert payload["truncated"] is True
+        assert payload["skipped_docs"] == 1
+        assert "bomb.pdf skipped: extractor memory" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_the_parser_refuses_is_a_settled_answer(self, tmp_path):
+        """Not a PDF under a .pdf name: no hit, no skip, no partial flag -- the
+        same shape as a workbook that is not a zip."""
+        root = tmp_path / "mixed"
+        root.mkdir()
         (root / "paper.pdf").write_bytes(b"%PDF-1.4\n\x00 the WIDGET plan\n")
         _write_docx(root / "spec.docx", ["the WIDGET decision"])
 
         payload = await _grep(root, "WIDGET")
         assert _files(payload) == {"spec.docx"}
+        assert payload["truncated"] is False
+        assert payload["skipped_docs"] == 0
 
     @pytest.mark.asyncio
     async def test_a_workbook_reports_its_sheet_and_row(self, tmp_path):

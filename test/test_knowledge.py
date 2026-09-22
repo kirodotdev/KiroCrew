@@ -10,12 +10,15 @@ import logging
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from pdf_test_helpers import flate_bomb_pdf
 
+from kiro_crew import pdf_extract
 from kiro_crew.embeddings import PRIORITY_NORMAL
 from kiro_crew.knowledge import readers
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
@@ -745,9 +748,10 @@ class TestFileReaderPdf:
         assert reader._DISPATCH.get('.pdf') == '_read_pdf'
 
     def test_pdfplumber_runtime_dep_present(self):
-        # The optional import in readers.py must succeed in the built env.
-        # If this fails, 'pdfplumber' is missing from setup.cfg install_requires.
-        assert readers.pdfplumber is not None, (
+        # The extractor child imports pdfplumber; the parent only checks it is
+        # installed. If this fails, 'pdfplumber' is missing from setup.cfg
+        # install_requires.
+        assert pdf_extract.pdfplumber_available(), (
             "pdfplumber import failed -- declare 'pdfplumber' in setup.cfg "
             "install_requires"
         )
@@ -760,74 +764,53 @@ class TestFileReaderPdf:
         assert "Hello PDF regression" in text
         assert meta["format"] == "pdf"
         assert meta["page_count"] == 1
+        assert "truncated" not in meta
 
-    def test_read_pdf_releases_each_page_cache(self, monkeypatch):
-        events = []
+    def test_read_pdf_runs_in_the_bounded_child(self, tmp_path, monkeypatch):
+        """The reader hands the open file to ``extract_pdf_segments`` with the
+        ingest caps and never parses in this process."""
+        calls = []
 
-        class FakePage:
-            def __init__(self, number, text=None, error=None):
-                self.number = number
-                self.text = text
-                self.error = error
+        def fake_extract(source, *, max_chars, deadline, max_pages):
+            calls.append((source.read(5), max_chars, max_pages, deadline - time.monotonic()))
+            return pdf_extract.PdfExtraction(
+                (("page 1", "first"), ("page 3", "third")), True, None, 3
+            )
 
-            def extract_text(self):
-                events.append(("extract", self.number))
-                if self.error is not None:
-                    raise self.error
-                return self.text
+        monkeypatch.setattr(readers, "extract_pdf_segments", fake_extract)
+        p = tmp_path / "doc.pdf"
+        p.write_bytes(_make_pdf("ignored by the fake"))
+        text, meta = FileReader()._read_pdf(str(p))
+        assert text == "first\nthird"
+        assert meta == {"format": "pdf", "page_count": 3, "truncated": True}
+        [(head, max_chars, max_pages, remaining)] = calls
+        assert head == b"%PDF-"
+        assert max_chars == readers._PDF_MAX_CHARS
+        assert max_pages == pdf_extract.PDF_MAX_PAGES
+        assert 0 < remaining <= readers._PDF_WALL_SECS
 
-            def close(self):
-                events.append(("close", self.number))
+    def test_read_pdf_flate_bomb_is_a_read_error(self, tmp_path):
+        """A page that inflates past the child's ceiling is the ordinary error
+        sentinel: ``ingest_file`` records it and the scan continues. The reason
+        names the ceiling (``memory``), so this cannot pass on a timeout."""
+        p = tmp_path / "bomb.pdf"
+        p.write_bytes(flate_bomb_pdf())
+        text, meta = FileReader().read(str(p))
+        assert meta["format"] == "error"
+        assert meta["error"] == "PDF extraction failed: memory"
+        assert text.startswith("Error reading file:")
 
-        class FakePdf:
-            def __init__(self, pages):
-                self.pages = pages
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-        class FakeLegacyPage:
-            def extract_text(self):
-                events.append(("extract", 4))
-                return "legacy"
-
-            def flush_cache(self):
-                events.append(("flush", 4))
-
-        first_pages = [FakePage(1, "first"), FakePage(2, "second")]
-        failing_pages = [FakePage(3, error=ValueError("bad page"))]
-        legacy_pages = [FakeLegacyPage()]
-        opened = iter((FakePdf(first_pages), FakePdf(failing_pages), FakePdf(legacy_pages)))
-
-        class FakePdfplumber:
-            @staticmethod
-            def open(_path):
-                return next(opened)
-
-        monkeypatch.setattr(readers, "pdfplumber", FakePdfplumber)
-
-        text, meta = FileReader()._read_pdf("ok.pdf")
-        assert text == "first\nsecond"
-        assert meta == {"format": "pdf", "page_count": 2}
-        assert events == [
-            ("extract", 1),
-            ("close", 1),
-            ("extract", 2),
-            ("close", 2),
-        ]
-
-        text, meta = FileReader()._read_pdf("bad.pdf")
-        assert text == "Error reading file: bad page"
-        assert meta == {"format": "error", "error": "bad page"}
-        assert events[-2:] == [("extract", 3), ("close", 3)]
-
-        text, meta = FileReader()._read_pdf("legacy.pdf")
-        assert text == "legacy"
-        assert meta == {"format": "pdf", "page_count": 1}
-        assert events[-2:] == [("extract", 4), ("flush", 4)]
+    def test_read_pdf_child_failure_kinds_are_all_errors(self, tmp_path, monkeypatch):
+        for kind in ("cpu", "timeout", "killed", "parse", "protocol", "spawn"):
+            monkeypatch.setattr(
+                readers,
+                "extract_pdf_segments",
+                lambda *_a, _kind=kind, **_k: pdf_extract.PdfExtraction((), True, _kind, 0),
+            )
+            p = tmp_path / f"{kind}.pdf"
+            p.write_bytes(_make_pdf("x"))
+            _text, meta = FileReader()._read_pdf(str(p))
+            assert meta == {"format": "error", "error": f"PDF extraction failed: {kind}"}
 
     def test_read_pdf_does_not_hit_missing_dep_guard(self, tmp_path):
         # A malformed PDF must surface a real parse error, never the

@@ -224,7 +224,7 @@ search, since the end-of-stream sentinel is a non-blocking put that a full queue
 drops.
 
 **Document extraction is deadline-bounded and re-parsed per request.** A
-document pass extracts `.docx`/`.pptx`/`.xlsx`. The character cap bounds TEXT, not
+document pass extracts `.docx`/`.pdf`/`.pptx`/`.xlsx`. The character cap bounds TEXT, not
 work: a workbook of empty rows produces none, so the worksheet row loop samples
 the deadline every `_GREP_ROW_DEADLINE_STRIDE` rows. A parse that did not see all
 of a document's text — deadline, mid-read failure, or the character cap — marks
@@ -232,16 +232,22 @@ the answer `truncated`. There is no extraction cache: the shared 2 s budget
 already bounds what one keystroke can cost, and a cache keyed by content had to
 carry the partial-parse flag with it to stay honest.
 
-**`.pdf` is deliberately absent.** Extracting PDF text has no memory ceiling this
-process can enforce: `pdfplumber` exposes no length limit, and the allocation is
-the parsed character list itself, so any check runs after the memory is already
-committed — a 25 MB input can decompress to orders of magnitude more text.
-Without the extension a PDF is not a document to this pass, and both engines then
-skip it as binary (ripgrep by its own detection, the python walk by its NUL
-sniff); `test_a_pdf_is_not_searched_at_all` pins that, with a `.docx` beside it so
-the assertion cannot pass by finding nothing. Restoring PDF needs a
-resource-bounded extractor, which belongs with the identical exposure in
-`knowledge/readers.py:_read_pdf` rather than in this module alone.
+**`.pdf` is extracted out of process.** Extracting PDF text has no memory ceiling
+this process can enforce: `pdfplumber` exposes no length limit, and the allocation
+is the parsed character list itself, so any check runs after the memory is already
+committed — a 25 MB input can decompress to orders of magnitude more text. The
+pass therefore hands the bytes to `kiro_crew.pdf_extract.extract_pdf_segments`,
+which spawns `python -m kiro_crew.pdf_extract_child` under the `extractor` rlimit
+profile (`RLIMIT_AS` 1 GiB, `RLIMIT_CPU` 60 s; see
+`docs/architecture/resource-protection.md`) with the request deadline as its
+timeout. The child caps characters and pages itself and labels a hit `page N`. A
+child stopped by a ceiling — memory, CPU, deadline — is a document SKIPPED
+(counted in `skipped_docs`) and the answer is `truncated`; a document the parser
+refused yields no hit and no flag, like a workbook that is not a zip. The same
+extractor serves `knowledge/readers.py:_read_pdf`, so the two call sites cannot
+drift in what they bound. `test_a_flate_bomb_pdf_is_skipped_and_the_search_still_answers`
+pins the bound with a crafted single-page Flate stream that inflates past the
+ceiling, a `.docx` beside it so the assertion cannot pass by finding nothing.
 
 **Every string a row carries is redacted**, asserted as a rule over the row rather
 than field by field: preview, label and path. The path uses the same

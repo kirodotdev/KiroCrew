@@ -12625,6 +12625,35 @@ def resource_limit_preexec() -> "Callable[[], None] | None":
     return _RESOURCE_PREEXEC  # type: ignore[return-value]
 
 
+_EXTRACTOR_PREEXEC: object = _UNSET
+
+
+def extractor_resource_limit_preexec() -> "Callable[[], None] | None":
+    """Legacy ``preexec_fn`` for :data:`RLIMIT_PROFILE_EXTRACTOR`, shim-less hosts only.
+
+    Same fixed ceiling ``_rlimit_spec`` emits for the profile, applied post-fork
+    through :func:`kiro_crew.security.apply_resource_limits`. ``None`` off POSIX,
+    where ``preexec_fn`` must not be passed.
+    """
+    global _EXTRACTOR_PREEXEC
+    if _EXTRACTOR_PREEXEC is _UNSET:
+        if os.name != "posix":
+            _EXTRACTOR_PREEXEC = None
+            return None
+        from kiro_crew.security import apply_resource_limits
+
+        _EXTRACTOR_PREEXEC = apply_resource_limits(
+            {
+                "resource_limits": {
+                    "max_memory_mb": _EXTRACTOR_MAX_AS_BYTES // (1024 * 1024),
+                    "max_cpu_seconds": _EXTRACTOR_MAX_CPU_SECS,
+                    "max_open_files": _EXTRACTOR_MAX_NOFILE,
+                }
+            }
+        )
+    return _EXTRACTOR_PREEXEC  # type: ignore[return-value]
+
+
 # Cached ``--rlimits=`` argv fragment for the process-group supervisor. Same
 # policy as ``resource_limit_preexec``, delivered post-exec instead of post-fork.
 _RESOURCE_SUPERVISOR_ARGV: object = _UNSET
@@ -12784,6 +12813,21 @@ except OSError:  # pragma: no cover - only if the install is truncated
 RLIMIT_PROFILE_TOOL = "tool"
 RLIMIT_PROFILE_BUILD = "build"
 RLIMIT_PROFILE_SESSION_HOST = "session_host"
+# A first-party document parser fed untrusted bytes (``pdf_extract_child``). Its
+# ceiling is FIXED, not read from ``resource_limits``: the ``tool`` profile only
+# applies RLIMIT_AS when an operator sets ``max_memory_mb`` (default 0), and a
+# parser whose allocation precedes any length check needs a memory bound that
+# is on by default. RLIMIT_AS caps VIRTUAL address space, which is why ``tool``
+# leaves it opt-in (Node/V8 reserves far more than it touches); this child is
+# pure CPython plus ``pdfplumber``, measured at ~270 MB VmPeak on a one-page
+# document, so 1 GiB is headroom for a large document and a hard stop for a
+# Flate bomb. RLIMIT_CPU ends a parse that never finishes; NOFILE matches the
+# ``tool`` default. Biases the OOM killer like ``tool``: this is the process to
+# lose.
+RLIMIT_PROFILE_EXTRACTOR = "extractor"
+_EXTRACTOR_MAX_AS_BYTES = 1024 * 1024 * 1024
+_EXTRACTOR_MAX_CPU_SECS = 60
+_EXTRACTOR_MAX_NOFILE = 1024
 # No limits and no OOM bias: the interactive terminal is the user's own shell,
 # not agent-executed code, and never carried either.
 RLIMIT_PROFILE_NONE = "none"
@@ -12792,6 +12836,7 @@ RLIMIT_PROFILE_NONE = "none"
 _PROFILE_OOM_BIAS = {
     RLIMIT_PROFILE_TOOL: True,
     RLIMIT_PROFILE_BUILD: True,
+    RLIMIT_PROFILE_EXTRACTOR: True,
     # session_host_preexec raises NOFILE and does nothing else -- notably it does
     # NOT bias the OOM score, and a trusted session host should not be the
     # preferred kill target.
@@ -12827,6 +12872,13 @@ def _rlimit_spec(profile: str) -> str:
         # pipe pairs for a whole tree of MCP servers, and the tool-grade 1024 cap
         # EMFILE-crashed it.
         return "RLIMIT_NOFILE:hard"
+    if profile == RLIMIT_PROFILE_EXTRACTOR:
+        # Fixed policy, independent of ``resource_limits``: see the constants.
+        return (
+            f"RLIMIT_AS:{_EXTRACTOR_MAX_AS_BYTES},"
+            f"RLIMIT_CPU:{_EXTRACTOR_MAX_CPU_SECS},"
+            f"RLIMIT_NOFILE:{_EXTRACTOR_MAX_NOFILE}"
+        )
 
     cfg: dict | None = None
     try:
@@ -12946,6 +12998,8 @@ def _preexec_for_profile(profile: str) -> "Callable[[], None] | None":
         return session_host_preexec()
     if profile == RLIMIT_PROFILE_BUILD:
         return build_resource_limit_preexec()
+    if profile == RLIMIT_PROFILE_EXTRACTOR:
+        return extractor_resource_limit_preexec()
     return resource_limit_preexec()
 
 

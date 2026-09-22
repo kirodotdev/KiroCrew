@@ -160,10 +160,15 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`), source-code extensions, a
 **`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). Reachable only if `.pptx` were re-added to `SUPPORTED`.
 
 **Binary/optional-dep readers** degrade gracefully — a missing optional import returns an `{'format': 'error'}` meta with an install hint rather than raising:
-- `_read_pdf` — pdfplumber; concatenates per-page `extract_text()`, records `page_count`,
-  and releases each page immediately after extraction so its parsed-layout cache does not
-  remain resident until the whole document closes (`Page.close()` when available, with
-  `flush_cache()` compatibility for pdfplumber 0.10).
+- `_read_pdf` — pdfplumber, run in a memory-bounded child (`kiro_crew.pdf_extract`,
+  `extractor` rlimit profile: `RLIMIT_AS` 1 GiB / `RLIMIT_CPU` 60 s; the file handle is the
+  child's stdin). Concatenates per-page text, records `page_count` (pages opened), and caps
+  the document at `_PDF_MAX_CHARS` characters / `PDF_MAX_PAGES` pages / `_PDF_WALL_SECS`
+  wall seconds, setting `truncated: True` when a cap cut it. A child stopped by its ceiling
+  is the ordinary `format: 'error'` result, which `ingest_file` records as a per-file
+  failure. The child releases each page immediately after extraction (`Page.close()` when
+  available, `flush_cache()` for pdfplumber 0.10). Shared with file-grep's document pass
+  (`file-search.md`) so the two call sites cannot drift in what they bound.
 - `_read_docx` — python-docx; converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`), records `paragraph_count`.
 - `_read_html` — html2text when importable (`ignore_images=True`, `ignore_links=False`); otherwise a regex fallback strips `<script>`/`<style>` and tags.
 
