@@ -528,6 +528,52 @@ describe('InstancesViewport', () => {
     expect(screen.queryByText(/Connection error/i)).toBeNull()
   })
 
+  it('keeps a host drag strip over the loading and connection-error overlays so macOS can still drag the window', async () => {
+    // Regression (macOS window-drag bug): on frameless macOS the window is
+    // dragged SOLELY by `.host-drag-strip` divs, and the per-pane strips are
+    // gated off once an overlay is up. Both the loading overlay and the
+    // error/disconnected panel cover the top band with an opaque `bg-bg` layer
+    // over a still-mounted iframe, so without an overlay strip the title bar
+    // becomes un-draggable while a pane is connecting or has failed. Each
+    // overlay must carry its own `overlay-drag-strip`.
+
+    // Connecting/loading: warm + connected but not yet ready → loading overlay.
+    mockConnectedCd1()
+    const loadingStore = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    const { unmount } = renderWithProviders(<InstancesViewport />, { store: loadingStore })
+    expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('overlay-drag-strip')).toHaveClass('host-drag-strip'))
+    unmount()
+
+    // Connection error: active, non-warm, status error → error panel overlay.
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    const errorStore = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store: errorStore })
+    expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('overlay-drag-strip')).toHaveClass('host-drag-strip'))
+    // Retry stays clickable under the strip (injected no-drag rule).
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument()
+  })
+
   it('suppresses the host drag strips in focus mode so the pane can peek its own chrome', async () => {
     // The strips are `-webkit-app-region: drag`, which the compositor resolves
     // BEFORE hit-testing. In focus mode the pane hides its own header to match the

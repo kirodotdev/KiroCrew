@@ -188,6 +188,16 @@ origin and mints its own port-scoped cookie.
 OpenSSH `ssh` client on `PATH`, and run-marker port discovery refuses outright on
 non-POSIX (§12). Treat a Windows hub as unverified.
 
+**Frameless-window drag.** Under the desktop app's frameless macOS shell the
+window is dragged solely by `-webkit-app-region: drag` `.host-drag-strip`
+regions, and the per-pane strips are gated off once a remote-instance overlay is
+up — so `InstancesViewport`'s connecting/loading overlay and its
+connection-error/disconnected overlay each render a `.host-drag-strip` across the
+top (clipped clear of the Windows/Linux caption controls) to keep the window
+draggable while a pane is connecting or has failed. The injected no-drag rule
+leaves the `InstanceTabBar` switcher, Retry and ErrorNotice clickable under the
+strip.
+
 ---
 
 ## 4. The connect → warm → self-heal lifecycle

@@ -985,6 +985,32 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     : ''
   const panelError = connectFailure || activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
 
+  // Draggable title-bar strip for the loading/error overlays. On frameless
+  // macOS the window is dragged SOLELY by `-webkit-app-region: drag`
+  // host-drag-strips (the per-pane strips above are gated off once an overlay
+  // is up), and each overlay's opaque `bg-bg` cover plus the still-mounted
+  // iframe otherwise leave the top band with no draggable region — so the
+  // window can't be moved while a pane is connecting or shows a connection
+  // error. Mirror the per-pane strips: lay one across the top of each overlay,
+  // clipped clear of the Windows/Linux caption controls at the right edge (a
+  // drag strip over Close would drag the window instead of clicking it). The
+  // injected `button/a/[role=button]/[tabindex] { -webkit-app-region: no-drag }`
+  // rule keeps the InstanceTabBar switcher, the Retry button, the ErrorNotice
+  // and the SettingsLink clickable under the strip. Computed once and reused in
+  // both overlays below. Precedent: App.tsx's `focus-mac-drag-strip`.
+  const overlayDragStrip = isElectron
+    ? (() => {
+        const rightBound = isWinElectron
+          ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+          : isLinuxFramelessElectron
+            ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
+            : Number.POSITIVE_INFINITY
+        const width = Math.min(window.innerWidth, rightBound)
+        if (width < 1) return null
+        return <div aria-hidden data-testid="overlay-drag-strip" className="host-drag-strip" style={{ left: 0, width }} />
+      })()
+    : null
+
   return (
     <div
       className="absolute inset-0 bg-bg"
@@ -1091,6 +1117,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         })}
       {showLoading && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
+          {overlayDragStrip}
           {/* Same escape hatch as the error panel: while this overlay is up the
               only other switcher lives inside the still-loading iframe, so the
               strip is the user's sole way to reach Local or another instance. */}
@@ -1109,6 +1136,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       )}
       {showPanel && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
+          {overlayDragStrip}
           {/* Escape hatch. While a remote
               tab is active the local header — and with it the only top-level
               InstanceTabBar — is display:none, and the embedded switcher lives
