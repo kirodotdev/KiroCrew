@@ -1705,6 +1705,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Defines the shared external-text redactor used by output boundaries and
         # creation guards. It emits nothing itself.
         "external_text.py",
+        # Defines the pass ORDER (redact, strip, redact, scan a normalized copy)
+        # that the dashboard's `_scrub_text` and the `kirocrew skills` terminal
+        # output share. It emits nothing itself; both callers are listed here
+        # too, and their text reaches the dashboard response and the terminal.
+        "untrusted_text.py",
         # Consumes that redactor as a yes/no predicate, not as a rewrite:
         # `is_dispatchable_member_name` asks whether a stored Crew Member name
         # WOULD need redaction and refuses the pin when it would. Nothing is

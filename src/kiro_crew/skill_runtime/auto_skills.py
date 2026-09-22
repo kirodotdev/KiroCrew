@@ -840,15 +840,15 @@ def pending_candidate_is_staged(loader: SkillsLoader, slug: str) -> bool:
     caller that renders both as "approved or dismissed elsewhere" tells the user
     their candidate is gone while it sits in the list. This separates them.
 
-    Deliberately a by-name probe, and deliberately not a security check: the pinned
-    read is the authority on whether anything may be READ, and this runs only after
-    that read already refused. Losing the race changes which refusal message a user
-    sees and can never turn a refusal into a read, which is why a second traversal
-    would be cost without a property.
+    It uses the same lstat-only shape check as pending enumeration. That preserves
+    the message distinction without following a candidate directory or ``SKILL.md``
+    link by name before the descriptor-pinned reader makes the security decision.
     """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
     if not loader._is_pending_slug_safe(slug):
         return False
-    return (loader._pending_root() / slug / "SKILL.md").exists()
+    return sk._pending_candidate_shape(loader._pending_root() / slug) is not None
 
 
 def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
