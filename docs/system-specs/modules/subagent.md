@@ -1886,6 +1886,146 @@ Decision + lifecycle:
 Backends outside `ACP_BACKENDS_SESSION_SHARING` are not eligible and use the
 per-process path regardless of the flag.
 
+### One `$KIROCREW_SCRATCH` per session tree
+
+A parent and every process spawned on its behalf read and write ONE work
+directory under one name, however the run was placed. `agent_scratch` allocates
+scratch per PROCESS and the sandbox masks the whole scratch root, re-exposing
+each process only its own directory (`extra_private_dirs`); on their own, that
+gave a dedicated subagent process and a companion runtime an EMPTY
+`$KIROCREW_SCRATCH`, so a brief the parent staged there was unreadable to the
+child (the case `docs/architecture/context-management.md` used to document as a
+limitation), and a `_bg` runtime recycled for age or RSS mid-task handed every
+session it took over an empty directory as well.
+
+The mechanism is one extra window plus one env value, applied at three seams:
+
+- **What is inherited.** `work_scratch_dir`, declared on the `LLMProvider`
+  ABC with a `None` default (harness-parity H14, like `tool_search_settings`)
+  and answered by `AcpProvider` / `AcpSessionProvider` from the process that
+  actually serves the session (`AcpRuntime.work_scratch_dir`,
+  `AcpClient.work_scratch_dir`): the directory it exposes as
+  `$KIROCREW_SCRATCH` — the one it inherited when it joined a tree, else its
+  own allocation. `session_allocation.parent_work_scratch_dir(owner, parent_key)`
+  reads the capability off the parent's live provider, never probes a client
+  attribute (`None` when the parent has none).
+- **How a spawn takes it.** `AcpRuntime(shared_scratch=…)` and
+  `AcpClient(shared_scratch=…)`, threaded through `AcpProvider` and the `_acp`
+  provider factory. `AcpProvider` keeps the value itself, because on the kiro
+  backend `_start_kiro_runtime_impl` REPLACES the placeholder `AcpClient` with
+  an `AcpRuntime` it constructs (twice: the first spawn and the resume
+  respawn), and that runtime is the process the dedicated subagent runs in.
+  At spawn the path is re-validated by
+  `agent_scratch.shared_scratch_window` (a plain directory directly under the
+  managed root, never a link, never re-created when swept — a stale path is
+  dropped and the spawn keeps its own directory alone) and marked ACTIVE for
+  the sweep's grace window (its directory mtime is refreshed under
+  `_SWEEP_LOCK`, the lock the sweep also takes for its final look-and-delete):
+  the allocator may already be dead and the tree idle past the grace window —
+  the crash-recovery case — and an hourly sweep landing between the mount and
+  the adoption would otherwise delete it. The sweep's own rule (a fresh mtime is
+  a live user, whoever owns it) then holds the tree for the hour a spawn needs
+  seconds of; nothing is released, a second heir simply refreshes again, and the
+  lock never covers marker I/O. If the refresh itself fails (`os.utime` raises)
+  the window is handed out only when the sweep could not take the tree anyway —
+  a live owner, or an absent/garbled marker — and refused for a dead-owner tree,
+  since mounting one without the hold is the deletion-under-a-mount this exists
+  to prevent; the spawn then falls back to its own directory. It is mounted as
+  a SECOND
+  `extra_private_dirs` window beside the process's own, and named by
+  `KIROCREW_SCRATCH` (`agent_scratch.scratch_env(own, shared=…)`). `TMPDIR` /
+  `TMP` / `TEMP` and `KIRO_CHAT_LOG_FILE` stay on the process's own directory:
+  temp files are per-process by construction and two live processes appending
+  to one kiro-cli log is the sharing the log pin exists to prevent.
+- **Who passes it.** A companion runtime gets it from
+  `_collect_parent_runtime_kwargs`; a dedicated subagent process from
+  `subagent_manager/run.py`, which adds `shared_scratch` to the `get_or_create`
+  kwargs (and which is also the signal that skips the warm pool —
+  `pool_decision = "bypass_shared_scratch"` — because a pooled child's mounts were
+  fixed when it was pre-spawned with no parent); a shared-session subagent needs
+  nothing, it already runs in the parent's process. The `_bg` runtime's
+  replacement in `session_background.get_bg_session` inherits its predecessor's
+  `work_scratch_dir`, recorded on `BackgroundRuntimeState.inherited_scratch` from
+  every runtime seen in the slot and from each replacement the moment it takes
+  the slot (a backend switch retires a runtime without another acquisition
+  reading it as a predecessor) — state rather than a call-local, because the
+  stale runtime is detached and the slot cleared before the replacement spawns,
+  and a replacement that fails to spawn must not leave the next call with
+  nothing to hand on. The marker lives inside a directory mounted read-write
+  into every agent the predecessor served, so it can be replaced with a link
+  or garbage from inside the sandbox; when a replacement's spawn refuses to
+  join it (`SharedScratchJoinError`, the subclass the spawners raise at their
+  adopt site and nowhere else — a failure on the replacement's OWN marker is a
+  plain `ScratchBoundaryError` and keeps the inherit, since that tree still
+  holds the sessions' work), `get_bg_session` abandons the inherit and
+  spawns with the replacement's own directory — the sessions lose their staged
+  files to the tampering, the tree stays on disk unowned for a human, and the
+  `_bg` slot is never locked out of a runtime.
+- **Every process seam is enumerated.** A seam that starts a kiro-cli process
+  and forgets `shared_scratch` reproduces the bug with no red test, so
+  `test_subagent_shared_scratch.py::TestEveryProcessSpawnSeamIsAccountedFor`
+  scans `src/` for every `AcpRuntime(` / `AcpClient(` construction: each passes
+  `shared_scratch=` (or a caller-filled `**kwargs`) or is listed as a standalone
+  process with the reason it has no session tree to join (the review-sage
+  worker pool, the knowledge LLM pool). A new construction site fails the test
+  until it is placed.
+
+Ownership names every user. Each process that mounts a tree it did not allocate
+ADDS itself to the tree's `.owner` marker once live (`agent_scratch.adopt_owner`;
+one pid per line, read-modify-write under a process-wide lock, dead pids pruned
+on the way, and `sweep_dead_scratch` keeps a directory while ANY named pgroup
+lives). Naming only one side is wrong whichever process dies first: a parent
+that crashes under running dedicated children, or a successor that fails beside
+its draining predecessor, would leave a dead-only marker over a live user and
+the sweep reads dead-plus-idle as reclaimable. Outcomes: `"refused"` (a link
+where the marker belongs) reaps the spawn exactly as the own-directory marker
+does; `"stale"` (the append failed AND the old marker could not be cleared) reaps
+too, since that is precisely the deletion-under-a-live-process state;
+`"unwritable"` leaves the tree UNOWNED — never swept, a visible leak rather than
+a loss — and warns. `"garbled"` (a marker this module did not write: not
+integers, oversized, not a regular file) also only warns and proceeds: the sweep
+skips such a tree for good, so mounting it risks a leak and never a deletion,
+and a fatal answer would let any agent process the tree is mounted into veto
+every later spawn on it by scribbling over the marker. The marker is read to
+EOF under the size cap, never in one `read`: a short read hands back a prefix,
+and a prefix naming only dead pids reads as a dead owner over the live pid the
+tail names. It is opened `O_NONBLOCK`: a FIFO planted at the marker's name
+passes the link check and `O_NOFOLLOW`, and a blocking open with no writer
+would park the sweep or a spawn's adopt forever; non-blocking, the open returns
+and the `fstat` regular-file check rejects it.
+
+A ROOT that respawns is still its tree. An `AcpClient` whose process exited and
+is respawned by `ensure_ready`, an `AcpRuntime` respawned on the same object,
+and an `AcpProvider` restarting the kiro runtime that served a session all
+promote the directory the previous process exposed to `shared_scratch` and join
+it like any inherited tree (validated, dropped if swept, adopted once live) —
+the children spawned before the restart mounted that directory, and the work
+staged in it is what the session was doing. `AcpProvider` records the tree off
+the LIVE runtime once it takes over (`runtime.work_scratch_dir`), not the value
+it was constructed with: an inherited window that was swept is dropped by the
+spawn, and a restart that re-sent the swept path would drop it again and start a
+third tree, losing what the first runtime staged.
+
+Lifetime, stated on purpose: the `_bg` runtime's tree now chains across every
+recycle, so it lives as long as the gateway (and any agent process that outlives
+it), where a per-process directory used to rotate with each recycle. Only the
+work products under `$KIROCREW_SCRATCH` chain; `TMPDIR` temp files and the
+kiro-cli log stay on each process's own directory and still rotate per recycle,
+and `cap_kiro_cli_logs` still bounds the logs. Work products are what a session
+deliberately keeps for its own duration, so their lifetime is the session
+tree's — the accepted trade for a directory that never vanishes under a live
+session. For the `_bg` runtime specifically that tree is the gateway's: every
+dashboard session's work products accumulate in one directory under
+`<data home>/scratch/` for as long as the gateway (or any agent process that
+outlives it) runs, and nothing in-tree prunes or size-caps it — a bound would
+delete a live session's files, which is the defect this mechanism removes. The
+operator monitors disk for it as for the rest of the data home
+(`src/kiro_crew/docs/troubleshooting.md` names the path and the remedy); the
+directory is reclaimed by the ordinary liveness sweep once the gateway and its
+runtimes are gone, and a gateway restart starts a fresh one. Siblings from OTHER trees stay masked either way: the mask is a
+per-tree boundary, and this widens the window to the tree, never lifts the
+mask. Pinned by `test/test_subagent_shared_scratch.py`.
+
 ### Parent end ends the children, on every backend
 
 Reaping the companion runtime ends the children of a harness that multiplexes

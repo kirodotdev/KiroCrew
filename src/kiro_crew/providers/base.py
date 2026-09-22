@@ -35,6 +35,8 @@ from kiro_crew.essential_delivery import EssentialDelivery
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Type-only: this module's runtime imports are deliberately just acp.types
     # and constants, and recovery.ladder pulls in mcp_gateway + metrics.
+    from pathlib import Path
+
     from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
     from kiro_crew.recovery.ladder import InfraError
 
@@ -459,6 +461,22 @@ class LLMProvider(ABC):
         (harness-parity H14): a provider that never threaded the setting answers
         ``None`` and the runtime it seeds stays exactly as before. The ACP
         provider answers with its resolved ``ToolSearchSettings``.
+        """
+        return None
+
+    @property
+    def work_scratch_dir(self) -> "Path | None":
+        """The ``$KIROCREW_SCRATCH`` directory the process serving this session
+        exposes, or ``None`` when it has none.
+
+        Read by whoever spawns a process on this session's behalf (a companion
+        runtime, a dedicated sub-agent process) so that process mounts the SAME
+        directory and the session tree keeps one work directory
+        (``agent_scratch``). Declared here with a safe default rather than probed
+        off the instance (harness-parity H14): a provider that never allocated
+        scratch answers ``None`` and the child starts its own directory, exactly
+        as before the capability existed. The ACP providers answer the directory
+        their live process was spawned with.
         """
         return None
 

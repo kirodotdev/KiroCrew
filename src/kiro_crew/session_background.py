@@ -18,8 +18,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, MutableMapping, Set
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_scratch import SharedScratchJoinError
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.metrics.sessions import (
     END_REASON_RECYCLED,
@@ -48,6 +50,8 @@ class _BackgroundRuntime(Protocol):
 
     pid: int | None
     acp_backend: str
+    #: The session tree's ``$KIROCREW_SCRATCH`` directory; a replacement inherits it.
+    work_scratch_dir: Path | None
 
     def is_alive(self) -> bool: ...
 
@@ -114,6 +118,13 @@ class BackgroundRuntimeState:
     runtime: _BackgroundRuntime | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     draining: list[_BackgroundRuntime] = field(default_factory=list)
+    #: The ``$KIROCREW_SCRATCH`` tree the sessions on the ``_bg`` runtime use,
+    #: recorded from every runtime observed in the slot and handed to each
+    #: replacement. State, not a call-local: a stale runtime is detached and
+    #: the slot cleared BEFORE its replacement spawns, so a replacement that
+    #: fails to spawn would otherwise leave the next call with no runtime to
+    #: read the tree from, and its replacement would start an empty one.
+    inherited_scratch: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +479,16 @@ class BackgroundSessionRuntime:
                     )
                 await self._owner._reap_drained_bg_runtimes_locked()
                 runtime = self._bg_runtime
+                # The runtime this call may replace, read before any detach
+                # clears the slot: its work directory is what every replacement
+                # inherits (see the spawn below). Kept on the STATE, not in a
+                # local: a detach followed by a failed replacement spawn leaves
+                # the slot empty for the next call, which must still hand the
+                # tree on. Read the way this block reads ``acp_backend``; a
+                # value that is not a path is no inheritance.
+                predecessor_scratch = getattr(runtime, "work_scratch_dir", None)
+                if isinstance(predecessor_scratch, Path):
+                    self.state.inherited_scratch = predecessor_scratch
                 configured_backend_raw = self._owner._configured_bg_backend_raw()
                 configured_backend = (
                     configured_backend_raw
@@ -519,23 +540,79 @@ class BackgroundSessionRuntime:
                                 exc_info=True,
                             )
                     agent_cfg = self._owner._cfg.agent
-                    runtime = AcpRuntime(
-                        agent=self._deps.runtime_agent,
-                        sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
-                        acp_backend=configured_backend,
-                        expect_mcp_reports=False,
-                        # Same operator choice the foreground provider threads in;
-                        # on a wire-settings host the runtime sends it explicitly
-                        # (gated on the background agent's own loader grant)
-                        # rather than leaving it to the host's default.
-                        tool_search=ToolSearchSettings.from_config(
-                            getattr(agent_cfg, "tool_search", True),
-                            getattr(agent_cfg, "tool_search_min_pct", None),
-                            getattr(agent_cfg, "tool_search_min_tokens", None),
-                        ),
-                    )
-                    await runtime.spawn()
-                    self._bg_runtime = runtime
+
+                    # The replacement takes over the sessions the previous
+                    # runtime served, so it takes over their work directory
+                    # too: without this a recycle (age, RSS, backend flap, a
+                    # crash) hands every session on the runtime an EMPTY
+                    # ``$KIROCREW_SCRATCH`` mid-task, and the files it staged
+                    # for its subagents are masked from the new process.
+                    # The successor joins the directory's owner marker beside
+                    # the draining predecessor at spawn; a swept directory is
+                    # dropped there.
+                    def build_runtime(shared_scratch: Path | None) -> Any:
+                        return AcpRuntime(
+                            agent=self._deps.runtime_agent,
+                            sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
+                            acp_backend=configured_backend,
+                            expect_mcp_reports=False,
+                            shared_scratch=shared_scratch,
+                            # Same operator choice the foreground provider threads
+                            # in; on a wire-settings host the runtime sends it
+                            # explicitly (gated on the background agent's own
+                            # loader grant) rather than leaving it to the host's
+                            # default.
+                            tool_search=ToolSearchSettings.from_config(
+                                getattr(agent_cfg, "tool_search", True),
+                                getattr(agent_cfg, "tool_search_min_pct", None),
+                                getattr(agent_cfg, "tool_search_min_tokens", None),
+                            ),
+                        )
+
+                    replacement = build_runtime(self.state.inherited_scratch)
+                    try:
+                        await replacement.spawn()
+                    except SharedScratchJoinError:
+                        # Only the INHERITED tree's marker: the spawner raises
+                        # this subclass at its adopt site alone, so a failure on
+                        # the replacement's OWN marker (plain
+                        # ScratchBoundaryError) propagates with the inherit kept
+                        # -- that tree still holds the sessions' staged work and
+                        # says nothing about why the own marker was tampered.
+                        abandoned = self.state.inherited_scratch
+                        if abandoned is None:
+                            raise
+                        # The inherited tree is mounted read-write into every
+                        # agent process the predecessor served, so its owner
+                        # marker can be replaced with a link from inside the
+                        # sandbox. The spawn refused to join it (the right
+                        # answer for that spawn); keeping the inherit would make
+                        # EVERY replacement refuse the same way and leave the
+                        # ``_bg`` slot without a runtime for good. Abandon the
+                        # inherit instead: the sessions lose their staged files
+                        # to the tampering, the tree stays on disk for a human,
+                        # and the slot recovers.
+                        self.state.inherited_scratch = None
+                        logger.warning(
+                            "get_bg_session: the inherited work directory %r could not be "
+                            "joined; abandoning it so the background runtime can be "
+                            "replaced (its files stay on disk, unowned)",
+                            abandoned.name,
+                            exc_info=True,
+                        )
+                        replacement = build_runtime(None)
+                        await replacement.spawn()
+                    self._bg_runtime = replacement
+                    # Recorded NOW, off the live runtime, not at the next
+                    # acquisition: a backend switch retires the runtime through
+                    # _retire_stale_backend_bg_runtime without another call
+                    # reading it as a predecessor, and a tree nobody remembered
+                    # is swept an hour after its owner exits -- switching back
+                    # would start empty. Also the truth when the inherit was
+                    # dropped (swept) or abandoned: the tree this runtime HAS.
+                    live_tree = getattr(replacement, "work_scratch_dir", None)
+                    if isinstance(live_tree, Path):
+                        self.state.inherited_scratch = live_tree
                 # Pinned under the lock: use the selected object even if a later
                 # displacement changes the shared slot.
                 selected = self._bg_runtime if runtime_capable else None

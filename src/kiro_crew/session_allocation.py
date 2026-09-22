@@ -269,7 +269,34 @@ def _collect_parent_runtime_kwargs(
     tool_search = provider.tool_search_settings
     if tool_search is not None:
         kwargs["tool_search"] = tool_search
+    # The parent's session tree keeps ONE work directory across every process
+    # it spans: a companion runtime is handed the parent's ``$KIROCREW_SCRATCH``
+    # as a second private window into the masked scratch root, so a brief the
+    # parent staged there is readable by the subagents the runtime hosts (see
+    # ``agent_scratch``); at spawn it joins the tree's owner marker beside the parent.
+    shared_scratch = parent_work_scratch_dir(owner, parent_session_key)
+    if shared_scratch is not None:
+        kwargs["shared_scratch"] = shared_scratch
     return kwargs
+
+
+def parent_work_scratch_dir(owner: _AllocationOwner, parent_session_key: str) -> Path | None:
+    """The work directory of *parent_session_key*'s session tree, or None.
+
+    Read off the parent's live provider through the ``LLMProvider``
+    capability (``work_scratch_dir``, harness-parity H14 -- declared on the
+    ABC with a ``None`` default, never probed for a private name); None when
+    the parent has no live provider or its process carries no scratch. The
+    caller passes it as ``shared_scratch`` to the spawn it makes on the
+    parent's behalf -- a companion runtime here, a dedicated subagent process
+    in ``subagent_manager/run.py`` -- and the spawn re-validates it at mount
+    time (``agent_scratch.shared_scratch_window``).
+    """
+    provider = owner.get_provider(parent_session_key)
+    if provider is None:
+        return None
+    path = provider.work_scratch_dir
+    return path if isinstance(path, Path) else None
 
 
 class SessionAllocationService:
@@ -1558,6 +1585,12 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif extra_factory_kwargs.get("shared_scratch") is not None:
+            # A dedicated subagent joining its parent's session tree needs the
+            # parent's work directory MOUNTED, and a pooled child's mounts were
+            # fixed when it was pre-spawned with no parent. Cold-starting is what
+            # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
+            pool_decision = "bypass_shared_scratch"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run

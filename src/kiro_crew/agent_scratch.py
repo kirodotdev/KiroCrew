@@ -28,6 +28,23 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   a gateway restart), an ownerless directory is never deleted, and a garbled
   owner file is left for a human.
 
+The WORK directory follows the session tree, not the process. The scratch
+root is masked for every sandboxed process and each spawn is handed back only
+its own directory as a private window -- so on their own, a dedicated subagent
+process and a companion runtime could not read a brief the parent staged under
+``$KIROCREW_SCRATCH``, and a runtime recycled for age or RSS would hand the
+sessions it took over an empty directory mid-task. Both therefore receive the
+tree's existing directory as a SECOND window (:func:`shared_scratch_window`)
+and ``KIROCREW_SCRATCH`` names it (:func:`scratch_env`'s ``shared``), while
+the temp triple and the kiro-cli log stay on the process's own directory.
+Every process that mounts a tree it did not allocate ADDS itself to the
+tree's owner marker (:func:`adopt_owner`) -- a child beside its parent, a
+successor beside the predecessor it replaces -- and the sweep keeps a
+directory while ANY named pgroup lives. A dead owner over a live user is how
+the sweep comes to delete work in progress; naming every user is what rules
+it out whichever process dies first (a parent that crashes under its
+dedicated children, a successor that fails beside a draining predecessor).
+
 kiro-cli's own log rides along. The CLI writes ``kiro-log/kiro-chat.log`` (plus
 ``mcp.log`` / ``lsp.log`` beside it) under ``$XDG_RUNTIME_DIR`` when that is
 set, else ``$TMPDIR`` -- ONE file per machine, unlinked by whichever process
@@ -65,7 +82,9 @@ import re
 import secrets
 import shutil
 import stat
+import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -86,7 +105,7 @@ OWNER_FILENAME = ".owner"
 #: gateway write and the spawn must not continue. ``"stale"`` is the third
 #: don't-continue case and is nobody's fault: the write failed AND the marker it
 #: left behind could not be cleared, so the directory still names the gateway.
-OwnerOutcome = Literal["recorded", "unwritable", "refused", "stale"]
+OwnerOutcome = Literal["recorded", "unwritable", "refused", "stale", "garbled"]
 
 #: A directory younger than this with no ``.owner`` yet is mid-spawn, not an
 #: orphan: allocation happens before the child pid exists. Anything older
@@ -144,6 +163,19 @@ class ScratchBoundaryError(Exception):
     """
 
 
+class SharedScratchJoinError(ScratchBoundaryError):
+    """A live process could not JOIN the owner marker of a tree it INHERITED.
+
+    Raised by the spawners at their :func:`adopt_owner` site only -- never for
+    the process's own directory -- so a caller that inherits on behalf of a
+    slot (``session_background.get_bg_session``) can tell "the inherited tree
+    is unjoinable" apart from "this process's own marker was tampered with":
+    the first is grounds to abandon the inherit and spawn again on a fresh
+    tree, the second says nothing about the inherited tree, which still holds
+    the sessions' staged work and must be kept for the next attempt.
+    """
+
+
 def scratch_root() -> Path:
     """The managed root: ``<data home>/scratch``."""
     return config_dir() / _SUBDIR
@@ -168,8 +200,13 @@ def _refuse_linked(path: Path, what: str) -> None:
     raise ScratchBoundaryError(f"agent scratch {what} is a link")
 
 
-def _write_owner_marker(directory: Path, pid: int) -> None:
-    """Install *pid* as *directory*'s owner marker, never following a link.
+def _write_owner_marker(directory: Path, pids: "int | Iterable[int]") -> None:
+    """Install *pids* as *directory*'s owner marker, never following a link.
+
+    One pid per line. A single owner is the ordinary shape; a successor that
+    adopts a tree APPENDS itself (:func:`adopt_owner`), so a marker can name
+    the draining predecessor and the live successor at once and the sweep keeps
+    the directory while ANY of them lives.
 
     Two independent guards, because neither does the other's job:
 
@@ -206,7 +243,80 @@ def _write_owner_marker(directory: Path, pid: int) -> None:
         raise NotADirectoryError(f"agent scratch dir is not a directory: {directory.name}")
     marker = directory / OWNER_FILENAME
     _refuse_linked(marker, f"{OWNER_FILENAME} in {directory.name!r}")
-    atomic_write(marker, str(pid))
+    if isinstance(pids, int):
+        pids = (pids,)
+    atomic_write(marker, "\n".join(str(pid) for pid in pids))
+
+
+#: Largest owner marker this module will read. Pids are at most 11 bytes each
+#: and a tree names its LIVE users only (:func:`adopt_owner` prunes the dead),
+#: so a real marker is a few hundred bytes; anything past this is not a marker
+#: this code wrote. The marker sits inside a directory the agent process owns
+#: and writes, so an unbounded read here would hand that process the
+#: gateway's memory (a marker replaced with a link to ``/dev/zero``, or simply
+#: a huge regular file).
+_OWNER_MARKER_MAX_BYTES = 4096
+
+#: Largest pid a marker may name: the C ``int`` the kernel's pid_t is on every
+#: supported platform. ``os.killpg`` raises ``OverflowError`` -- not
+#: ``OSError`` -- past it, so a marker naming a bigger number would escape the
+#: liveness probe's error handling instead of reading as dead.
+_PID_MAX = 2**31 - 1
+
+
+def _read_owner_pids(marker: Path) -> tuple[int, ...]:
+    """The pids a marker names, one per line, read as a BOUNDED regular file.
+
+    The marker lives in the agent's own directory, so it is read the way the
+    log cap reads the agent's logs: lstat-refused when it is a link
+    (:class:`ScratchBoundaryError`), opened ``O_NOFOLLOW`` where the platform
+    has it so a link planted after the lstat is not followed either, opened
+    ``O_NONBLOCK`` so a FIFO planted there cannot park the reader, checked
+    with ``fstat`` to be a regular file no larger than
+    :data:`_OWNER_MARKER_MAX_BYTES`, and read only that far. Anything else --
+    absent (``OSError``), not regular, oversized, not integers, or an integer no
+    process can have (``ValueError``: non-positive or past :data:`_PID_MAX`) --
+    is not a marker this code wrote, and the callers treat it as absence of
+    evidence, never as a pid.
+    """
+    _refuse_linked(marker, f"{OWNER_FILENAME} in {marker.parent.name!r}")
+    # O_NONBLOCK: a FIFO planted at the marker's name passes the link check and
+    # O_NOFOLLOW, and a blocking O_RDONLY open of a FIFO with no writer never
+    # returns -- from the sweep or from a spawn's adopt, on an executor thread.
+    # Non-blocking, the open returns at once and the fstat below rejects it as
+    # not a regular file; for a regular file the flag changes nothing.
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(marker, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("owner marker is not a regular file")
+        if info.st_size > _OWNER_MARKER_MAX_BYTES:
+            raise ValueError("owner marker is larger than any this module writes")
+        # To EOF, not one read: a short read would hand back a PREFIX of the
+        # marker, and a prefix that names only dead pids reads as a dead owner
+        # over the live one the tail names -- the deletion this marker exists to
+        # prevent. Bounded by the cap, so a file that grows under the read
+        # cannot be read without end.
+        chunks: list[bytes] = []
+        remaining = _OWNER_MARKER_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(data) > _OWNER_MARKER_MAX_BYTES:
+        raise ValueError("owner marker is larger than any this module writes")
+    pids = tuple(int(line) for line in data.decode("utf-8").split() if line)
+    if not pids:
+        raise ValueError("empty owner marker")
+    if any(pid < 1 or pid > _PID_MAX for pid in pids):
+        raise ValueError("owner marker names a pid no process can have")
+    return pids
 
 
 def _discard_owner_marker(directory: Path) -> bool:
@@ -344,7 +454,178 @@ def record_owner(path: Path, pid: int) -> OwnerOutcome:
     return "recorded"
 
 
-def scratch_env(path: Path) -> dict[str, str]:
+#: Serializes read-modify-write of a marker across the gateway's executor
+#: threads: two children of one parent spawn concurrently and both adopt the
+#: same tree, and an unlocked append would drop one of them from the marker.
+_ADOPT_LOCK = threading.Lock()
+
+
+def adopt_owner(path: Path, pid: int) -> OwnerOutcome:
+    """ADD *pid* to *path*'s owner marker, keeping every LIVE pid already named.
+
+    For every process that mounts a tree it did not allocate: a dedicated
+    subagent process or companion runtime beside its parent, a successor
+    runtime beside the predecessor it replaces. Replacing the marker
+    (:func:`record_owner`) would be wrong in both directions -- a child or a
+    successor that then fails leaves a dead pid over a tree its parent or
+    predecessor still writes, and a marker that keeps naming only the
+    allocator lets that process's exit read as dead-owner over live users.
+    Naming EVERY user keeps the directory exactly as long as any of them runs
+    (:func:`sweep_dead_scratch` keeps a dir while ANY recorded pgroup lives).
+
+    Pids whose process group is already dead are dropped on the way, so a tree
+    that chains through many recycles carries a bounded marker rather than
+    every pid it ever had. The read-modify-write is serialized with
+    :data:`_ADOPT_LOCK` -- concurrent adopters of one tree are ordinary
+    (siblings of one fan-out), and an unlocked append would lose one.
+
+    The marker is read through :func:`_read_owner_pids` -- lstat-refused when
+    linked, opened without following, bounded -- because it sits in a
+    directory the agent process writes. An ABSENT marker is left absent and
+    reported ``"recorded"``: an unowned tree is never swept, so "kept while
+    *pid* lives" already holds, and a marker naming only *pid* would make the
+    allocator's tree reclaimable the hour after *pid* exits. A marker that is
+    not one this module wrote (garbled, oversized, not a regular file) is
+    ``"garbled"`` without a write: the sweep skips such a tree for good, so
+    mounting it risks a leak and never a deletion, and the spawner proceeds
+    with a warning -- a fatal answer here would let anything that can write
+    the tree (every agent process it is mounted into) veto every later spawn
+    on it. Only a planted LINK is ``"refused"``: that one steers a gateway
+    write, and the spawn must not carry on.
+
+    Other outcomes as for :func:`record_owner`, with one deliberate asymmetry on
+    the failure side. ``"unwritable"`` still discards the marker first: a tree whose
+    marker names only the predecessor would be swept the hour after that process
+    exits while the successor is using it, and an UNOWNED tree is never swept --
+    a leak a human can see beats a deletion nobody can undo. ``"stale"`` (the
+    discard failed too) is then the don't-continue case the spawner reaps on,
+    exactly as it does for its own directory.
+    """
+    marker = path / OWNER_FILENAME
+    try:
+        with _ADOPT_LOCK:
+            try:
+                existing = _read_owner_pids(marker)
+            except FileNotFoundError:
+                # UNOWNED: the sweep never touches it, so the guarantee this
+                # adoption exists for -- kept while *pid* lives -- already
+                # holds, and writing a marker naming only *pid* would make the
+                # tree reclaimable the hour after *pid* exits while the
+                # process that allocated it may still be using it.
+                logger.debug("agent-scratch: %r is unowned; nothing to join", path.name)
+                return "recorded"
+            except ValueError:
+                # Not a marker this module wrote (garbled, oversized, not a
+                # regular file): nothing is written over it, and the tree is
+                # one the sweep skips for good (it reads the same ValueError),
+                # so the join is unnecessary for safety and the spawner may
+                # proceed. Distinct from a planted link because a garbled
+                # marker steers nothing -- it only leaks.
+                logger.warning(
+                    "agent-scratch: %s in %r is not a marker this module wrote; the tree "
+                    "is left as-is and will not be swept",
+                    OWNER_FILENAME,
+                    path.name,
+                )
+                return "garbled"
+            live = tuple(p for p in existing if p != pid and _pgroup_alive(p))
+            _write_owner_marker(path, (*live, pid))
+    except ScratchBoundaryError:
+        return "refused"
+    except OSError:
+        logger.debug("agent-scratch: could not adopt owner for %r", path.name, exc_info=True)
+        if not _discard_owner_marker(path):
+            logger.warning(
+                "agent-scratch: %r still names only its previous owner after a failed adoption",
+                path.name,
+            )
+            return "stale"
+        return "unwritable"
+    return "recorded"
+
+
+#: Serializes the sweep's final look-and-delete against a spawn's
+#: validate-and-touch (:func:`shared_scratch_window`), so neither can interleave
+#: the other's two steps: the sweep never removes a tree a spawn has just marked
+#: active, and a spawn never marks a tree the sweep is already removing. Held
+#: only across lstat/utime and the rmtree; never across marker I/O.
+_SWEEP_LOCK = threading.Lock()
+
+
+def shared_scratch_window(path: Path | None) -> Path | None:
+    """The scratch dir another process of the same session tree may be handed, or None.
+
+    A path this returns is marked ACTIVE for the sweep's grace window (its
+    directory mtime is refreshed under :data:`_SWEEP_LOCK`): the spawner mounts
+    it next and its new user cannot be in the owner marker before the process
+    exists, while the allocator may already be dead and the tree idle -- the
+    crash-recovery case -- and an hourly sweep landing between the mount and
+    the adoption would otherwise delete it. The sweep's own rule (a tree with
+    a fresh mtime is in use, whoever owns it) then holds the tree for the hour
+    a spawn needs seconds of; nothing has to be released, and a second heir
+    validating the same tree simply refreshes it again.
+
+    Returns *path* when it is a plain directory directly under the managed
+    root; None (and a debug line) for anything else -- absent, a link, a file,
+    or a path outside the root -- so the spawner falls back to the child's own
+    directory alone. Fail-open in the same sense as the rest of this module:
+    losing the shared window costs the child visibility, not the spawn.
+    """
+    if path is None:
+        return None
+    root = scratch_root()
+    if path.parent != root:
+        logger.debug("agent-scratch: shared window %r is not under the managed root", path.name)
+        return None
+    # The lstat and the touch are one step under the sweep lock, so the sweep
+    # cannot remove the tree between "it exists" and "it is active".
+    with _SWEEP_LOCK:
+        if platform_compat.is_link_or_junction(path) or not _is_plain_dir(path):
+            logger.debug("agent-scratch: shared window %r is gone or not a plain dir", path.name)
+            return None
+        try:
+            if os.utime in os.supports_follow_symlinks:
+                os.utime(path, None, follow_symlinks=False)
+            else:
+                os.utime(path, None)  # lstat above already refused a link
+        except OSError:
+            # No refresh means no hold. That only matters for a tree the sweep
+            # could take: a readable marker naming only dead pids. A tree with a
+            # live owner is never swept whatever its mtime, and an unowned or
+            # garbled marker is never swept either, so those are handed out as
+            # before. The dead-owner tree is exactly what the hold protects --
+            # without it the sweep may remove the tree under the mount, so the
+            # window is refused and the spawn falls back to its own directory:
+            # visibility lost, not files.
+            if _sweep_could_reclaim(path):
+                logger.warning(
+                    "agent-scratch: could not refresh shared window %r and its owners are "
+                    "dead; not mounting a tree the sweep may reclaim",
+                    path.name,
+                    exc_info=True,
+                )
+                return None
+            logger.debug(
+                "agent-scratch: could not touch shared window %r", path.name, exc_info=True
+            )
+    return path
+
+
+def _sweep_could_reclaim(path: Path) -> bool:
+    """Would :func:`sweep_dead_scratch` judge *path* reclaimable on its owner alone?
+
+    True only for a readable marker naming no live process group. Absent,
+    linked, garbled or oversized markers are the cases the sweep skips for good
+    (never delete on evidence the subject controls), so they read as False.
+    """
+    try:
+        pids = _read_owner_pids(path / OWNER_FILENAME)
+    except (OSError, ValueError, ScratchBoundaryError):
+        return False
+    return not any(_pgroup_alive(pid) for pid in pids)
+
+
+def scratch_env(path: Path, *, shared: Path | None = None) -> dict[str, str]:
     """Env exports pointing a child's temp, scratch AND kiro-cli log at *path*.
 
     ``TMPDIR``/``TMP``/``TEMP`` cover ``tempfile`` and shell ``mktemp`` on
@@ -356,13 +637,21 @@ def scratch_env(path: Path) -> dict[str, str]:
     (Windows) the key is omitted and kiro-cli keeps its default location. Where
     set, it overrides any inherited value, because an inherited value names a
     path SHARED with other processes, which is the failure this exists to prevent.
+
+    *shared* is the session tree's work directory when this process is not
+    the tree's first (see :func:`shared_scratch_window`): ``KIROCREW_SCRATCH``
+    then names THAT directory, so a subagent and its parent -- or a recycled
+    runtime's successor and the sessions it took over -- read and write one
+    place under one name. The temp triple and the log stay on *path*: temp
+    files are per-process by construction, and two live processes appending
+    to one kiro-cli log is exactly the sharing the pin exists to prevent.
     """
     value = str(path)
     env = {
         "TMPDIR": value,
         "TMP": value,
         "TEMP": value,
-        "KIROCREW_SCRATCH": value,
+        "KIROCREW_SCRATCH": str(shared) if shared is not None else value,
     }
     if _CAN_CAP_LOGS:
         env[KIRO_CHAT_LOG_FILE_ENV] = str(path / KIRO_CLI_LOG_SUBDIR / KIRO_CLI_CHAT_LOG_NAME)
@@ -569,9 +858,10 @@ def sweep_dead_scratch(now: float | None = None) -> int:
     Deletion needs BOTH signals, because each alone is an unfaithful proxy
     for "no process is using this":
 
-    * A dir whose recorded owner pid is alive is never touched -- agent
+    * A dir ANY of whose recorded owner pids is alive is never touched -- agent
       processes can outlive a gateway restart, so a fresh gateway must not
-      clear wholesale.
+      clear wholesale, and a tree a successor adopted names its draining
+      predecessor beside it (:func:`adopt_owner`).
     * A dead owner with a FRESH mtime reads as still-in-use and is kept:
       the recorded owner is the launcher pid, and descendants can outlive
       it while still writing (``tempfile`` creates entries directly under
@@ -627,13 +917,25 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             )
             continue
         try:
-            pid = int(marker.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            # Unowned or garbled: never delete on absence of evidence.
+            pids = _read_owner_pids(marker)
+        except (OSError, ValueError, ScratchBoundaryError):
+            # Unowned, garbled, oversized or linked: never delete on absence
+            # of evidence.
             continue
-        if _pgroup_alive(pid):
+        if any(_pgroup_alive(pid) for pid in pids):
+            # A tree adopted by a successor names its predecessor too; either
+            # one alive is a live user.
             continue
-        shutil.rmtree(child, ignore_errors=True)
+        with _SWEEP_LOCK:
+            # Final look under the lock a spawn's validate-and-touch also
+            # takes: a spawn that marked this tree active since the idle
+            # reading above wins, and the tree is left for the next sweep.
+            try:
+                if reference - os.lstat(child).st_mtime < _UNOWNED_GRACE_SECONDS:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(child, ignore_errors=True)
         removed += 1
     if removed:
         logger.info("agent-scratch: sweep removed %d dead idle scratch dir(s)", removed)

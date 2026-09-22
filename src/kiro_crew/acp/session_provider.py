@@ -232,6 +232,11 @@ class AcpSessionProvider(LLMProvider):
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
     @property
+    def work_scratch_dir(self) -> Path | None:
+        """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
+        return self._runtime.work_scratch_dir
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware."""
         return getattr(self._handle, "child_fidelity_aware", False)

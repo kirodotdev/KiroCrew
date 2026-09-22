@@ -314,11 +314,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "tasks",
     # The per-process scratch root (``agent_scratch``): every kiro-cli session
     # and every shared runtime gets ``<home>/scratch/<label>-<rand>`` as its
-    # ``$KIROCREW_SCRATCH`` / ``TMPDIR``. Masked as a WHOLE so one session cannot open
-    # another's scratch; each spawn passes its OWN directory back through
+    # ``TMPDIR``. Masked as a WHOLE so one session tree cannot open another's
+    # scratch; each spawn passes its OWN directory back through
     # ``extra_private_dirs`` (``acp/client.py``, ``acp/runtime.py``) -- a
-    # window INSIDE the mask, not a lift of it -- so the child keeps read-write
-    # on exactly the one directory that is its own.
+    # window INSIDE the mask, not a lift of it -- and a spawn made on behalf of
+    # an existing session tree (a companion runtime, a dedicated subagent
+    # process, a recycled runtime's successor) passes the TREE's work directory
+    # as a second such window, so ``$KIROCREW_SCRATCH`` names one place for the
+    # whole tree. Siblings from other trees stay hidden either way.
     "scratch",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the

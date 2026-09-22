@@ -1446,6 +1446,7 @@ class AcpRuntime:
         member_context: bool = False,
         memory_mode: str = "persistent",
         tool_search: ToolSearchSettings | None = None,
+        shared_scratch: Path | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -1514,6 +1515,16 @@ class AcpRuntime:
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
+        # The session tree's work directory when this runtime is not the tree's
+        # first process (a companion runtime spawned for a parent's subagents,
+        # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn
+        # (``agent_scratch.shared_scratch_window``); ``None`` means this process
+        # starts a tree and its own directory is the work directory. Once live,
+        # the process adds itself to the tree's owner marker beside every other
+        # live user (``agent_scratch.adopt_owner``), so the sweep keeps the tree
+        # while any of them runs.
+        self._shared_scratch: Path | None = Path(shared_scratch) if shared_scratch else None
+        self._scratch_dir: Path | None = None
         # What the pre-spawn freshness check verified, for the post-handshake half of
         # the bracket. ``None`` until a spawn takes it, and ``None`` for every agent
         # that mirrors no other spec.
@@ -1751,6 +1762,19 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The session tree's work directory this process exposes as ``$KIROCREW_SCRATCH``.
+
+        The inherited directory when this runtime joined an existing tree, else
+        its own allocation; ``None`` before spawn or when allocation failed. This
+        is what a spawn made ON BEHALF of a session on this runtime -- a
+        companion runtime, a dedicated subagent process, a recycled successor --
+        is handed as its ``shared_scratch``, so the whole tree keeps one work
+        directory however many processes it spans.
+        """
+        return self._shared_scratch or self._scratch_dir
 
     @property
     def process_instance(self) -> str:
@@ -2256,6 +2280,11 @@ class AcpRuntime:
         # Per-process scratch containment (twin of acp/client.py). Allocated
         # BEFORE the wrap: the scratch ROOT is masked for every sandboxed
         # process, so this runtime's own directory is carved back out.
+        if self._shared_scratch is None and self._scratch_dir is not None:
+            # A respawn of this runtime: its previous process's directory IS
+            # the tree its sessions and their children use (twin of
+            # acp/client.py) -- join it rather than start an empty one.
+            self._shared_scratch = self._scratch_dir
         self._scratch_dir = None
         try:
             self._scratch_dir = await self._to_thread_guarding_sandbox(
@@ -2270,6 +2299,18 @@ class AcpRuntime:
                 exc_info=True,
             )
         scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
+        # The session tree's work directory, when this runtime is not the tree's
+        # first process: a second window into the masked root, re-validated now
+        # because the allocation it names may have been swept since it was
+        # recorded (``shared_scratch_window`` answers None for anything that is
+        # not a plain directory under the root, and the spawn then carries on
+        # with the runtime's own directory alone).
+        if self._shared_scratch is not None:
+            self._shared_scratch = await self._to_thread_guarding_sandbox(
+                agent_scratch.shared_scratch_window, self._shared_scratch
+            )
+        if self._shared_scratch is not None:
+            scratch_window = (*scratch_window, str(self._shared_scratch))
         # Resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
         # (config read) and pass it to both the sandbox wrap and the parent scrub
         # below, so neither reads config on the loop. Scoped to this agent spawn.
@@ -2387,7 +2428,11 @@ class AcpRuntime:
         # owner pid is recorded after spawn; reclamation is liveness-keyed
         # (agent_scratch.sweep_dead_scratch), never age-keyed.
         if self._scratch_dir is not None:
-            env.update(agent_scratch.scratch_env(self._scratch_dir))
+            env.update(agent_scratch.scratch_env(self._scratch_dir, shared=self._shared_scratch))
+        elif self._shared_scratch is not None:
+            # Own allocation failed (inherited temp) but the tree's work
+            # directory is mounted: the prompt-visible name still points there.
+            env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
         # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
@@ -2512,6 +2557,43 @@ class AcpRuntime:
                     # recoverable; that deletion is not.
                     raise agent_scratch.ScratchBoundaryError(
                         "the scratch owner marker still names the gateway after a failed update"
+                    )
+            if self._shared_scratch is not None:
+                # Join the tree's owner marker BESIDE its other live users -- the
+                # parent this companion serves, or the draining predecessor this
+                # successor replaces. Naming only one side leaves a dead pid over
+                # a live user whichever process dies first, and the sweep reads
+                # dead-plus-idle as reclaimable.
+                adopt_outcome = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(agent_scratch.adopt_owner, self._shared_scratch, self._pid),
+                )
+                if adopt_outcome == "refused":
+                    # Same guard as the own-dir marker above: a link where the
+                    # marker belongs is a live process steering an unsandboxed
+                    # gateway write, and the spawn must not carry on. The
+                    # subclass names WHICH marker, for the caller that inherits
+                    # on a slot's behalf (see SharedScratchJoinError).
+                    raise agent_scratch.SharedScratchJoinError(
+                        "the inherited scratch owner marker was replaced with a link"
+                    )
+                if adopt_outcome == "stale":
+                    # The marker still names only the other users: their exit
+                    # would read as a dead owner over THIS runtime's live use,
+                    # which is the deletion this whole mechanism exists to
+                    # prevent. Reaping now is recoverable; that is not.
+                    raise agent_scratch.SharedScratchJoinError(
+                        "the inherited scratch owner marker could not be joined"
+                    )
+                if adopt_outcome != "recorded":
+                    # "unwritable": the marker was discarded, so the tree is
+                    # UNOWNED and never swept -- a leak a human can see rather
+                    # than a deletion under a live runtime.
+                    logger.warning(
+                        "agent-scratch: could not join the owner marker of %r (%s); the tree's "
+                        "work directory is left unowned and will not be swept",
+                        self._shared_scratch.name,
+                        adopt_outcome,
                     )
         except BaseException:
             logger.error(

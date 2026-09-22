@@ -341,6 +341,26 @@ About 700 MB of RSS is expected while the embedding model is loaded. One copy is
 shared by vector memory and the Knowledge Library. The model loads lazily on
 first use and stays resident afterwards.
 
+### `~/.kiro/crew/scratch/` is using a lot of disk
+
+Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
+temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
+screenshots). A directory is reclaimed automatically once every process
+recorded in its `.owner` file has exited and nothing in it has been touched for
+an hour, so short-lived sessions clean up on their own.
+
+One directory does not: the background runtime's tree (`runtime-*`) is shared by
+every dashboard session and is handed on from one runtime to its replacement, so
+it lives as long as the gateway does and is never pruned while a session might
+still need it. If it grows large, the fix is a gateway restart (a fresh tree is
+started and the old one is reclaimed by the hourly sweep once its processes are
+gone), or deleting large work products inside it that you know are finished.
+Do not delete a directory whose `.owner` names a live process.
+
+```bash
+du -sh ~/.kiro/crew/scratch/*/ | sort -h | tail
+```
+
 ### Subagent completion event seems cut off
 
 The completion event injected into the parent session is a bounded copy of the

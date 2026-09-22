@@ -542,6 +542,16 @@ def _repo_root() -> Path:
 #: raised, so the fail-closed half of each lives at the call site.
 FATAL_OUTCOMES = ("refused", "stale")
 
+#: The outcomes a spawn continues past, each for a stated reason. ``recorded`` is
+#: success. ``unwritable`` leaves the tree UNOWNED, which the sweep never touches:
+#: a leak, not a deletion. ``garbled`` (``adopt_owner`` only: a marker this module
+#: did not write over an INHERITED tree) is the same shape -- the sweep reads the
+#: same ``ValueError`` and skips the tree for good, nothing is written over the
+#: marker, and a fatal answer would let any agent process the tree is mounted
+#: into veto every later spawn on it by scribbling over the marker. Only a
+#: LINK steers a gateway write, and that one is ``refused``.
+NON_FATAL_OUTCOMES = ("recorded", "unwritable", "garbled")
+
 
 def _outcome_branches(source: str, outcome: str) -> list[ast.If]:
     """Every ``if <expr> == outcome:`` statement in *source*.
@@ -572,7 +582,7 @@ def test_the_fatal_outcomes_are_the_ones_record_owner_can_report() -> None:
     declared = set(get_args(sc.OwnerOutcome))
 
     assert set(FATAL_OUTCOMES) <= declared
-    assert declared - set(FATAL_OUTCOMES) == {"recorded", "unwritable"}
+    assert declared - set(FATAL_OUTCOMES) == set(NON_FATAL_OUTCOMES)
 
 
 @pytest.mark.parametrize("outcome", FATAL_OUTCOMES)

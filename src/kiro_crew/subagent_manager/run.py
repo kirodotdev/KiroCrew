@@ -1104,6 +1104,20 @@ class RunEventCoordinator(ManagerComponent):
             extra_kwargs["allowed_tools"] = info.allowed_tools
         if info.cwd:
             extra_kwargs["cwd"] = info.cwd
+        # A dedicated process joins its parent's session tree: the parent's
+        # ``$KIROCREW_SCRATCH`` is mounted beside the child's own scratch and is
+        # what the child's ``$KIROCREW_SCRATCH`` names, so a brief the parent
+        # staged there is readable (agent_scratch). Inert on the shared-runtime
+        # arm, where the child already runs in the parent's process; None when
+        # the parent has no live provider or spawned without scratch. Also the
+        # signal that skips the warm pool, whose mounts were fixed at pre-spawn.
+        if info.parent_session_key:
+            resolve_scratch = getattr(self._manager._sessions, "parent_work_scratch_dir", None)
+            shared_scratch = (
+                resolve_scratch(info.parent_session_key) if resolve_scratch is not None else None
+            )
+            if shared_scratch is not None:
+                extra_kwargs["shared_scratch"] = shared_scratch
 
         # ── Session sharing: reuse parent's shared AcpRuntime ──
         # When enabled and eligible, subagents get a session on the parent's

@@ -298,22 +298,29 @@ per-run model or effort override, or a member launch force the dedicated path.
 | Process | the parent's kiro-cli | its own kiro-cli |
 | Start cost | ~200ms | ~3–5s |
 | Context assembly | identical `build_message` call | identical |
-| `$KIROCREW_SCRATCH` | **the parent's** | **its own** |
+| `$KIROCREW_SCRATCH` | **the parent's** | **the parent's** (mounted as a second window) |
 
 `agent_scratch.py` → `allocate_scratch` gives each spawned agent **process**
 `<data home>/scratch/<label>-<token8>/`, and `scratch_env` points
-`TMPDIR`/`TMP`/`TEMP`/`KIROCREW_SCRATCH` at it — per process, not per session
+`TMPDIR`/`TMP`/`TEMP` at it — per process, not per session
 (`acp/client.py` for a dedicated client, `acp/runtime.py` for a runtime). It also
 pins kiro-cli's chat log there, but only where `cap_kiro_cli_logs` can bound it
 (`_CAN_CAP_LOGS`); on Windows the key is omitted and kiro-cli keeps its default
 location, since a pinned log nothing rotates is worse than the CLI's own unlink.
 
-So a **shared-session** child sees the parent's scratch dir while a
-**dedicated-process** child gets an empty one: a brief staged under
-`$KIROCREW_SCRATCH` is unreadable to a dedicated child. Reclamation is keyed on
+`$KIROCREW_SCRATCH` itself follows the **session tree**, not the process. A
+shared-session child runs in the parent's process and sees the parent's directory
+for free; a dedicated-process child and a companion runtime are spawned with the
+parent's `work_scratch_dir` as `shared_scratch`, which the spawner mounts as a
+second private window into the masked scratch root and names as the child's
+`KIROCREW_SCRATCH` (`scratch_env(own, shared=…)`). So a brief staged under
+`$KIROCREW_SCRATCH` is readable by every child, however it was placed, and a
+`_bg` runtime recycled for age or RSS hands the sessions it takes over the same
+directory (its replacement inherits and adopts it). Reclamation is keyed on
 process liveness rather than on file age — a directory is removed only once its
 recorded owner's process GROUP is dead **and** the whole tree has been idle past a
-grace window, and an ownerless directory is never deleted.
+grace window, and an ownerless directory is never deleted. The seams and the
+ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scratch-per-session-tree).
 
 ## 4. Default agent vs other agents
 

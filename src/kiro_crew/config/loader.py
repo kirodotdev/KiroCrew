@@ -5523,6 +5523,7 @@ class KiroCrewConfig:
             # caller passing it into the catch-all would be swallowed here and
             # the session would spawn on the backend's default with no error.
             permission_mode: str | None = None,
+            shared_scratch: Path | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -5658,6 +5659,10 @@ class KiroCrewConfig:
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
                 permission_mode=resolve_cc_permission_mode(permission_mode, _backend),
+                # A dedicated subagent process joins its parent's session tree:
+                # the tree's work directory is mounted beside its own scratch
+                # and is what its ``$KIROCREW_SCRATCH`` names (agent_scratch).
+                shared_scratch=shared_scratch,
             )
 
         return _acp

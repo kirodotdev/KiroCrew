@@ -107,6 +107,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 if TYPE_CHECKING:
@@ -176,6 +177,7 @@ from kiro_crew.session_allocation import (  # noqa: F401
 from kiro_crew.session_allocation import (
     _collect_parent_runtime_kwargs,
 )
+from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_background import (
     BackgroundRuntimeDeps,
     BackgroundSessionRuntime,
@@ -2123,6 +2125,10 @@ class SessionManager:
     def _parent_runtime_kwargs(self, parent_session_key: str) -> dict:
         """Return the parent runtime security and backend posture."""
         return _collect_parent_runtime_kwargs(cast(Any, self), parent_session_key)
+
+    def parent_work_scratch_dir(self, parent_session_key: str) -> Path | None:
+        """The ``$KIROCREW_SCRATCH`` directory of the exact parent's session tree, or None."""
+        return _parent_work_scratch_dir(cast(Any, self), parent_session_key)
 
     def is_session_sharing_eligible(self, parent_session_key: str) -> bool:
         """Return whether the exact parent can share a runtime."""

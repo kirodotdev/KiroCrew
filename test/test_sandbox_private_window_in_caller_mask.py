@@ -190,3 +190,45 @@ class TestTheDurableDataView:
             ln.lstrip().startswith("(deny") and json.dumps(_OWN_SECRET) in ln for ln in lines
         )
         assert not any(_SIBLING_SECRET in ln and "require-not" in ln for ln in lines)
+
+
+_SCRATCH = os.path.join(_HOME, ".kiro", "crew", "scratch")
+_OWN_SCRATCH = os.path.join(_SCRATCH, "subagent-abc-11111111")
+_TREE_SCRATCH = os.path.join(_SCRATCH, "runtime-22222222")
+_OTHER_TREE = os.path.join(_SCRATCH, "chat-9-33333333")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX backends only")
+class TestTwoWindowsInTheScratchMask:
+    """A spawn made on a session tree's behalf passes TWO windows into the
+    masked scratch root -- its own directory and the tree's
+    (``agent_scratch``): both are re-exposed read-write, every other tree stays
+    hidden, and the two builders agree. The primitive is N-ary by construction
+    (``_private_window_spellings`` iterates); this pins that the second entry is
+    honoured exactly like the first rather than assuming it."""
+
+    _KWARGS = {"extra_private_dirs": (_OWN_SCRATCH, _TREE_SCRATCH)}
+
+    def test_the_launcher_opens_both_windows_and_no_sibling(self) -> None:
+        hidden, _files, windows = _launcher_view(**self._KWARGS)
+        assert _SCRATCH in hidden
+        assert windows == [_OWN_SCRATCH, _TREE_SCRATCH]
+        assert not _denied(os.path.join(_OWN_SCRATCH, "tmpabc123"), hidden, windows)
+        assert not _denied(os.path.join(_TREE_SCRATCH, "docs-refresh", "BRIEF.md"), hidden, windows)
+        assert _denied(os.path.join(_OTHER_TREE, "BRIEF.md"), hidden, windows)
+        assert _denied(_SCRATCH, hidden, windows)
+
+    def test_seatbelt_carves_both_windows_out_of_the_same_denies(self) -> None:
+        lines = _seatbelt(**self._KWARGS)
+        for window in (_OWN_SCRATCH, _TREE_SCRATCH):
+            except_window = f"(require-not (subpath {json.dumps(window)}))"
+            for operation in ("file-read*", "file-write*", "file-link"):
+                matching = _rules_for(lines, operation, _SCRATCH)
+                assert matching, (operation, window)
+                assert any(except_window in ln for ln in matching), (operation, window)
+        assert not any(_OTHER_TREE in ln and "require-not" in ln for ln in lines)
+
+    def test_a_single_window_spawn_is_unchanged(self) -> None:
+        """The first-process shape (no tree to inherit) still gets exactly one window."""
+        _hidden, _files, windows = _launcher_view(extra_private_dirs=(_OWN_SCRATCH,))
+        assert windows == [_OWN_SCRATCH]
