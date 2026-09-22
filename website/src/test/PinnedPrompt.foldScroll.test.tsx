@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 
@@ -222,5 +222,27 @@ describe('PinnedPrompt — the forwarder yields to the card own scroll region', 
     p.dispatchEvent(move)
     expect(scrollTranscriptBy).not.toHaveBeenCalled()
     expect(move.defaultPrevented).toBe(false)
+  })
+})
+
+// A line-mode wheel (Firefox) is converted with a line height, and WHICH element that
+// is read from is the whole question. `box` is the `.user-bubble` div, whose `text-sm`
+// sets line-height 1.25rem (20px); the paragraph is `my-1 leading-6` (24px). The
+// earlier line-mode test could not catch a box read, because happy-dom computes no
+// line-height at all and the 24px fallback answered either way. So this test states
+// both values and checks the delta.
+describe('PinnedPrompt — a line-mode wheel uses the paragraph line height', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('converts 3 lines as 72px, not the box 60px', () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element) => ({
+      lineHeight: el.tagName === 'P' ? '24px' : '20px',
+      // The forwarder also asks about overflow when deciding whether to yield; nothing
+      // here is scrollable, so it must not yield.
+      overflowY: 'visible',
+    }) as unknown as CSSStyleDeclaration)
+    const { box, scrollTranscriptBy } = renderCard()
+    wheel(box, 3, 1)
+    expect(scrollTranscriptBy).toHaveBeenCalledWith(72)
   })
 })

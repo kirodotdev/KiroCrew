@@ -327,9 +327,12 @@ export default function PinnedPrompt({
     if (!box || !scrollTranscriptBy) return
     // `deltaMode` is not always pixels. Firefox reports lines, and page mode exists
     // too; treating either as pixels would move the transcript by a few px when the
-    // reader asked for a screen. Convert with the box's own line height, which is
-    // the same `leading-6` the transcript rows use.
-    const lineHeight = parseFloat(getComputedStyle(box).lineHeight) || 24
+    // reader asked for a screen. The line height to convert with is the PARAGRAPH's
+    // (`my-1 leading-6`, 24px), not the box's: `box` is the `.user-bubble` div and its
+    // `text-sm` sets line-height to 1.25rem (20px), while `.user-bubble` in index.css
+    // only sets `background-color`. Reading the box made a line-mode wheel travel 20px
+    // per line instead of 24 — short by a sixth, on every notch.
+    const lineHeight = parseFloat(getComputedStyle(textRef.current ?? box).lineHeight) || 24
     const pixels = (e: WheelEvent) => {
       if (e.deltaMode === 1) return e.deltaY * lineHeight
       if (e.deltaMode === 2) return e.deltaY * (box.ownerDocument.defaultView?.innerHeight ?? 800)
