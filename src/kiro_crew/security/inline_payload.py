@@ -18,9 +18,15 @@ import tokenize
 
 from .shell_normalizer import (
     _NESTED_SHELL_PROGRAMS,
+    _PYTHON_INLINE_PROGRAM_FLAGS,
+    _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
+    _SHELL_WRAPPER_CHARS,
+    _normalize_operand,
     _program_basename,
+    _python_reads_stdin,
     _shell_tokens,
+    _stdin_program_text,
 )
 from .vocabulary import _SELF_NAME_RE
 
@@ -826,4 +832,97 @@ def _names_the_mint(view: str) -> bool:
             return True
         if _dynamic_runner_handed_the_package(arg):
             return True
+    return False
+
+
+def _has_self_importing_inline_program(
+    tokens: list[str], i: int, decoded_literals: "tuple[tuple[str, str], ...]" = ()
+) -> bool:
+    """True if ``tokens[i]`` is an interpreter given a ``-c`` payload that imports this package.
+
+    Separate from ``_is_self_module_invocation`` because the two answer different questions.
+    That one asks "does this argv run our code?", which admits ``-m`` and ``-c`` alike and is
+    the right input to a verb-gated decision. This one asks "is the code inline?", which is the
+    case where the verb gate cannot hold: an inline payload can append to ``sys.argv``, call
+    ``main(['token'])``, or reach the token-minting function directly, so no argv word has to
+    say ``token``.
+
+    Only the interpreter's own inline-program operand counts — the separate (``-c PAYLOAD``)
+    and attached (``-cPAYLOAD``) spellings. A later positional that happens to mention the
+    import name is data for whatever the payload does with it, not code we are about to run.
+
+    The STDIN forms are the same escape without an operand: ``python -`` (and a bare ``python``
+    with no script) read the program from stdin, so a ``python - <<'PY' … PY`` heredoc or an
+    ``echo '…' | python -`` pipe reaches the CLI with the payload nowhere in argv. When that
+    program text is visible on the command line, matching the import is the same fail-closed
+    decision as for ``-c`` — but it is matched only in the tokens that actually CARRY that
+    program (see :func:`_stdin_program_text`), not anywhere in the frame. When it is NOT
+    visible (a bare ``python -`` fed by an unseen producer) there is nothing to match and the
+    gate cannot see it; that residual is noted, not silently claimed as covered.
+    """
+    if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
+        return False
+    later_tokens = tokens[i + 1 :]
+    glued = tokens[i].strip(_SHELL_WRAPPER_CHARS)
+    if "<" in glued:
+        # A redirect GLUED to the program name is still this command's redirect, and the
+        # detector only ever saw the tokens AFTER the interpreter -- so `python<<EOF … EOF`
+        # had no marker in view and its body read as a script path. Hand the suffix over as
+        # its own token.
+        later_tokens = [glued[glued.index("<") :], *later_tokens]
+    # STDIN program: the text is not an operand of this interpreter — the shell fills stdin from
+    # a heredoc body, a redirected file, or a pipe producer — so the search space is those
+    # carriers rather than this position's operands. `_python_reads_stdin` is precise so this
+    # does not fire for `python script.py`, `python -c …`, or `python -m …`.
+    if _python_reads_stdin(later_tokens):
+        # The carriers arrive whitespace-split -- a heredoc body is one word per token --
+        # so a statement spanning several words (``from kiro_crew.x import generate_token``)
+        # is only legible with the carrier tokens read together.  Joined with a NEWLINE:
+        # the one joiner under which an import statement is still seen at a statement
+        # start while a path inside a string never becomes one.  Only LEADING wrappers
+        # come off, for the reason the ``-c`` payload below states in full.
+        program = "\n".join(t.lstrip(_SHELL_WRAPPER_CHARS) for t in _stdin_program_text(tokens, i))
+        if program and _inline_payload_reaches_cli(program, decoded_literals):
+            return True
+    expect_payload = False
+    skip_next = False
+    for later in later_tokens:
+        # The PAYLOAD is matched RAW, not through `_normalize_operand`. That helper truncates at
+        # the first control operator, which is correct for an operand the shell will split — but
+        # a `-c` payload is a quoted program, so its `;` is Python, not a command separator.
+        # Normalising `"import sys; ...; from kiro_crew.cli import main; main()"` down to
+        # `import sys` hid the import entirely and let the bypass through.  Only LEADING
+        # wrapper characters come off: a payload's own closing quote and paren are its
+        # last characters, and stripping them leaves the final string literal
+        # unterminated, so ``__import__('kiro_' 'crew.cli')`` reads as ``'kiro_' 'crew.cli``
+        # and the fold that joins the two pieces never fires.
+        raw = later.lstrip(_SHELL_WRAPPER_CHARS)
+        if expect_payload:
+            if _inline_payload_reaches_cli(raw, decoded_literals):
+                return True
+            expect_payload = False
+            continue
+        # The FLAG itself is a plain token, so it is safe (and more accurate) to normalise.
+        stripped = _normalize_operand(later).strip("\"'")
+        if skip_next:
+            skip_next = False
+            continue  # value consumed by an operand-taking flag (`-X dev`)
+        if stripped in _PYTHON_INLINE_PROGRAM_FLAGS:
+            expect_payload = True
+            continue
+        if len(raw) > 2 and raw[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
+            if _inline_payload_reaches_cli(raw, decoded_literals):
+                return True
+        if stripped in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(stripped) > 2 and stripped[:2] in _PYTHON_OPERAND_FLAGS:
+            continue  # attached operand, e.g. `-Xdev`
+        # Only interpreter flags precede a `-c` operand. The first token that is neither a flag
+        # nor a flag's operand is the interpreter's own positional (a script path or `-`), and
+        # nothing after it is a `-c` payload — so stop, rather than scan the rest of the frame.
+        # Without this bail the loop was O(tokens) for EACH python token, i.e. O(n²) on a
+        # `python open python open …` spam input, which the ReDoS-resistance test caught.
+        if not stripped.startswith("-"):
+            break
     return False

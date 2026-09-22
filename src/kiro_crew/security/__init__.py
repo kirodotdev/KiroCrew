@@ -105,7 +105,6 @@ from .argv_floor import (
     _bare_kill_raw_bodies,
     _git_publish_floor_tags,
     _git_push_args,
-    _has_self_importing_inline_program,
     _host_is_self,
     _is_credential_mint,
     _is_dev_mode_out_of_root_confirm,
@@ -134,7 +133,6 @@ from .argv_floor import (
     _process_substitution_word_is_opaque,
     _proxyjump_value_targets_self,
     _push_segment_targets_protected,
-    _python_reads_stdin,
     _resolve_own_host_names,
     _resolve_own_host_names_into_cache,
     _routing_option_key_value_targets_self,
@@ -149,8 +147,6 @@ from .argv_floor import (
     _shell_payload_sources,
     _ssh_family_verb,
     _static_substitution_output,
-    _stdin_program_text,
-    _stdin_redirect_carriers,
     _unmask_separators,
 )
 from .denied_rules import (
@@ -311,6 +307,7 @@ from .helpers import (
 )
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
+    _has_self_importing_inline_program,
     _inline_payload_reaches_cli,
 )
 from .paths import (
@@ -520,6 +517,7 @@ from .shell_normalizer import (
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
+    _python_reads_stdin,
     _redirect_consumes_next,
     _redirect_glue_point,
     _resolve_function_aliases,
@@ -538,6 +536,8 @@ from .shell_normalizer import (
     _split_glued_operators,
     _split_push_command_segments,
     _split_shell_words,
+    _stdin_program_text,
+    _stdin_redirect_carriers,
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,

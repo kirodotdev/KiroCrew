@@ -50,7 +50,7 @@ import socket
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 # fcntl/struct drive the Linux per-interface address sweep in
 # _resolve_own_host_names_into_cache.  They are imported here at module scope to
@@ -79,7 +79,7 @@ from .host_addresses import (  # noqa: F401  (parser re-imported as a test entry
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
     _decoded_b64_literal_sources,
-    _inline_payload_reaches_cli,
+    _has_self_importing_inline_program,
 )
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
@@ -99,20 +99,16 @@ from .shell_normalizer import (
     _dequote_token,
     _ends_argv,
     _glob_could_expand_to,
-    _here_string_payload,
-    _heredoc_marker,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
     _matching_close_paren,
     _nested_shell_payloads,
-    _operand_span_end,
     _program_basename,
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
     _redirect_consumes_next,
-    _redirect_glue_point,
     _resolve_param_defaults,
     _shell_join_continuations,
     _shell_payload_walk,
@@ -125,10 +121,6 @@ from .shell_normalizer import (
     _xargs_here_string_rebuild,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
 
 # ── Git publish detection (verb-anchored) ──
 # ``git push`` must be blocked, but ``push`` appearing anywhere in arbitrary
@@ -330,394 +322,6 @@ def _shell_payload_sources(text_lower: str) -> "list[str]":
     return [source for source, _tokens in _shell_payload_walk(text_lower)]
 
 
-def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Iterator[str]":
-    """Program text from the stdin REDIRECTIONS in ``tokens[start:stop]``.
-
-    One walk over a token run, yielding whatever each stdin redirection puts on this
-    interpreter's stdin.  The redirection families, from the shell grammar:
-
-    * ``<<TAG`` / ``<<-TAG`` -- a heredoc; the BODY up to the matching tag is the program.
-      An unterminated one runs to the end of the run, which over-yields, not under.
-    * ``<<<WORD`` -- a here-string; the WORD itself is the program.
-    * ``<WORD`` -- a file whose CONTENT is the program.
-    * ``< <(cmd)`` -- process substitution; the command text is visible and spans tokens
-      up to its closing paren, so it is yielded as a run.
-    * ``<&N`` -- an fd dup, which carries no text at all; a documented residual.
-
-    Walked as a RUN rather than "everything after the interpreter" because a
-    redirection may appear ANYWHERE in a simple command -- BEFORE the program name
-    (``<<'PY' python -``), after it, and GLUED TO IT with no space
-    (``python3<<<'…'``, ``python3<prog.py``), all of which are ordinary bash reaching
-    the same mint.  A token that carries a redirect
-    after some other text is therefore classified from its first ``<`` onward: the
-    text before it is the program name or an earlier operand, and the shell reads the
-    rest as the redirection.
-
-    The left-hand run is not split on a newline, so an earlier command's own stdin
-    redirect is yielded too -- the same deliberate over-block the pipe producer has,
-    and for the same reason.
-
-    A heredoc's body ends at the LAST token equal to its tag, not the first.  Bash
-    closes a heredoc only on a line that holds the delimiter ALONE, and line structure
-    does not survive tokenizing -- so a body line that merely CONTAINS the word
-    (``# EOF``, an ordinary Python comment) produced a token equal to the tag and closed
-    the body early, leaving the real payload after it unscanned.
-    The last occurrence is the delimiter that actually ends it; taking it
-    over-yields only when the tag word recurs in a LATER command, which is the safe
-    direction.
-    """
-    run = tokens[start:stop]
-    idx = 0
-    while idx < len(run):
-        raw = run[idx].strip(_SHELL_WRAPPER_CHARS)
-        if "<" in raw and not raw.startswith("<"):
-            # A redirect GLUED to a preceding word: the shell reads everything from the
-            # first `<` as the redirection, so classify that suffix. Without this the
-            # interpreter's own token was excluded from the walk and
-            # `python3<<<'import kiro_crew'` -- one word, no space -- was never scanned.
-            raw = raw[raw.index("<") :]
-        here = _here_string_payload(raw)
-        if here is not None:
-            # Checked before the heredoc branch, which would otherwise read `<<<payload`
-            # as a tag and drop the payload.
-            idx += 1
-            if not here:  # a bare `<<<` puts its word next
-                if idx >= len(run):
-                    return
-                here = run[idx].strip(_SHELL_WRAPPER_CHARS)
-                yield run[idx]
-                idx += 1
-            else:
-                yield here
-            end = _operand_span_end(run, idx, here)
-            yield from run[idx:end]
-            idx = end
-            continue
-        marker = _heredoc_marker(raw)
-        if marker is not None:
-            # Checked before the plain-redirect branch below, which would otherwise read
-            # the first `<` of `<<` as a stdin redirect.
-            idx += 1
-            if not marker:  # a bare `<<` splits its tag into the next token
-                if idx >= len(run):
-                    return
-                marker = run[idx].strip(_SHELL_WRAPPER_CHARS)
-                idx += 1
-            end = len(run)
-            for j in range(len(run) - 1, idx - 1, -1):
-                if run[j].strip(_SHELL_WRAPPER_CHARS) == marker:
-                    end = j
-                    break
-            yield from run[idx:end]
-            idx = end + 1
-            continue
-        if "<" in raw:
-            target = raw.rsplit("<", 1)[1]
-            if target.startswith("&"):
-                idx += 1  # `<&N` fd dup: nothing on the command line to match
-                continue
-            idx += 1
-            if not target:
-                if idx >= len(run):
-                    return
-                target = run[idx].strip(_SHELL_WRAPPER_CHARS)
-                yield run[idx]
-                idx += 1
-            else:
-                yield target
-            end = _operand_span_end(run, idx, target)
-            yield from run[idx:end]
-            idx = end
-            continue
-        idx += 1
-
-
-def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
-    """The tokens that can carry the PROGRAM a stdin-reading ``python`` will run.
-
-    ``tokens[i]`` is an interpreter that reads its program from stdin.  The shell can
-    fill that stdin from exactly two families, and this yields those and nothing else:
-
-    * a stdin REDIRECTION -- heredoc body, here-string word, redirected file or process
-      substitution -- anywhere in the command: before the program name, after it, or
-      glued to it (:func:`_stdin_redirect_carriers`).  Walked over the WHOLE frame in ONE
-      pass, not per side of the interpreter: a marker and its body can straddle the
-      program name (``<<EOF python - … EOF``), and splitting the walk lost that
-      association entirely.  Only REDIRECT OPERANDS are
-      yielded, so a neighbouring command's ordinary argument is still never program text;
-    * a PIPE PRODUCER -- the tokens left of this interpreter, when a pipe feeds it.
-      The pipe is NOT reliably its own token: the tokenizer splits on whitespace only,
-      so ``echo '…'|python -`` glues the operator into a neighbouring word and
-      ``_program_basename`` resolves the program from the LAST control-operator
-      segment.  So the pipe is detected as a CHARACTER anywhere left of, or glued
-      into, the interpreter token, and that token's own leading segment is producer
-      text.  Requiring a standalone ``|`` token would miss all four no-space spellings
-      and let the producer's payload through.
-
-    Both families over-yield on the left: any pipe, or any earlier command's own stdin
-    redirect, qualifies.  That is the safe direction -- a missed carrier is a bypass,
-    an extra token is only a visible refusal (pinned by a test).
-
-    Everything else in the frame is another command's argv.  Scanning THAT is the
-    defect: a frame is not split on a newline, so an unrelated neighbour that
-    merely names this package in a FILE PATH (``isort src/kiro_crew/mcp_core.py``
-    followed by any ``python - <<'PY' … PY``) makes a harmless heredoc read as a
-    credential mint -- with no ``token`` word anywhere in the command.
-
-    Yields lazily so the caller's ``any()`` short-circuits: the cost stays O(frame)
-    per interpreter token, the same bound the frame-wide scan had.
-    """
-    # A PIPE PRODUCER writes this interpreter's stdin, so its argv IS program text.
-    glued_head, pipe_glued, _ = tokens[i].strip(_SHELL_WRAPPER_CHARS).rpartition("|")
-    if pipe_glued or any("|" in t for t in tokens[:i]):
-        yield from tokens[:i]
-        if pipe_glued:
-            yield glued_head
-    yield from _stdin_redirect_carriers(tokens, 0, len(tokens))
-
-
-def _has_self_importing_inline_program(
-    tokens: list[str], i: int, decoded_literals: "tuple[tuple[str, str], ...]" = ()
-) -> bool:
-    """True if ``tokens[i]`` is an interpreter given a ``-c`` payload that imports this package.
-
-    Separate from ``_is_self_module_invocation`` because the two answer different questions.
-    That one asks "does this argv run our code?", which admits ``-m`` and ``-c`` alike and is
-    the right input to a verb-gated decision. This one asks "is the code inline?", which is the
-    case where the verb gate cannot hold: an inline payload can append to ``sys.argv``, call
-    ``main(['token'])``, or reach the token-minting function directly, so no argv word has to
-    say ``token``.
-
-    Only the interpreter's own inline-program operand counts — the separate (``-c PAYLOAD``)
-    and attached (``-cPAYLOAD``) spellings. A later positional that happens to mention the
-    import name is data for whatever the payload does with it, not code we are about to run.
-
-    The STDIN forms are the same escape without an operand: ``python -`` (and a bare ``python``
-    with no script) read the program from stdin, so a ``python - <<'PY' … PY`` heredoc or an
-    ``echo '…' | python -`` pipe reaches the CLI with the payload nowhere in argv. When that
-    program text is visible on the command line, matching the import is the same fail-closed
-    decision as for ``-c`` — but it is matched only in the tokens that actually CARRY that
-    program (see :func:`_stdin_program_text`), not anywhere in the frame. When it is NOT
-    visible (a bare ``python -`` fed by an unseen producer) there is nothing to match and the
-    gate cannot see it; that residual is noted, not silently claimed as covered.
-    """
-    if not _PYTHON_PROGRAM_RE.match(_shell_normalizer._program_basename(tokens[i])):
-        return False
-    later_tokens = tokens[i + 1 :]
-    glued = tokens[i].strip(_SHELL_WRAPPER_CHARS)
-    if "<" in glued:
-        # A redirect GLUED to the program name is still this command's redirect, and the
-        # detector only ever saw the tokens AFTER the interpreter -- so `python<<EOF … EOF`
-        # had no marker in view and its body read as a script path. Hand the suffix over as
-        # its own token.
-        later_tokens = [glued[glued.index("<") :], *later_tokens]
-    # STDIN program: the text is not an operand of this interpreter — the shell fills stdin from
-    # a heredoc body, a redirected file, or a pipe producer — so the search space is those
-    # carriers rather than this position's operands. `_python_reads_stdin` is precise so this
-    # does not fire for `python script.py`, `python -c …`, or `python -m …`.
-    if _python_reads_stdin(later_tokens):
-        # The carriers arrive whitespace-split -- a heredoc body is one word per token --
-        # so a statement spanning several words (``from kiro_crew.x import generate_token``)
-        # is only legible with the carrier tokens read together.  Joined with a NEWLINE:
-        # the one joiner under which an import statement is still seen at a statement
-        # start while a path inside a string never becomes one.  Only LEADING wrappers
-        # come off, for the reason the ``-c`` payload below states in full.
-        program = "\n".join(t.lstrip(_SHELL_WRAPPER_CHARS) for t in _stdin_program_text(tokens, i))
-        if program and _inline_payload_reaches_cli(program, decoded_literals):
-            return True
-    expect_payload = False
-    skip_next = False
-    for later in later_tokens:
-        # The PAYLOAD is matched RAW, not through `_normalize_operand`. That helper truncates at
-        # the first control operator, which is correct for an operand the shell will split — but
-        # a `-c` payload is a quoted program, so its `;` is Python, not a command separator.
-        # Normalising `"import sys; ...; from kiro_crew.cli import main; main()"` down to
-        # `import sys` hid the import entirely and let the bypass through.  Only LEADING
-        # wrapper characters come off: a payload's own closing quote and paren are its
-        # last characters, and stripping them leaves the final string literal
-        # unterminated, so ``__import__('kiro_' 'crew.cli')`` reads as ``'kiro_' 'crew.cli``
-        # and the fold that joins the two pieces never fires.
-        raw = later.lstrip(_SHELL_WRAPPER_CHARS)
-        if expect_payload:
-            if _inline_payload_reaches_cli(raw, decoded_literals):
-                return True
-            expect_payload = False
-            continue
-        # The FLAG itself is a plain token, so it is safe (and more accurate) to normalise.
-        stripped = _shell_normalizer._normalize_operand(later).strip("\"'")
-        if skip_next:
-            skip_next = False
-            continue  # value consumed by an operand-taking flag (`-X dev`)
-        if stripped in _PYTHON_INLINE_PROGRAM_FLAGS:
-            expect_payload = True
-            continue
-        if len(raw) > 2 and raw[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
-            if _inline_payload_reaches_cli(raw, decoded_literals):
-                return True
-        if stripped in _PYTHON_OPERAND_FLAGS:
-            skip_next = True
-            continue
-        if len(stripped) > 2 and stripped[:2] in _PYTHON_OPERAND_FLAGS:
-            continue  # attached operand, e.g. `-Xdev`
-        # Only interpreter flags precede a `-c` operand. The first token that is neither a flag
-        # nor a flag's operand is the interpreter's own positional (a script path or `-`), and
-        # nothing after it is a `-c` payload — so stop, rather than scan the rest of the frame.
-        # Without this bail the loop was O(tokens) for EACH python token, i.e. O(n²) on a
-        # `python open python open …` spam input, which the ReDoS-resistance test caught.
-        if not stripped.startswith("-"):
-            break
-    return False
-
-
-def _python_reads_stdin(later_tokens: list[str]) -> bool:
-    """True if this ``python`` invocation runs its PROGRAM from stdin (a script/module does not).
-
-    CPython reads its program from stdin for a bare interpreter (no positional) or an explicit
-    ``-`` argument; ``-c CODE``, ``-m MOD``, and ``FILE`` all supply the program elsewhere.
-    Walks the argument stream the way ``_is_self_module_invocation`` does so the corner cases
-    line up: an operand-taking flag consumes its value (``-X dev`` — ``dev`` is not a script),
-    a heredoc (the ``<<TAG`` marker, its BODY and the closing tag) is not an argument, and a
-    pipe/redirect token ends this command's own arguments.
-
-    The heredoc structure is read off the RAW token via :func:`_heredoc_marker`, because
-    ``_normalize_operand`` strips a redirection to the empty string — which would leave the
-    heredoc branch here unreachable and have ``python << 'PY' … PY`` (no ``-``) report FALSE,
-    reading the first word of the BODY as a script path.  A redirect OPERAND is consumed
-    through :func:`_operand_span_end` for the same reason the carrier scan uses it: a
-    substitution operand is one shell WORD over several tokens, and skipping only the first
-    leaves ``python <<< $(printf …)`` reading ``%s`` as a script path.  The two
-    functions share that helper so the detector and the carrier scope agree on where
-    an operand ends.
-    """
-    skip_next = False
-    heredoc_tag: str | None = None
-    expect_tag = False
-    idx = 0
-    while idx < len(later_tokens):
-        tok = later_tokens[idx]
-        idx += 1
-        raw = tok.strip(_SHELL_WRAPPER_CHARS)
-        if heredoc_tag is not None:
-            # The body is program text on stdin, not an argument, and its CLOSING TAG
-            # ends this command: the tokenizer drops the newline that follows, so
-            # whatever comes after the tag belongs to the NEXT command. Reading it as
-            # this interpreter's positional made `python <<PY … PY; echo ok` report
-            # "runs a script named echo" and skipped the whole branch, so the heredoc's
-            # payload went unscanned. The heredoc has
-            # already supplied the program, so the answer here is simply True.
-            if raw == heredoc_tag:
-                return True
-            continue
-        if expect_tag:
-            expect_tag = False
-            heredoc_tag = raw
-            continue
-        here = _here_string_payload(raw)
-        if here is not None:
-            # A here-string supplies the program on stdin exactly as a heredoc does; its
-            # operand is a redirect word, never this interpreter's positional -- and the
-            # WHOLE operand, which a substitution spreads over several tokens.
-            if not here:  # a bare `<<<` puts its word in the next token
-                if idx >= len(later_tokens):
-                    break
-                here = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
-                idx += 1
-            idx = _operand_span_end(later_tokens, idx, here)
-            continue
-        marker = _heredoc_marker(raw)
-        if marker is not None:
-            if marker:
-                heredoc_tag = marker
-            else:
-                expect_tag = True  # a bare `<<` splits its tag into the next token
-            continue
-        # Scanned on a form that keeps the SUBSTITUTION delimiters. `raw` has had
-        # `_SHELL_WRAPPER_CHARS` stripped, and those include `(` and `)` -- so the word
-        # `2>$(` (the tokenizer splits on the space inside `$( (true); printf x)`) arrived
-        # here as `2>$`, with the opener gone. The scan then saw an ordinary one-character
-        # target, never entered a substitution, and the tail of the substitution was read
-        # as a script path, putting the stdin program back out of view. Quotes still come
-        # off, since a quoted redirect is still a redirect.
-        redirect_word = tok.strip("\"'")
-        glue = _redirect_glue_point(redirect_word)
-        if glue is not None:
-            # The redirect rides on the back of another word (`-u>`). Split it and let the
-            # loop read both halves, so the part BEFORE the redirect is classified by the
-            # same flag/positional branches as any other word -- `-u` continues the scan,
-            # `script.py` ends it. Once per word, since neither half can split again.
-            later_tokens = [
-                *later_tokens[:idx],
-                redirect_word[:glue],
-                redirect_word[glue:],
-                *later_tokens[idx:],
-            ]
-            continue
-        redirect = _shell_normalizer._output_redirect_scan(redirect_word)
-        if redirect is not None:
-            # An OUTPUT redirect and its target are not this command's arguments and say
-            # nothing about where the program comes from, so the walk steps over both and
-            # keeps looking, as for a stdin redirect. Falling through read the leftover
-            # digits of `2>&1` as a script path, so `python 2>&1 <<< '<program>'` went unscanned.
-            redirect_target, position = redirect
-            # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
-            # here, in place, to stay linear in the word length on a floor that runs
-            # for every command.
-            while position < len(redirect_word):
-                further = _shell_normalizer._output_redirect_scan(redirect_word, position)
-                if further is None:
-                    break
-                redirect_target, position = further
-            remainder = redirect_word[position:]
-            if remainder:
-                # What is left starts with a STDIN operator (`2>/dev/null<<EOF`), which
-                # the branches above know how to read. Hand it back as its own token --
-                # once per word, not once per operator -- because swallowing it loses the
-                # heredoc and with it the program on stdin.
-                later_tokens = [*later_tokens[:idx], remainder, *later_tokens[idx:]]
-            elif not redirect_target:
-                if idx >= len(later_tokens):
-                    break
-                redirect_target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
-                idx += 1
-            if redirect_target:
-                idx = _operand_span_end(later_tokens, idx, redirect_target)
-            continue
-        if "<" in raw:
-            # A stdin REDIRECT and its operand are not this command's arguments either,
-            # and the redirect is what supplies the program: `python < prog.py` reads its
-            # program from that file. The earlier walk stopped at the redirect and then
-            # read the operand as a script path, so `python3 < $(printf …)` answered False.
-            target = raw[raw.index("<") :].rsplit("<", 1)[1]
-            if not target:
-                if idx >= len(later_tokens):
-                    break
-                target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
-                idx += 1
-            idx = _operand_span_end(later_tokens, idx, target)
-            continue
-        norm = _shell_normalizer._normalize_operand(tok).strip("\"'")
-        if skip_next:
-            skip_next = False
-            continue  # value consumed by an operand-taking flag (`-X dev`)
-        if not norm:
-            continue
-        if norm.startswith("<") or norm.startswith("|"):
-            break  # a redirect/pipe boundary ends this command's argument list
-        if norm == "-":
-            return True
-        if norm in _PYTHON_INLINE_PROGRAM_FLAGS or norm.startswith("-m") or norm.startswith("-c"):
-            return False  # `-c`/`-m` supply the program, not stdin
-        if norm in _PYTHON_OPERAND_FLAGS:
-            skip_next = True
-            continue
-        if len(norm) > 2 and norm[:2] in _PYTHON_OPERAND_FLAGS:
-            continue  # attached operand, e.g. `-Xdev`
-        if norm.startswith("-"):
-            continue  # an ordinary interpreter flag
-        return False  # a positional that is not `-` is a script path
-    return True  # nothing but flags → bare interpreter reads stdin
-
-
 # ── Self-protection floor short-circuit (perf) ──
 # The floor predicates below re-tokenize the command and descend every nested
 # shell payload (`_self_token_frames`), which is where the cost of the deny
@@ -831,6 +435,13 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     decoded_literals = _decoded_b64_literal_sources(submitted)
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
+        # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
+        # answer is the same for every token in this frame.  Held here and computed at
+        # most once per FRAME rather than once per trigger token: that half contains an
+        # O(len(tokens)) sweep, so re-asking it per trigger token makes the floor
+        # quadratic in the trigger count.  ``None`` until the first trigger token needs
+        # it, so a frame carrying none pays nothing.
+        disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             # AN INLINE PROGRAM THAT NAMES THE MINT SURFACE IS DENIED WITHOUT NEEDING THE VERB
             # AS AN ARGV WORD, and it is checked FIRST because it does not depend on the
@@ -852,7 +463,9 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 continue
             # The name is an ARGUMENT of a command that treats arguments as data
             # (``echo <name> <verb>`` prints two words) -- a mention, not a mint.
-            if _data_consumer_exempt(i, token, programs, tokens):
+            if disqualified is None:
+                disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
+            if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
             # quotes are already off these tokens, so ``'/tmp/kirocrew;' token`` (a symlink
@@ -1241,11 +854,15 @@ def _is_self_kill(text_lower: str) -> bool:
         return False
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
+        # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
+        disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             if not _is_kill_by_name_program(token):
                 continue
             # ``echo pkill kirocrew`` prints two words; it does not kill anything.
-            if _data_consumer_exempt(i, token, programs, tokens):
+            if disqualified is None:
+                disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
+            if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
@@ -1526,12 +1143,23 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
+        # Same reason, for the command-level half of ``_data_consumer_exempt``: see
+        # ``_is_credential_mint``.
+        disqualified: "bool | None" = None
         for i in range(len(tokens)):
             prog_idx = _self_program_index(tokens, i, scan)
             if prog_idx is None:
                 continue
             # ``echo kirocrew restart`` / ``echo python -m kiro_crew restart`` print words.
-            if _data_consumer_exempt(prog_idx, tokens[prog_idx], programs, tokens):
+            if disqualified is None:
+                disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
+            if _data_consumer_exempt(
+                prog_idx,
+                tokens[prog_idx],
+                programs,
+                tokens,
+                command_disqualified=disqualified,
+            ):
                 continue
             if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
                 return True
@@ -3153,6 +2781,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         cmd_start = True  # the next token sits in program position
         outer_depth = 0
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
+        # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
+        disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             verb = _ssh_family_verb(token)
             if verb is None and bound_program_verbs:
@@ -3241,7 +2871,9 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             # run ends here.
             prev_stripped_tok = None
             # ``echo ssh localhost`` prints two words; it connects to nothing.
-            if _data_consumer_exempt(i, token, programs, tokens):
+            if disqualified is None:
+                disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
+            if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
             # round-35 (GPT): launched through xargs, the verb's REAL argv
             # arrives on stdin -- and a here-string puts that stdin in the

@@ -699,6 +699,301 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
 _SCRIPT_EXECUTES_RE = re.compile(r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$")
 
 
+def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Iterator[str]":
+    """Program text from the stdin REDIRECTIONS in ``tokens[start:stop]``.
+
+    One walk over a token run, yielding whatever each stdin redirection puts on this
+    interpreter's stdin.  The redirection families, from the shell grammar:
+
+    * ``<<TAG`` / ``<<-TAG`` -- a heredoc; the BODY up to the matching tag is the program.
+      An unterminated one runs to the end of the run, which over-yields, not under.
+    * ``<<<WORD`` -- a here-string; the WORD itself is the program.
+    * ``<WORD`` -- a file whose CONTENT is the program.
+    * ``< <(cmd)`` -- process substitution; the command text is visible and spans tokens
+      up to its closing paren, so it is yielded as a run.
+    * ``<&N`` -- an fd dup, which carries no text at all; a documented residual.
+
+    Walked as a RUN rather than "everything after the interpreter" because a
+    redirection may appear ANYWHERE in a simple command -- BEFORE the program name
+    (``<<'PY' python -``), after it, and GLUED TO IT with no space
+    (``python3<<<'…'``, ``python3<prog.py``), all of which are ordinary bash reaching
+    the same mint.  A token that carries a redirect
+    after some other text is therefore classified from its first ``<`` onward: the
+    text before it is the program name or an earlier operand, and the shell reads the
+    rest as the redirection.
+
+    The left-hand run is not split on a newline, so an earlier command's own stdin
+    redirect is yielded too -- the same deliberate over-block the pipe producer has,
+    and for the same reason.
+
+    A heredoc's body ends at the LAST token equal to its tag, not the first.  Bash
+    closes a heredoc only on a line that holds the delimiter ALONE, and line structure
+    does not survive tokenizing -- so a body line that merely CONTAINS the word
+    (``# EOF``, an ordinary Python comment) produced a token equal to the tag and closed
+    the body early, leaving the real payload after it unscanned.
+    The last occurrence is the delimiter that actually ends it; taking it
+    over-yields only when the tag word recurs in a LATER command, which is the safe
+    direction.
+    """
+    run = tokens[start:stop]
+    idx = 0
+    while idx < len(run):
+        raw = run[idx].strip(_SHELL_WRAPPER_CHARS)
+        if "<" in raw and not raw.startswith("<"):
+            # A redirect GLUED to a preceding word: the shell reads everything from the
+            # first `<` as the redirection, so classify that suffix. Without this the
+            # interpreter's own token was excluded from the walk and
+            # `python3<<<'import kiro_crew'` -- one word, no space -- was never scanned.
+            raw = raw[raw.index("<") :]
+        here = _here_string_payload(raw)
+        if here is not None:
+            # Checked before the heredoc branch, which would otherwise read `<<<payload`
+            # as a tag and drop the payload.
+            idx += 1
+            if not here:  # a bare `<<<` puts its word next
+                if idx >= len(run):
+                    return
+                here = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                yield run[idx]
+                idx += 1
+            else:
+                yield here
+            end = _operand_span_end(run, idx, here)
+            yield from run[idx:end]
+            idx = end
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            # Checked before the plain-redirect branch below, which would otherwise read
+            # the first `<` of `<<` as a stdin redirect.
+            idx += 1
+            if not marker:  # a bare `<<` splits its tag into the next token
+                if idx >= len(run):
+                    return
+                marker = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            end = len(run)
+            for j in range(len(run) - 1, idx - 1, -1):
+                if run[j].strip(_SHELL_WRAPPER_CHARS) == marker:
+                    end = j
+                    break
+            yield from run[idx:end]
+            idx = end + 1
+            continue
+        if "<" in raw:
+            target = raw.rsplit("<", 1)[1]
+            if target.startswith("&"):
+                idx += 1  # `<&N` fd dup: nothing on the command line to match
+                continue
+            idx += 1
+            if not target:
+                if idx >= len(run):
+                    return
+                target = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                yield run[idx]
+                idx += 1
+            else:
+                yield target
+            end = _operand_span_end(run, idx, target)
+            yield from run[idx:end]
+            idx = end
+            continue
+        idx += 1
+
+
+def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
+    """The tokens that can carry the PROGRAM a stdin-reading ``python`` will run.
+
+    ``tokens[i]`` is an interpreter that reads its program from stdin.  The shell can
+    fill that stdin from exactly two families, and this yields those and nothing else:
+
+    * a stdin REDIRECTION -- heredoc body, here-string word, redirected file or process
+      substitution -- anywhere in the command: before the program name, after it, or
+      glued to it (:func:`_stdin_redirect_carriers`).  Walked over the WHOLE frame in ONE
+      pass, not per side of the interpreter: a marker and its body can straddle the
+      program name (``<<EOF python - … EOF``), and splitting the walk lost that
+      association entirely.  Only REDIRECT OPERANDS are
+      yielded, so a neighbouring command's ordinary argument is still never program text;
+    * a PIPE PRODUCER -- the tokens left of this interpreter, when a pipe feeds it.
+      The pipe is NOT reliably its own token: the tokenizer splits on whitespace only,
+      so ``echo '…'|python -`` glues the operator into a neighbouring word and
+      ``_program_basename`` resolves the program from the LAST control-operator
+      segment.  So the pipe is detected as a CHARACTER anywhere left of, or glued
+      into, the interpreter token, and that token's own leading segment is producer
+      text.  Requiring a standalone ``|`` token would miss all four no-space spellings
+      and let the producer's payload through.
+
+    Both families over-yield on the left: any pipe, or any earlier command's own stdin
+    redirect, qualifies.  That is the safe direction -- a missed carrier is a bypass,
+    an extra token is only a visible refusal (pinned by a test).
+
+    Everything else in the frame is another command's argv.  Scanning THAT is the
+    defect: a frame is not split on a newline, so an unrelated neighbour that
+    merely names this package in a FILE PATH (``isort src/kiro_crew/mcp_core.py``
+    followed by any ``python - <<'PY' … PY``) makes a harmless heredoc read as a
+    credential mint -- with no ``token`` word anywhere in the command.
+
+    Yields lazily so the caller's ``any()`` short-circuits: the cost stays O(frame)
+    per interpreter token, the same bound the frame-wide scan had.
+    """
+    # A PIPE PRODUCER writes this interpreter's stdin, so its argv IS program text.
+    glued_head, pipe_glued, _ = tokens[i].strip(_SHELL_WRAPPER_CHARS).rpartition("|")
+    if pipe_glued or any("|" in t for t in tokens[:i]):
+        yield from tokens[:i]
+        if pipe_glued:
+            yield glued_head
+    yield from _stdin_redirect_carriers(tokens, 0, len(tokens))
+
+
+def _python_reads_stdin(later_tokens: list[str]) -> bool:
+    """True if this ``python`` invocation runs its PROGRAM from stdin (a script/module does not).
+
+    CPython reads its program from stdin for a bare interpreter (no positional) or an explicit
+    ``-`` argument; ``-c CODE``, ``-m MOD``, and ``FILE`` all supply the program elsewhere.
+    Walks the argument stream the way ``_is_self_module_invocation`` does so the corner cases
+    line up: an operand-taking flag consumes its value (``-X dev`` — ``dev`` is not a script),
+    a heredoc (the ``<<TAG`` marker, its BODY and the closing tag) is not an argument, and a
+    pipe/redirect token ends this command's own arguments.
+
+    The heredoc structure is read off the RAW token via :func:`_heredoc_marker`, because
+    ``_normalize_operand`` strips a redirection to the empty string — which would leave the
+    heredoc branch here unreachable and have ``python << 'PY' … PY`` (no ``-``) report FALSE,
+    reading the first word of the BODY as a script path.  A redirect OPERAND is consumed
+    through :func:`_operand_span_end` for the same reason the carrier scan uses it: a
+    substitution operand is one shell WORD over several tokens, and skipping only the first
+    leaves ``python <<< $(printf …)`` reading ``%s`` as a script path.  The two
+    functions share that helper so the detector and the carrier scope agree on where
+    an operand ends.
+    """
+    skip_next = False
+    heredoc_tag: str | None = None
+    expect_tag = False
+    idx = 0
+    while idx < len(later_tokens):
+        tok = later_tokens[idx]
+        idx += 1
+        raw = tok.strip(_SHELL_WRAPPER_CHARS)
+        if heredoc_tag is not None:
+            # The body is program text on stdin, not an argument, and its CLOSING TAG
+            # ends this command: the tokenizer drops the newline that follows, so
+            # whatever comes after the tag belongs to the NEXT command. Reading it as
+            # this interpreter's positional made `python <<PY … PY; echo ok` report
+            # "runs a script named echo" and skipped the whole branch, so the heredoc's
+            # payload went unscanned. The heredoc has
+            # already supplied the program, so the answer here is simply True.
+            if raw == heredoc_tag:
+                return True
+            continue
+        if expect_tag:
+            expect_tag = False
+            heredoc_tag = raw
+            continue
+        here = _here_string_payload(raw)
+        if here is not None:
+            # A here-string supplies the program on stdin exactly as a heredoc does; its
+            # operand is a redirect word, never this interpreter's positional -- and the
+            # WHOLE operand, which a substitution spreads over several tokens.
+            if not here:  # a bare `<<<` puts its word in the next token
+                if idx >= len(later_tokens):
+                    break
+                here = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            idx = _operand_span_end(later_tokens, idx, here)
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            if marker:
+                heredoc_tag = marker
+            else:
+                expect_tag = True  # a bare `<<` splits its tag into the next token
+            continue
+        # Scanned on a form that keeps the SUBSTITUTION delimiters. `raw` has had
+        # `_SHELL_WRAPPER_CHARS` stripped, and those include `(` and `)` -- so the word
+        # `2>$(` (the tokenizer splits on the space inside `$( (true); printf x)`) arrived
+        # here as `2>$`, with the opener gone. The scan then saw an ordinary one-character
+        # target, never entered a substitution, and the tail of the substitution was read
+        # as a script path, putting the stdin program back out of view. Quotes still come
+        # off, since a quoted redirect is still a redirect.
+        redirect_word = tok.strip("\"'")
+        glue = _redirect_glue_point(redirect_word)
+        if glue is not None:
+            # The redirect rides on the back of another word (`-u>`). Split it and let the
+            # loop read both halves, so the part BEFORE the redirect is classified by the
+            # same flag/positional branches as any other word -- `-u` continues the scan,
+            # `script.py` ends it. Once per word, since neither half can split again.
+            later_tokens = [
+                *later_tokens[:idx],
+                redirect_word[:glue],
+                redirect_word[glue:],
+                *later_tokens[idx:],
+            ]
+            continue
+        redirect = _output_redirect_scan(redirect_word)
+        if redirect is not None:
+            # An OUTPUT redirect and its target are not this command's arguments and say
+            # nothing about where the program comes from, so the walk steps over both and
+            # keeps looking, as for a stdin redirect. Falling through read the leftover
+            # digits of `2>&1` as a script path, so `python 2>&1 <<< '<program>'` went unscanned.
+            redirect_target, position = redirect
+            # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
+            # here, in place, to stay linear in the word length on a floor that runs
+            # for every command.
+            while position < len(redirect_word):
+                further = _output_redirect_scan(redirect_word, position)
+                if further is None:
+                    break
+                redirect_target, position = further
+            remainder = redirect_word[position:]
+            if remainder:
+                # What is left starts with a STDIN operator (`2>/dev/null<<EOF`), which
+                # the branches above know how to read. Hand it back as its own token --
+                # once per word, not once per operator -- because swallowing it loses the
+                # heredoc and with it the program on stdin.
+                later_tokens = [*later_tokens[:idx], remainder, *later_tokens[idx:]]
+            elif not redirect_target:
+                if idx >= len(later_tokens):
+                    break
+                redirect_target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            if redirect_target:
+                idx = _operand_span_end(later_tokens, idx, redirect_target)
+            continue
+        if "<" in raw:
+            # A stdin REDIRECT and its operand are not this command's arguments either,
+            # and the redirect is what supplies the program: `python < prog.py` reads its
+            # program from that file. The earlier walk stopped at the redirect and then
+            # read the operand as a script path, so `python3 < $(printf …)` answered False.
+            target = raw[raw.index("<") :].rsplit("<", 1)[1]
+            if not target:
+                if idx >= len(later_tokens):
+                    break
+                target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            idx = _operand_span_end(later_tokens, idx, target)
+            continue
+        norm = _normalize_operand(tok).strip("\"'")
+        if skip_next:
+            skip_next = False
+            continue  # value consumed by an operand-taking flag (`-X dev`)
+        if not norm:
+            continue
+        if norm.startswith("<") or norm.startswith("|"):
+            break  # a redirect/pipe boundary ends this command's argument list
+        if norm == "-":
+            return True
+        if norm in _PYTHON_INLINE_PROGRAM_FLAGS or norm.startswith("-m") or norm.startswith("-c"):
+            return False  # `-c`/`-m` supply the program, not stdin
+        if norm in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(norm) > 2 and norm[:2] in _PYTHON_OPERAND_FLAGS:
+            continue  # attached operand, e.g. `-Xdev`
+        if norm.startswith("-"):
+            continue  # an ordinary interpreter flag
+        return False  # a positional that is not `-` is a script path
+    return True  # nothing but flags → bare interpreter reads stdin
+
+
 def _data_consumer_command_disqualified(tokens: "list[str]") -> bool:
     """True where NO token in *tokens* can claim the data-consumer exemption.
 
@@ -741,7 +1036,7 @@ def _data_consumer_exempt(
     programs: "list[str]",
     tokens: "list[str]",
     *,
-    command_disqualified: "bool | None" = None,
+    command_disqualified: bool,
 ) -> bool:
     """True if *token* is an ARGUMENT of a command that treats arguments as data.
 
@@ -782,12 +1077,12 @@ def _data_consumer_exempt(
         return False
     if _LEADING_SUBSTITUTION_RE.match(token):
         return False
-    # Command-level guards, hoisted into ``_data_consumer_command_disqualified``.
-    # *command_disqualified* lets a caller iterating one fixed argv charge them
-    # once; ``None`` means "compute them here", which is what every caller that
-    # asks about a single token does, so their behaviour is unchanged.
-    if command_disqualified is None:
-        command_disqualified = _data_consumer_command_disqualified(tokens)
+    # The command-level guards live in ``_data_consumer_command_disqualified`` and
+    # their verdict arrives here already computed. Every caller iterates one fixed
+    # argv, so every caller can charge them once per argv rather than once per
+    # token, and the parameter is REQUIRED so that a caller cannot fall back to
+    # computing them per token -- the whole-argv sweep inside them is what makes
+    # that shape quadratic in the token count.
     if command_disqualified:
         return False
     return programs[index] in _DATA_CONSUMER_PROGRAMS

@@ -7134,23 +7134,281 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
             f"$(printf echo) {_NAME} {_TOK}",
         ],
     )
-    def test_precomputed_and_self_computed_guards_agree(self, cmd):
-        # The three call sites this change does not touch pass no precomputed
-        # value, so they take the ``None`` branch.  That branch must give the
-        # same answer as the hoisted one, or those callers silently change
-        # behaviour.
+    def test_the_command_level_verdict_is_the_callers_to_supply(self, cmd):
+        # ``command_disqualified`` is required, so a caller cannot reach the guards
+        # without having charged them once for its own argv. Omitting it is a
+        # TypeError rather than a silent per-token recomputation, which is the
+        # shape that costs one whole-argv sweep per candidate token.
         tokens = security.normalize_shell_command(cmd)
         programs = security._argv_programs(tokens)
         hoisted = security._data_consumer_command_disqualified(tokens)
+        with pytest.raises(TypeError):
+            security._data_consumer_exempt(0, tokens[0], programs, tokens)
         for i, token in enumerate(tokens):
-            self_computed = security._data_consumer_exempt(i, token, programs, tokens)
-            passed_in = security._data_consumer_exempt(
+            # The supplied verdict governs: a disqualified command earns no
+            # exemption for any token, whatever that token looks like.
+            assert (
+                security._data_consumer_exempt(
+                    i, token, programs, tokens, command_disqualified=True
+                )
+                is False
+            ), f"token {i} ({token!r}) was exempted by a disqualified command"
+            supplied = security._data_consumer_exempt(
                 i, token, programs, tokens, command_disqualified=hoisted
             )
-            assert self_computed == passed_in, (
-                f"token {i} ({token!r}) disagrees: self-computed={self_computed} "
-                f"passed-in={passed_in}"
+            assert isinstance(supplied, bool)
+
+
+class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
+    """The self-protection floors must not be quadratic in TRIGGER-token count.
+
+    Four floors walk one fixed argv per frame and ask ``_data_consumer_exempt``
+    about each token that passes a narrow trigger predicate: the self-program and
+    self-module names (credential mint), a kill-family program name (self kill), a
+    resolved self-program index (self subcommand), and an ssh-family verb (ssh to
+    self). The command-level half of that guard reads only ``tokens``, and one of
+    its members sweeps the whole argv with ``_SCRIPT_EXECUTES_RE``, so charging it
+    per trigger token costs N x len(tokens): a 24KB command carrying 1,600
+    kill-family words as arguments of a data consumer took ~14s, which crosses a
+    25s-class watchdog around 2,200 such words.
+
+    A per-frame memo makes the charge one per frame. It is computed LAZILY, at the
+    first trigger token, so the far more common command that reaches these floors
+    and trips no trigger predicate pays nothing at all -- the property
+    ``test_a_command_with_no_trigger_token_pays_nothing`` pins, and the reason a
+    memo is preferable to an unconditional per-frame hoist.
+
+    The assertions are STRUCTURAL, matching the payload-axis class above: a
+    wall-clock ratio cannot separate this property from the runner, and a wall-clock
+    bound tight enough to catch the quadratic on a slow host passes it on a fast one
+    -- the 24KB repro above lands under 4s on some hosts and near 14s on others. So
+    what is pinned is the bounded QUANTITY: how often the command-level answer is
+    computed, and how many times the argv is swept for it.
+    """
+
+    @staticmethod
+    def _triggers(n: int) -> str:
+        """The issue's repro shape: kill-family words as arguments of ``echo``."""
+        return "echo " + " ".join([_PK, _NAME] * n)
+
+    @staticmethod
+    def _count_guard_calls(monkeypatch, cmd: str) -> "tuple[int, str | None]":
+        calls = {"n": 0}
+        real = security._data_consumer_command_disqualified
+
+        def counting(tokens):
+            calls["n"] += 1
+            return real(tokens)
+
+        monkeypatch.setattr(security, "_data_consumer_command_disqualified", counting)
+        verdict = security.is_denied(cmd)
+        return calls["n"], verdict
+
+    def test_guard_is_charged_the_same_however_many_trigger_tokens(self, monkeypatch):
+        # Measured before the memo: 700 / 1400 / 2100 calls at n = 100 / 200 / 300
+        # -- exactly 7n, one per trigger token per reaching floor. After: 7 at
+        # every size, one per frame per reaching floor.
+        counts = {}
+        for n in (100, 200, 300):
+            counts[n], verdict = self._count_guard_calls(monkeypatch, self._triggers(n))
+            # The verdict has to be reached THROUGH the instrumented path, or the
+            # counts are counting nothing. ``echo`` makes these words data.
+            assert verdict is None, f"n={n} changed the exemption verdict: {verdict!r}"
+        assert counts[100] == counts[200] == counts[300], (
+            "the command-level guard is charged per trigger token, not per frame: " f"{counts}"
+        )
+        # Equal counts alone could hold by accident for a shape that is still a
+        # multiple of the trigger count, so bound the count directly too.
+        assert counts[300] < 30, f"guard charged {counts[300]} times for {300 * 2} trigger tokens"
+
+    def test_a_command_with_no_trigger_token_pays_nothing(self, monkeypatch):
+        # The memo is lazy, so the common command reaching these floors without
+        # tripping a trigger predicate must not pay the sweep an unconditional
+        # per-frame hoist would charge it.
+        calls, verdict = self._count_guard_calls(monkeypatch, f"ls -la /var/log {_NAME}.log")
+        assert verdict is None
+        assert calls == 0, f"a command with no trigger token paid {calls} argv sweeps"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # One per trigger predicate, each reaching its floor and each exempt.
+            f"echo {_PK} {_NAME}",
+            f"echo {_NAME} {_TOK}",
+            f"echo {_NAME} restart",
+            "echo ssh localhost",
+            # And cases where the exemption is REFUSED, so the memo is consulted on
+            # the deny side as well.
+            f"echo {_PK} {_NAME} | sh",
+            f"echo {_NAME} {_TOK} | sh",
+            "echo ssh localhost | sh",
+            f"$(printf echo) {_NAME} {_TOK}",
+            # Two frames, so the memo is built more than once in one call.
+            f"echo {_PK} {_NAME}; sed 's/a/{_PK} -f {_NAME}/e' f",
+            f"echo {_NAME} {_TOK}; $(printf echo) {_NAME} {_TOK}",
+        ],
+    )
+    def test_the_memo_reaches_the_same_verdict_as_recomputing_every_call(self, monkeypatch, cmd):
+        # Charging the guard once per frame may not move any verdict: it is a pure
+        # function of ``tokens``, which a frame binds once. Compare the real verdict
+        # against one where the memo is discarded and the answer recomputed from the
+        # frame's tokens at every single call.
+        #
+        # BOTH namespaces are patched, and neither is redundant. Each caller binds
+        # ``_data_consumer_exempt`` as its own module global via ``from
+        # .shell_normalizer import ...``: the four frame loops in ``argv_floor``, and
+        # the payload walk in the ``security`` package body. The facade mirrors an
+        # attribute write onto ONE owning submodule -- the normalizer, for this name --
+        # so a facade write alone leaves ``argv_floor`` resolving the real function and
+        # instruments nothing here. Which caller a given command reaches also varies:
+        # ``awk 'system(...)'`` carries its kill inside one quoted token, so no frame
+        # loop sees a trigger word and only the payload walk judges it.
+        #
+        # ``calls`` is asserted non-zero for that reason. A wrong or incomplete patch
+        # target then reads as a RED test rather than a comparison of the real
+        # function against itself, which would pass whatever the memo did.
+        #
+        # That assertion is also why ``awk 'system(...)'`` is absent from the cases
+        # above: its kill is denied by a different tier and the guard is never asked,
+        # so it would trip the non-zero check while proving nothing about the memo.
+        # The sibling class covers that shape under refused exemptions.
+        real = _argv_floor._data_consumer_exempt
+        assert security._data_consumer_exempt is real, "the two callers hold one object"
+        calls = {"n": 0}
+
+        def recomputing_every_call(index, token, programs, tokens, *, command_disqualified):
+            calls["n"] += 1
+            return real(
+                index,
+                token,
+                programs,
+                tokens,
+                command_disqualified=security._data_consumer_command_disqualified(tokens),
             )
+
+        with_memo = security.is_denied(cmd)
+        monkeypatch.setattr(_argv_floor, "_data_consumer_exempt", recomputing_every_call)
+        monkeypatch.setattr(security, "_data_consumer_exempt", recomputing_every_call)
+        without_memo = security.is_denied(cmd)
+        assert calls["n"] > 0, (
+            "the instrument observed nothing -- the patch target is not the namespace "
+            f"the frame loops resolve through, so this comparison is vacuous ({cmd!r})"
+        )
+        assert with_memo == without_memo, (
+            f"the per-frame memo changed the verdict for {cmd!r}: "
+            f"memo={with_memo!r} recomputed={without_memo!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "floor",
+        [
+            "_is_credential_mint",
+            "_is_self_kill",
+            "_matches_self_subcommand",
+            "_is_ssh_to_self",
+        ],
+    )
+    def test_the_memo_is_declared_inside_the_frame_loop(self, floor):
+        """The memo's SCOPE is the frame, and that is asserted on the source.
+
+        Hoisting the declaration one level further out would compute the answer
+        from the first frame's tokens and reuse it for every later frame -- a
+        different command-level verdict silently applied to a different argv.
+
+        This is asserted structurally rather than behaviourally because the
+        behaviour is not reachable: each floor returns as soon as a frame denies,
+        so a frame whose guard answer differs from an earlier frame's is only ever
+        visited when the earlier frame did not deny, and no command was found that
+        both survives its first frame and disagrees with it. The scope is still the
+        correct shape, so it is pinned where it is visible.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(security, floor))))
+
+        def memo_targets(node) -> "list[int]":
+            found = []
+            for sub in ast.walk(node):
+                targets = []
+                if isinstance(sub, ast.Assign):
+                    targets = sub.targets
+                elif isinstance(sub, ast.AnnAssign):
+                    targets = [sub.target]
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id == "disqualified":
+                        value = sub.value
+                        if isinstance(value, ast.Constant) and value.value is None:
+                            found.append(sub.lineno)
+            return found
+
+        frame_loops = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "tokens"
+        ]
+        assert len(frame_loops) == 1, f"{floor} no longer has exactly one frame loop"
+        loop = frame_loops[0]
+        inside = [ln for stmt in loop.body for ln in memo_targets(stmt)]
+        assert inside, f"{floor} declares no per-frame memo inside its frame loop"
+        all_declarations = memo_targets(tree)
+        assert sorted(all_declarations) == sorted(inside), (
+            f"{floor} declares the memo outside its frame loop as well "
+            f"(inside={sorted(inside)} all={sorted(all_declarations)}) -- an outer "
+            "declaration carries one frame's command-level answer into the next"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A data-consumer mention beside a real invocation: the real one must
+            # still be judged, whichever frame it lands in.
+            f"echo {_PK} {_NAME}; sed 's/a/{_PK} -f {_NAME}/e' f",
+            f"echo {_NAME} {_TOK}; $(printf echo) {_NAME} {_TOK}",
+            f"echo {_PK} {_NAME}; echo {_PK} {_NAME} | sh",
+            "echo ssh localhost; echo ssh localhost | sh",
+        ],
+    )
+    def test_a_mention_beside_a_real_invocation_is_still_denied(self, cmd):
+        assert (
+            security.is_denied(cmd) is not None
+        ), f"a real invocation beside a mention went unjudged: {cmd!r}"
+
+    @pytest.mark.parametrize("n", [50, 100, 150])
+    def test_the_argv_sweep_is_linear_in_the_argv_not_quadratic_in_triggers(self, monkeypatch, n):
+        """Backstop against the cost the guard-call counts cannot see.
+
+        Those counts pin how often the command-level guard is ASKED. This one pins
+        the expensive thing inside it -- ``_SCRIPT_EXECUTES_RE`` sweeping every
+        token -- so a regression that re-pays the sweep somewhere else would still
+        be caught. Measured per trigger token the sweeps are 35,350 / 140,700 /
+        316,050 at n = 50 / 100 / 150, which is 350x / 700x / 1050x the argv length:
+        the multiplier itself grows, which is what quadratic means here. Charged per
+        frame it is exactly 7x the argv length at every size. The bound below leaves
+        the linear form room and the quadratic form misses it by 35x at n=50.
+        """
+        cmd = self._triggers(n)
+        argv_len = len(security.normalize_shell_command(cmd))
+        calls = {"n": 0}
+        real = security._SCRIPT_EXECUTES_RE
+
+        class Counting:
+            def search(self, text):
+                calls["n"] += 1
+                return real.search(text)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        monkeypatch.setattr(security, "_SCRIPT_EXECUTES_RE", Counting())
+        assert security.is_denied(cmd) is None
+        assert calls["n"] <= 10 * argv_len, (
+            f"the argv sweep is quadratic in trigger count: {calls['n']} sweeps for "
+            f"an argv of {argv_len} tokens ({n * 2} trigger tokens)"
+        )
 
 
 class TestSandboxEscapeSshSelf:
