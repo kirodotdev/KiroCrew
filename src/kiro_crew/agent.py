@@ -4491,6 +4491,40 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     return _AppOwnership(owned, fully_read)
 
 
+# Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
+# source has since DROPPED is dropped here too. Anything else on a merged entry is
+# the user's (``autoApprove``, ``disabledTools``, fields we do not model) and
+# survives by being ABSENT here, so one invented later defaults to surviving.
+# ``command``/``url`` are absent (a transport needs a scope that declares one;
+# ``test_mcp_rebuild_reconsumption`` owns that), so their dependants are too --
+# reconciling ``headers`` without its ``url`` would pair this source's credential
+# with the entry's old endpoint. mcp.md calls this adopting as a unit.
+_SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
+
+
+def _merge_source_owned(mcps: dict, name: str, spec: dict, *, stale: set[str]) -> None:
+    """Reconcile a scope global's *spec* onto ``mcps[name]``.
+
+    ``setdefault`` was a no-op for a name the config already held, so a source the
+    user had CHANGED -- a bumped ``timeout`` -- never reached the generated spec
+    again. Only a name in *stale* is reconciled, and reconciling RETIRES it, so a
+    name claimed earlier in this pass by a higher-priority scope keeps winning and
+    the declared inter-scope precedence is left untouched.
+    """
+    existing = mcps.get(name)
+    if not isinstance(existing, dict):
+        mcps[name] = without_marker(spec)
+        return
+    if name not in stale:
+        return
+    stale.discard(name)
+    for key in _SOURCE_OWNED_MCP_KEYS:
+        if key in spec:
+            existing[key] = spec[key]
+        else:
+            existing.pop(key, None)
+
+
 def rebuild_agent_config(
     *, clean: bool = False, refresh_forks: bool | Literal["defer"] = True
 ) -> Path:
@@ -4585,9 +4619,15 @@ def rebuild_agent_config(
     # had just stripped (the ceiling now governs that server) lost to the stale
     # grant, the tightening never reached an existing config, and those tools
     # kept skipping the PreToolUse gate.
+    # Names a PREVIOUS rebuild left behind -- the only stale projections a changed
+    # source reconciles. Seeded here so the app loop can retire what it claims.
+    _stale = set(config.get("mcpServers", {}))
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
+            # The manifest just spoke, so a same-named shared-file leftover must
+            # not reconcile onto it -- this is how the app entry keeps outranking.
+            _stale.discard(_app_srv)
             # EXPOSE it: kiro-cli connects entries declared in `mcpServers`, but
             # an unreferenced server contributes no tools to the agent. `tools`
             # is the unconditional exposure list (the final
@@ -4607,11 +4647,12 @@ def rebuild_agent_config(
             # SHARED file and has no meaning in a spec we render ourselves, so
             # keeping it would put a key in front of the runtime that says nothing
             # to it.
-            config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
+            _merge_source_owned(config.setdefault("mcpServers", {}), name, spec, stale=_stale)
 
     # Merge shared MCP servers from edition-contributed provider globals (CPP
-    # seam) — now LOWER priority than Kiro global; setdefault is a no-op when
-    # Kiro already populated the same key, so these only fill gaps. In OSS the
+    # seam) — now LOWER priority than Kiro global: an absent name is filled and a
+    # name claimed earlier in THIS pass was retired from ``_stale``, so these only
+    # fill gaps. In OSS the
     # seam is empty, so NO provider global (e.g. ~/.claude.json) is merged —
     # keeping rebuild symmetric with discovery + apply/uninstall so a server the
     # dashboard can't see is never re-merged into sessions. A companion
@@ -4629,7 +4670,7 @@ def rebuild_agent_config(
             if name not in managed_names:
                 # Copy (see note above) so the source dict stays pristine for
                 # the fallback-candidate lookup.
-                config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
+                _merge_source_owned(config.setdefault("mcpServers", {}), name, spec, stale=_stale)
 
     # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.

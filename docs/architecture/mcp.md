@@ -74,9 +74,18 @@ kirocrew`). Onto that base:
    manifests are authoritative and are re-derived on every rebuild, so keeping
    the previous rebuild's entry would preserve an `autoApprove` grant this pass
    had just stripped.
-2. **`~/.kiro/settings/mcp.json`** (Kiro global) via `setdefault`.
-3. **Seam-contributed provider globals** via `setdefault`, so they can only fill
-   gaps the Kiro global did not. Empty in this build.
+2. **`~/.kiro/settings/mcp.json`** (Kiro global). An absent name is added. A name
+   a PREVIOUS rebuild left behind is *reconciled*: the transport-independent keys
+   the source owns (`timeout`, `disabled`) are overwritten, and one the source has
+   since dropped is removed, so an edit to the source reaches the generated spec
+   instead of losing to the value the first rebuild froze. Every other key on the
+   entry is the user's and survives by omission, `autoApprove` included.
+   Reconciling retires the name, so a lower-priority scope cannot reconcile it
+   again. `command`/`url` and the fields dependent on them (`args`, `env`,
+   `headers`) are NOT reconciled — see the fallback's as-a-unit rule below.
+3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
+   global did not: a name step 1 or step 2 already claimed in this pass has been
+   retired, so it is left alone. Empty in this build.
 4. **`~/.kiro/crew/mcp.json`** via `update()` on an existing entry, so
    Kiro Crew's `command`/`args`/`env` win while user-set fields such as
    `autoApprove` survive.
