@@ -337,9 +337,49 @@ interface SettingsSectionProps {
   children?: React.ReactNode
 }
 
+/* ── A settings deep link that is still looking for its row ──
+ *
+ * The command palette and every `SettingRef` chip navigate to
+ * `/settings/<tab>?highlight=<id>`, and `useSettingHighlight` then resolves that
+ * id by QUERYING THE DOM for the row. A collapsed group renders no rows at all,
+ * so a setting inside one is not merely hidden from the reader -- it is absent
+ * from the document the deep link searches, and the link arrives on the tab
+ * having revealed nothing and rung nothing.
+ *
+ * Carried as a signal rather than read from the router HERE, because
+ * `SettingsSection` is also rendered outside a router (Mochi's Electron renderer
+ * under `apps/mochi`), where a `useSearchParams` in a shared primitive would
+ * throw. `useSettingHighlight` owns the router and publishes.
+ */
+let deepLinkPending = false
+const deepLinkListeners = new Set<() => void>()
+
+/** Publish whether a settings deep link is still unresolved. */
+export function setSettingsDeepLinkPending(next: boolean): void {
+  if (deepLinkPending === next) return
+  deepLinkPending = next
+  for (const cb of deepLinkListeners) cb()
+}
+
+function subscribeDeepLinkPending(cb: () => void): () => void {
+  deepLinkListeners.add(cb)
+  return () => { deepLinkListeners.delete(cb) }
+}
+const readDeepLinkPending = () => deepLinkPending
+const readDeepLinkOnServer = () => false
+
 export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
   const [open, setOpen] = React.useState(false)
   const bodyId = React.useId()
+  const deepLink = React.useSyncExternalStore(
+    subscribeDeepLinkPending, readDeepLinkPending, readDeepLinkOnServer,
+  )
+  /* LATCHED rather than derived. The link strips its own parameter the moment it
+   * has rung the row, so a group whose openness merely mirrored the signal would
+   * close again on that same tick -- taking the ringed row off the screen exactly
+   * when the user was meant to see it. Opening is also the only direction: a user
+   * who closes the group afterwards keeps it closed. */
+  React.useEffect(() => { if (deepLink) setOpen(true) }, [deepLink])
   return (
     <>
       {/* `mt-4` separates one section from the previous section's controls, so it
