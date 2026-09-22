@@ -135,7 +135,7 @@ class ProjectionRegistry:
         can be newer than another; folding each from its own watermark would need a
         separate pass per unit over a different range, and the single pass this makes
         instead hands every unit the same events. A unit already past an event drops
-        it on its own watermark inside :meth:`drive`, so replaying from the floor
+        it on its own watermark as the fold applies it, so replaying from the floor
         costs the newer units nothing and cannot double-count.
 
         *tail_from* is the client's, because the kernel owns no log: it is called
@@ -177,12 +177,14 @@ class ProjectionRegistry:
                     state, watermark = restored[defn.key]
                     self._cells[(defn.key, store)] = _Cell(state, watermark)
 
-        # Fold the tail OUTSIDE the lock, through drive, so a resumed fold and a cold
-        # fold run the same code over the same events. A second tail-folding loop here
-        # would be a path that can disagree with drive about the same bytes, and
-        # nothing in the file would say which one is right.
+        # Fold the tail OUTSIDE the lock, through the same fold a live event takes, so
+        # a resumed fold and a cold fold run the same code over the same events. A
+        # second tail-folding loop here would be a path that can disagree with that
+        # fold about the same bytes, and nothing in the file would say which one is
+        # right. Emission is off for the same reason :meth:`prime` has none: these
+        # events are history the client's store already holds.
         for event in tail_from(floor):
-            self.drive(store, event)
+            self._fold_one(store, event, emit=False)
         return floor
 
     def savepoints(self, store: str, identity: Mapping[str, Any]) -> list[Savepoint]:
@@ -220,13 +222,27 @@ class ProjectionRegistry:
         over just this event; callers that need a full history must
         ``prime`` first (a client with a log on disk does at load).
         """
+        self._fold_one(store, event, emit=True)
+
+    def _fold_one(self, store: str, event: Any, *, emit: bool) -> None:
+        """Fold one event through every unit, announcing the changes only when *emit*.
+
+        The fold is identical either way, and that is the point: a live event and a
+        replayed one reach a cell through this one function over the same bytes, so
+        there is no second folding path that could disagree with it about them.
+
+        *emit* decides only whether those changes are announced. An event being new to
+        a cell does not make it news to a client: replaying a log the client's store
+        already holds reaches the value it already has by a route it need not hear
+        about, and a callback is a client's egress rather than a bookkeeping hook.
+        """
         # Read the seq BEFORE taking the lock: it is a pure read of the payload,
         # and the reader belongs to the client, so there is no reason to run it
         # while holding a lock the client's callback may also contend for.
         seq = self._seq_of(event)
         with self._lock:
             defns = list(self._defns.items())
-            on_change = self._on_change
+            on_change = self._on_change if emit else None
             fired: list[tuple[str, dict, int]] = []
             for key, defn in defns:
                 cell = self._cells.get((key, store))

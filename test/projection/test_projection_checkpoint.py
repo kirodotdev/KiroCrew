@@ -124,6 +124,75 @@ class TestAStaleSavepointPlusItsTailEqualsAColdFold:
         assert reg.snapshot("a")["values"]["summing"]["count"] == 4
 
 
+class TestARestoreFiresNoChangeCallbacks:
+    """A restore is not news, so it emits nothing -- the same as a cold ``prime``.
+
+    A client's callback is a network egress rather than a bookkeeping hook, so a
+    restore that emits republishes a store's own history as live changes.
+    """
+
+    def test_resuming_past_a_savepoint_emits_nothing(self, tmp_path):
+        events = [_ev(seq, amount=seq) for seq in range(1, 11)]
+        store = DirectoryCheckpointStore(tmp_path)
+        writer, _ = _registry()
+        writer.prime("a", events[:4])
+        assert store.save("a", writer.savepoints("a", IDENTITY)[0]) is True
+
+        reg, defn = _registry()
+        fired: list[tuple[str, int]] = []
+        reg.set_on_change(lambda _store, key, _view, seq: fired.append((key, seq)))
+
+        floor = reg.prime_checkpointed("a", store, IDENTITY, _tail_from(events))
+
+        assert floor == 4
+        assert defn.applied == [5, 6, 7, 8, 9, 10], "the tail still folds"
+        assert fired == []
+
+    def test_a_load_with_no_savepoint_emits_nothing(self, tmp_path):
+        # Nothing on disk is the common case, not a corner: the floor drops to the
+        # empty watermark, so the tail is the WHOLE log. A client attached at that
+        # moment is the one that would receive a frame per historical change.
+        events = [_ev(seq) for seq in range(1, 8)]
+        store = DirectoryCheckpointStore(tmp_path)
+        reg, defn = _registry()
+        fired: list[tuple[str, int]] = []
+        reg.set_on_change(lambda _store, key, _view, seq: fired.append((key, seq)))
+
+        floor = reg.prime_checkpointed("a", store, IDENTITY, _tail_from(events))
+
+        assert floor == EMPTY_WATERMARK
+        assert defn.applied == [1, 2, 3, 4, 5, 6, 7], "the whole log still folds"
+        assert fired == []
+        assert reg.snapshot("a")["values"]["summing"]["count"] == 7
+
+    def test_a_cold_prime_is_silent_on_the_same_events(self, tmp_path):
+        # The parity the docstring claims, pinned directly: whichever path reaches the
+        # value, neither reports it as a change.
+        events = [_ev(seq) for seq in range(1, 8)]
+        reg, _ = _registry()
+        fired: list[tuple[str, int]] = []
+        reg.set_on_change(lambda _store, key, _view, seq: fired.append((key, seq)))
+
+        reg.prime("a", events)
+
+        assert fired == []
+
+    def test_a_live_event_after_the_restore_still_emits(self, tmp_path):
+        # Silencing the restore must not silence what the callback exists for.
+        events = [_ev(seq) for seq in range(1, 5)]
+        store = DirectoryCheckpointStore(tmp_path)
+        reg, _ = _registry()
+        fired: list[tuple[str, int]] = []
+        reg.set_on_change(lambda _store, key, _view, seq: fired.append((key, seq)))
+
+        reg.prime_checkpointed("a", store, IDENTITY, _tail_from(events))
+        assert fired == [], "the restore itself is silent"
+
+        reg.drive("a", _ev(5))
+
+        assert fired == [("summing", 5)], "a genuinely new event is still news"
+
+
 class TestAStateVersionMismatchForcesAColdRebuild:
     def test_a_savepoint_written_by_another_state_shape_is_refused(self, tmp_path):
         store = DirectoryCheckpointStore(tmp_path)
