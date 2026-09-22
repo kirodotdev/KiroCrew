@@ -10,8 +10,11 @@ Pins the four seams the member-dispatch mount rides on:
   projection widening: the server joins ``tools`` and the conductor's
   approval-free dashboard verbs join the ``allowedTools`` input BEFORE the
   governance ceiling filter.
-- ``AcpClient._append_member_dispatch_server`` — the claude session-array
-  append, honoring the permission-surface precondition.
+- ``AcpClient._append_member_dispatch_server`` — the claude session-array append,
+  honoring the permission-surface precondition.
+- ``AcpProvider._member_session_key`` — the set membership that decides whether the
+  runtime's session/new and session/load paths mount anything at all, which is the
+  only route a codex member session has.
 - ``AcpRuntime._kas_custom_agents`` / ``create_session`` threading — the member
   flag reaches the projection.
 
@@ -24,10 +27,12 @@ hand session control to every session of the agent.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
+from kiro_crew import acp_tool_gate
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.types import (
@@ -36,6 +41,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.members import (
@@ -43,6 +49,7 @@ from kiro_crew.members import (
     is_member_session_key,
     member_dispatch_session_server,
 )
+from kiro_crew.providers.acp import AcpProvider
 
 MEMBER_KEY = "dashboard_member-autofix"
 
@@ -52,14 +59,21 @@ class TestCapabilitySet:
         """kiro v2 reads its template from disk and exposes no per-session
         channel, so it must never be in the set: a member session on it runs as
         plain chat rather than mounted-and-refused."""
-        assert ACP_BACKENDS_MEMBER_DISPATCH == frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
+        assert ACP_BACKENDS_MEMBER_DISPATCH == frozenset(
+            {ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+        )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MEMBER_DISPATCH
-        # codex has the per-session mount now (providers/mirrors/codex.py) and its
-        # precondition is stronger than claude's, so its exclusion is a scope
-        # decision rather than a capability gap: mounting session control into a
-        # codex DM thread is a NEW capability and belongs to whoever decides member
-        # threads run on codex at all.
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_MEMBER_DISPATCH
+
+    def test_codex_holds_both_things_membership_needs(self):
+        """The mount it rides, and the gate that makes the mount safe.
+
+        Without the array set a codex session gets no Crew array at all; without an
+        ENFORCED routing a session that cannot be gated would still run, and session
+        control is the one tool set that must not reach one.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_MEMBER_DISPATCH
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_MCP_ARRAY
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_CODEX) is True
 
 
 class TestMemberDispatchSessionServer:
@@ -262,17 +276,6 @@ class TestClaudeMemberAppend:
         stub.backend = ACP_BACKEND_KIRO
         assert self._run(stub) == _base_servers()
 
-    def test_codex_is_untouched_because_it_is_not_a_member(self):
-        """The capability set withholds the mount, and it is checked FIRST.
-
-        Codex has the per-session mount and an enforced permission routing, so its
-        exclusion is a scope decision rather than a failed precondition. Pinning it
-        here means a later change that adds codex to the set cannot do so silently.
-        """
-        stub = _ClientStub()
-        stub.backend = ACP_BACKEND_CODEX
-        assert self._run(stub) == _base_servers()
-
     def test_same_named_entry_is_replaced_not_duplicated(self):
         stub = _ClientStub()
         servers = _base_servers() + [
@@ -282,6 +285,59 @@ class TestClaudeMemberAppend:
         matches = [e for e in out if e["name"] == MEMBER_DISPATCH_SERVER]
         assert len(matches) == 1
         assert matches[0]["command"] != "old"
+
+
+class TestCodexMemberMount:
+    """What actually mounts session control on a codex member DM.
+
+    NOT ``_append_member_dispatch_server``: that helper serves the backends whose
+    array the CLIENT composes, and codex is not one of them -- its array is built by
+    ``AcpRuntime._mirrored_session_mcp`` and the runtime appends the member entry
+    itself, keyed only on a non-empty ``member_session_key``. So the codex-specific
+    fact is the one asserted here, the seam that decides whether that key is empty.
+    """
+
+    @staticmethod
+    def _provider(backend: str, session_key: str) -> AcpProvider:
+        provider = object.__new__(AcpProvider)
+        provider._client = SimpleNamespace(backend=backend, _session_key=session_key)
+        return provider
+
+    def _key(self, backend: str, session_key: str) -> str:
+        return AcpProvider._member_session_key(self._provider(backend, session_key))
+
+    def test_a_codex_member_session_yields_its_key(self):
+        """Non-empty is the whole mount: both runtime establishment paths read this
+        one value, and the block they gate on is backend-agnostic."""
+        assert self._key(ACP_BACKEND_CODEX, MEMBER_KEY) == MEMBER_KEY
+
+    def test_an_ordinary_codex_session_yields_nothing(self):
+        """The mount is SESSION-scoped, which is the whole reason it is not in the
+        agent template: another session on the same agent gains nothing."""
+        assert self._key(ACP_BACKEND_CODEX, "dashboard_abc123") == ""
+
+    def test_a_member_session_off_the_set_yields_nothing(self):
+        """kiro-cli reads its template from disk, so its member threads stay plain
+        chat -- and this is the value that keeps the runtime from mounting anything."""
+        assert self._key(ACP_BACKEND_KIRO, MEMBER_KEY) == ""
+
+    def test_the_mounted_entry_survives_codex_transport_narrowing(self):
+        """The harness has the last word on the array, and it drops what it did not
+        advertise -- so an entry the runtime appends is only mounted if it survives
+        here. ``member_dispatch_session_server`` builds a stdio element, which
+        codex-acp 1.11.0 advertises; a remote-transport entry would be dropped with
+        no error anywhere.
+        """
+        from kiro_crew.acp.harness.codex import CodexHarness
+
+        entry = member_dispatch_session_server(MEMBER_KEY, "f" * 64)
+        assert entry is not None
+        kept = CodexHarness().session_mcp_servers(
+            [*_base_servers(), entry],
+            agent_capabilities={"mcpCapabilities": {"acp": False, "http": True, "sse": False}},
+        )
+        assert [e["name"] for e in kept] == ["kirocrew-core", MEMBER_DISPATCH_SERVER]
+        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in kept[-1]["env"]
 
 
 class TestRuntimeMemberThreading:

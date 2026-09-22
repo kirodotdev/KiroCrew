@@ -796,26 +796,38 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # session on it stays a plain chat: the dispatch tools are simply not
 # mounted, never mounted-and-refused.
 #
-# codex-acp is NOT a member, and the reason is scope rather than capability.
-# ``providers/mirrors/codex.py`` gives it the per-session mount its earlier
-# exclusion was waiting on, and its precondition needs no new gate: codex's
-# routing is ``SESSION_CONFIG``, the one mechanism in
-# ``tool_gate.ENFORCED_ROUTINGS``, so a session that cannot arm ``mode=read-only``
-# is refused before its first prompt — structurally stronger than claude's
-# ``settings.local.json`` ownership check, which covers a routing this core
-# declares and does not enforce. What is missing is a DECISION, not a
-# mechanism: mounting session control into a codex DM thread is a new capability,
-# separate from giving a codex session the tools its own agent spec declares, and
-# it belongs to whoever decides member threads should run on codex at all. Until
-# then a codex member session stays plain chat — the dispatch tools are simply not
-# mounted, never mounted-and-refused.
+# codex-acp is a member, and both things membership requires hold:
 #
-# opencode is excluded, but NOT any longer for want of a mount: it is a member of
-# ``ACP_BACKENDS_SESSION_MCP_ARRAY`` and its sessions now carry Crew's control
-# plane, so the transport a member dispatch would ride on exists. What is missing is
-# the same DECISION codex is waiting on -- mounting session control into a member DM
-# thread is a new capability, separate from giving a session the tools its own agent
-# spec declares. Until that is taken, an opencode member session stays plain chat:
+#   * the per-session mount exists -- ``providers/mirrors/codex.py`` projects the
+#     whole array onto ``session/new`` (codex is in
+#     ``ACP_BACKENDS_SESSION_MCP_ARRAY``), so the dispatch element rides the same
+#     channel the session's own servers do;
+#   * the session is GATED -- codex's routing is ``SESSION_CONFIG``, one of the
+#     three mechanisms in ``tool_gate.ENFORCED_ROUTINGS``, so a session that cannot
+#     arm ``mode=read-only`` is REFUSED before its first prompt. That is
+#     structurally stronger than claude's ``settings.local.json`` ownership check,
+#     which covers a routing this core declares and does not enforce.
+#
+# Membership is a DECISION on top of those two rather than a consequence of them:
+# mounting session control into a codex DM thread is a capability separate from
+# giving a codex session the tools its own agent spec declares. The decision is
+# that a member DM thread on codex holds the session-control tools.
+#
+# Membership un-withholds nothing, because the entry is Crew's OWN.
+# ``mirrors.identity.identity_bound_crew_servers`` keeps the dashboard server out of
+# the projection, and that withhold judges SPEC-DESCRIBED elements: one the agent
+# file names carries no session identity and answers ``identity_unattested`` to
+# every call. The dispatch entry comes from
+# ``members.member_dispatch_session_server`` carrying this session's key and its
+# signed stub token, the same way the projection rebuilds the control plane.
+#
+# opencode is excluded, and not for want of a mount: it is a member of
+# ``ACP_BACKENDS_SESSION_MCP_ARRAY`` and its sessions carry Crew's control plane, so
+# the transport a member dispatch rides on exists, and its routing
+# (``VERIFIED_SEEDED_SETTINGS``) sits inside ``tool_gate.ENFORCED_ROUTINGS`` as
+# well. What it lacks is the DECISION for THIS harness. The one above is codex's,
+# and H6 is explicit that supporting one harness establishes nothing about another,
+# so it does not carry over. Without it an opencode member session stays plain chat:
 # the dispatch tools are simply not mounted, never mounted-and-refused.
 #
 # pi is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: the array is
@@ -828,7 +840,18 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # cannot be gated is never refused because nothing gates it. Mounting session control
 # into such a session would hand Crew's own control plane to a harness whose tool
 # calls Crew does not decide. A member session on it stays plain chat.
-ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
+#
+# WHERE the mount happens differs by backend, and codex's is the runtime's.
+# ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
+# CLIENT composes -- claude's -- and codex is not one of them: its array comes from
+# ``AcpRuntime._mirrored_session_mcp`` and ``create_session`` / ``load_session``
+# append the entry themselves, on a non-empty ``member_session_key`` alone. That key
+# is where membership is read (``providers/acp.py`` ``_member_session_key``), which
+# is why adding a backend here is the whole of the change for a runtime-served
+# harness. Both establishment paths carry it, because ``session/load``
+# re-initializes a session's MCP servers and a resume that skipped the append would
+# strip a member thread of its tools mid-conversation.
+ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer).
 # claude-agent-acp does not implement it, so a steer sent there is answered with

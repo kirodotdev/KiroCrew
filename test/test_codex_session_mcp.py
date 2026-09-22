@@ -52,6 +52,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
 )
+from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors import Concern, Disposition, mirror_for
 from kiro_crew.providers.mirrors.codex import (
     CodexMirror,
@@ -493,15 +494,38 @@ class TestTheSessionArraySeam:
     plus the source-level pins that keep the split where it is.
     """
 
-    def test_codex_is_in_the_array_set_and_NOT_in_member_dispatch(self):
-        """One set this projection needs, and one it deliberately stays out of.
+    def test_codex_is_in_both_the_array_set_and_member_dispatch(self):
+        """The two sets this session's array depends on.
 
         Without the array set the session gets ``[]`` however good the mirror is.
-        Member dispatch is a different capability -- session control in a DM thread
-        -- and this PR does not add it, so the set is pinned in both directions.
+        Member dispatch is mounted onto that same array, but by the RUNTIME rather
+        than by this projection -- ``AcpRuntime.create_session`` appends the entry
+        after the mirror has run, because the dashboard server is identity-bound and
+        ``codex_withheld_servers`` therefore keeps the SPEC-described spelling of it
+        out of the translation below. Which sessions get that append is decided by
+        ``AcpProvider._member_session_key``, pinned in ``test_member_dispatch_mount``.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_MCP_ARRAY
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_MEMBER_DISPATCH
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_MEMBER_DISPATCH
+
+    def test_the_spec_can_never_supply_the_dashboard_server_itself(self, agents_dir):
+        """Membership adds no way for the agent file to mount session control.
+
+        An agent spec that names ``@kirocrew-dashboard`` still gets it withheld: a
+        spec-described element carries no session identity and would answer
+        ``identity_unattested`` to every verb. So the only dashboard entry a codex
+        session can hold is the one the runtime builds with this session's key, and
+        adding codex to the dispatch set does not un-withhold the other kind.
+        """
+        _write_spec(
+            agents_dir,
+            servers={MEMBER_DISPATCH_SERVER: {"command": "/opt/kirocrew"}},
+            tools=[f"@{MEMBER_DISPATCH_SERVER}", "@kirocrew-core"],
+        )
+        projection = codex_projection("kirocrew")
+        names = [e["name"] for e in projection.params["mcpServers"]]
+        assert MEMBER_DISPATCH_SERVER not in names
+        assert MEMBER_DISPATCH_SERVER in codex_withheld_servers(frozenset())
 
     def test_the_session_array_carries_the_spec_and_the_control_plane(self, agents_dir):
         """The one assertion the whole mirror exists to make true.
