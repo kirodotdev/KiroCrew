@@ -7286,6 +7286,8 @@
         "approve": "Aprobar",
         "close": "Cerrar",
         "continue_in_chat": "Continuar en el chat",
+        "could_not_open_the_chat_click_button_to_retry": "No se pudo abrir el chat. Haz clic en {{button}} para reintentar.",
+        "could_not_open_the_result_in_chat_click_button_to_retry": "No se pudo abrir el resultado en el chat. Haz clic en {{button}} para reintentar.",
         "go_to_chat": "Ir al chat",
         "mark_read": "Marcar como leída",
         "mark_unread": "Marcar como no leída",

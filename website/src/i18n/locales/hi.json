@@ -7182,6 +7182,8 @@
         "approve": "स्वीकृत करें",
         "close": "बंद करें",
         "continue_in_chat": "चैट में जारी रखें",
+        "could_not_open_the_chat_click_button_to_retry": "चैट नहीं खोली जा सकी। दोबारा कोशिश करने के लिए {{button}} पर क्लिक करो।",
+        "could_not_open_the_result_in_chat_click_button_to_retry": "परिणाम चैट में नहीं खोला जा सका। दोबारा कोशिश करने के लिए {{button}} पर क्लिक करो।",
         "go_to_chat": "चैट पर जाएँ",
         "mark_read": "पढ़ा हुआ चिह्नित करें",
         "mark_unread": "अपठित चिह्नित करें",

@@ -7390,6 +7390,8 @@
         "approve": "Подтвердить",
         "close": "Закрыть",
         "continue_in_chat": "Продолжить в чате",
+        "could_not_open_the_chat_click_button_to_retry": "Не удалось открыть чат. Нажми {{button}}, чтобы повторить.",
+        "could_not_open_the_result_in_chat_click_button_to_retry": "Не удалось открыть результат в чате. Нажми {{button}}, чтобы повторить.",
         "go_to_chat": "Перейти в чат",
         "mark_read": "Отметить прочитанным",
         "mark_unread": "Отметить непрочитанным",

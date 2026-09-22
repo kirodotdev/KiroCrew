@@ -7078,6 +7078,8 @@
         "approve": "批准",
         "close": "关闭",
         "continue_in_chat": "在聊天中继续",
+        "could_not_open_the_chat_click_button_to_retry": "无法打开聊天。请点击“{{button}}”重试。",
+        "could_not_open_the_result_in_chat_click_button_to_retry": "无法在聊天中打开结果。请点击“{{button}}”重试。",
         "go_to_chat": "前往聊天",
         "mark_read": "标为已读",
         "mark_unread": "标为未读",

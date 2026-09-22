@@ -7078,6 +7078,8 @@
         "approve": "승인",
         "close": "닫기",
         "continue_in_chat": "채팅에서 계속하기",
+        "could_not_open_the_chat_click_button_to_retry": "채팅을 열 수 없습니다. {{button}}을(를) 클릭해 재시도하세요.",
+        "could_not_open_the_result_in_chat_click_button_to_retry": "결과를 채팅에서 열 수 없습니다. {{button}}을(를) 클릭해 재시도하세요.",
         "go_to_chat": "채팅으로 이동",
         "mark_read": "읽음으로 표시",
         "mark_unread": "읽지 않음으로 표시",
