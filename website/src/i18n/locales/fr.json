@@ -1182,6 +1182,7 @@
       "action_ask": "Demander",
       "ask_agent": "Demander à l’agent : « {{query}} »",
       "group_attention": "Requiert votre attention",
+      "group_recent_sessions": "Sessions récentes",
       "action_enter": "Ouvrir la vue",
       "action_continue": "Continuer",
       "action_open": "Ouvrir",

@@ -1116,6 +1116,7 @@
       "action_ask": "質問",
       "ask_agent": "エージェントに質問：「{{query}}」",
       "group_attention": "あなたの対応待ち",
+      "group_recent_sessions": "最近のセッション",
       "action_enter": "ビューを開く",
       "action_continue": "続ける",
       "action_open": "開く",

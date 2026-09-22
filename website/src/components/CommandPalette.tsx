@@ -7,6 +7,7 @@ import { useAppSelector } from '../store'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import type { Result, ResourceProvider } from './commandPalette/types'
+import { slotRecency } from './commandPalette/slotRecency'
 import { registerProvider } from './commandPalette/providers'
 import { usePaletteActions } from './commandPalette/paletteActions'
 import { useAllAggregator } from './commandPalette/providers/allAggregator'
@@ -365,7 +366,7 @@ export default function CommandPalette({
               const detailText = detail?.kind === 'tool' ? detail.purpose ?? '' : detail?.label ?? ''
               return `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
                 s.pinned ? 1 : 0
-              }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
+              }:${slotRecency(s).timestamp ?? ''}:${
                 detail?.kind ?? ''
               }:${detailText}:${detail?.ts ?? ''}`
             })

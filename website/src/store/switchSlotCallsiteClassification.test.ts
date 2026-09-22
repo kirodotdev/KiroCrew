@@ -30,7 +30,7 @@ const PINNED: Record<string, Counts> = {
   'src/App.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce' },
   'src/app-sdk/ChatPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot the host supplied programmatically' },
   'src/apps/auto-improvement/lib/agentSession.ts': { announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
-  'src/apps/command-bar/CommandBarOverlay.tsx': { announced: 1, keepTarget: 1, plain: 0, reason: 'picker announces; create path keeps target on the create/fetch race' },
+  'src/apps/command-bar/CommandBarOverlay.tsx': { announced: 2, keepTarget: 1, plain: 0, reason: 'attention row and recent row announce; create path keeps target on the create/fetch race' },
   'src/apps/issue-radar/lib/agentSession.ts': { announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/issue-radar/views/CrewPageView.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'awaited unwrap() with page-level error handling' },
   'src/apps/papyrus/CoAuthorPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },

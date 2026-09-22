@@ -40,7 +40,12 @@ import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
 import { appIcon } from '../../components/commandPalette/providers/appsProvider'
-import { sessionStatus, useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
+import {
+  isEmptyNewSlot,
+  recencyEpoch,
+  sessionStatus,
+  useRecentsProvider,
+} from '../../components/commandPalette/providers/recentsProvider'
 import { createArtifactsProvider } from '../../components/commandPalette/providers/artifactsProvider'
 import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
 import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
@@ -112,10 +117,29 @@ const ARTIFACTS_MIN_CHARS = 2
 const ARTIFACTS_ROW_LIMIT = 12
 const DEBOUNCE_MS = 150
 
+/**
+ * Sessions the root lifts into its `recent` group.
+ *
+ * Three, because the value of this group is that the reader does not have to READ
+ * it — at three rows the one they want is recognised at a glance and reached with
+ * one arrow key, and the group costs the commands below it almost nothing. Sized to
+ * the glance, not to the corpus: a fourth row buys a little more coverage and takes
+ * the "no reading required" property with it, and the whole corpus is one row below
+ * under Search Sessions.
+ */
+const RECENT_SESSION_ROWS = 3
+
 function groupLabel(group: RootGroup): string {
   switch (group) {
     case 'attention':
       return i18nT('apps.commandBar.group_attention')
+    case 'recent':
+      // Its own header key beside `group_attention`, not the recents listing's bare
+      // "Recent" (which `group_recent` already carries for the artifacts view): these
+      // rows are the same session objects as "New Session" and "Search Sessions"
+      // beside them, and a header naming the group ("Recent sessions") says so, where
+      // a lone adjective borrowed from another surface reads as a different thing.
+      return i18nT('apps.commandBar.group_recent_sessions')
     case 'commands':
       return i18nT('apps.commandBar.group_commands')
     case 'apps':
@@ -138,6 +162,10 @@ function groupLabel(group: RootGroup): string {
  */
 function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string }): string | null {
   if (row.group === 'attention') return null
+  // A recent row is named by its own group header and its session glyph, and its
+  // right-hand column belongs to whatever the session is DOING. Labelling it
+  // "Command" would be both wrong and the widest thing on the row.
+  if (row.group === 'recent') return null
   if (row.kind === 'view') return i18nT('apps.commandBar.kind.view')
   if (row.group === 'apps') return i18nT('apps.commandBar.kind.app')
   if (row.group === 'settings') return i18nT('apps.commandBar.kind.setting')
@@ -170,6 +198,8 @@ function rootRowCopyable(row: RootRow): CopyableRow {
 function groupIcon(group: RootGroup) {
   switch (group) {
     case 'attention':
+      return <MessageSquare size={14} className="lucide-inline" />
+    case 'recent':
       return <MessageSquare size={14} className="lucide-inline" />
     case 'commands':
       return <Terminal size={14} className="lucide-inline" />
@@ -755,9 +785,11 @@ export default function CommandBarOverlay({
     // the user to ignore it, and the whole value is that its presence means
     // something. A running session is not waiting on anyone and stays in the
     // sessions view where it belongs.
+    const lifted = new Set<string>()
     for (const slot of liveSlots) {
       const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
       if (st.style !== 'pill' || !st.label || !st.colorVar) continue
+      lifted.add(slot.key)
       rows.push({
         id: `attention:${slot.key}`,
         title: slot.title || slot.key,
@@ -773,6 +805,48 @@ export default function CommandBarOverlay({
         },
       })
     }
+    // Then the sessions the reader was last in.
+    //
+    // This is the one thing the surface is opened for most and the one thing it used
+    // to answer worst: switching back to yesterday's conversation meant entering the
+    // sessions view and typing a name the reader had to remember. The facts are in
+    // the same live store the block above reads, so the root pays no request for
+    // them — which is the property that decides WHERE this can live. The full corpus
+    // stays behind Search Sessions; this is the shortcut, not the index.
+    //
+    // Empty untitled slots are excluded: switching into a blank chat is what the New
+    // Session command is for, and one of those rows is indistinguishable from
+    // another. A slot already lifted into `attention` is excluded too — it is on
+    // screen, above this, carrying more information than a second copy would.
+    const recentSlots = liveSlots
+      .filter(slot => !lifted.has(slot.key) && !isEmptyNewSlot(slot))
+      .sort((a, b) => recencyEpoch(b) - recencyEpoch(a))
+      .slice(0, RECENT_SESSION_ROWS)
+    recentSlots.forEach(slot => {
+      const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
+      rows.push({
+        id: `recent:${slot.key}`,
+        title: slot.title || slot.key,
+        group: 'recent',
+        kind: 'invoke',
+        icon: <MessageSquare size={14} className="lucide-inline" />,
+        // Running state only, and never a pill: a pill means the session is waiting
+        // on the reader, and every session that is has already been lifted into the
+        // block above. Two treatments of "needs me" on one page is how the signal
+        // stops meaning anything.
+        status:
+          st.style === 'dot' && st.label && st.colorVar
+            ? { colorVar: st.colorVar, label: st.label, detail: st.detail, pulse: st.pulse }
+            : undefined,
+        // Pushed in recency order — recentSlots is sorted newest-first — which is the
+        // order the root's idle-ordered `recent` group keeps, so the row needs no
+        // sort key of its own.
+        run: async () => {
+          dispatch(switchSlot({ key: slot.key, announceOnMissing: true }))
+          navigate('/chat')
+        },
+      })
+    })
     rows.push(
       {
         id: 'command:new-session',

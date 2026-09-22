@@ -4897,6 +4897,7 @@
       "action_ask": "জিজ্ঞাসা করুন",
       "ask_agent": "এজেন্টকে জিজ্ঞাসা করুন: “{{query}}”",
       "group_attention": "আপনাকে প্রয়োজন",
+      "group_recent_sessions": "সাম্প্রতিক সেশন",
       "action_enter": "ভিউ খুলুন",
       "action_continue": "চালিয়ে যান",
       "action_open": "খুলুন",

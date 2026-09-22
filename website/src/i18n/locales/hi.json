@@ -4897,6 +4897,7 @@
       "action_ask": "पूंरें",
       "ask_agent": "ऐजेंट से पूंरें: “{{query}}”",
       "group_attention": "तुम्हारी ज़रूरत है",
+      "group_recent_sessions": "हाल के सेशन",
       "action_enter": "व्यू खोलें",
       "action_continue": "जारी रखें",
       "action_open": "खोलें",

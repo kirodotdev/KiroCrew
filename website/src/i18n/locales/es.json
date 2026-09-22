@@ -4976,6 +4976,7 @@
       "action_ask": "Preguntar",
       "ask_agent": "Preguntar al agente: «{{query}}»",
       "group_attention": "Requiere tu atención",
+      "group_recent_sessions": "Sesiones recientes",
       "action_enter": "Abrir vista",
       "action_continue": "Continuar",
       "action_open": "Abrir",

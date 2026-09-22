@@ -104,31 +104,49 @@ that.
 
 `website/src/apps/command-bar/rootIndex.ts` owns the row model.
 
-- `ROOT_GROUPS = ['attention', 'commands', 'apps', 'settings']`, rendered in that order.
-  `attention` is normally absent and contains only live sessions whose status is a pill — an
-  approval or answer the user owes, not merely running or unread work. `rankRootRows` ends with
-  a sort on `groupOrder`, so groups are always contiguous blocks under their own header — they
-  never interleave by score.
+- `ROOT_GROUPS = ['attention', 'recent', 'commands', 'apps', 'settings']`, rendered in that
+  order. `attention` is normally absent and contains only live sessions whose status is a pill —
+  an approval or answer the user owes, not merely running or unread work. `rankRootRows` ends
+  with a sort on `groupOrder`, so groups are always contiguous blocks under their own header —
+  they never interleave by score.
+- `recent` follows `attention`: at most `RECENT_SESSION_ROWS = 3` live sessions the reader was
+  last in, so "get me back to what I was doing" is a row to press rather than a search to run.
+  It is built by the overlay from the same live slot store `attention` reads, so it costs the
+  root no request. The rows are the slots left after two exclusions — any slot already lifted
+  into `attention` (it is on screen above, carrying more), and any empty untitled new-chat slot
+  (that is what New Session is for) — ordered newest-first by `slotRecency` (the later of
+  `last_activity_ts` and `last_ts`, with `created` as a fallback), then sliced to the cap. A
+  recent row renders a dot status when the session is running and never a pill (a pill means the
+  session owes the user something, and every such session has already been lifted into
+  `attention`). The full corpus stays one `view` row below, under Search Sessions.
 - A row's `kind` is `view` (enter a surface inside the bar), `navigate` (leave and route),
   `invoke` (run and close), or `prompt` (a contributed command -- collect one argument if it
   declares one, then seed a session).
 - App rows are derived from the installed-app list, so a newly installed app appears as a
   destination with no per-app work.
 - Ordinary rows render a right-aligned kind — Command, App, Setting or View. A contributed
-  command prefixes that kind with its app label. An `attention` row renders its live status pill
-  instead, because the decision it needs is more useful than a static "Session" label. `view` is
-  named separately from its group because it opens a surface instead of acting and closing.
+  command prefixes that kind with its app label. An `attention` or `recent` row renders no kind
+  label — `attention` shows its live status pill instead and `recent` its running dot, because
+  the session's state is more useful than a static "Session" label. `view` is named separately
+  from its group because it opens a surface instead of acting and closing.
 - `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page;
-  settings use the tighter `SETTINGS_IDLE_LIMIT = 2` while the query is empty. **Known gap:**
-  rows past a root cap are dropped silently. The artifacts view does not share that gap — it
-  renders a `+N more` line under its list, outside the listbox so it cannot become an option that
-  Enter does nothing with — and that line is the shape to copy when this one is closed.
+  settings use the tighter `SETTINGS_IDLE_LIMIT = 2` while the query is empty, and `recent` is
+  capped ahead of ranking by the overlay at `RECENT_SESSION_ROWS = 3` rather than by this limit.
+  **Known gap:** rows past a root cap are dropped silently. The artifacts view does not share
+  that gap — it renders a `+N more` line under its list, outside the listbox so it cannot become
+  an option that Enter does nothing with — and that line is the shape to copy when this one is
+  closed.
 - `idleDemote` sorts a row to the end of its group while the query is EMPTY, at a cost sized
   to lose to a single real use. The empty-query order is frecency, so on a cold install every
   score is zero and the alphabet alone decides what the launcher opens on. It is DERIVED, not
   declared: a command that needs an argument cannot act on an empty query, so it has nothing
   to offer a bar that has just opened -- leaving it to the manifest would mean asking every
   app author to volunteer their own row out of the first page, which none would.
+- `recent` opts out of all of that while the query is empty: `rankRootRows` scores its rows 0,
+  declining the frecency boost, and breaks their tie by SOURCE POSITION rather than title, so
+  the newest-first order the overlay already sorted them into stands. Neither frecency, idle
+  demotion nor the alphabet may reshuffle a recency order that is a fact. Once a query is
+  present a recent row ranks on its match like any other row.
 
 ## Ranking and frecency
 

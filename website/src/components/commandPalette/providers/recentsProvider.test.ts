@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatSlot } from '../../../types'
+import { slotRecency } from '../slotRecency'
 import {
   hasPlaceholderTitle,
   isEmptyNewSlot,
@@ -100,6 +101,26 @@ describe('isEmptyNewSlot', () => {
   })
 })
 
+describe('slotRecency', () => {
+  it('compares ISO and epoch-second values and reserves created for fallback', () => {
+    const newerEpochSeconds = Date.parse('2026-07-22T10:00:00Z') / 1000
+    expect(
+      slotRecency({
+        last_activity_ts: '2026-07-19T10:00:00Z',
+        last_ts: newerEpochSeconds,
+        created: '2026-07-25T10:00:00Z',
+      }),
+    ).toEqual({ timestamp: newerEpochSeconds, epoch: newerEpochSeconds * 1000 })
+    expect(
+      slotRecency({
+        last_activity_ts: 'invalid-activity',
+        last_ts: 'invalid-message',
+        created: '2026-07-18T10:00:00Z',
+      }).timestamp,
+    ).toBe('2026-07-18T10:00:00Z')
+  })
+})
+
 describe('prepareCurrentSlots — duplicate "+ New Session…" collapse', () => {
   it('keeps at most one empty-new slot when several are open', () => {
     const slots = [
@@ -139,7 +160,7 @@ describe('prepareCurrentSlots — duplicate "+ New Session…" collapse', () => 
     expect(ordered).toHaveLength(2)
   })
 
-  it('orders empty-new first, then pinned, then recency', () => {
+  it('orders empty-new first, then recency, with a pin claiming no place', () => {
     const slots = [
       slot({ key: 'old', title: 'Old', last_ts: '2026-07-20T10:00:00Z' }),
       slot({ key: 'pin', title: 'Pinned', pinned: true, last_ts: '2026-07-19T10:00:00Z' }),
@@ -147,7 +168,42 @@ describe('prepareCurrentSlots — duplicate "+ New Session…" collapse', () => 
       slot({ key: 'recent', title: 'Recent', last_ts: '2026-07-22T10:00:00Z' }),
     ]
     const { ordered } = prepareCurrentSlots(slots)
-    expect(ordered.map((s) => s.key)).toEqual(['new', 'pin', 'recent', 'old'])
+    // The pin is the oldest of the three and lands last. Floating it would open the
+    // switcher on a session the reader last touched days before the one above it.
+    expect(ordered.map((s) => s.key)).toEqual(['new', 'recent', 'old', 'pin'])
+  })
+
+  it('ranks a slot the wire sent an empty last_activity_ts for by its last message', () => {
+    // The WIRE shape, which every fixture above understates: `slot_projection`
+    // starts `last_activity_ts = ""` and emits the key unconditionally, so the
+    // field is PRESENT and empty rather than absent. A nullish ladder stops on it
+    // and reads neither fallback, which sank the session holding only the prompt
+    // the reader just sent — the single row this surface exists to return them to.
+    const slots = [
+      slot({ key: 'stale', title: 'Stale', last_activity_ts: '2026-07-19T10:00:00Z' }),
+      slot({ key: 'justsent', title: 'Just sent', last_activity_ts: '', last_ts: '2026-07-22T10:00:00Z' }),
+    ]
+    const { ordered } = prepareCurrentSlots(slots)
+    expect(ordered.map((s) => s.key)).toEqual(['justsent', 'stale'])
+  })
+
+  it('ranks by a newer last_ts when last_activity_ts is nonempty', () => {
+    const slots = [
+      slot({
+        key: 'new-prompt',
+        title: 'New prompt',
+        last_activity_ts: '2026-07-19T10:00:00Z',
+        last_ts: '2026-07-22T10:00:00Z',
+      }),
+      slot({
+        key: 'untouched',
+        title: 'Untouched',
+        last_activity_ts: '2026-07-20T10:00:00Z',
+        last_ts: '2026-07-20T10:00:00Z',
+      }),
+    ]
+    const { ordered } = prepareCurrentSlots(slots)
+    expect(ordered.map((s) => s.key)).toEqual(['new-prompt', 'untouched'])
   })
 
   it('handles the empty slot list', () => {
@@ -305,6 +361,26 @@ describe('useRecentsProvider — live status bridge', () => {
       statusPulse: true,
       statusLabel: 'Running: read /workspace/src/app.ts',
     })
+  })
+
+  it('displays the newer last_ts when last_activity_ts is nonempty', async () => {
+    mocks.state.dashboard.slots = [
+      slot({
+        key: 'mixed',
+        last_activity_ts: '2026-07-19T10:00:00Z',
+        last_ts: '2026-07-22T10:00:00Z',
+      }),
+      slot({ key: 'message-only', last_ts: '2026-07-22T10:00:00Z' }),
+      slot({ key: 'activity-only', last_activity_ts: '2026-07-19T10:00:00Z' }),
+    ]
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+    const timestampFor = (key: string) =>
+      rows.find((row) => row.id === `recents:cur:${key}`)?.timestamp
+
+    expect(timestampFor('mixed')).toBe(timestampFor('message-only'))
+    expect(timestampFor('mixed')).not.toBe(timestampFor('activity-only'))
   })
 
   it('renders the raw tool title when the user turned simplified tool names off', async () => {

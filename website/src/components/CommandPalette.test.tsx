@@ -482,6 +482,32 @@ describe('CommandPalette — render', () => {
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(4))
   })
 
+  it('refreshes recents when last_ts advances beyond a nonempty activity timestamp', async () => {
+    H.storeState.dashboard.slots = [
+      {
+        key: 'chat-1',
+        title: 'Live session',
+        running: false,
+        messages: 2,
+        last_activity_ts: '2026-07-19T10:00:00Z',
+        last_ts: '2026-07-21T10:00:00Z',
+      },
+    ]
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.dashboard.slots = [
+      {
+        ...H.storeState.dashboard.slots[0],
+        last_ts: '2026-07-22T10:00:00Z',
+      },
+    ]
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+  })
+
   it('refreshes recents when the simplified-tool-names preference changes', async () => {
     // Rows render the tool status through toolStatusLabel, so the preference is
     // part of the live state the query key covers — otherwise a running row keeps

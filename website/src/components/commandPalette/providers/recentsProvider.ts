@@ -14,6 +14,7 @@ import { toolStatusLabel, type ToolStatusDetail } from '../../../utils/toolStatu
 
 import { i18nT } from '../../../i18n/t'
 import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
+import { slotRecency } from '../slotRecency'
 
 /**
  * Recents / quick-switcher — the unscoped empty-query default view. Unlike
@@ -67,10 +68,17 @@ export function isEmptyNewSlot(s: ChatSlot): boolean {
   return hasPlaceholderTitle(s) && (s.messages ?? 0) === 0
 }
 
-/** Order live slots (empty-new first, then pinned, then recency — matching
- * the sidebar with new-chat pinned to the top) and keep at most ONE empty-new
- * slot, the most recent, so the palette never shows duplicate
- * "+ New Session…" rows when several empty chats are open. */
+/** Order live slots (empty-new first, then pure recency) and keep at most ONE
+ * empty-new slot, the most recent, so the palette never shows duplicate
+ * "+ New Session…" rows when several empty chats are open.
+ *
+ * Pinning deliberately does NOT float a slot here, and that is the difference
+ * between this surface and the sidebar. A pin says "keep this reachable", which is
+ * an ordering instruction to a list the user browses; this list answers "what was
+ * I just in", and a pin from last week floating above today's work makes the
+ * switcher open on the one thing the reader cannot have meant. The pin still
+ * RENDERS on the row, so nothing about the mark is lost — only its claim on the
+ * top of a recency list. */
 export function prepareCurrentSlots(slots: ChatSlot[]): {
   ordered: ChatSlot[]
   hasEmptyNew: boolean
@@ -79,9 +87,6 @@ export function prepareCurrentSlots(slots: ChatSlot[]): {
     const na = isEmptyNewSlot(a) ? 0 : 1
     const nb = isEmptyNewSlot(b) ? 0 : 1
     if (na !== nb) return na - nb
-    const pa = a.pinned ? 0 : 1
-    const pb = b.pinned ? 0 : 1
-    if (pa !== pb) return pa - pb
     return recencyEpoch(b) - recencyEpoch(a)
   })
   let hasEmptyNew = false
@@ -155,12 +160,13 @@ function fmtRelativeTime(ts: string | number | undefined): string | undefined {
   return fmtDateFields(d, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-/** Recency epoch (ms) for sorting live slots — last activity, else last msg, else created. */
+/** Recency epoch (ms) for sorting live slots.
+ *
+ * Activity and message timestamps are independent views of the transcript, so
+ * the later parseable value defines recency. Creation time applies only when
+ * neither message-derived timestamp parses. Numeric values are epoch seconds. */
 export function recencyEpoch(slot: ChatSlot): number {
-  const t = slot.last_activity_ts ?? slot.last_ts ?? slot.created
-  if (!t) return 0
-  const ms = typeof t === 'number' ? (t as number) * 1000 : new Date(t).getTime()
-  return isNaN(ms) ? 0 : ms
+  return slotRecency(slot).epoch
 }
 
 function shortMsg(slot: ChatSlot): string {
@@ -279,7 +285,7 @@ export function useRecentsProvider(): ResourceProvider {
         const folderName = (fid?: string): string | undefined =>
           fid ? folders.find((f) => f.id === fid)?.name : undefined
 
-        // CURRENT — live slots (folder-labeled), ordered pinned-first + recency.
+        // CURRENT — live slots (folder-labeled), ordered by recency.
         const current: Result[] = orderedSlots.map((s) => {
           // Only an EMPTY untitled slot renders as the bare "+ New Session…"
           // create affordance (no agent line, status, preview, or timestamp).
@@ -305,7 +311,7 @@ export function useRecentsProvider(): ResourceProvider {
             pinned: isNew ? undefined : s.pinned || undefined,
             folder: isNew ? undefined : folderName(s.folder_id),
             isNew: isNew || undefined,
-            timestamp: isNew ? undefined : fmtRelativeTime(s.last_activity_ts ?? s.last_ts),
+            timestamp: isNew ? undefined : fmtRelativeTime(slotRecency(s).timestamp),
             onActivate: () => {
               dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
               navigate('/chat')

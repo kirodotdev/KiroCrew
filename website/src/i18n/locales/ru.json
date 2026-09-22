@@ -5055,6 +5055,7 @@
       "action_ask": "Спросить",
       "ask_agent": "Спросить агента: «{{query}}»",
       "group_attention": "Требуется ваше участие",
+      "group_recent_sessions": "Недавние сессии",
       "action_enter": "Открыть представление",
       "action_continue": "Продолжить",
       "action_open": "Открыть",

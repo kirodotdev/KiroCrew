@@ -610,16 +610,92 @@ describe('CommandBarOverlay rows', () => {
   it('shows no attention section when nothing is waiting on the user', () => {
     // A section that is always present is a section the user learns to skip; the whole
     // value of this one is that its presence means something. A RUNNING session is not
-    // waiting on anyone, so it must not be lifted here either.
+    // waiting on anyone, so it must not be lifted here either — it belongs to the
+    // recent group below, which is a switch list and makes no claim on the reader.
     storeState.dashboard.slots = [
       { key: 'slot-c', title: 'Refactor the parser', running: true, messages: 9 },
       { key: 'slot-d', title: 'Idle thread', messages: 3 },
     ]
     mount()
     expect(screen.queryByText('Needs You')).toBeNull()
-    expect(screen.queryByText('Refactor the parser')).toBeNull()
-    // The commands are back at the top where they were.
-    expect(screen.getAllByRole('option')[0].textContent).toMatch(/New Session|Search Sessions|Toggle Theme/)
+    expect(screen.queryByText('Approve')).toBeNull()
+    expect(screen.queryByText('Answer')).toBeNull()
+    expect(rowByText('Refactor the parser')).toBeTruthy()
+  })
+
+  it('offers the sessions the reader was last in, newest first, above the commands', () => {
+    // The most common reason this surface is opened: get me back to what I was doing.
+    // It used to mean entering the sessions view and typing a name from memory, so the
+    // answer the store already held cost two steps and a recall.
+    storeState.dashboard.slots = [
+      { key: 'slot-old', title: 'Last week thread', messages: 3, last_activity_ts: 1_000 },
+      { key: 'slot-new', title: 'This morning thread', messages: 5, last_activity_ts: 3_000 },
+      { key: 'slot-mid', title: 'Yesterday thread', messages: 2, last_activity_ts: 2_000 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    expect(screen.getByText('Recent sessions')).toBeTruthy()
+    // Order is the claim — recency, not the alphabet and not the frecency store.
+    expect(rows[0].textContent).toContain('This morning thread')
+    expect(rows[1].textContent).toContain('Yesterday thread')
+    expect(rows[2].textContent).toContain('Last week thread')
+    // Ahead of the commands, which keep their own block underneath.
+    expect(rows[3].textContent).toMatch(/New Session|Search Sessions|Toggle Theme/)
+    // A session row carries no static kind word; its column is for live state.
+    expect(rows[0].textContent).not.toContain('Command')
+    // Activating one switches to it, the same way every other surface opens a session.
+    fireEvent.mouseDown(rows[0])
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'switchSlot',
+      key: 'slot-new',
+      announceOnMissing: true,
+    })
+  })
+
+  it('caps the recent group at three, leaving the rest to the sessions view', () => {
+    // The group's value is that it needs no reading. A fourth row buys a little more
+    // coverage and spends that property, and the whole corpus is one row below.
+    storeState.dashboard.slots = Array.from({ length: 7 }, (_, i) => ({
+      key: `slot-${i}`,
+      title: `Thread ${i}`,
+      messages: 2,
+      last_activity_ts: 1_000 - i,
+    }))
+    mount()
+    const titles = screen.getAllByRole('option').map(r => r.textContent ?? '')
+    expect(titles.filter(t => /Thread \d/.test(t))).toHaveLength(3)
+    expect(titles[0]).toContain('Thread 0')
+    expect(screen.queryByText('Thread 3')).toBeNull()
+    expect(rowByText('Search Sessions')).toBeTruthy()
+  })
+
+  it('keeps a session out of the recent group when it is already in the one above', () => {
+    // A session waiting on the reader is on screen with its pill. A second, quieter
+    // copy of it three rows down adds nothing and makes the page look longer than the
+    // number of sessions it is actually about.
+    storeState.dashboard.slots = [
+      { key: 'slot-a', title: 'Deploy the pricing service', pending_approval: true, messages: 4, last_activity_ts: 3_000 },
+      { key: 'slot-b', title: 'Idle thread', messages: 2, last_activity_ts: 1_000 },
+    ]
+    mount()
+    expect(screen.getAllByText('Deploy the pricing service')).toHaveLength(1)
+    expect(rowByText('Idle thread')).toBeTruthy()
+  })
+
+  it('leaves an empty untitled session out of the recent group', () => {
+    // Switching into a blank chat is what New Session is for, and one blank row is
+    // indistinguishable from another — so they would fill the group with rows that
+    // cannot be told apart.
+    storeState.dashboard.slots = [
+      { key: 'slot-blank', title: 'New Session…', messages: 0, last_activity_ts: 9_000 },
+      { key: 'slot-real', title: 'Real thread', messages: 4, last_activity_ts: 1_000 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    expect(rows[0].textContent).toContain('Real thread')
+    // The New Session COMMAND is still there; what is absent is a session row for the
+    // blank slot, which would be a second row reading the same way.
+    expect(screen.getAllByText(/New Session/)).toHaveLength(1)
   })
 
   it('always gives the typed text a way to reach an agent', async () => {

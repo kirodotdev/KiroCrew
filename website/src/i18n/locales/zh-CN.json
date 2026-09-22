@@ -4818,6 +4818,7 @@
       "action_ask": "提问",
       "ask_agent": "问一下 agent：“{{query}}”",
       "group_attention": "等你处理",
+      "group_recent_sessions": "最近的会话",
       "action_enter": "打开视图",
       "action_continue": "继续",
       "action_open": "打开",

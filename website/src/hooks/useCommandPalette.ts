@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useAppSelector } from '../store'
 import { SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
 import {
   chordMatchesEvent,
@@ -84,10 +85,56 @@ export function useCommandPalette(): UseCommandPalette {
   // Timestamp of the last *bare* Shift keydown, for double-tap detection.
   // 0 means "no pending first tap".
   const lastShiftRef = useRef(0)
+  // Which pane this document is showing. Top-level dashboards own `activeId`;
+  // embedded panes receive the parent-owned identity through `host.activeId`.
+  // Stable fallbacks keep partial test stores supported.
+  const activeInstanceId = useAppSelector(s => s.instances?.activeId ?? null)
+  const hostActiveInstanceId = useAppSelector(s => s.instances?.host?.activeId)
+  const hostModelPresent = hostActiveInstanceId !== undefined
+  const visibleActiveInstanceId = hostModelPresent ? hostActiveInstanceId : activeInstanceId
+  // The pane identity this hook last saw, including which model supplied it. A
+  // newly relayed host model establishes the embedded baseline rather than
+  // representing a pane switch. Seeded at mount to suppress the initial effect.
+  const lastInstanceRef = useRef({ hostModelPresent, activeId: visibleActiveInstanceId })
 
   const openPalette = useCallback(() => setOpen(true), [])
   const close = useCallback(() => setOpen(false), [])
   const toggle = useCallback(() => setOpen(v => !v), [])
+
+  // Switching the visible pane dismisses the palette.
+  //
+  // ⌘/Ctrl+digit (useInstanceShortcuts) is a GLOBAL chord bound on `document`, so it
+  // fires while the palette is open and does exactly what it promises — the pane
+  // behind changes — but the modal stayed up, over the instance the user had just
+  // asked to look at, still offering that instance's predecessor's sessions.
+  //
+  // Keyed on the visible pane identity rather than on the keystroke. The chord is
+  // Electron-only and is bound in two documents: the top-level listener dispatches
+  // `setActiveId`, while the embedded listener relays `mc-switch-instance` to the
+  // parent. The parent updates its `activeId` and broadcasts an `mc-host-model`;
+  // `EmbeddedHostBridge` writes that model to `host` in the pane's store. Tracking
+  // the active id from the model owned by this document covers both routes.
+  //
+  // Note the tab strip is NOT such a door while the palette is up: the overlay is
+  // modal and intercepts the pointer, so the topbar cannot be clicked (measured in
+  // scripts/capture-command-bar-recent-switch.mjs). The keyboard is the only way to
+  // switch panes from behind the palette, which is why the bug was reachable at all.
+  //
+  // This belongs to the hook that OWNS the open state rather than to the app shell:
+  // the palette and any app overlay that replaces it share this state, so both are
+  // dismissed by one rule instead of each growing its own.
+  useEffect(() => {
+    const current = { hostModelPresent, activeId: visibleActiveInstanceId }
+    const last = lastInstanceRef.current
+    lastInstanceRef.current = current
+
+    // A host model arriving or disappearing changes which store field is
+    // authoritative, not which pane is visible. Use its first value as the new
+    // baseline so relay initialization cannot dismiss an open palette.
+    if (last.hostModelPresent !== current.hostModelPresent) return
+    if (last.activeId === current.activeId) return
+    setOpen(false)
+  }, [hostModelPresent, visibleActiveInstanceId])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
