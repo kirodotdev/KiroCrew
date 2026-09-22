@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -431,10 +432,57 @@ def runner(tmp_path: Path, script: str) -> Runner:
 
 
 def test_stale_pending_is_refired(runner: Runner) -> None:
-    dispatched = runner.sweep(state="pending", status_at="2020-01-01T00:00:00Z")
+    """The dropped-event freeze: a lane finished after the pending was published.
+
+    The fixture carries the check evidence that makes it that shape: the verdict
+    is old and a lane completed later, so the recompute reads something the frozen
+    verdict never saw.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+    )
     assert len(dispatched) == 1
     assert "pr=2064" in dispatched[0]
     assert "sha=4328fd0f941f09ff10f245fbdb4accf7c246febe" in dispatched[0]
+
+
+def test_stale_pending_with_no_later_check_evidence_is_left_alone(runner: Runner) -> None:
+    """A pending newer than every check on its head cannot change, so it is not nudged.
+
+    A readiness lane added to the monitored list after a head was pushed has zero
+    runs on that immutable head and can never acquire one, so the aggregator
+    counts it "(not started)" and republishes the same pending for as long as the
+    pull request stays open. Age alone made the sweep re-fire that recompute every
+    cycle, and each recompute re-derived the identical verdict, so the nudge
+    burned Actions minutes on 22 pull requests and changed nothing.
+
+    The test is the one modes 2, 4 and 5 already use, read in the pending
+    direction: the verdict here is NEWER than the newest completed check, so no
+    evidence has landed since it was computed and a recompute has nothing new to
+    read. Self-terminating rather than permanent -- the moment any lane completes
+    after the verdict the condition below flips and the nudge resumes.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:16:13Z",
+            check_completed_at="2026-08-07T19:01:24Z",
+        )
+        == []
+    )
+
+
+def test_a_pending_with_no_checks_at_all_is_left_alone(runner: Runner) -> None:
+    """Zero completed checks is not evidence of a freeze.
+
+    A head whose lanes are all still queueing carries no completed check-run, and
+    its pending is honest: the completion events are still owed and each one
+    recomputes. Nudging here cannot help, because the recompute reads the same
+    empty evidence the verdict already read.
+    """
+    assert runner.sweep(state="pending", status_at="2020-01-01T00:00:00Z") == []
 
 
 def test_fresh_pending_is_left_alone(runner: Runner) -> None:
@@ -443,6 +491,99 @@ def test_fresh_pending_is_left_alone(runner: Runner) -> None:
 
     recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert runner.sweep(state="pending", status_at=recent) == []
+
+
+# ── The evaluate-to-publish window ──────────────────────────────────────────
+
+PUBLISH_LAG_SECONDS = 300
+
+
+def test_a_check_completed_inside_the_publish_lag_is_evidence(runner: Runner) -> None:
+    """A lane the verdict could not have seen still counts, though it pre-dates it.
+
+    The aggregator reads lane state, then finishes its other reads and writes its
+    summary before publishing, so its view is older than its publish stamp. A
+    lane completing in that gap is invisible to the verdict; if its own
+    completion event is then dropped, comparing against the stamp alone calls the
+    check old and nothing ever recomputes. The verdict here is published two
+    minutes after the check, inside the bound.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-07T19:16:13Z",
+        check_completed_at="2026-08-07T19:14:13Z",
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+
+
+def test_a_check_one_second_inside_the_publish_lag_is_evidence(runner: Runner) -> None:
+    """The near edge, to pin the bound's value and not merely its existence."""
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at="2026-08-07T19:16:13Z",
+                check_completed_at="2026-08-07T19:11:14Z",
+            )
+        )
+        == 1
+    )
+
+
+def test_a_check_at_the_publish_lag_floor_is_not_evidence(runner: Runner) -> None:
+    """The far edge. The window is BOUNDED, which is what makes mode 1 terminate.
+
+    A check exactly publish_lag_seconds before the verdict is old evidence: the
+    aggregator's gap cannot have been that wide, so the verdict did read it.
+    Without this edge the floor would drift toward "any check at all", which is
+    the age-only retry the evidence test replaces.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:16:13Z",
+            check_completed_at="2026-08-07T19:11:13Z",
+        )
+        == []
+    )
+
+
+def test_a_republished_verdict_carries_the_same_check_below_the_floor(
+    runner: Runner,
+) -> None:
+    """Self-termination, as the sweep actually reaches it.
+
+    A rescue dispatches the aggregator, which republishes. The next sweep sees
+    the SAME newest check against a publication that is now at least
+    stale_seconds newer -- because nothing is re-examined before then -- and
+    stale_seconds is larger than the lag, so the check is below the floor and the
+    nudge does not repeat. This models the second pass: the check that earned the
+    first rescue, one stale window later.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:31:14Z",
+            check_completed_at="2026-08-07T19:14:13Z",
+        )
+        == []
+    )
+
+
+def test_the_publish_lag_stays_below_the_staleness_window() -> None:
+    """The ordering the termination argument rests on, asserted against the file.
+
+    If the lag ever grew past stale_seconds, a rescue's own republish would keep
+    the check inside the new window and mode 1 would nudge the same head every
+    sweep -- the loop this whole change removes, reintroduced by a constant.
+    """
+    sweep = WORKFLOW.read_text(encoding="utf-8")
+    assert "publish_lag_seconds=%d" % PUBLISH_LAG_SECONDS in sweep
+    assert "$(( updated_epoch - publish_lag_seconds ))" in sweep
+    stale = re.search(r'STALE_MINUTES:\s*"(\d+)"', sweep)
+    assert stale, "STALE_MINUTES is unreadable, so the termination bound cannot be checked"
+    assert PUBLISH_LAG_SECONDS < int(stale.group(1)) * 60
 
 
 # ── The re-run freeze (the case this change adds) ────────────────────────────
@@ -704,6 +845,25 @@ def test_every_open_pull_request_is_scanned_across_pages(tmp_path: Path, script:
             json.dumps([[{"context": "PR Readiness", "state": "pending", "updated_at": at}]])
         )
     (fixtures / "prs.json").write_text(json.dumps(prs))
+    # Mode 1 needs a check that completed AFTER the verdict, so the stale PRs are
+    # rescuable at all. This fixture is global to every PR the stub serves, and
+    # that is harmless here: it post-dates the five stale verdicts and pre-dates
+    # the fresh ones, which the age gate excludes before evidence is read.
+    (fixtures / "check_runs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "check_runs": [
+                        {
+                            "status": "completed",
+                            "conclusion": "success",
+                            "completed_at": "2020-06-01T00:00:00Z",
+                        }
+                    ]
+                }
+            ]
+        )
+    )
 
     proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
         ["bash", "-c", script],
@@ -844,6 +1004,23 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
         (fixtures / f"status_{sha}.json").write_text(
             json.dumps([[{"context": "PR Readiness", "state": "pending", "updated_at": at}]])
         )
+    # One check completed after all three verdicts, so each is a mode 1 rescue and
+    # the test varies only the staleness order.
+    (fixtures / "check_runs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "check_runs": [
+                        {
+                            "status": "completed",
+                            "conclusion": "success",
+                            "completed_at": "2020-01-01T00:01:00Z",
+                        }
+                    ]
+                }
+            ]
+        )
+    )
 
     proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
         ["bash", "-c", script],
