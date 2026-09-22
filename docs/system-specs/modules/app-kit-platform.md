@@ -1604,7 +1604,17 @@ banner art, while `screenshots*` must be a capture of the real App UI. The detai
 page prefers the wide `heroImageDetail*` banner when present and renders the
 screenshot gallery independently. Registry manifests project `useCases` and
 `configuration` as display metadata and rewrite repo-relative screenshot and
-hero paths through the same-origin blob proxy.
+hero paths through the same-origin blob proxy. That rewrite (`_merge_manifest`,
+via `_store_asset_path`) first joins each art path under the entry's
+`subdirectory` — the directory `app.json` was read from — because the blob
+route resolves `path` against the repo root: a monorepo entry's
+`ui/icons/app.png` is served from `apps/<name>/ui/icons/app.png`, and the bare
+path 502s. The join is the store-card reader's alone; the manifest field keeps
+its meaning, because the installed-app reader below resolves the same value
+against the install directory. It preserves containment rather than re-deriving
+it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
+URL is left untouched, and no normalisation happens, so a `..` in the asset path
+still reaches the blob route's own rejection.
 
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes

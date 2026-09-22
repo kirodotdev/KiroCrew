@@ -487,7 +487,10 @@ and detail cards. The path form depends on how the app is distributed:
 
 - **Federated / registry apps** use a repo-relative path (e.g. `ui/hero-light.svg`);
   `registry.py` rewrites it to a blob-proxy URL (`/api/apps/blob?repo=<repo>&path=<path>`)
-  so the artwork resolves without the app being locally installed:
+  so the artwork resolves without the app being locally installed. The path is
+  relative to the directory `app.json` lives in: for a registry entry that
+  declares a `subdirectory`, the rewrite prefixes it (`apps/<name>/ui/hero-light.svg`),
+  so the manifest is written the same way in a monorepo as at the repo root:
 
   ```json
   {

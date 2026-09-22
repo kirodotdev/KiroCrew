@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import platform as _platform
+import posixpath
 import re
 import shutil
 import sys
@@ -2421,18 +2422,55 @@ _REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _store_asset_path(subdirectory: Any, asset_path: Any) -> Any:
+    """Repo-root-relative path of a store-card asset declared in ``app.json``.
+
+    The manifest is read from ``_contained_join(clone_dir, subdirectory)``, so
+    every art path it declares (``iconPath``, ``heroImage*``, ``screenshots*``)
+    is relative to that directory -- while ``/api/apps/blob`` resolves ``path``
+    against the repo root. This is the store-card reader's join; the field
+    itself keeps its meaning, because the installed-app reader
+    (``handle_app_art_file``) resolves the same value against the install
+    directory, where the subdirectory has already been stripped by the install.
+
+    Containment is preserved rather than re-derived: a ``subdirectory`` the
+    lexical gate :func:`_is_safe_registry_subdir` rejects (absolute, ``..``,
+    backslash) is NOT joined, so the join never manufactures a traversing path
+    -- such entries are dropped before listing anyway, and the bare path here
+    is exactly what the store built before. Empty or ``.`` means the repo root
+    (unchanged), an absolute path or URL is left untouched, and the join is a
+    plain posix join with no normalisation, so a ``..`` inside the asset path
+    still reaches the blob route's own rejection unchanged.
+    """
+    if not asset_path or not isinstance(asset_path, str) or not isinstance(subdirectory, str):
+        return asset_path
+    subdir = subdirectory.rstrip("/")
+    if subdir in ("", "."):
+        return asset_path
+    if not _is_safe_registry_subdir(subdir):
+        return asset_path
+    if asset_path.startswith("/") or "://" in asset_path:
+        return asset_path
+    return posixpath.join(subdir, asset_path)
+
+
 def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Merge app.json fields into a registry entry.
 
     Registry-only fields (``_REGISTRY_ROW_KEYS``) are preserved from the entry.
     Everything else comes from app.json, with the blob proxy URL pattern
-    applied to image paths.
+    applied to image paths -- each joined under the entry's ``subdirectory``
+    first (:func:`_store_asset_path`), the directory the manifest was read from.
     """
     raw_repo = entry.get("repo", "")
     repo = _strip_git_target_userinfo(raw_repo) if isinstance(raw_repo, str) else ""
     result = {k: v for k, v in entry.items() if k in _REGISTRY_ROW_KEYS}
     if isinstance(result.get("repo"), str):
         result["repo"] = _strip_git_target_userinfo(result["repo"])
+    subdirectory = entry.get("subdirectory", "")
+
+    def _blob_url(asset_path: str) -> str:
+        return f"/api/apps/blob?repo={repo}&path={_store_asset_path(subdirectory, asset_path)}"
 
     # Top-level display fields from app.json
     for key in (
@@ -2472,7 +2510,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
 
-    # Icon — convert repo-relative path to blob proxy URL.
+    # Icon — convert a manifest-relative path to a blob proxy URL, joined under
+    # the entry's ``subdirectory`` (the directory app.json was read from) so the
+    # blob path names the file where it actually lives in the repo.
     #
     # Only ``iconPath`` (repo-relative) is honoured, never a manifest-declared
     # ``iconUrl``: an index-fetched manifest is untrusted content, and copying an
@@ -2482,13 +2522,13 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # trusted-host gate.
     icon_path = manifest.get("iconPath", "")
     if icon_path and repo:
-        result["iconUrl"] = f"/api/apps/blob?repo={repo}&path={icon_path}"
+        result["iconUrl"] = _blob_url(icon_path)
     # Dark-appearance variant. Raster icons have fixed bytes, so an app that
     # must read well on both backgrounds ships two files; first-party
     # ``/app-assets/`` SVGs are inlined and repaint from theme tokens instead.
     icon_path_dark = manifest.get("iconPathDark", "")
     if icon_path_dark and repo:
-        result["iconUrlDark"] = f"/api/apps/blob?repo={repo}&path={icon_path_dark}"
+        result["iconUrlDark"] = _blob_url(icon_path_dark)
     # Lucide fallback icon from manifest extra fields
     if manifest.get("icon"):
         result["icon"] = manifest["icon"]
@@ -2496,31 +2536,29 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Screenshots — convert repo-relative paths to blob proxy URLs
     screenshots = manifest.get("screenshots", [])
     if screenshots and repo:
-        result["screenshots"] = [f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots]
+        result["screenshots"] = [_blob_url(p) for p in screenshots]
 
     # Screenshots dark — convert repo-relative paths to blob proxy URLs
     screenshots_dark = manifest.get("screenshotsDark", [])
     if screenshots_dark and repo:
-        result["screenshotsDark"] = [
-            f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark
-        ]
+        result["screenshotsDark"] = [_blob_url(p) for p in screenshots_dark]
 
     # Hero images — convert repo-relative paths to blob proxy URLs
     hero = manifest.get("heroImage", "")
     if hero and repo:
-        result["heroImage"] = f"/api/apps/blob?repo={repo}&path={hero}"
+        result["heroImage"] = _blob_url(hero)
     hero_dark = manifest.get("heroImageDark", "")
     if hero_dark and repo:
-        result["heroImageDark"] = f"/api/apps/blob?repo={repo}&path={hero_dark}"
+        result["heroImageDark"] = _blob_url(hero_dark)
     # Detail-page hero images (wide banner ratio) — convert repo-relative paths
     # to blob proxy URLs. The detail page prefers these over the (near-square)
     # Browse-card hero so the wide banner isn't cropped.
     hero_detail = manifest.get("heroImageDetail", "")
     if hero_detail and repo:
-        result["heroImageDetail"] = f"/api/apps/blob?repo={repo}&path={hero_detail}"
+        result["heroImageDetail"] = _blob_url(hero_detail)
     hero_detail_dark = manifest.get("heroImageDetailDark", "")
     if hero_detail_dark and repo:
-        result["heroImageDetailDark"] = f"/api/apps/blob?repo={repo}&path={hero_detail_dark}"
+        result["heroImageDetailDark"] = _blob_url(hero_detail_dark)
 
     return result
 
