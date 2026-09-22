@@ -26,6 +26,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -2165,6 +2166,68 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     return merged
 
 
+def _opencode_models(request: web.Request, configured_default: str = "") -> list[dict]:
+    """Assemble the OpenCode model dropdown from what opencode itself advertises.
+
+    Same shape as :func:`_codex_models`: opencode has no static catalog on our
+    side either, and the ONLY ids ``session/set_config_option("model")``
+    accepts are the ones the adapter advertised as its ``model`` select on
+    ``session/new``, so those are the only rows offered.
+
+    Source order: a live opencode session's advertised list first (the
+    namespace-selected read :func:`_advertised_cc_models` does, so a retained
+    session of another harness cannot answer with ids opencode refuses), then
+    the cross-session cache that :meth:`AcpClient._capture_available_models`
+    fed on the last opencode ``session/new`` -- so a cold dashboard after a
+    restart still offers the real list instead of nothing. Both empty means no
+    opencode session has ever started on this install; the picker then offers
+    ``auto`` alone, and the frontend refetches on the next session spawn.
+
+    ``auto`` always leads: it means "inherit opencode's own default" and is
+    never an entitlement question. The configured default is resurrected only
+    when nothing is known -- force-including a pin the adapter did not
+    advertise would put back the exact row that kills the session.
+    """
+    opencode_namespace = model_registry_namespace(ACP_BACKEND_OPENCODE)
+    advertised = _advertised_cc_models(request, opencode_namespace)
+    if not advertised:
+        cached = model_registry.advertised_models(opencode_namespace)
+        advertised = [{"model_name": m, "display_name": m, "description": ""} for m in cached]
+
+    rows: list[dict] = [
+        {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}
+    ]
+    seen: set[str] = {"auto"}
+    for entry in advertised:
+        name = str(entry.get("model_name", "") or "").strip()
+        if not name or _normalize_model_key(name) == "auto" or name in seen:
+            continue
+        seen.add(name)
+        rows.append(
+            {
+                "model_name": name,
+                "display_name": entry.get("display_name") or name,
+                "description": entry.get("description", ""),
+            }
+        )
+    default = (configured_default or "").strip()
+    if (
+        default
+        and _normalize_model_key(default) != "auto"
+        and default not in seen
+        and not advertised
+    ):
+        rows.insert(
+            1, {"model_name": default, "display_name": default, "description": "Configured default"}
+        )
+    for entry in rows:
+        entry["context_window"] = (
+            model_registry.model_window(entry["model_name"])
+            or model_registry.REFERENCE_WINDOW_TOKENS
+        )
+    return rows
+
+
 def _codex_models(request: web.Request, configured_default: str = "") -> list[dict]:
     """Assemble the codex model dropdown from what codex-acp itself advertises.
 
@@ -2284,6 +2347,10 @@ async def api_models(request: web.Request) -> web.Response:
     if backend == ACP_BACKEND_CODEX:
         return web.json_response(
             _codex_models(request, configured_default=_scoped_default(cfg, backend))
+        )
+    if backend == ACP_BACKEND_OPENCODE:
+        return web.json_response(
+            _opencode_models(request, configured_default=_scoped_default(cfg, backend))
         )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
@@ -3823,7 +3890,7 @@ async def api_capability_mcp_registry(request: web.Request) -> web.Response:
         return _err500(exc)
 
 
-# ── KiroCrew Agent CRUD API ──
+# ── Kiro Crew Agent CRUD API ──
 
 
 def _roster_mask(value: object) -> str:
