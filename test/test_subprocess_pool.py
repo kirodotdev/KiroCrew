@@ -38,6 +38,15 @@ posix_names_only = pytest.mark.skipif(
     os.name == "nt", reason="POSIX filename semantics: newline and non-UTF-8 names"
 )
 
+# A newline is a legal APFS/HFS+ name unit, but a byte sequence that is not valid
+# UTF-8 is not: ``os.mkdir`` on macOS refuses it with EILSEQ before the resolver is
+# ever reached, so that ONE case is skipped there as well (the same skip every other
+# non-UTF-8 path test in this suite carries).
+utf8_relaxed_names_only = pytest.mark.skipif(
+    os.name == "nt" or sys.platform == "darwin",
+    reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+)
+
 # The per-request read deadline is armed with select, which on Windows accepts only
 # sockets and so cannot watch the child's pipe. There the ceiling reaper bounds a
 # wedge instead, so these three assert a POSIX capability rather than shared
@@ -148,7 +157,7 @@ class TestResolutionParity:
         odd.mkdir()
         assert pool.realpath_spellings(str(odd)) == _resolved_spellings(str(odd))
 
-    @posix_names_only
+    @utf8_relaxed_names_only
     def test_a_name_that_is_not_utf8_round_trips(self, pool, tmp_path: pathlib.Path) -> None:
         raw = os.path.join(os.fsencode(str(tmp_path)), b"not\xffutf8")
         os.mkdir(raw)
