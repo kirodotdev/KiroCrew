@@ -257,12 +257,25 @@ PROXY_PATH_MAX_DECODE_PASSES: int = 4
 
 # Timeout (secs) for one session-transfer request over an already-open tunnel
 # (POST the bundle to the peer's import endpoint — no SSH spawn). Far larger than
-# the token probe above because this carries a whole conversation: a bundle is
-# capped at ~20 MB of message content, and the SSH forward it crosses can be a
-# high-latency link, so a probe-sized budget would fail every large transfer. The
-# request is still bounded rather than unlimited, so an unresponsive peer
+# the token probe above, because the SSH forward it crosses can be a
+# high-latency link. It bounds each connect and each read, NOT the whole
+# request: a bundle has no size ceiling, so a total budget would fail every
+# transfer that simply takes long to upload. An unresponsive peer still
 # surfaces as a clean transfer error instead of hanging the caller's turn.
 DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS: float = 30.0
+
+# How long (secs) an arriving session waits for the host to have memory to
+# parse it before the importer answers a retryable 429. Shared with the sender,
+# whose wait for the importer's reply has to outlast it.
+SESSION_IMPORT_MEMORY_WAIT_SECS: float = 300.0
+
+# Cap (bytes) on a peer's reply to a session transfer, read before it is
+# decoded. The upload has no size ceiling and so no total timeout, which leaves
+# the reply as the one read nothing else bounds. An importer answers with a few
+# hundred bytes of JSON (the new slot and its title, or a refusal code); 256 KiB
+# only ever bites on a hostile or broken peer. Bound before buffering, like
+# SEARCH_REPLY_MAX_BYTES.
+SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
 # Timeout (secs) for one federated session-search request over an already-open
 # tunnel (GET the peer's /api/sessions/search — no SSH spawn). Sized between the

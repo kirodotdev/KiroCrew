@@ -55,6 +55,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
+from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 from urllib.parse import quote
 
@@ -119,6 +120,10 @@ from kiro_crew.instances.constants import (
     LENT_HOP_TTL_CAP,
 )
 from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
+from kiro_crew.instances.constants import SESSION_IMPORT_MEMORY_WAIT_SECS as _IMPORT_MEMORY_WAIT
+from kiro_crew.instances.constants import (
+    SESSION_TRANSFER_REPLY_MAX_BYTES as _TRANSFER_REPLY_MAX_BYTES,
+)
 from kiro_crew.instances.diagnostics import (
     DiagnosisResult,
     diagnose_instance,
@@ -173,6 +178,58 @@ _T = TypeVar("_T")
 # answers is a failure to retry, not a hop to retire -- the distinction is what
 # keeps a network blip from tearing down a working chain.
 _HOP_RETIRED_CODES = frozenset({"instance_not_connected", "instance_not_found"})
+#: Refusal codes an OLDER importer answers when a bundle is past the size
+#: ceilings it enforces. ``send_session_bundle`` resends such a bundle once
+#: without Layer B, which that peer accepts when Layer B was what put it over;
+#: a transcript still past its ceilings is refused again, and that answer is
+#: returned as it stands.
+_PEER_SIZE_REFUSALS = frozenset({"transfer_layer_b_too_large", "transfer_bundle_too_large"})
+#: Read size for streaming a serialised bundle up the tunnel.
+_UPLOAD_CHUNK_BYTES = 256 * 1024
+
+
+async def _read_transfer_reply(resp: Any) -> Any:
+    """A peer's reply to a session transfer, decoded, or ``{}``.
+
+    Read under :data:`_TRANSFER_REPLY_MAX_BYTES` before anything is decoded: the
+    upload has no total timeout, so a peer that keeps sending would otherwise
+    have the gateway buffer its reply without end. A reply past the cap, or not
+    JSON, reads as ``{}``; the status still decides the outcome.
+    """
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in resp.content.iter_chunked(65536):
+        received += len(chunk)
+        if received > _TRANSFER_REPLY_MAX_BYTES:
+            return {}
+        chunks.append(chunk)
+    try:
+        return json.loads(b"".join(chunks))
+    except Exception:
+        return {}
+
+
+async def _upload_chunks(fh: Any, stall: asyncio.Timeout) -> Any:
+    """Yield *fh* in chunks for an upload, with a no-progress deadline on *stall*.
+
+    The request has no total timeout, because a bundle has no size ceiling, so a
+    peer that stops reading would otherwise hold the upload forever. aiohttp
+    pulls the next chunk only once the previous one is written, so each pull is
+    progress: every pull moves the deadline ``_TRANSFER_TIMEOUT`` ahead, and a
+    peer that stalls lets it lapse, which raises ``TimeoutError`` out of the
+    request. When the file is exhausted the deadline is cleared, and waiting for
+    the peer's reply falls to the session's per-read timeout.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        stall.reschedule(loop.time() + _TRANSFER_TIMEOUT)
+        chunk = await asyncio.to_thread(fh.read, _UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            stall.reschedule(None)
+            return
+        yield chunk
+
+
 _LOOPBACK = "127.0.0.1"
 
 #: The closed set of peer endpoints :meth:`SshTunnelManager.peer_capability` may
@@ -4659,8 +4716,27 @@ class SshTunnelManager:
                 await session.close()
             return
 
-    async def send_session_bundle(self, instance_id: str, bundle: dict) -> tuple[bool, dict]:
+    async def send_session_bundle(
+        self,
+        instance_id: str,
+        bundle: dict,
+        *,
+        serialise: Callable[[dict], Path],
+        recheck: Callable[[], dict | None] | None = None,
+    ) -> tuple[bool, dict]:
         """POST a session-transfer *bundle* to a connected instance's importer.
+
+        Each attempt writes the bundle to a file through *serialise* and uploads
+        that file, so a large session is never encoded in memory; the file is
+        removed after the attempt. The caller supplies the serialiser because
+        the bundle's own encoding (a Layer B log carried as a file) belongs to
+        the dashboard.
+
+        *recheck*, when given, runs off the loop after each serialisation and
+        immediately before the request. It returns ``None`` to proceed or a
+        refusal payload (``error`` + ``code``) that is returned unsent: a large
+        session serialises for long enough that the caller's own checks on the
+        source (its privacy line) can go stale in between.
 
         Returns ``(ok, payload)``: on success *payload* is the peer's JSON reply
         (carrying the new session key); on failure it carries ``error`` and a
@@ -4686,7 +4762,14 @@ class SshTunnelManager:
                 ),
             }
         stamp = self._peer_forward_stamp(instance_id)
-        timeout = aiohttp.ClientTimeout(total=_TRANSFER_TIMEOUT)
+        # Per-connect and per-read, never total: a bundle has no size ceiling, so a
+        # total budget would fail every transfer that simply takes long to
+        # upload. The read budget outlasts the importer's own wait for memory.
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=_TRANSFER_TIMEOUT,
+            sock_read=_IMPORT_MEMORY_WAIT + _TRANSFER_TIMEOUT,
+        )
         # Two INDEPENDENT one-shot retries, tracked by flag rather than by loop
         # index so neither consumes the other's budget:
         #  * ``reminted`` -- a retained credential can go stale while the tunnel
@@ -4695,21 +4778,41 @@ class SshTunnelManager:
         #    credentials). One fresh mint turns that into a transparent success.
         #  * ``downgraded`` -- an older peer refuses bundle_version 2; resend the
         #    transcript-only v1 shape it has always accepted.
-        # Bounded at 3 attempts so at most one of each can fire plus the original.
+        #  * ``trimmed`` -- an older peer enforces a size ceiling this side does
+        #    not, and refuses a bundle whose Layer B is past it; resend without
+        #    Layer B, the transcript-only copy that peer accepts.
+        # Bounded at 4 attempts so at most one of each can fire plus the original.
         reminted = False
         downgraded = False
-        for _attempt in range(3):
+        trimmed = False
+        for _attempt in range(4):
             try:
                 headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
             except _PeerUnavailable as e:
                 return False, {"error": e.message, "code": "transfer_no_credential"}
+            body_path: Path | None = None
+            body_file: Any = None
+            # No deadline until the upload starts; see ``_upload_chunks``.
+            stall = asyncio.timeout(None)
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(url, json=bundle, headers=headers) as resp:
-                        try:
-                            payload = await resp.json()
-                        except Exception:
-                            payload = {}
+                body_path = await asyncio.to_thread(serialise, bundle)
+                body_file = await asyncio.to_thread(open, body_path, "rb")
+                # Serialising a large session is the longest await before the
+                # request, so the forward is re-checked after it: a tunnel
+                # replaced meanwhile can hand this URL's port to another peer,
+                # which must not receive this session or its credential.
+                self._require_peer_forward(instance_id, stamp)
+                if recheck is not None:
+                    refusal = await asyncio.to_thread(recheck)
+                    if refusal is not None:
+                        return False, refusal
+                async with stall, aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url,
+                        data=_upload_chunks(body_file, stall),
+                        headers={**headers, "Content-Type": "application/json"},
+                    ) as resp:
+                        payload = await _read_transfer_reply(resp)
                         if 200 <= resp.status < 300:
                             return True, payload if isinstance(payload, dict) else {}
                         if resp.status in (401, 403):
@@ -4769,6 +4872,22 @@ class SshTunnelManager:
                                 instance_id,
                             )
                             continue
+                        # An OLDER peer enforces size ceilings this side does
+                        # not. Layer B is the part that grows past them, and that
+                        # peer accepts the session without it, so resend that
+                        # copy rather than fail the transfer. The peer then
+                        # answers ``prefix`` and the row reads "Sent (transcript
+                        # only)", which is true.
+                        if code in _PEER_SIZE_REFUSALS and not trimmed and "layer_b" in bundle:
+                            trimmed = True
+                            bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                            logger.info(
+                                "Session transfer to %s: peer refused the size (%s); "
+                                "retrying without Layer B",
+                                instance_id,
+                                code,
+                            )
+                            continue
                         return False, {
                             "error": (
                                 payload.get("error")
@@ -4777,6 +4896,9 @@ class SshTunnelManager:
                             ),
                             "code": code or "transfer_peer_refused",
                         }
+            except _PeerUnavailable as e:
+                # The forward changed under the serialisation; nothing was sent.
+                return False, {"error": e.message, "code": "transfer_peer_not_connected"}
             except Exception as e:
                 logger.info(
                     "Session transfer to %s failed (%s)",
@@ -4787,6 +4909,23 @@ class SshTunnelManager:
                     "error": f"could not reach the instance ({type(e).__name__})",
                     "code": "transfer_unreachable",
                 }
+            finally:
+                # Each attempt serialises its own body, and a retry changes the
+                # bundle, so the file is this attempt's alone to remove. A
+                # failure here is logged, never raised: it would replace the
+                # attempt's own answer, and after a committed import that turns
+                # success into an error whose retry duplicates the session.
+                try:
+                    if body_file is not None:
+                        await asyncio.to_thread(body_file.close)
+                    if body_path is not None:
+                        await asyncio.to_thread(body_path.unlink, missing_ok=True)
+                except OSError as e:
+                    logger.warning(
+                        "Session transfer to %s: could not remove the staged body (%s)",
+                        instance_id,
+                        type(e).__name__,
+                    )
         # Both attempts came back unauthorized.
         return False, {
             "error": "peer rejected the credential",

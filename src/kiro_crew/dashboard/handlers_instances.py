@@ -50,6 +50,8 @@ from kiro_crew.dashboard.session_transfer import (
     TranscriptWithheld,
     build_transfer_bundle_async,
     local_instance_label,
+    release_bundle_files,
+    write_bundle_file,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
 from kiro_crew.history import SEARCH_MIN_CHARS
@@ -1476,7 +1478,14 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         # released immediately after this off-loop revalidation. The remaining
         # race window is the transmit itself; holding across the await would
         # stall the event loop behind a cross-process transcript lock.
-        await asyncio.to_thread(_revalidate_for_publication)
+        #
+        # A refusal here returns before the send, whose ``finally`` is the other
+        # place the bundle's Layer B snapshot is removed, so it is removed here.
+        try:
+            await asyncio.to_thread(_revalidate_for_publication)
+        except BaseException:
+            release_bundle_files(bundle)
+            raise
     except TranscriptBusy:
         # The seam could not take the transcript lock in time; nothing was sent
         # and the source is untouched, so this is the retryable answer.
@@ -1515,13 +1524,45 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    ok, payload = await mgr.send_session_bundle(instance_id, bundle)
+
+    def _recheck_before_post() -> dict | None:
+        # Serialising a large session takes long enough for the privacy line to
+        # tighten after the check above, so it is re-checked just before the
+        # request leaves. Blocking; the send runs it off the loop.
+        try:
+            _revalidate_for_publication()
+        except TranscriptWithheld:
+            return {
+                "error": "cannot transfer a non-persistent session",
+                "code": "transfer_slot_not_persistent",
+            }
+        except TranscriptBusy:
+            return {
+                "error": "the session could not be copied consistently right now; please retry",
+                "code": "transfer_snapshot_unstable",
+            }
+        return None
+
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            instance_id,
+            bundle,
+            # Plain JSON, which every importer release reads, streamed from disk.
+            serialise=lambda b: write_bundle_file(b, compress=False),
+            recheck=_recheck_before_post,
+        )
+    finally:
+        release_bundle_files(bundle)
     if not ok:
         _audit(
             "send_session",
             "failure",
             request_id=instance_id,
             error=str(payload.get("code", "unknown")),
+        )
+        code = payload.get("code", "transfer_peer_refused")
+        status = {"transfer_slot_not_persistent": 400, "transfer_snapshot_unstable": 503}.get(
+            code, 502
         )
         # Re-emit the peer's reason explicitly rather than forwarding *payload*
         # verbatim: the code must be statically visible in the response body
@@ -1532,7 +1573,7 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
                 "error": payload.get("error", "the transfer failed"),
                 "code": payload.get("code", "transfer_peer_refused"),
             },
-            status=502,
+            status=status,
         )
     _audit("send_session", "success", request_id=instance_id)
     return web.json_response(

@@ -33,6 +33,7 @@ const REFUSAL_COPY: Record<string, () => string> = {
   transfer_bundle_too_large: () => i18nT('components.importSessionItem.refusal_too_large'),
   transfer_body_unreadable: () => i18nT('components.importSessionItem.refusal_upload_failed'),
   transfer_expansion_busy: () => i18nT('components.importSessionItem.refusal_busy'),
+  transfer_uploads_busy: () => i18nT('components.importSessionItem.refusal_busy'),
 }
 
 /**

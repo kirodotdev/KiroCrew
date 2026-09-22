@@ -44,6 +44,21 @@ from kiro_crew.history import (
 )
 
 
+def _export_bytes(resp) -> bytes:
+    """The body a successful export sends: it is served from its staged file."""
+    assert isinstance(resp, se._StagedExport), resp
+    return resp._path.read_bytes()
+
+
+def _staged_bytes(document) -> bytes:
+    """What :func:`se._stage_export` writes for *document*, read and removed."""
+    path = se._stage_export(document)
+    try:
+        return path.read_bytes()
+    finally:
+        path.unlink()
+
+
 class _FakeLog:
     def __init__(self, messages, *, metadata=None, readable=True):
         self._messages = messages
@@ -413,7 +428,7 @@ async def test_export_streams_a_gzipped_bundle():
     assert resp.headers["Content-Disposition"].startswith("attachment; filename*=UTF-8''")
     assert resp.headers["Content-Disposition"].endswith(".kcsession.json.gz")
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert document["bundle_version"] == 2
     assert [m["content"] for m in document["messages"]] == [
         "how does the tunnel work?",
@@ -503,7 +518,12 @@ async def test_a_line_tightened_at_commit_leaves_only_the_denied_audit(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_a_busy_commit_leaves_only_the_failure_audit(monkeypatch):
+async def test_a_busy_commit_leaves_only_the_failure_audit(monkeypatch, tmp_path):
+    import kiro_crew.dashboard.session_transfer as st
+
+    out = tmp_path / "egress"
+    out.mkdir()
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
     events = _capture_audit(monkeypatch)
 
     class _BusyAtCommit(_FakeLog):
@@ -520,6 +540,7 @@ async def test_a_busy_commit_leaves_only_the_failure_audit(monkeypatch):
 
     assert resp.status == 503
     assert [e["outcome"] for e in events] == ["failure"]
+    assert list(out.iterdir()) == [], "a refused commit removes the staged body"
 
 
 @pytest.mark.asyncio
@@ -532,7 +553,7 @@ async def test_a_committed_export_records_exactly_one_allowed_audit(monkeypatch)
 
     assert resp.status == 200
     assert [e["outcome"] for e in events] == ["allowed"]
-    assert f"bytes={len(resp.body)}" in events[0]["resources"]
+    assert f"bytes={len(_export_bytes(resp))}" in events[0]["resources"]
     assert f"messages={len(MSGS)}" in events[0]["resources"]
 
 
@@ -569,7 +590,7 @@ async def test_export_carries_no_host_or_login_provenance():
     state = _state(MSGS, sessions=_FakeSessions({SESSION_KEY: "auto"}), slots={"slot-1": slot})
 
     resp = await se.api_chat_slot_export(_request(state))
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
 
     # No host identity at the top level.
     assert document["origin"] == ""
@@ -790,7 +811,7 @@ async def test_the_export_withholds_layer_b_by_default(monkeypatch):
     resp = await se.api_chat_slot_export(_request(state))
     assert resp.status == 200
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert "layer_b" not in document, "the export must withhold context by default"
     assert document["layer_b_skipped"] is True
     assert "a-real-sid" not in json.dumps(document)
@@ -829,7 +850,7 @@ async def test_an_export_carries_layer_b_on_explicit_opt_in(monkeypatch):
     resp = await se.api_chat_slot_export(_request(state, query={"include_layer_b": "true"}))
     assert resp.status == 200
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert "layer_b" in document, "an explicit opt-in must carry the context window"
     # ``_assemble_bundle`` keeps only the envelope + events on the wire; the sid is
     # resolved locally and never rides along.
@@ -859,7 +880,7 @@ async def test_an_export_withholds_layer_b_for_a_non_operator_caller(monkeypatch
     )
     assert resp.status == 200
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert "layer_b" not in document
     assert document["layer_b_skipped"] is True
 
@@ -891,7 +912,7 @@ async def test_an_export_withholds_when_permitted_but_not_requested(monkeypatch)
     resp = await se.api_chat_slot_export(_request(state))  # no query flag
     assert resp.status == 200
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert "layer_b" not in document, "permission alone must not carry without a per-export ask"
     assert document["layer_b_skipped"] is True
 
@@ -985,7 +1006,7 @@ async def test_a_session_that_never_had_context_is_not_flagged_as_degraded():
     resp = await se.api_chat_slot_export(_request(state))
     assert resp.status == 200
 
-    document = json.loads(gzip.decompress(resp.body))
+    document = json.loads(gzip.decompress(_export_bytes(resp)))
     assert "layer_b" not in document
     assert "layer_b_skipped" not in document
 
@@ -1006,19 +1027,22 @@ def test_the_free_text_provenance_fields_are_redacted():
 
 
 @pytest.mark.asyncio
-async def test_a_bundle_the_importer_would_reject_is_not_handed_over(monkeypatch):
-    """A producer must not emit a document its own reader refuses.
+async def test_an_oversized_session_exports_rather_than_being_refused(monkeypatch):
+    """Export is never blocked by size — no producer-side reject preflight.
 
-    Past the importer's bounds the file would download cleanly, cost the user a
-    download, and then be rejected wherever they took it. The bounds are consulted
-    through the validator itself rather than restated, so the two cannot drift.
+    A bundle far past every OLD importer bound (5,000 messages / 20 MB content)
+    exports successfully: the file is handed over, gzipped, with all its messages,
+    because a transfer must never be blocked by size (the owner's decision). The
+    old ``export_bundle_rejected`` refusal is gone.
     """
+    import gzip
+
     oversized = {
         "bundle_version": 2,
         "origin": "mac",
         "title": "huge",
         "agent": "",
-        "messages": [{"role": "user", "content": "x", "ts": ""} for _ in range(5001)],
+        "messages": [{"role": "user", "content": "x" * 4000, "ts": ""} for _ in range(6000)],
     }
 
     async def _huge(*_a, **_k):
@@ -1029,27 +1053,10 @@ async def test_a_bundle_the_importer_would_reject_is_not_handed_over(monkeypatch
 
     resp = await se.api_chat_slot_export(_request(state))
 
-    assert resp.status == 400
-    body = json.loads(resp.body)
-    assert body["code"] == "export_bundle_rejected"
-    # Which bound was hit is carried in prose and in the audit record, not as a
-    # separate machine-readable field: nothing reads one off the wire.
-    assert "too many messages" in body["error"]
-    assert "importer_code" not in body
-
-
-def test_the_rejection_reason_comes_from_the_importer_itself():
-    from kiro_crew.dashboard.session_transfer import bundle_rejection_reason
-
-    ok = {
-        "bundle_version": 2,
-        "messages": [{"role": "user", "content": "hi", "ts": ""}],
-    }
-    assert bundle_rejection_reason(ok) == ("", "")
-
-    reason, code = bundle_rejection_reason({"bundle_version": 2, "messages": []})
-    assert code == "transfer_bundle_empty"
-    assert reason
+    assert resp.status == 200
+    assert resp.content_type == "application/gzip"
+    round_tripped = json.loads(gzip.decompress(_export_bytes(resp)))
+    assert len(round_tripped["messages"]) == 6000
 
 
 @pytest.mark.asyncio
@@ -1101,7 +1108,7 @@ def test_a_lone_surrogate_does_not_crash_serialisation():
         "messages": [{"role": "user", "content": lone, "ts": ""}],
     }
 
-    raw = se.gzip_bundle(document)
+    raw = _staged_bytes(document)
 
     assert json.loads(gzip.decompress(raw))["messages"][0]["content"] == lone
 
@@ -1110,8 +1117,8 @@ def test_gzip_is_deterministic_for_one_document():
     """``mtime=0``: the export instant is already inside the document, so a
     second copy in the gzip header would only make identical exports differ."""
     document = {"bundle_version": 2, "messages": [{"role": "user", "content": "hi", "ts": ""}]}
-    assert se.gzip_bundle(document) == se.gzip_bundle(document)
-    assert json.loads(gzip.decompress(se.gzip_bundle(document))) == document
+    assert _staged_bytes(document) == _staged_bytes(document)
+    assert json.loads(gzip.decompress(_staged_bytes(document))) == document
 
 
 @pytest.mark.asyncio
@@ -1144,3 +1151,107 @@ async def test_a_pending_line_tightening_is_applied_before_export(tmp_path, monk
     assert json.loads(response.body)["code"] == "export_slot_not_persistent"
     assert events[-1]["outcome"] == "denied"
     assert events[-1]["error"] == "memory_mode=incognito"
+
+
+@pytest.mark.asyncio
+async def test_an_export_streams_layer_b_from_its_snapshot_and_removes_it(monkeypatch, tmp_path):
+    """Layer B rides out of its snapshot file, never read whole, and the
+    snapshot is gone once the response is built."""
+    import kiro_crew.dashboard.session_transfer as st
+
+    out = tmp_path / "egress"
+    out.mkdir()
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+    snap = out / "snap.jsonl"
+    snap.write_bytes('{"k":"中"}\n'.encode())
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *_a, **_k: "a-real-sid")
+    monkeypatch.setattr(
+        st,
+        "_read_layer_b",
+        lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
+    )
+    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    resp = await se.api_chat_slot_export(_request(state, query={"include_layer_b": "true"}))
+
+    assert resp.status == 200
+    assert json.loads(gzip.decompress(_export_bytes(resp)))["layer_b"]["events"] == '{"k":"中"}\n'
+    # The snapshot is gone once the response is built; the staged body stays
+    # until the response is sent, which removes it.
+    assert list(out.iterdir()) == [resp._path]
+
+
+@pytest.mark.asyncio
+async def test_a_sent_export_streams_its_staged_file_and_removes_it(tmp_path, monkeypatch):
+    """The body goes out of the staged file, a chunk at a time, and the file is
+    removed once the send ends. Nothing reads it whole into memory."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import kiro_crew.dashboard.session_transfer as st
+
+    out = tmp_path / "egress"
+    out.mkdir()
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+    document = {"bundle_version": 2, "messages": [{"role": "user", "content": "hi", "ts": ""}]}
+    staged = se._stage_export(document)
+
+    def _no_whole_read(self, *a, **k):
+        raise AssertionError("the staged export was read whole")
+
+    monkeypatch.setattr(type(staged), "read_bytes", _no_whole_read)
+
+    async def _handler(_request):
+        return se._StagedExport(staged, headers={"Content-Type": "application/gzip"})
+
+    app = web.Application()
+    app.router.add_get("/x", _handler)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/x")
+        assert resp.status == 200
+        assert json.loads(gzip.decompress(await resp.read())) == document
+    assert not staged.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_staging_failure_is_an_audited_coded_500_and_releases_the_snapshot(
+    monkeypatch, tmp_path
+):
+    """A full staging volume fails the serialisation; the answer is the handler's
+    own coded failure, audited, with the Layer B snapshot removed."""
+    import kiro_crew.dashboard.session_transfer as st
+
+    out = tmp_path / "egress"
+    out.mkdir()
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+    snap = out / "snap.jsonl"
+    snap.write_bytes(b'{"k":1}\n')
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *_a, **_k: "a-real-sid")
+    monkeypatch.setattr(
+        st,
+        "_read_layer_b",
+        lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
+    )
+    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
+
+    def _full(_bundle):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(se, "_stage_export", _full)
+    audits: list[str] = []
+    monkeypatch.setattr(
+        se, "sel", lambda: SimpleNamespace(log_api_access=lambda **k: audits.append(k["outcome"]))
+    )
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    resp = await se.api_chat_slot_export(_request(state, query={"include_layer_b": "true"}))
+
+    assert resp.status == 500
+    assert json.loads(resp.body)["code"] == "export_failed"
+    assert audits == ["error"]
+    assert not snap.exists()

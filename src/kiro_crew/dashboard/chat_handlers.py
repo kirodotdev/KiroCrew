@@ -11593,8 +11593,9 @@ def _materialise_slot_from_history(
     caller switches. ``window_limit`` is how many newest rows to surface as the
     live window given that earlier rows are already durable elsewhere: resume's
     rows are a window onto a longer on-disk transcript (cap 500, the rest frozen
-    on disk), import's rows exist only in memory and are ALL persisted by its own
-    save (``None`` = surface every row, ``_disk_older_count`` falls out as 0).
+    on disk), and import writes its older rows to the transcript as the frozen
+    prefix before its save and passes the same cap. ``None`` surfaces every row,
+    for a caller whose rows are all persisted by the save itself.
     ``disk_meta_observed`` is whether this hydration read an existing transcript
     off disk: resume did (True), import synthesised its metadata (False), and it
     gates the delete-won disk-identity bookkeeping that only means something for a
@@ -11910,11 +11911,11 @@ def _hydrate_slot_from_history(
     # the newest rows to surface as the live window, given that any rows before
     # it are ALREADY DURABLE somewhere the next save will not rewrite. Resume's
     # rows are a window onto a longer on-disk transcript, so it caps at 500 and
-    # the earlier rows stay frozen on disk. Import's rows exist only in memory
-    # and are ALL persisted by the caller's save below, so nothing is "older on
-    # disk": it passes ``None`` (surface every row) and ``_disk_older_count``
-    # falls out as 0. Applying resume's cap to import would drop every row past
-    # the last 500 and claim a frozen prefix of rows that were never written.
+    # the earlier rows stay frozen on disk. Import caps the same way and writes
+    # the rows before the window to the transcript itself, before its save, so
+    # ``_disk_older_count`` counts exactly the rows that write put on disk. A
+    # caller passing a cap without that write would claim a frozen prefix of
+    # rows that were never written.
     if window_limit is None or disk_total <= window_limit:
         messages = all_messages
     else:

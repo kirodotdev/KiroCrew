@@ -8854,7 +8854,9 @@ class TestPeerRequestSharedDance:
                 pass
         assert ei.value.code == "proxy_peer_not_connected"
 
-        ok, payload = await mgr.send_session_bundle("nope", {"bundle_version": 2})
+        ok, payload = await mgr.send_session_bundle(
+            "nope", {"bundle_version": 2}, serialise=lambda _b: None
+        )
         assert (ok, payload["code"]) == (False, "transfer_peer_not_connected")
 
         ok, payload = await mgr.search_sessions_remote("nope", "q", 10)
@@ -8876,7 +8878,9 @@ class TestPeerRequestSharedDance:
         assert ei.value.code == "proxy_no_credential"
         assert ei.value.http_status == 503
 
-        ok, payload = await mgr.send_session_bundle("cd-1", {"bundle_version": 2})
+        ok, payload = await mgr.send_session_bundle(
+            "cd-1", {"bundle_version": 2}, serialise=lambda _b: None
+        )
         assert (ok, payload["code"]) == (False, "transfer_no_credential")
 
         ok, payload = await mgr.search_sessions_remote("cd-1", "q", 10)
