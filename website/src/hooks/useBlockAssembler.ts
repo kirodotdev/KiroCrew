@@ -341,6 +341,71 @@ const THROTTLE_MS = 100
 /** Shared empty result so the streaming path allocates nothing per render. */
 const NO_BLOCKS: ContentBlock[] = []
 
+/** A structural parse snapshot: the blocks, the exact text they came from
+ *  (so the render path can tell how much of the current text the snapshot
+ *  already covers), and the 1-based line on which the next character
+ *  appended to that text lands. `nextLine` is computed once here, at parse
+ *  rate: extendTail runs every animation frame and must not rescan the text. */
+type ParseSnap = { blocks: ContentBlock[]; text: string; nextLine: number }
+
+const EMPTY_SNAP: ParseSnap = { blocks: NO_BLOCKS, text: '', nextLine: 1 }
+
+/** 1-based line number on which the next character appended to `text` lands.
+ *  A hand loop, not `split('\n')`, so a snapshot build allocates no line array. */
+function nextLineOf(text: string): number {
+  let n = 1
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+/** The only constructor of a non-empty snapshot: every site that pairs blocks
+ *  with their text goes through here so `nextLine` can never drift from `text`. */
+function snapOf(blocks: ContentBlock[], text: string): ParseSnap {
+  return { blocks, text, nextLine: nextLineOf(text) }
+}
+
+/**
+ * Extend a structural snapshot with text that streamed in after it was
+ * parsed, WITHOUT re-parsing. This is what keeps the per-character smooth
+ * reveal (useSmoothStream advances the visible text every animation frame)
+ * flowing between the ~100ms structural parses: block BOUNDARIES may be up
+ * to a throttle window stale, but the visible text is always current.
+ *
+ * Exactness argument: parseBlocks decides state transitions per LINE, and the
+ * snapshot's trailing block is its still-open buffer — an incomplete fence or
+ * widget, or a trailing markdown block — whose content always spans to the
+ * end of the parsed text. Appending the delta to that block is therefore
+ * byte-identical to what a full re-parse would produce, UNLESS the delta
+ * introduces a new structural boundary (a fence opening, a widget tag, the
+ * growing tail line reclassifying itself). Those render as plain text inside
+ * the tail block for at most one throttle window and are corrected by the
+ * next structural parse — the same staleness the throttle already imposed on
+ * ALL streamed text before this function existed.
+ *
+ * Fallbacks are deliberate no-ops: text that is not a pure extension of the
+ * snapshot (a steer rewrite, a reset) returns the snapshot unchanged and the
+ * next timer tick re-parses from scratch.
+ */
+function extendTail(snap: ParseSnap, rawText: string): ContentBlock[] {
+  const { blocks, text, nextLine } = snap
+  if (rawText.length <= text.length || !rawText.startsWith(text)) return blocks
+  const delta = rawText.slice(text.length)
+  const last = blocks[blocks.length - 1]
+  // The still-open buffer: an incomplete fence/widget, or a trailing markdown
+  // block (markdown can only be last when it IS the open buffer). Settled
+  // blocks keep their object identity so memoized renderers skip them.
+  if (last && (!last.complete || last.type === 'markdown')) {
+    const next = blocks.slice(0, -1)
+    next.push({ ...last, content: last.content + delta })
+    return next
+  }
+  // No open buffer (empty parse, or the snapshot ended exactly on a closed
+  // fence/widget): the delta starts a new trailing markdown block. A
+  // whitespace-only delta stays invisible either way; skip the allocation.
+  if (!delta.trim()) return blocks
+  return [...blocks, { type: 'markdown', content: delta, complete: true, startLine: nextLine }]
+}
+
 /**
  * Hook that parses raw message text into content blocks.
  * During streaming, unclosed fences or widgets produce provisional blocks.
@@ -352,6 +417,14 @@ const NO_BLOCKS: ContentBlock[] = []
  * along with the GC pressure from the discarded intermediates. The eager parse
  * is gated off for the duration of the stream and resumes the moment streaming
  * ends, so the final output is identical to an unthrottled parse.
+ *
+ * Smoothness: the throttle bounds STRUCTURAL parsing only. Every render
+ * between ticks extends the snapshot's tail block with the newly revealed
+ * text (extendTail above, O(delta)), so the per-frame character reveal from
+ * useSmoothStream reaches the DOM every frame instead of being quantized to
+ * one visible jump per throttle window — which is what made streamed text
+ * lurch in ~10Hz chunks and only animate smoothly during the post-stream
+ * drain, after the completion sound.
  */
 export function useBlockAssembler(rawText: string, streaming: boolean): ContentBlock[] {
   // Gated on !streaming: during a stream this must not parse, or the throttle
@@ -363,8 +436,8 @@ export function useBlockAssembler(rawText: string, streaming: boolean): ContentB
 
   // Gated too: the early return below never reads this when !streaming, so a
   // completed message would otherwise pay a second full parse for nothing.
-  const [throttledBlocks, setThrottledBlocks] = useState<ContentBlock[]>(() =>
-    streaming ? parseBlocks(rawText, true) : NO_BLOCKS,
+  const [throttledSnap, setThrottledSnap] = useState<ParseSnap>(() =>
+    streaming ? snapOf(parseBlocks(rawText, true), rawText) : EMPTY_SNAP,
   )
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestTextRef = useRef(rawText)
@@ -382,13 +455,14 @@ export function useBlockAssembler(rawText: string, streaming: boolean): ContentB
         timerRef.current = null
       }
       // Primes the snapshot so a later stream resumes from the current parse.
-      setThrottledBlocks(immediateBlocks)
+      setThrottledSnap(snapOf(immediateBlocks, rawText))
       return
     }
     if (timerRef.current === null) {
       timerRef.current = setTimeout(() => {
         timerRef.current = null
-        setThrottledBlocks(parseBlocks(latestTextRef.current, true))
+        const text = latestTextRef.current
+        setThrottledSnap(snapOf(parseBlocks(text, true), text))
       }, THROTTLE_MS)
     }
   }, [rawText, streaming, immediateBlocks])
@@ -402,7 +476,15 @@ export function useBlockAssembler(rawText: string, streaming: boolean): ContentB
     }
   }, [])
 
+  // Per-render tail extension: O(delta) plus one prefix comparison, never a
+  // parse. Settled block objects keep their identity, so downstream memo
+  // consumers re-render only the growing tail block.
+  const streamedBlocks = useMemo(
+    () => (streaming ? extendTail(throttledSnap, rawText) : NO_BLOCKS),
+    [streaming, throttledSnap, rawText],
+  )
+
   // This early return, not any effect, is what makes the final render exact.
   if (!streaming) return immediateBlocks
-  return throttledBlocks
+  return streamedBlocks
 }
