@@ -525,20 +525,38 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
 
     Returns ``model_id`` UNCHANGED when it is empty / the ``auto`` sentinel, when
     the provider advertised nothing (cold cache), when it is already an
-    advertised id, or when no advertised id shares its normalized key — i.e. it
-    only ever tightens a bare id onto an advertised versioned one, never rewrites
-    an id the provider does not serve. When several advertised ids match, a 1M
-    window variant wins over a base one.
+    advertised id, or when no advertised id shares its normalized key or its
+    registry entry's aliases — i.e. it only ever tightens a bare id onto an
+    advertised versioned one, never rewrites an id the provider does not serve.
+    When several advertised ids match, a 1M window variant wins over a base one.
+
+    The normalized-key compare alone only bridges spelling (prefix, ``[1m]``,
+    separators): it cannot fold ``claude-fable-5`` onto an advertiser that has
+    moved to serving the bare registry alias ``fable`` instead of the dotted
+    provider id, because those two strings share no normalized key. When the
+    key compare misses, this also resolves ``model_id`` through the registry's
+    own :data:`_CANONICAL_INDEX` and retries against that entry's aliases and
+    provider id, so a stored dotted id still finds a now-bare advertised alias.
     """
     if not model_id or model_id == "auto":
         return model_id
     adv = advertised_models(provider)
     if not adv or model_id in adv:
         return model_id
-    want = _normalize_advertised_key(model_id)
+    want = {_normalize_advertised_key(model_id)}
+    want.discard("")
+    canonical = _resolve_canonical(model_id, provider)
+    if canonical is not None:
+        entry = _REGISTRY.get(canonical, {})
+        candidates = [canonical, *entry.get("aliases", [])]
+        pid = entry.get("providers", {}).get(provider)
+        if pid:
+            candidates.append(pid)
+        want.update(_normalize_advertised_key(c) for c in candidates)
+        want.discard("")
     if not want:
         return model_id
-    matches = [a for a in adv if _normalize_advertised_key(a) == want]
+    matches = [a for a in adv if _normalize_advertised_key(a) in want]
     if not matches:
         return model_id
     matches.sort(
