@@ -26,9 +26,15 @@ passes its own reader and the kernel needs no change.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from kiro_crew.projection.checkpoint import (
+    EMPTY_WATERMARK,
+    Admit,
+    CheckpointStore,
+    Savepoint,
+)
 from kiro_crew.projection.definition import ProjectionDefinition
 
 #: How the registry reads the ordering number out of one event.
@@ -106,6 +112,105 @@ class ProjectionRegistry:
                     states[i] = defn.apply(states[i], ev)
             for defn, state in zip(defns, states):
                 self._cells[(defn.key, store)] = _Cell(state, last_seq)
+
+    # ---- checkpointed priming ---------------------------------------------
+    def prime_checkpointed(
+        self,
+        store: str,
+        checkpoints: CheckpointStore,
+        identity: Mapping[str, Any],
+        tail_from: Callable[[int], Iterable[Any]],
+        *,
+        admit: Admit | None = None,
+    ) -> int:
+        """Restore every unit from its savepoint, then fold only the tail past it.
+
+        Returns the seq the restore started folding from minus one -- that is, the
+        watermark the whole set resumed at, which is ``EMPTY_WATERMARK`` when any
+        unit had no usable savepoint. A caller that wants to know whether the
+        shortcut was taken at all compares it against ``EMPTY_WATERMARK``.
+
+        The FLOOR, not each unit's own watermark, decides where the tail starts, and
+        that is the whole correctness argument. Units are saved independently, so one
+        can be newer than another; folding each from its own watermark would need a
+        separate pass per unit over a different range, and the single pass this makes
+        instead hands every unit the same events. A unit already past an event drops
+        it on its own watermark inside :meth:`drive`, so replaying from the floor
+        costs the newer units nothing and cannot double-count.
+
+        *tail_from* is the client's, because the kernel owns no log: it is called
+        ONCE with the floor and returns the events after it. Taking a callable rather
+        than an iterable is what lets a client read fewer records instead of reading
+        the whole log and discarding the front -- which is the cost this method
+        exists to remove.
+
+        No change callbacks fire, matching :meth:`prime`: a restore is not news.
+        """
+        with self._lock:
+            defns = list(self._defns.values())
+            if not defns:
+                return EMPTY_WATERMARK
+            restored: dict[str, tuple[Any, int]] = {}
+            for defn in defns:
+                savepoint = checkpoints.load(
+                    store,
+                    defn.key,
+                    state_version=defn.state_version,
+                    identity=identity,
+                    admit=admit,
+                )
+                if savepoint is None:
+                    # One unusable savepoint costs only its own unit a cold fold, but
+                    # the SHARED pass has to start low enough for that unit, so the
+                    # floor drops to empty and every unit refolds. Cheaper than a
+                    # per-unit range, and it cannot serve a stale value.
+                    restored.clear()
+                    break
+                restored[defn.key] = (savepoint.state, savepoint.watermark)
+            if len(restored) != len(defns):
+                floor = EMPTY_WATERMARK
+                for defn in defns:
+                    self._cells[(defn.key, store)] = _Cell(defn.init(), EMPTY_WATERMARK)
+            else:
+                floor = min(watermark for _, watermark in restored.values())
+                for defn in defns:
+                    state, watermark = restored[defn.key]
+                    self._cells[(defn.key, store)] = _Cell(state, watermark)
+
+        # Fold the tail OUTSIDE the lock, through drive, so a resumed fold and a cold
+        # fold run the same code over the same events. A second tail-folding loop here
+        # would be a path that can disagree with drive about the same bytes, and
+        # nothing in the file would say which one is right.
+        for event in tail_from(floor):
+            self.drive(store, event)
+        return floor
+
+    def savepoints(self, store: str, identity: Mapping[str, Any]) -> list[Savepoint]:
+        """A savepoint per registered unit for *store*, ready to hand to a store.
+
+        Reads the cells and builds the payloads; it does NOT write. When to spend a
+        write is the client's call and deliberately not the kernel's: the crew log
+        writes only past a threshold of entries advanced, and a kernel that wrote on
+        every drive would make that client write a file per entry -- the exact cost
+        its savepoints exist to remove. A unit that has folded nothing is skipped,
+        since a savepoint at the empty watermark saves no replay.
+        """
+        with self._lock:
+            out: list[Savepoint] = []
+            for key, defn in self._defns.items():
+                cell = self._cells.get((key, store))
+                if cell is None or cell.observed_seq <= EMPTY_WATERMARK:
+                    continue
+                out.append(
+                    Savepoint(
+                        key=key,
+                        state_version=defn.state_version,
+                        watermark=cell.observed_seq,
+                        state=cell.state,
+                        identity=dict(identity),
+                    )
+                )
+            return out
 
     # ---- drive ------------------------------------------------------------
     def drive(self, store: str, event: Any) -> None:
