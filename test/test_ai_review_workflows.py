@@ -116,6 +116,20 @@ def _workflow(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
+def _reads_header_anchored(workflow: str, header: str) -> bool:
+    """Whether *workflow* reads *header* anchored to the start of a line.
+
+    Tool-agnostic on purpose. A lane may read its verdict header with ``grep
+    -iE '^Header:'`` or with an ``awk`` record match ``/^header:/``; what the
+    lanes must not lose is the ANCHOR, because an unanchored read turns a model
+    that merely mentions the header in prose into a verdict. A pin naming one
+    program stops finding the capture the day the capture changes tool, and then
+    passes while measuring nothing -- which is exactly how a converted lane can
+    go unnoticed.
+    """
+    return re.search(rf"\^{re.escape(header)}", workflow, re.IGNORECASE) is not None
+
+
 def _stub_path(tmp_path: Path) -> str:
     """PATH for executing a workflow read block with stubbed commands.
 
@@ -1000,8 +1014,12 @@ class TestFirstPrinciplesReview:
 
         for name in FP_LANES:
             workflow = _workflow(name)
-            # Each lane parses that header and pins the model.
-            assert "grep -iE '^First-Principles-Verdict:'" in workflow
+            # Each lane parses that header and pins the model. Asserted as an
+            # ANCHORED reference to the header rather than as one tool's spelling
+            # of it: what matters is that the lane reads this header at the start
+            # of a line, and a pin naming `grep` stops finding the capture the day
+            # it becomes `awk` -- and then measures nothing while still passing.
+            assert _reads_header_anchored(workflow, "First-Principles-Verdict:"), name
             # Fable 5 with the same Opus overload fallback as the sibling
             # advisory lanes; a bare/`global.` profile id would be rejected.
             assert "--model us.anthropic.claude-fable-5" in workflow
@@ -8880,7 +8898,7 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert contract.rstrip().endswith("[FIRST-PRINCIPLES-REVIEWED] <head sha>")
         for name in FP_LANES:
             workflow = _workflow(name)
-            assert "grep -iE '^First-Principles-Verdict:'" in workflow
+            assert _reads_header_anchored(workflow, "First-Principles-Verdict:"), name
         # The subtraction-only stance and the SYSTEM RULES block stay.
         assert contract.startswith("SYSTEM RULES (non-negotiable")
         assert "EVERY suggestion you emit must be a SUBTRACTION" in contract
@@ -9004,8 +9022,22 @@ class TestReviewLanesPublishOnlyTheReview:
         # Whatever the step is called, the trim sits right after the
         # execution_file capture and before the header is parsed.
         start = workflow.index("select(.result != null) ] | (last.result")
-        end = workflow.index(f"grep -iE '^{_lane_header(name)}'", start)
-        return workflow[start:end]
+        header = _lane_header(name)
+        # The VERDICT read, in either spelling a lane uses for it, is the end of
+        # the slice. Both spellings are listed because the two fork advisory lanes
+        # read their header with `awk` and the rest with `grep`, and the boundary
+        # is the read itself rather than the program: keying this to `grep` alone
+        # would make the slice run past the capture on a converted lane and the
+        # assertions below would then measure the wrong block. Neither pattern can
+        # match the TRIM a few lines above it -- that one greps with `-q` and its
+        # awk opens `f ||`, where the capture's opens `!found &&`.
+        end_at = re.search(
+            rf"grep -iE '\^{re.escape(header)}'"
+            rf"|!found && tolower\(\$0\) ~ /\^{re.escape(header.lower())}/",
+            workflow[start:],
+        )
+        assert end_at is not None, f"{name}: no verdict read follows the trim"
+        return workflow[start : start + end_at.start()]
 
     def test_every_lane_trims_to_its_own_header(self) -> None:
         for name in ALL_CONCERNS_LANES:
@@ -12080,3 +12112,176 @@ class TestForkGptLaneMantleEgress:
                 f"{lane} job {name!r} runs no mantle-backed model, so allowing "
                 f"{self.ENDPOINT} widens its egress for nothing"
             )
+
+
+#: The two FORK advisory lanes whose verdict capture runs under ``set -uo pipefail``,
+#: with the header each one reads. The same-repo ``design-review.yml`` and
+#: ``first-principles-review.yml`` are deliberately absent: their post-summary steps
+#: carry no ``set -`` line, so an unmatched ``grep``'s status is masked by the
+#: pipeline's last command and the step cannot die this way. Adding them here would
+#: pin a property they do not have, and would invite a ``pipefail`` to be added to
+#: them later without the capture being converted first.
+_FORK_VERDICT_LANES = (
+    ("fork-design-review.yml", "Design-Verdict:"),
+    ("fork-first-principles-review.yml", "First-Principles-Verdict:"),
+)
+
+
+class TestForkVerdictCaptureNeverAbortsAboveItsOwnFallback:
+    """A fork advisory lane must live to read the fallback written one line below it.
+
+    Both steps end their capture with ``[ -n "$v" ] && verdict="$v"`` and start it
+    with ``verdict="UNKNOWN"``, which is a complete, fail-closed answer for a review
+    that names no verdict. Neither line runs if the capture itself takes the step
+    down: the lane then writes no verdict output at all, and the comment that would
+    have named the cause is never posted.
+
+    Two ordinary model outcomes do exactly that, under the ``bash -e`` a ``run:``
+    block with no ``shell:`` key gets plus the ``set -uo pipefail`` these steps add:
+
+    * a review with NO header -- ``grep`` matches nothing and exits 1, and
+      ``pipefail`` promotes that status to the pipeline's, so the assignment fails;
+    * a review with MANY headers -- ``head -n1`` closes the pipe and its producer
+      dies of SIGPIPE (141). This is the worse arm: a value is already in hand, so
+      an expression that merely suppressed the status would hand the lane a verdict
+      read out of a document the step never finished reading.
+
+    Each step's OWN expression is run, extracted by shape rather than by the program
+    it names, so a pin keyed to one tool cannot keep passing after the capture is
+    rewritten. Both the status and the value are asserted: asserting the value alone
+    passes an expression that returns the right answer and kills the step anyway.
+
+    ``#12351`` fixed exactly this in the two Security Scope lanes; these two are its
+    counted, unconverted siblings. The three sites in these files that ALREADY use a
+    here-string (each with a comment saying a long summary must not manufacture a
+    SIGPIPE status under ``pipefail``) are what makes the surviving pipeline an
+    oversight rather than a different judgement.
+    """
+
+    #: Headers in the many-headers review. Large enough to fill the pipe buffer and
+    #: make ``head -n1``'s exit close it on its producer -- measured to need more
+    #: than a few thousand on Git-for-Windows Bash, where a 64 KiB buffer swallows
+    #: the smaller body whole -- and still a fixture of a couple of megabytes.
+    _MANY_HEADERS = 60_000
+
+    #: Review body kinds. Every one is an ordinary model outcome, not malformed
+    #: input. The last three CARRY a verdict, and they are what pins the conversion
+    #: as behaviour-preserving: an expression that never aborted and also stopped
+    #: reading verdicts would satisfy the status assertion on its own.
+    _REVIEW_KINDS = (
+        "no-header",
+        "header-shaped-prose",
+        "many-headers",
+        "plain",
+        "lowercase",
+        "crlf",
+    )
+
+    #: The fallback line, which is also how the capture is IDENTIFIED: the capture
+    #: is by definition the assignment this line reads, so the variable name comes
+    #: from the fallback rather than from a guess. Both steps ALSO trim their
+    #: summary to the header with a second assignment mentioning the same header,
+    #: and a first-match-wins selector silently measures that one instead.
+    _FALLBACK = '[ -n "$v" ] && verdict="$v"'
+
+    def _capture_line(self, workflow: str, header: str) -> str:
+        """The verdict ASSIGNMENT in *workflow*, named by what the fallback reads.
+
+        Found by SHAPE, never by the program it runs: a selector keyed to ``grep``
+        or to ``awk`` stops finding the capture the day the capture changes tool,
+        and then measures nothing while still passing.
+        """
+        text = _workflow(workflow)
+        assert self._FALLBACK in text, f"{workflow}: {self._FALLBACK!r} is gone"
+        name = self._FALLBACK.split("-n ", 1)[1].split("]", 1)[0].strip().strip('"$')
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if header.lower() not in stripped.lower():
+                continue
+            if stripped.startswith(f'{name}="$('):
+                return stripped
+        raise AssertionError(f"{workflow}: no {header} capture assigned to {name!r}")
+
+    def _body(self, kind: str, header: str) -> tuple[str, str]:
+        """The review text for *kind*, and the value the capture must yield for it."""
+        if kind == "no-header":
+            return "The change refuses nothing new.\n\nNothing to check.\n", ""
+        if kind == "header-shaped-prose":
+            # Header-SHAPED but not a header: the anchor is what tells the two
+            # apart, so this also fails if a rewrite ever drops the `^`.
+            return f"I would write {header[:-1]} as a header if the contract asked.\n", ""
+        if kind == "plain":
+            return f"{header} CONCERNS\n\nOne thing to watch.\n", "CONCERNS"
+        if kind == "lowercase":
+            # The capture upper-cases, so every later comparison sees one spelling.
+            return f"{header.lower()} block\n", "BLOCK"
+        if kind == "crlf":
+            # A model emitting CRLF must not leave a carriage return inside the
+            # value: that would make each `[ "$verdict" = "BLOCK" ]` test false.
+            return f"{header} BLOCK\r\nrest\r\n", "BLOCK"
+        body = f"{header} PASS\n" + f"{header} BLOCK\n" * self._MANY_HEADERS
+        return body, "PASS"
+
+    @pytest.mark.parametrize(("workflow", "header"), _FORK_VERDICT_LANES)
+    def test_the_step_still_carries_the_fallback_this_pin_is_about(
+        self, workflow: str, header: str
+    ) -> None:
+        """If the fallback goes, the test below is measuring something else."""
+        text = _workflow(workflow)
+        assert 'verdict="UNKNOWN"' in text, (
+            f"{workflow}: no UNKNOWN default, so an aborted capture is no longer "
+            "distinguishable from a lane that simply read no verdict"
+        )
+        assert '[ -n "$v" ] && verdict="$v"' in text, (
+            f"{workflow}: the capture's own fallback is gone; this pin asserts that "
+            "the capture lives long enough to reach it"
+        )
+
+    @pytest.mark.parametrize(("workflow", "header"), _FORK_VERDICT_LANES)
+    @pytest.mark.parametrize("review_kind", _REVIEW_KINDS)
+    def test_every_ordinary_review_reaches_the_fallback_with_the_right_value(
+        self, workflow: str, header: str, review_kind: str, tmp_path: Path
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture is Bash; skip where Bash is absent")
+        body, expected = self._body(review_kind, header)
+        review = tmp_path / "review.md"
+        review.write_text(body, encoding="utf-8")
+        line = self._capture_line(workflow, header)
+        name = line.split("=", 1)[0]
+        # The step's own preamble: `pipefail` is what turns an unmatched grep into
+        # the pipeline's status, and `bash -e` below is what the runner supplies for
+        # a `run:` block with no `shell:` key. Running without either is what would
+        # let this pin pass while the lane died.
+        script = "\n".join(
+            [
+                "set -uo pipefail",
+                'summary="$(cat "$IN")"',
+                line,
+                f'printf %s "${name}"',
+            ]
+        )
+        out = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, "IN": str(review)},
+            cwd=tmp_path,
+        )
+        assert out.returncode == 0, (
+            f"{workflow}: a {review_kind} review aborted the step "
+            f"(rc={out.returncode}) under the runner's own `bash -e`, above the "
+            f"fallback written for it: {out.stderr.strip()}"
+        )
+        # Clipped: the many-headers body is megabytes, and a failure message that
+        # prints it whole buries the one line saying what went wrong.
+        got = out.stdout if len(out.stdout) <= 120 else out.stdout[:120] + "..."
+        assert out.stdout == expected, (
+            f"{workflow}: a {review_kind} review captured {got!r} "
+            f"({len(out.stdout)} chars), expected {expected!r}"
+        )
