@@ -65,6 +65,20 @@ describe('presentToolDiff', () => {
     expect(intact?.mode).toBe('card')
   })
 
+  it('a store-clamped diff (input_cut set) is always a summary, flagged truncated', () => {
+    // The live tool log clamps an oversize input to head + tail and records
+    // the seam as `input_cut` instead of writing a marker line, so the clamped
+    // text has no transport annotation and can sit under the card line cap
+    // (a long-line create diff). Without the seam it would render — and copy —
+    // as a complete patch.
+    const view = presentToolDiff('edit', UNIFIED_DIFF, { at: 40, count: 90_000 })
+    expect(view?.mode).toBe('summary')
+    if (view?.mode === 'summary') expect(view.truncated).toBe(true)
+    // No seam (unclamped live entry, or a historical row) keeps the card.
+    expect(presentToolDiff('edit', UNIFIED_DIFF, null)?.mode).toBe('card')
+    expect(presentToolDiff('edit', UNIFIED_DIFF, undefined)?.mode).toBe('card')
+  })
+
   it('degrades an over-cap diff to a summary — never to nothing', () => {
     // Under the relaxed prompt the model no longer restates tool edits, so a
     // dropped card would leave a large edit with zero transcript trace.

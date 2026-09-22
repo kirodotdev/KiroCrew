@@ -386,16 +386,19 @@ function JsonTable({ data }: { data: Record<string, unknown> }): ReactNode {
  *  rather than a 2px step between them. */
 function PayloadView({ text, cut, raw, maxH }: { text: string; cut?: ToolPayloadCut | null; raw: boolean; maxH: string }): ReactNode {
   const base = `px-2 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-5 border border-border`
-  // A clamped payload is head + tail with the middle gone, so it is never a
-  // whole JSON object: skip the table (which would swallow the seam) and
-  // highlight the two halves around the marker instead.
+  // A clamped payload is head + tail with the middle gone. It is never a whole
+  // JSON object (no table, which would swallow the seam), and neither half is
+  // a whole diff or document either: the diff renderer would draw the head as
+  // a finished patch while the tail, which starts mid-line, cannot be parsed
+  // at all. Both halves render verbatim around the marker, so what the reader
+  // sees is exactly the fragment the store holds.
   if (cut && cut.at >= 0 && cut.at <= text.length) {
     return (
       <pre className={`${base} whitespace-pre-wrap break-all`}>
-        <ToolInputText text={text.slice(0, cut.at)} raw={raw} />
+        {text.slice(0, cut.at)}
         <TruncationMarker count={cut.count} />
         {'\n'}
-        <ToolInputText text={text.slice(cut.at)} raw={raw} />
+        {text.slice(cut.at)}
       </pre>
     )
   }

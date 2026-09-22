@@ -640,8 +640,8 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // size caps in presentToolDiff.
   const denied = isRejected || isAutoDenied
   const diffView = useMemo(
-    () => (denied ? null : presentToolDiff(toolKind, input)),
-    [denied, toolKind, input],
+    () => (denied ? null : presentToolDiff(toolKind, input, inputCut)),
+    [denied, toolKind, input, inputCut],
   )
   // Per-card density control, FOLDED by default: a turn that edits several
   // files stacks a full patch per file, so the answer the reader came for

@@ -27,7 +27,7 @@
 import { isDiffText } from '../../utils/diffUtils'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { extractFilePath } from '../../components/DiffBlock'
-import type { ChatMessage } from '../../types'
+import type { ChatMessage, ToolPayloadCut } from '../../types'
 
 /**
  * Upper bound (in newline count) for a full inline card. A whole-file create
@@ -58,10 +58,18 @@ const TRUNCATION_RE = /\n\\ diff truncated$/
  * edit-tool diff (wrong kind, no input, not a diff). `kind`/`input` come from
  * the live toolLog entry when one backs the row, else from the persisted
  * message meta — both carry the same values.
+ *
+ * `cut` is the live entry's `input_cut`: the store clamps an oversize input
+ * to head + tail (`clampToolOutput`) and records the seam instead of a
+ * marker line, so a clamped diff can be under the card line cap and look
+ * whole while its middle is gone. A set `cut` therefore takes the same
+ * summary path as a transport-truncated diff. Persisted meta is never
+ * clamped, so callers reading a historical row pass nothing.
  */
 export function presentToolDiff(
   kind: string | undefined,
   input: string | undefined,
+  cut?: ToolPayloadCut | null,
 ): ToolDiffView | null {
   if (kind !== 'edit' || !input) return null
   // Bare-JSON edit payloads are covered UPSTREAM: acp/_dispatch.py's
@@ -70,11 +78,12 @@ export function presentToolDiff(
   // genuinely unrecognizable shape; its fold-proof trace is FileChangeChips
   // (the file_changes snapshot on the assistant message), not this module.
   if (!isDiffText(input)) return null
-  // A transport-truncated diff must never render as a complete-looking card:
-  // it can be under the card line cap (64 KiB of long lines) while missing
-  // most of the change. Always the summary chip, flagged so the chip shows a
-  // visible truncation note and the counts read as lower bounds.
-  const truncated = TRUNCATION_RE.test(input)
+  // A truncated diff — by the transport or by the store's clamp — must never
+  // render as a complete-looking card: it can be under the card line cap
+  // (64 KiB of long lines) while missing most of the change. Always the
+  // summary chip, flagged so the chip shows a visible truncation note and the
+  // counts read as lower bounds.
+  const truncated = TRUNCATION_RE.test(input) || cut != null
   let newlines = 0
   for (let i = 0; i < input.length; i++) {
     if (input.charCodeAt(i) === 10) newlines++
