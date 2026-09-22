@@ -6046,3 +6046,168 @@ class TestConsolidationLessonScope:
             )
         finally:
             store.close()
+
+
+class TestConsolidationLessonApplies:
+    """Consolidation states the authored ``applies`` tier on both lesson write paths.
+
+    Every other write surface (``learn_add``, ``POST /api/lessons``) states the
+    tier; consolidation is the highest-volume writer, so without this its rows
+    all land unstated and are served as standing rules. The tier is untrusted
+    model output: the two literals round-trip, an omitted key lands unstated,
+    and a misspelling is logged and lands unstated rather than dropping the
+    correction.
+    """
+
+    _consolidator = staticmethod(TestConsolidationLessonScope._consolidator)
+    _jsonl_consolidator = staticmethod(TestConsolidationLessonScope._jsonl_consolidator)
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda _text: [1.0, 0.0]
+        return store
+
+    @staticmethod
+    def _by_rule(store) -> dict[str, dict]:
+        return {
+            json.loads(row["value_json"])["rule"]: json.loads(row["value_json"])
+            for row in store.get_lessons()
+        }
+
+    @pytest.mark.parametrize("tier", ["always", "on_topic"])
+    def test_tier_round_trips_on_vector_path(self, tmp_path, tier) -> None:
+        store = self._store(tmp_path)
+        try:
+            self._consolidator(store)._save_lessons(
+                [{"rule": "Read the job log before classifying a red", "applies": tier}]
+            )
+
+            [lesson] = store.get_lessons()
+            assert json.loads(lesson["value_json"])["applies"] == tier
+            assert lesson["source"] == "consolidation"
+        finally:
+            store.close()
+
+    def test_omitted_tier_lands_unstated_on_vector_path(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        try:
+            self._consolidator(store)._save_lessons(
+                [{"rule": "Prefer explicit timezones in timestamps"}]
+            )
+
+            [lesson] = store.get_lessons()
+            # Unstated is ABSENT, not null: the row is byte-identical to one
+            # written before the field existed (see write_lesson's lesson_value).
+            assert "applies" not in json.loads(lesson["value_json"])
+        finally:
+            store.close()
+
+    def test_misspelled_tier_logs_and_lands_unstated_on_vector_path(self, tmp_path, caplog) -> None:
+        """A misspelling is a bug in the writer and must be audible, but the
+        correction itself is not lost: it lands unstated, never dropped."""
+        store = self._store(tmp_path)
+        # Orthogonal embeddings: the two rows must not be judged duplicates of
+        # each other, or the dedup pass (not the tier seam) decides which lands.
+        store.embed_fn = lambda text: [1.0, 0.0] if "Misspelled" in text else [0.0, 1.0]
+        try:
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+                self._consolidator(store)._save_lessons(
+                    [
+                        {"rule": "Misspelled tier still lands", "applies": "Directive"},
+                        {"rule": "Clean sibling keeps its tier", "applies": "on_topic"},
+                    ]
+                )
+
+            by_rule = self._by_rule(store)
+            assert "applies" not in by_rule["Misspelled tier still lands"]
+            assert by_rule["Clean sibling keeps its tier"]["applies"] == "on_topic"
+            assert any("unrecognized applies tier" in rec.getMessage() for rec in caplog.records)
+            # Only the closed-set reason is logged, never the untrusted value.
+            assert all("Directive" not in rec.getMessage() for rec in caplog.records)
+        finally:
+            store.close()
+
+    def test_tier_round_trips_on_jsonl_fallback(self, tmp_path) -> None:
+        from kiro_crew.learn import LessonStore
+
+        lesson_store = LessonStore(base_dir=tmp_path)
+        c = self._jsonl_consolidator(lesson_store)
+
+        c._save_lessons(
+            [
+                {"rule": "Never force-push a shared branch here", "applies": "always"},
+                {"rule": "The flaky shard was the arm64 runner", "applies": "on_topic"},
+                {"rule": "A rule with no tier stays unstated"},
+            ]
+        )
+
+        by_rule = {le.rule: le for le in lesson_store.load_all()}
+        assert by_rule["Never force-push a shared branch here"].applies == "always"
+        assert by_rule["The flaky shard was the arm64 runner"].applies == "on_topic"
+        assert by_rule["A rule with no tier stays unstated"].applies is None
+        # The unstated row carries NO applies key on disk (not ``null``), so the
+        # two stores agree on what absence means.
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "lessons.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        unstated = [r for r in rows if r["rule"] == "A rule with no tier stays unstated"]
+        assert unstated and "applies" not in unstated[0]
+
+    def test_misspelled_tier_logs_and_lands_unstated_on_jsonl_fallback(
+        self, tmp_path, caplog
+    ) -> None:
+        from kiro_crew.learn import LessonStore
+
+        lesson_store = LessonStore(base_dir=tmp_path)
+        c = self._jsonl_consolidator(lesson_store)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            c._save_lessons([{"rule": "Misspelled on the fallback path", "applies": "ALWAYS "}])
+        # Case and surrounding whitespace are canonicalised, not refused.
+        [lesson] = lesson_store.load_all()
+        assert lesson.applies == "always"
+        assert not any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            c._save_lessons([{"rule": "Truly misspelled on the fallback path", "applies": 7}])
+        by_rule = {le.rule: le for le in lesson_store.load_all()}
+        assert by_rule["Truly misspelled on the fallback path"].applies is None
+        assert any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_extraction_prompt_asks_for_the_tier(self, tmp_path) -> None:
+        """The prompt the code actually builds names the field and the two
+        literals, tells the model to decide from what the user said, and to omit
+        the key when it cannot tell -- the same instruction ``learn_add`` carries."""
+        from kiro_crew.memory import MemoryStore
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        consolidator = HistoryConsolidator(log=conv_log, memory=mem)
+        conv_log.append("dashboard:chat-tier", "user", "no, always run the gate first")
+        conv_log.append("dashboard:chat-tier", "assistant", "Understood, running it.")
+
+        captured: dict[str, str] = {}
+
+        async def fake_llm(prompt, *, memory_store: str = "", session_key: str = ""):
+            captured["prompt"] = prompt
+            return {"history_entry": "did stuff", "lessons": []}
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            consolidator.consolidate_session("dashboard:chat-tier")
+            await asyncio.sleep(0.05)
+            for t in list(consolidator._tasks):
+                await t
+
+        prompt = " ".join(captured["prompt"].split())
+        assert '"applies": "always|on_topic"' in prompt
+        assert "YOU decide it from what the user actually said" in prompt
+        assert "OMIT the key when you genuinely cannot tell" in prompt

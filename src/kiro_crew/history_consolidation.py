@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
+from kiro_crew.lesson_validation import normalize_lesson_applies
 from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     background_turn,
@@ -1167,7 +1168,19 @@ class HistoryConsolidator:
                     '"lessons": Array of corrections the user taught '
                     '(e.g. "no, do X", "always Y", "never Z"). '
                     'Each: {"rule": "...", "negative": "...", "category": "tool|preference|knowledge", '
-                    '"repo_scope": "..."}. '
+                    '"repo_scope": "...", "applies": "always|on_topic"}. '
+                    '"applies" is the startup tier. YOU decide it from what the user '
+                    'actually said, because nothing else can: "always" is a standing '
+                    "rule the user wants followed in every session regardless of topic "
+                    "(a permission, a safety constraint, a style or workflow "
+                    'requirement); "on_topic" is a past finding worth having only when '
+                    "the task touches it (a troubleshooting conclusion, a project "
+                    "detail, how one bug turned out). Standing rules share a small "
+                    'startup budget, so filing a finding as "always" spends room a real '
+                    'rule needs, and filing a rule as "on_topic" means it stops arriving '
+                    'unless the task mentions it. Do not pick by wording: "always" '
+                    "appears in both kinds. OMIT the key when you genuinely cannot tell "
+                    "-- the row is then treated as a standing rule. "
                     '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
                     "genuinely specific to one codebase worked on in the chat. Give a "
                     "RELATIVE directory path inside that repository that is distinctive "
@@ -1627,6 +1640,27 @@ class HistoryConsolidator:
             return None, True
         return raw, False
 
+    def _lesson_tier(self, item: dict) -> str | None:
+        """The lesson's authored ``applies`` tier to forward, or ``None`` for unstated.
+
+        The value is untrusted model output. ``normalize_lesson_applies`` is the
+        write path's raising form: it returns ``None`` for an absent or blank
+        tier and RAISES on anything but the two literals, so a misspelling is
+        audible in the logs. The row is still written -- UNSTATED, the class
+        every reader serves as a standing rule -- because dropping it would lose
+        a correction the user actually made over a one-word slip, and unstated
+        is the documented safe direction (demoting a real rule is the costlier
+        mistake). Only the closed-set reason is logged, never the value.
+        """
+        try:
+            return normalize_lesson_applies(item.get("applies"))
+        except ValueError:
+            self._logger.warning(
+                "Consolidation lesson names an unrecognized applies tier; "
+                "storing the lesson unstated"
+            )
+            return None
+
     def _save_lessons(
         self,
         raw: object,
@@ -1686,6 +1720,9 @@ class HistoryConsolidator:
                         # Gated by _gated_lesson_scope above; write_lesson
                         # canonicalises and re-checks admissibility itself.
                         repo_scope=scope,
+                        # Already normalized by _lesson_tier, so write_lesson's
+                        # own raising check cannot fire on it.
+                        applies=self._lesson_tier(item),
                         facets=facets,
                     )
                     if ok:
@@ -1715,6 +1752,9 @@ class HistoryConsolidator:
                         # Gated by _gated_lesson_scope above (LessonStore.save
                         # canonicalises but never checks admissibility itself).
                         repo_scope=scope,
+                        # None is dropped by _serializable, so an unstated row
+                        # is byte-identical to one written before the field.
+                        applies=self._lesson_tier(item),
                     )
                 )
                 if outcome != "refused":
