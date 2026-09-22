@@ -6134,6 +6134,11 @@ def published_autocompact_pct() -> float:
 # zone during the boot window.
 _CONFIG_TIMEZONE: str = ""
 _CONFIG_TIMEZONE_TICKET: int = 0
+# One immutable rebind gives lock-free readers a timezone and semantic
+# publication generation from the same accepted publish. The generation changes
+# whenever the accepted timezone value changes, so A -> B -> A cannot masquerade
+# as an unchanged authority even though the final string matches.
+_CONFIG_TIMEZONE_AUTHORITY: tuple[str, int] = ("", 0)
 
 #: Serializes the compare-and-set in :func:`publish_config_timezone`, for the
 #: reasons given on :data:`_CONFIG_AUTOCOMPACT_LOCK`: each publish is a read
@@ -6142,8 +6147,9 @@ _CONFIG_TIMEZONE_TICKET: int = 0
 #: backwards. A SEPARATE lock rather than reusing the autocompact one, which
 #: :func:`next_config_load_ticket` already holds -- drawing a ticket while
 #: holding this one is therefore safe, and the reverse nesting must not appear.
-#: The READ path (:func:`published_config_timezone`) never takes it, which is
-#: what keeps the event loop lock-free.
+#: The READ paths (:func:`published_config_timezone` and
+#: :func:`published_config_timezone_authority`) never take it, which keeps the
+#: event loop lock-free.
 _CONFIG_TIMEZONE_LOCK = threading.Lock()
 
 
@@ -6164,19 +6170,24 @@ def publish_config_timezone(config: "KiroCrewConfig", ticket: int | None = None)
     a caller publishing a config it just built (tests), wrong for one replaying
     an earlier read.
     """
-    global _CONFIG_TIMEZONE, _CONFIG_TIMEZONE_TICKET
+    global _CONFIG_TIMEZONE, _CONFIG_TIMEZONE_AUTHORITY, _CONFIG_TIMEZONE_TICKET
     # Drawn OUTSIDE the lock below purely for symmetry with
     # publish_autocompact_pct; next_config_load_ticket takes a DIFFERENT
     # (autocompact) lock, so nesting here would not deadlock as it would there.
     if ticket is None:
         ticket = next_config_load_ticket()
-    # Compare and BOTH assignments under one lock: they are a single
-    # compare-and-set. See _CONFIG_TIMEZONE_LOCK.
+    # Compare and every assignment under one lock. The immutable authority tuple
+    # is rebound last, so lock-free readers cannot pair one publication's zone
+    # with another publication's generation.
     with _CONFIG_TIMEZONE_LOCK:
         if ticket < _CONFIG_TIMEZONE_TICKET:
             return
+        current_timezone, generation = _CONFIG_TIMEZONE_AUTHORITY
+        if config.timezone != current_timezone:
+            generation += 1
         _CONFIG_TIMEZONE_TICKET = ticket
         _CONFIG_TIMEZONE = config.timezone
+        _CONFIG_TIMEZONE_AUTHORITY = (config.timezone, generation)
 
 
 def published_config_timezone() -> str:
@@ -6187,7 +6198,17 @@ def published_config_timezone() -> str:
     resolve it to UTC. Callers must NOT treat it as a reason to reach for
     ``config.json`` themselves; that is the I/O this snapshot exists to remove.
     """
-    return _CONFIG_TIMEZONE
+    return _CONFIG_TIMEZONE_AUTHORITY[0]
+
+
+def published_config_timezone_authority() -> tuple[str, int]:
+    """Return the default timezone and its semantic publication generation.
+
+    The immutable tuple is an atomic, lock-free snapshot. Its generation changes
+    on every accepted timezone value change, including both legs of A -> B -> A,
+    and is stable across accepted publications that keep the same timezone.
+    """
+    return _CONFIG_TIMEZONE_AUTHORITY
 
 
 def resolve_effective_agent(agent_name: str | None, project_dir: str | None = None) -> str:

@@ -8,14 +8,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import threading
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import kiro_crew.executors as ex
-from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule, CronService
+from kiro_crew.sandbox import CHILD_START_ACK_FD_ENV
+
+
+def test_app_cron_env_cannot_supply_parent_start_ack_descriptor() -> None:
+    from kiro_crew.slack.gateway import cron_job_env_without_reserved
+
+    for foreign_value in ("not-a-fd", "19"):
+        env = cron_job_env_without_reserved(
+            {
+                "ORDINARY_JOB_VALUE": "kept",
+                CHILD_START_ACK_FD_ENV: foreign_value,
+            }
+        )
+        assert env == {"ORDINARY_JOB_VALUE": "kept"}
 
 
 async def _stalled_gate(*_args, **_kwargs):
@@ -82,7 +98,28 @@ def _make_command_job(**overrides):
     return CronJob(**defaults)
 
 
-async def _run_script_callback(gw, job, script_result=None, vet_reason=None, side_effect=None):
+def _mock_cron_service(*, manual_run: bool = False) -> MagicMock:
+    svc = MagicMock()
+    svc.start = AsyncMock()
+    svc.run_is_manual = MagicMock(return_value=manual_run)
+    svc.occurrence_for_pruned_launch = MagicMock(
+        return_value=None if manual_run else "scheduled-minute"
+    )
+    svc._newer_owed_occurrence = CronService._newer_owed_occurrence
+    svc.persist_owed_occurrence = AsyncMock(return_value=True)
+    svc.remove_job_async = AsyncMock(return_value=True)
+    return svc
+
+
+async def _run_script_callback(
+    gw,
+    job,
+    script_result=None,
+    vet_reason=None,
+    side_effect=None,
+    manual_run=False,
+    cron_svc=None,
+):
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
@@ -107,9 +144,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
             captured_cb = on_job
-            svc = MagicMock()
-            svc.start = AsyncMock()
-            svc.remove_job_async = AsyncMock(return_value=True)
+            svc = cron_svc if cron_svc is not None else _mock_cron_service(manual_run=manual_run)
             return svc
 
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
@@ -122,7 +157,15 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
         return await _init_and_run(), mock_run
 
 
-async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_reason=None):
+async def _run_command_callback(
+    gw,
+    job,
+    cmd_result=None,
+    side_effect=None,
+    vet_reason=None,
+    manual_run=False,
+    cron_svc=None,
+):
     """Run the cron callback with a mocked run_command_sandboxed result.
 
     Pass ``side_effect`` to make the mocked call raise instead of returning.
@@ -151,9 +194,7 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
             captured_cb = on_job
-            svc = MagicMock()
-            svc.start = AsyncMock()
-            svc.remove_job_async = AsyncMock(return_value=True)
+            svc = cron_svc if cron_svc is not None else _mock_cron_service(manual_run=manual_run)
             return svc
 
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
@@ -164,6 +205,1142 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
             return await captured_cb(job)
 
         return await _init_and_run(), mock_run
+
+
+class TestPrunedInstallCommandSkip:
+    """Command launch ENOENT follows the same update-handoff contract as scripts."""
+
+    @staticmethod
+    def _pruned_enoent():
+        return FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+    @pytest.mark.asyncio
+    async def test_install_enoent_retains_one_shot_without_a_failure_strike(self):
+        gw = _make_gw()
+        job = _make_command_job(delete_after_run=True)
+        job.consecutive_failures = 3
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, mock_run = await _run_command_callback(
+                gw, job, side_effect=self._pruned_enoent()
+            )
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.keep_overdue is True
+        assert job.enabled is False
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+        assert mock_run.call_args.args[-1] is True
+
+    @pytest.mark.asyncio
+    async def test_cron_expression_skip_records_one_owed_occurrence(self):
+        gw = _make_gw()
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_command_callback(gw, job, side_effect=self._pruned_enoent())
+
+        assert result is None
+        assert job.run_never_started is True
+        assert job.owed_fire is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_durable_publish_precedes_quiesce(self):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        order: list[str] = []
+        svc = _mock_cron_service()
+        svc.occurrence_for_pruned_launch.return_value = "100"
+
+        async def persist(job_id: str, occurrence_id: str) -> bool:
+            assert job.enabled is True
+            assert job_id == job.id
+            assert occurrence_id == "100"
+            order.append("persist")
+            return True
+
+        def quiesce(job_id: str) -> None:
+            assert order == ["persist"]
+            assert job_id == job.id
+            order.append("quiesce")
+
+        svc.persist_owed_occurrence = AsyncMock(side_effect=persist)
+        svc.quiesce_pruned.side_effect = quiesce
+
+        await _record_pruned_launch_skip(job, svc)
+
+        assert order == ["persist", "quiesce"]
+        assert job.enabled is False
+        assert job.owed_occurrence() == "100"
+        svc.relinquish_run_result_merges.assert_called_once_with(job.id)
+
+    @staticmethod
+    def _real_hot_cron(tmp_path, owed_occurrence: str | None = None):
+        svc = CronService(base_dir=tmp_path)
+        job = _make_command_job(
+            id="j1",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+            owed_fire=owed_occurrence is not None,
+            owed_fire_id=owed_occurrence or "",
+        )
+        svc._jobs = [job]
+        svc._save()
+        assert svc.get_job(job.id) is job
+        return svc, job
+
+    @pytest.mark.asyncio
+    async def test_shared_hot_job_is_saved_before_quiesce(self, tmp_path):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = self._real_hot_cron(tmp_path)
+        real_save = svc._save
+        real_quiesce = svc.quiesce_pruned
+        save_calls: list[str] = []
+
+        def save() -> None:
+            save_calls.append("save")
+            real_save()
+
+        def quiesce(job_id: str) -> None:
+            stored = CronService(base_dir=tmp_path).get_job(job_id)
+            assert stored is not None
+            assert stored.owed_occurrence() == occurrence_id
+            assert save_calls == ["save"]
+            assert svc._pending_owed_fires == {}
+            real_quiesce(job_id)
+
+        with (
+            patch("kiro_crew.slack.gateway.time.time", return_value=now),
+            patch.object(svc, "_save", side_effect=save),
+            patch.object(svc, "quiesce_pruned", side_effect=quiesce),
+        ):
+            await _record_pruned_launch_skip(job, svc)
+
+        assert job.owed_occurrence() == occurrence_id
+        assert job.enabled is False
+        assert job.id in svc._pruned_quiesced
+
+    @pytest.mark.asyncio
+    async def test_successful_older_publish_preserves_newer_hot_and_disk_debt(self, tmp_path):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        newer = str(int(occurrence_id) + 1)
+        svc, job = self._real_hot_cron(tmp_path, newer)
+
+        with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+            await _record_pruned_launch_skip(job, svc)
+
+        assert job.owed_occurrence() == newer
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() == newer
+        assert svc._pending_owed_fires == {}
+        assert job.id in svc._pruned_quiesced
+
+    @pytest.mark.asyncio
+    async def test_durable_handoff_relinquishes_stale_result_merge(self, tmp_path):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = self._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        job.last_result = "old gateway result"
+        replacement_run_ts = now + 60
+
+        async def handoff_then_replace(running_job: CronJob) -> None:
+            await _record_pruned_launch_skip(running_job, svc)
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(running_job.id)
+            assert replacement_job is not None
+            assert replacement_job.owed_occurrence() == occurrence_id
+            replacement_job.set_owed_occurrence(None)
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+
+        svc._on_job = handoff_then_replace
+        with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+            await svc._run_job_isolated(job)
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() is None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_run_ts == replacement_run_ts
+        assert stored.last_result == "replacement result"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("schedule", "delete_after_run"),
+        [
+            pytest.param(CronSchedule(kind="every", every_secs=60), False, id="every"),
+            pytest.param(CronSchedule(kind="at", at_ts=1.0), True, id="at-delete-after-run"),
+        ],
+    )
+    async def test_noncron_handoff_relinquishes_stale_result_merge(
+        self,
+        tmp_path: Path,
+        schedule: CronSchedule,
+        delete_after_run: bool,
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        replacement_run_ts = 1767333660.0
+        svc = CronService(base_dir=tmp_path)
+        job = _make_command_job(
+            id="j1",
+            schedule=schedule,
+            delete_after_run=delete_after_run,
+        )
+        job.strict_schedule = True
+        job.last_result = "drained gateway result"
+        svc._jobs = [job]
+        svc._save()
+
+        async def handoff_then_replace(running_job: CronJob) -> None:
+            await _record_pruned_launch_skip(running_job, svc)
+            assert running_job.__dict__.get("_result_merge_relinquished") is True
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(running_job.id)
+            assert replacement_job is not None
+            assert replacement_job.enabled is True
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+
+        svc._on_job = handoff_then_replace
+        await svc._run_job_isolated(job)
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_run_ts == replacement_run_ts
+        assert stored.last_result == "replacement result"
+        assert job.id in svc._pruned_quiesced
+
+    @pytest.mark.asyncio
+    async def test_no_occurrence_relinquishes_before_local_quiesce(self) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        svc = _mock_cron_service()
+        svc.occurrence_for_pruned_launch.return_value = None
+        order: list[str] = []
+
+        def relinquish(job_id: str) -> None:
+            assert job_id == job.id
+            assert job.enabled is True
+            order.append("relinquish")
+
+        def quiesce(job_id: str) -> None:
+            assert job_id == job.id
+            assert job.enabled is False
+            assert order == ["relinquish"]
+            order.append("quiesce")
+
+        svc.relinquish_run_result_merges.side_effect = relinquish
+        svc.quiesce_pruned.side_effect = quiesce
+
+        await _record_pruned_launch_skip(job, svc)
+
+        assert order == ["relinquish", "quiesce"]
+        assert job.__dict__.get("_result_merge_relinquished") is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["cancel", "reap"])
+    async def test_durable_handoff_relinquishes_terminal_state_merge(
+        self, tmp_path: Path, terminal: str
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        replacement_run_ts = now + 60
+        svc, job = self._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        svc._history.append = AsyncMock()  # type: ignore[method-assign]
+        svc._push_refresh = MagicMock()
+        audit = MagicMock()
+        handoff_complete = asyncio.Event()
+        hold_run = asyncio.Event()
+
+        async def handoff_then_wait(running_job: CronJob) -> None:
+            with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+                await _record_pruned_launch_skip(running_job, svc)
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(running_job.id)
+            assert replacement_job is not None
+            assert replacement_job.owed_occurrence() == occurrence_id
+            replacement_job.set_owed_occurrence(None)
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+            await asyncio.to_thread(svc._load)
+            terminal_job = svc.get_job(running_job.id)
+            assert terminal_job is not None
+            assert terminal_job is not running_job
+            assert terminal_job.__dict__.get("_result_merge_relinquished") is None
+            handoff_complete.set()
+            await hold_run.wait()
+
+        svc._on_job = handoff_then_wait
+        svc._executing.add(job.id)
+        run_task = asyncio.create_task(svc._run_job_isolated(job))
+        svc._running_tasks[job.id] = run_task
+        await asyncio.wait_for(handoff_complete.wait(), 2)
+
+        with (
+            patch("kiro_crew.cron.cron_script.kill_running_process", return_value=False),
+            patch("kiro_crew.cron.sel.sel", return_value=audit),
+            patch("kiro_crew.sel.sel", return_value=audit),
+        ):
+            if terminal == "cancel":
+                assert await asyncio.wait_for(svc.cancel(job.id), 2) is True
+            else:
+                await asyncio.wait_for(svc._force_reap(job.id, elapsed=1900, deadline=1800), 2)
+        await asyncio.gather(run_task, return_exceptions=True)
+
+        hot = svc.get_job(job.id)
+        assert hot is not None
+        assert hot.owed_occurrence() is None
+        assert hot.last_status == "ok"
+        assert hot.last_error is None
+        assert hot.last_run_ts == replacement_run_ts
+        assert hot.last_result == "replacement result"
+        updated = await svc.update_job_async(job.id, name="renamed")
+        assert updated is not None
+        assert updated.name == "renamed"
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() is None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_run_ts == replacement_run_ts
+        assert stored.last_result == "replacement result"
+        assert stored.name == "renamed"
+        assert run_task.done()
+        svc._history.append.assert_awaited_once()  # type: ignore[attr-defined]
+        history_record = svc._history.append.await_args.args[0]  # type: ignore[attr-defined]
+        expected_history_status = "cancelled" if terminal == "cancel" else "timeout"
+        expected_history_error = "Cancelled by user" if terminal == "cancel" else "Reaped after"
+        assert history_record.status == expected_history_status
+        assert expected_history_error in history_record.error
+        svc._push_refresh.assert_any_call("cron_history")
+        svc._push_refresh.assert_any_call("crons")
+        audit.log_tool_invocation.assert_called_once()
+        assert job.id not in svc._terminal_settling
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+        assert job.id not in svc._owed_fire_runs
+        assert job.id not in svc._run_occurrence_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["cancel", "reap"])
+    async def test_terminal_waits_for_pruned_handoff_decision(
+        self, tmp_path: Path, terminal: str
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        replacement_run_ts = now + 60
+        svc, job = self._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        svc._history.append = AsyncMock()  # type: ignore[method-assign]
+        audit = MagicMock()
+        persistence_committed = asyncio.Event()
+        decision_release = asyncio.Event()
+        real_persist = svc.persist_owed_occurrence
+
+        async def persist_then_pause(job_id: str, occurrence: str) -> bool:
+            assert await real_persist(job_id, occurrence) is True
+            persistence_committed.set()
+            await decision_release.wait()
+            return True
+
+        async def paused_handoff(running_job: CronJob) -> None:
+            with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+                await _record_pruned_launch_skip(running_job, svc)
+
+        async def wait_until_cancelled(task: asyncio.Task[None]) -> None:
+            while not task.cancelling():
+                await asyncio.sleep(0)
+
+        svc._on_job = paused_handoff
+        with patch.object(
+            svc,
+            "persist_owed_occurrence",
+            new=AsyncMock(side_effect=persist_then_pause),
+        ):
+            svc._executing.add(job.id)
+            run_task = asyncio.create_task(svc._run_job_isolated(job))
+            svc._running_tasks[job.id] = run_task
+            await asyncio.wait_for(persistence_committed.wait(), 2)
+
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(job.id)
+            assert replacement_job is not None
+            assert replacement_job.owed_occurrence() == occurrence_id
+            replacement_job.set_owed_occurrence(None)
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+            await asyncio.to_thread(svc._load)
+
+            with (
+                patch("kiro_crew.cron.cron_script.kill_running_process", return_value=False),
+                patch("kiro_crew.cron.sel.sel", return_value=audit),
+                patch("kiro_crew.sel.sel", return_value=audit),
+                patch.object(
+                    svc, "_reflect_terminal_state", wraps=svc._reflect_terminal_state
+                ) as reflect,
+                patch.object(
+                    svc,
+                    "_merge_terminal_state_locked",
+                    wraps=svc._merge_terminal_state_locked,
+                ) as terminal_merge,
+            ):
+                if terminal == "cancel":
+                    terminal_task = asyncio.create_task(svc.cancel(job.id))
+                else:
+                    terminal_task = asyncio.create_task(
+                        svc._force_reap(job.id, elapsed=1900, deadline=1800)
+                    )
+                await asyncio.wait_for(wait_until_cancelled(run_task), 2)
+                await asyncio.sleep(0)
+                assert terminal_task.done() is False
+                assert reflect.called is False
+                assert terminal_merge.called is False
+
+                decision_release.set()
+                terminal_result = await asyncio.wait_for(terminal_task, 2)
+
+            if terminal == "cancel":
+                assert terminal_result is True
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+        hot = svc.get_job(job.id)
+        assert hot is not None
+        assert hot.owed_occurrence() is None
+        assert hot.last_status == "ok"
+        assert hot.last_error is None
+        assert hot.last_run_ts == replacement_run_ts
+        assert hot.last_result == "replacement result"
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() is None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_run_ts == replacement_run_ts
+        assert stored.last_result == "replacement result"
+        assert terminal_merge.called is False
+        svc._history.append.assert_awaited_once()  # type: ignore[attr-defined]
+        audit.log_tool_invocation.assert_called_once()
+        assert job.id not in svc._terminal_settling
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+        assert job.id not in svc._owed_fire_runs
+        assert job.id not in svc._run_occurrence_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["cancel", "reap"])
+    @pytest.mark.parametrize("failure", ["refused", "exception"])
+    async def test_terminal_waits_for_failed_handoff_and_keeps_fallback(
+        self, tmp_path: Path, terminal: str, failure: str
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = self._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        svc._history.append = AsyncMock()  # type: ignore[method-assign]
+        audit = MagicMock()
+        persistence_entered = asyncio.Event()
+        decision_release = asyncio.Event()
+
+        async def pause_then_fail(job_id: str, occurrence: str) -> bool:
+            svc._queue_owed_occurrence(job_id, occurrence)
+            persistence_entered.set()
+            await decision_release.wait()
+            if failure == "exception":
+                raise OSError("handoff failed")
+            return False
+
+        async def paused_handoff(running_job: CronJob) -> None:
+            with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+                await _record_pruned_launch_skip(running_job, svc)
+
+        async def wait_until_cancelled(task: asyncio.Task[None]) -> None:
+            while not task.cancelling():
+                await asyncio.sleep(0)
+
+        svc._on_job = paused_handoff
+        with patch.object(
+            svc,
+            "persist_owed_occurrence",
+            new=AsyncMock(side_effect=pause_then_fail),
+        ):
+            svc._executing.add(job.id)
+            run_task = asyncio.create_task(svc._run_job_isolated(job))
+            svc._running_tasks[job.id] = run_task
+            await asyncio.wait_for(persistence_entered.wait(), 2)
+
+            with (
+                patch("kiro_crew.cron.cron_script.kill_running_process", return_value=False),
+                patch("kiro_crew.cron.sel.sel", return_value=audit),
+                patch("kiro_crew.sel.sel", return_value=audit),
+                patch.object(
+                    svc,
+                    "_merge_terminal_state_locked",
+                    wraps=svc._merge_terminal_state_locked,
+                ) as terminal_merge,
+            ):
+                if terminal == "cancel":
+                    terminal_task = asyncio.create_task(svc.cancel(job.id))
+                else:
+                    terminal_task = asyncio.create_task(
+                        svc._force_reap(job.id, elapsed=1900, deadline=1800)
+                    )
+                await asyncio.wait_for(wait_until_cancelled(run_task), 2)
+                await asyncio.sleep(0)
+                assert terminal_task.done() is False
+                assert terminal_merge.called is False
+
+                decision_release.set()
+                terminal_result = await asyncio.wait_for(terminal_task, 2)
+
+            if terminal == "cancel":
+                assert terminal_result is True
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() == occurrence_id
+        assert stored.last_status == "error"
+        expected_error = "Cancelled by user" if terminal == "cancel" else "Reaped after"
+        assert expected_error in (stored.last_error or "")
+        assert svc._pending_owed_fires == {job.id: occurrence_id}
+        assert job.__dict__.get("_result_merge_relinquished") is None
+        assert terminal_merge.call_count == 1
+        svc._history.append.assert_awaited_once()  # type: ignore[attr-defined]
+        audit.log_tool_invocation.assert_called_once()
+        assert job.id not in svc._terminal_settling
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+        assert job.id not in svc._owed_fire_runs
+        assert job.id not in svc._run_occurrence_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["cancel", "reap"])
+    @pytest.mark.parametrize("handoff", ["refused", "no-service"])
+    async def test_nondurable_handoff_retains_terminal_state_merge(
+        self, tmp_path: Path, terminal: str, handoff: str
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        replacement_run_ts = now + 60
+        svc, job = self._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        svc._history.append = AsyncMock()  # type: ignore[method-assign]
+        audit = MagicMock()
+        fallback_complete = asyncio.Event()
+        hold_run = asyncio.Event()
+
+        async def fallback_then_wait(running_job: CronJob) -> None:
+            with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+                if handoff == "refused":
+                    with patch.object(
+                        svc, "persist_owed_occurrence", new=AsyncMock(return_value=False)
+                    ):
+                        await _record_pruned_launch_skip(running_job, svc)
+                else:
+                    await _record_pruned_launch_skip(running_job, None)
+            assert running_job.__dict__.get("_result_merge_relinquished") is None
+            assert running_job.id not in svc._result_merge_relinquished_runs
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(running_job.id)
+            assert replacement_job is not None
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+            fallback_complete.set()
+            await hold_run.wait()
+
+        svc._on_job = fallback_then_wait
+        svc._executing.add(job.id)
+        run_task = asyncio.create_task(svc._run_job_isolated(job))
+        svc._running_tasks[job.id] = run_task
+        await asyncio.wait_for(fallback_complete.wait(), 2)
+
+        with (
+            patch("kiro_crew.cron.cron_script.kill_running_process", return_value=False),
+            patch("kiro_crew.cron.sel.sel", return_value=audit),
+            patch("kiro_crew.sel.sel", return_value=audit),
+        ):
+            if terminal == "cancel":
+                assert await asyncio.wait_for(svc.cancel(job.id), 2) is True
+            else:
+                await asyncio.wait_for(svc._force_reap(job.id, elapsed=1900, deadline=1800), 2)
+        await asyncio.gather(run_task, return_exceptions=True)
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.last_status == "error"
+        expected_error = "Cancelled by user" if terminal == "cancel" else "Reaped after"
+        assert expected_error in (stored.last_error or "")
+        assert stored.last_run_ts != replacement_run_ts
+        assert stored.last_result == "replacement result"
+        svc._history.append.assert_awaited_once()  # type: ignore[attr-defined]
+        audit.log_tool_invocation.assert_called_once()
+        assert job.id not in svc._terminal_settling
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+        assert job.id not in svc._owed_fire_runs
+        assert job.id not in svc._run_occurrence_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_kind", ["pre-commit", "commit-then-raise"])
+    async def test_failed_publish_distinguishes_retry_from_durable_commit(
+        self, tmp_path, failure_kind
+    ):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        newer = str(int(occurrence_id) + 1)
+        svc, job = self._real_hot_cron(tmp_path)
+        real_save = svc._save
+
+        def fail_save() -> None:
+            if failure_kind == "commit-then-raise":
+                real_save()
+            raise OSError(failure_kind)
+
+        with (
+            patch("kiro_crew.slack.gateway.time.time", return_value=now),
+            patch.object(svc, "_save", side_effect=fail_save),
+        ):
+            await _record_pruned_launch_skip(job, svc)
+
+        initially_stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert initially_stored is not None
+        if failure_kind == "pre-commit":
+            assert job.owed_occurrence() == occurrence_id
+            assert job.enabled is True
+            assert job.id not in svc._pruned_quiesced
+            assert svc._pending_owed_fires == {job.id: occurrence_id}
+            assert svc._last_digest != b""
+            assert initially_stored.owed_occurrence() is None
+
+            sibling = CronService(base_dir=tmp_path)
+            sibling_job = sibling.get_job(job.id)
+            assert sibling_job is not None
+            sibling_job.set_owed_occurrence(newer)
+            sibling._save()
+            await asyncio.to_thread(svc._merge_job_result, job)
+
+            stored = CronService(base_dir=tmp_path).get_job(job.id)
+            assert stored is not None
+            assert stored.owed_occurrence() == newer
+            assert svc._pending_owed_fires == {}
+        else:
+            assert job.owed_occurrence() == occurrence_id
+            assert job.enabled is False
+            assert job.id in svc._pruned_quiesced
+            assert svc._pending_owed_fires == {}
+            assert job.__dict__.get("_result_merge_relinquished") is True
+            assert initially_stored.owed_occurrence() == occurrence_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("replacement_minute_offset", "newer_pending", "replacement_owns_state"),
+        [
+            pytest.param(0, False, True, id="same-occurrence-completed"),
+            pytest.param(-1440, False, False, id="replacement-completion-older"),
+            pytest.param(0, True, True, id="newer-pending-is-persisted"),
+        ],
+    )
+    async def test_failed_handoff_merge_yields_to_replacement_completion(
+        self,
+        tmp_path: Path,
+        replacement_minute_offset: int,
+        newer_pending: bool,
+        replacement_owns_state: bool,
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        newer_occurrence = str(int(occurrence_id) + 1440)
+        svc, job = await asyncio.to_thread(self._real_hot_cron, tmp_path)
+        job.strict_schedule = True
+        job.last_result = "drained result"
+        job.last_result_ts = now - 300
+        job.last_result_stamp = "drained stamp"
+        job.last_posted_hash = "drained-posted"
+        job.consecutive_dupes = 7
+        job.last_posted_at = now - 200
+        job.last_failure_hash = "drained-failure"
+        job.last_failure_at = now - 100
+        job.consecutive_failures = 3
+        job.last_retry_count = 8
+        job.last_retry_run_ts = now - 50
+        await asyncio.to_thread(svc._save)
+        svc._run_occurrence_ids[job.id] = occurrence_id
+        svc._owed_fire_runs[job.id] = None
+        replacement_states: list[tuple[object, ...]] = []
+
+        def runtime_state(current: CronJob) -> tuple[object, ...]:
+            return (
+                current.last_run_ts,
+                current.last_status,
+                current.last_error,
+                current.enabled,
+                current.user_paused,
+                current.auto_paused,
+                current.last_result,
+                current.last_result_ts,
+                current.last_result_stamp,
+                current.last_posted_hash,
+                current.consecutive_dupes,
+                current.last_posted_at,
+                current.last_failure_hash,
+                current.last_failure_at,
+                current.consecutive_failures,
+                current.last_retry_count,
+                current.last_retry_run_ts,
+                current.owed_occurrence(),
+            )
+
+        async def refuse_handoff(job_id: str, occurrence: str) -> bool:
+            svc._queue_owed_occurrence(job_id, occurrence)
+            return False
+
+        async def handoff_then_complete(running_job: CronJob) -> None:
+            with (
+                patch("kiro_crew.slack.gateway.time.time", return_value=now),
+                patch.object(
+                    svc,
+                    "persist_owed_occurrence",
+                    new=AsyncMock(side_effect=refuse_handoff),
+                ),
+            ):
+                await _record_pruned_launch_skip(running_job, svc)
+
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(running_job.id)
+            assert replacement_job is not None
+            replacement_run_ts = now + replacement_minute_offset * 60 + 10
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.enabled = True
+            replacement_job.user_paused = False
+            replacement_job.auto_paused = False
+            replacement_job.last_result = "replacement result"
+            replacement_job.last_result_ts = replacement_run_ts
+            replacement_job.last_result_stamp = "replacement stamp"
+            replacement_job.last_posted_hash = "replacement-posted"
+            replacement_job.consecutive_dupes = 2
+            replacement_job.last_posted_at = replacement_run_ts
+            replacement_job.last_failure_hash = "replacement-failure"
+            replacement_job.last_failure_at = replacement_run_ts - 1
+            replacement_job.consecutive_failures = 0
+            replacement_job.last_retry_count = 2
+            replacement_job.last_retry_run_ts = replacement_run_ts
+            replacement_job.set_owed_occurrence(None)
+            replacement._save()
+            replacement_states.append(runtime_state(replacement_job))
+            if newer_pending:
+                svc._queue_owed_occurrence(running_job.id, newer_occurrence)
+
+        svc._on_job = handoff_then_complete
+        with patch.object(svc, "_save", wraps=svc._save) as stale_save:
+            await svc._run_job_isolated(job)
+
+        assert len(replacement_states) == 1
+        stored = await asyncio.to_thread(lambda: CronService(base_dir=tmp_path).get_job(job.id))
+        assert stored is not None
+        hot = svc.get_job(job.id)
+        assert hot is not None
+        if replacement_owns_state:
+            assert runtime_state(stored)[:-1] == replacement_states[0][:-1]
+            assert runtime_state(hot)[:-1] == replacement_states[0][:-1]
+            expected_owed = newer_occurrence if newer_pending else None
+            assert stored.owed_occurrence() == expected_owed
+            assert hot.owed_occurrence() == expected_owed
+            if newer_pending:
+                stale_save.assert_called_once()
+            else:
+                stale_save.assert_not_called()
+        else:
+            assert runtime_state(stored) == runtime_state(job)
+            assert runtime_state(hot) == runtime_state(job)
+            assert stored.last_status == "error"
+            assert "replaced by an update" in (stored.last_error or "")
+            assert stored.owed_occurrence() == occurrence_id
+            stale_save.assert_called_once()
+
+        assert svc._pending_owed_fires == {}
+        await asyncio.to_thread(svc._load)
+        reloaded = svc.get_job(job.id)
+        assert reloaded is not None
+        if replacement_owns_state:
+            assert runtime_state(reloaded)[:-1] == replacement_states[0][:-1]
+            assert reloaded.owed_occurrence() == (newer_occurrence if newer_pending else None)
+        else:
+            assert runtime_state(reloaded) == runtime_state(job)
+        assert svc._pending_owed_fires == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_persists_newer_debt_after_replacement_completed_old(
+        self, tmp_path: Path
+    ) -> None:
+        now = 1767333600.0
+        old_occurrence = str(int(now) // 60)
+        pending_occurrence = str(int(old_occurrence) + 1)
+        newer_occurrence = str(int(old_occurrence) + 2)
+        newest_occurrence = str(int(old_occurrence) + 3)
+        svc = CronService(base_dir=tmp_path)
+        job = _make_command_job(
+            id="j1",
+            schedule=CronSchedule(kind="cron", cron_expr="* * * * *"),
+            strict_schedule=True,
+            owed_fire=True,
+            owed_fire_id=old_occurrence,
+        )
+        svc._jobs = [job]
+        svc._save()
+        payload_entered = asyncio.Event()
+
+        async def blocked_payload(_running_job: CronJob) -> None:
+            payload_entered.set()
+            await asyncio.Future()
+
+        svc._on_job = blocked_payload
+        svc._executing.add(job.id)
+        run_task = asyncio.create_task(svc._run_job_isolated(job))
+        svc._running_tasks[job.id] = run_task
+        await asyncio.wait_for(payload_entered.wait(), 2)
+
+        replacement = CronService(base_dir=tmp_path)
+        replacement_job = replacement.get_job(job.id)
+        assert replacement_job is not None
+        replacement_job.set_owed_occurrence(None)
+        replacement_job.last_run_ts = now + 10
+        replacement_job.last_status = "ok"
+        replacement_job.last_error = None
+        replacement_job.last_result = "replacement result"
+        replacement_job.consecutive_failures = 0
+        replacement._save()
+        svc._queue_owed_occurrence(job.id, pending_occurrence)
+        real_save = svc._save
+        save_calls: list[int] = []
+
+        def save_with_newer_arrival() -> None:
+            real_save()
+            save_calls.append(len(save_calls) + 1)
+            if len(save_calls) == 1:
+                svc._queue_owed_occurrence(job.id, newer_occurrence)
+            elif len(save_calls) == 2:
+                svc._queue_owed_occurrence(job.id, newest_occurrence)
+
+        with patch.object(svc, "_save", side_effect=save_with_newer_arrival):
+            await asyncio.wait_for(svc.stop(), 2)
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() == newest_occurrence
+        assert stored.last_run_ts == now + 10
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_result == "replacement result"
+        assert stored.consecutive_failures == 0
+        assert save_calls == [1, 2, 3]
+        assert svc._pending_owed_fires == {}
+        assert run_task.done()
+        assert job.id not in svc._executing
+        assert job.id not in svc._running_tasks
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stabilization_is_finite_under_external_producer(
+        self, tmp_path: Path
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = _make_command_job(
+            id="j1",
+            schedule=CronSchedule(kind="cron", cron_expr="* * * * *"),
+            strict_schedule=True,
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._queue_owed_occurrence(job.id, "100")
+        real_save = svc._save
+        save_calls: list[int] = []
+
+        def save_with_external_arrival() -> None:
+            real_save()
+            save_calls.append(len(save_calls) + 1)
+            svc._queue_owed_occurrence(job.id, str(100 + len(save_calls)))
+
+        with patch.object(svc, "_save", side_effect=save_with_external_arrival):
+            with pytest.raises(RuntimeError, match="could not durably hand off 1 owed"):
+                await asyncio.wait_for(svc.stop(), 2)
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() == "102"
+        assert svc._pending_owed_fires == {job.id: "103"}
+        assert save_calls == [1, 2, 3]
+
+    @pytest.mark.parametrize("failure_kind", ["before-commit", "commit-then-raise"])
+    def test_newer_debt_save_failure_cannot_overwrite_later_completion(
+        self, tmp_path: Path, failure_kind: str
+    ) -> None:
+        now = 1767333600.0
+        old_occurrence = str(int(now) // 60)
+        newer_occurrence = str(int(old_occurrence) + 1)
+        svc = CronService(base_dir=tmp_path)
+        stored_job = _make_command_job(
+            id="j1",
+            schedule=CronSchedule(kind="cron", cron_expr="* * * * *"),
+            strict_schedule=True,
+            owed_fire=True,
+            owed_fire_id=old_occurrence,
+        )
+        svc._jobs = [stored_job]
+        svc._save()
+        running = _make_command_job(
+            id=stored_job.id,
+            schedule=stored_job.schedule,
+            strict_schedule=True,
+            owed_fire=True,
+            owed_fire_id=old_occurrence,
+            run_never_started=True,
+            keep_overdue=True,
+            last_status="error",
+            last_error="drained result",
+        )
+        svc._run_occurrence_ids[running.id] = old_occurrence
+        svc._queue_owed_occurrence(running.id, newer_occurrence)
+
+        replacement = CronService(base_dir=tmp_path)
+        replacement_job = replacement.get_job(running.id)
+        assert replacement_job is not None
+        replacement_job.set_owed_occurrence(None)
+        replacement_job.last_run_ts = now + 10
+        replacement_job.last_status = "ok"
+        replacement_job.last_error = None
+        replacement_job.last_result = "replacement A"
+        replacement._save()
+        real_save = svc._save
+
+        def failing_save() -> None:
+            if failure_kind == "commit-then-raise":
+                real_save()
+            raise OSError(failure_kind)
+
+        with (
+            patch.object(svc, "_save", side_effect=failing_save),
+            pytest.raises(OSError, match=failure_kind),
+        ):
+            svc._merge_job_result(running, old_occurrence)
+
+        assert svc._pending_owed_fires == {running.id: newer_occurrence}
+        assert svc._last_digest == b""
+        hot = svc.get_job(running.id)
+        assert hot is not None
+        assert hot.last_status == "ok"
+        assert hot.last_result == "replacement A"
+        assert hot.owed_occurrence() is None
+
+        latest = CronService(base_dir=tmp_path)
+        latest_job = latest.get_job(running.id)
+        assert latest_job is not None
+        latest_job.set_owed_occurrence(None)
+        latest_job.last_run_ts = int(newer_occurrence) * 60 + 10
+        latest_job.last_status = "ok"
+        latest_job.last_error = None
+        latest_job.last_result = "replacement B"
+        latest._save()
+
+        with patch.object(svc, "_save", wraps=svc._save) as stale_save:
+            svc._merge_job_result(running, old_occurrence)
+
+        final = CronService(base_dir=tmp_path).get_job(running.id)
+        assert final is not None
+        assert final.owed_occurrence() is None
+        assert final.last_status == "ok"
+        assert final.last_result == "replacement B"
+        assert svc._pending_owed_fires == {}
+        stale_save.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("store_state", "durable_occurrence"),
+        [
+            pytest.param("absent", None, id="absent-job"),
+            pytest.param("obsolete", None, id="obsolete-occurrence"),
+            pytest.param("durable", "100", id="durable-equal"),
+            pytest.param("durable", "101", id="durable-newer"),
+        ],
+    )
+    def test_readable_store_can_cover_ambiguous_publication(
+        self,
+        tmp_path: Path,
+        store_state: str,
+        durable_occurrence: str | None,
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job_id = "j1"
+        if store_state != "absent":
+            job = _make_command_job(
+                id=job_id,
+                schedule=CronSchedule(kind="cron", cron_expr="* * * * *"),
+                strict_schedule=True,
+                timezone="UTC",
+                owed_fire=durable_occurrence is not None,
+                owed_fire_id=durable_occurrence or "",
+            )
+            if store_state == "obsolete":
+                job.enabled = False
+                job.user_paused = True
+            svc._jobs = [job]
+            svc._save()
+        svc._queue_owed_occurrence(job_id, "100")
+
+        assert svc._ambiguous_owed_occurrence_is_covered_locked(job_id, "100") is True
+        assert svc._load_failed is False
+        assert svc._pending_owed_fires == {}
+
+    @pytest.mark.asyncio
+    async def test_unreadable_store_keeps_pruned_handoff_owned_until_retry(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = await asyncio.to_thread(self._real_hot_cron, tmp_path)
+        job.strict_schedule = True
+        await asyncio.to_thread(svc._save)
+        store = tmp_path / "crons.json"
+        healthy = await asyncio.to_thread(store.read_bytes)
+        svc._queue_owed_occurrence(job.id, occurrence_id)
+        await asyncio.to_thread(store.write_text, "{", encoding="utf-8")
+
+        covered = await asyncio.to_thread(
+            svc._ambiguous_owed_occurrence_is_covered_locked,
+            job.id,
+            occurrence_id,
+        )
+        assert covered is False
+        assert svc._load_failed is True
+        assert svc._pending_owed_fires == {job.id: occurrence_id}
+
+        run_token = svc._ensure_run_token(job.id)
+        with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+            await _record_pruned_launch_skip(job, svc)
+
+        assert svc._pending_owed_fires == {job.id: occurrence_id}
+        assert svc._result_merge_relinquished_runs.get(job.id) is not run_token
+        assert job.__dict__.get("_result_merge_relinquished") is None
+        assert job.id not in svc._pruned_quiesced
+        assert job.enabled is True
+        assert job.owed_occurrence() == occurrence_id
+
+        await asyncio.to_thread(store.write_bytes, healthy)
+        assert await svc.persist_owed_occurrence(job.id, occurrence_id) is True
+        stored = await asyncio.to_thread(lambda: CronService(base_dir=tmp_path).get_job(job.id))
+        assert stored is not None
+        assert stored.owed_occurrence() == occurrence_id
+        assert svc._load_failed is False
+        assert svc._pending_owed_fires == {}
+
+    @pytest.mark.asyncio
+    async def test_no_service_keeps_local_marker_without_quiescing(self):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+
+        with patch("kiro_crew.slack.gateway.time.time", return_value=now):
+            await _record_pruned_launch_skip(job, None)
+
+        assert job.owed_occurrence() == occurrence_id
+        assert job.enabled is True
+        assert job.keep_overdue is True
+        assert job.__dict__.get("_result_merge_relinquished") is None
+
+    @pytest.mark.asyncio
+    async def test_failed_publish_does_not_quiesce_the_retry_path(self):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        job.consecutive_failures = 3
+        svc = _mock_cron_service()
+        svc.occurrence_for_pruned_launch.return_value = "100"
+        svc.persist_owed_occurrence.return_value = False
+
+        await _record_pruned_launch_skip(job, svc)
+
+        assert job.run_never_started is True
+        assert job.keep_overdue is True
+        assert job.owed_occurrence() == "100"
+        assert job.__dict__.get("_result_merge_relinquished") is None
+        assert job.enabled is True
+        assert job.consecutive_failures == 3
+        svc.relinquish_run_result_merges.assert_not_called()
+        svc.quiesce_pruned.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            FileNotFoundError(2, "No such file or directory", "/missing/user-command"),
+            FileNotFoundError("Command launcher missing"),
+        ],
+        ids=["unrelated-path", "pathless"],
+    )
+    async def test_non_install_enoent_is_a_real_failure(self, missing):
+        gw = _make_gw()
+        job = _make_command_job()
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_command_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
 
 
 class TestScriptExecution:
@@ -776,7 +1953,7 @@ class TestFireTimeDenyOneShotRetention:
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_allowed_run_resets_flag_via_execute(self):
+    async def test_allowed_run_resets_flag_via_execute(self, tmp_path):
         # CronService._execute resets the marker at the start of every run.
         from kiro_crew.cron import CronService
 
@@ -786,7 +1963,7 @@ class TestFireTimeDenyOneShotRetention:
         async def _ok(j):
             return "ok"
 
-        svc = CronService.__new__(CronService)
+        svc = CronService(base_dir=tmp_path)
         svc._on_job = _ok
         await svc._execute(job)
         assert job.fire_time_denied is False
@@ -815,7 +1992,7 @@ class TestFireTimeDenyOneShotRetention:
         assert not any(j.id == job.id for j in svc.list_jobs(include_disabled=True))
 
     @pytest.mark.asyncio
-    async def test_denied_past_due_at_job_does_not_stay_due(self):
+    async def test_denied_past_due_at_job_does_not_stay_due(self, tmp_path):
         """A past-due at-job denied at fire time must be parked disabled —
         leaving it enabled would make it due again on every timer tick."""
         from kiro_crew.cron import CronService
@@ -828,7 +2005,7 @@ class TestFireTimeDenyOneShotRetention:
             j.fire_time_denied = True
             return None
 
-        svc = CronService.__new__(CronService)
+        svc = CronService(base_dir=tmp_path)
         svc._on_job = _deny
         await svc._execute(job)
         assert job.enabled is False
@@ -1030,7 +2207,7 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
     _stream_mock = AsyncMock(return_value="Agent response here")
 
     with (
-        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch.object(CronService, "create", new_callable=AsyncMock) as mock_cron_create,
         patch("kiro_crew.slack.gateway.run_in_embed_pool", _embed_mock),
         patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock),
         patch("kiro_crew.slack.gateway.sel"),
@@ -1042,12 +2219,10 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
             captured_cb = on_job
-            svc = MagicMock()
-            svc.start = AsyncMock()
-            svc.remove_job_async = AsyncMock(return_value=True)
+            svc = _mock_cron_service()
             return svc
 
-        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+        mock_cron_create.side_effect = capture_cron
         await gw._init_cron()
         assert captured_cb is not None
         result = await captured_cb(job)
@@ -1609,6 +2784,161 @@ def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
     assert job.last_result == "42 widgets", "a shutdown cancel wiped a completed result"
 
 
+@pytest.mark.asyncio
+async def test_shutdown_cancel_preserves_claimed_owed_occurrence(tmp_path: Path) -> None:
+    now = 1767333600.0
+    occurrence_id = str(int(now) // 60)
+    svc = CronService(base_dir=tmp_path)
+    job = CronJob(
+        id="j1",
+        name="owed",
+        message="go",
+        schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        strict_schedule=True,
+        timezone="UTC",
+        owed_fire=True,
+        owed_fire_id=occurrence_id,
+    )
+    svc._jobs = [job]
+    svc._save()
+    svc._running = True
+    svc._mint_run_token(job.id)
+    svc._owed_fire_runs[job.id] = occurrence_id
+    svc._run_occurrence_ids[job.id] = occurrence_id
+    svc._executing.add(job.id)
+    entered = asyncio.Event()
+
+    async def blocked(_job: CronJob) -> None:
+        entered.set()
+        await asyncio.Future()
+
+    svc._on_job = blocked
+    run_task = asyncio.create_task(svc._run_job_isolated(job))
+    svc._running_tasks[job.id] = run_task
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    await svc.stop()
+
+    assert run_task.cancelled()
+    stored = await asyncio.to_thread(lambda: CronService(base_dir=tmp_path).get_job(job.id))
+    assert stored is not None
+    assert stored.owed_occurrence() == occurrence_id
+
+    replacement = CronService(base_dir=tmp_path)
+    retried: list[str] = []
+
+    async def retry(retry_job: CronJob) -> None:
+        retried.append(retry_job.id)
+
+    replacement._on_job = retry
+    admitted = type("Admission", (), {"admitted": True, "reason": ""})()
+    with (
+        patch("kiro_crew.cron.time.time", return_value=now + 3600),
+        patch("kiro_crew.cron.admission_check", return_value=admitted),
+    ):
+        await replacement._on_timer()
+        retry_tasks = list(replacement._running_tasks.values())
+        assert retry_tasks
+        await asyncio.gather(*retry_tasks)
+
+    settled = await asyncio.to_thread(lambda: CronService(base_dir=tmp_path).get_job(job.id))
+    assert settled is not None
+    assert settled.owed_occurrence() is None
+    assert retried == [job.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fresh_state", ["completed", "newer-debt"])
+async def test_shutdown_cancel_arbitrates_fresh_replacement_state(
+    tmp_path: Path, fresh_state: str
+) -> None:
+    now = 1767333600.0
+    occurrence_id = str(int(now) // 60)
+    newer_occurrence = str(int(occurrence_id) + 1440)
+    svc = CronService(base_dir=tmp_path)
+    job = CronJob(
+        id="j1",
+        name="owed",
+        message="go",
+        schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        strict_schedule=True,
+        timezone="UTC",
+        owed_fire=True,
+        owed_fire_id=occurrence_id,
+        last_result="drained result",
+        last_retry_count=9,
+        consecutive_failures=4,
+    )
+    svc._jobs = [job]
+    svc._save()
+    svc._running = True
+    svc._mint_run_token(job.id)
+    svc._owed_fire_runs[job.id] = occurrence_id
+    svc._run_occurrence_ids[job.id] = occurrence_id
+    svc._executing.add(job.id)
+    entered = asyncio.Event()
+    expected_replacement: list[tuple[object, ...]] = []
+
+    def runtime_state(current: CronJob) -> tuple[object, ...]:
+        return (
+            current.last_run_ts,
+            current.last_status,
+            current.last_error,
+            current.last_result,
+            current.last_result_ts,
+            current.last_retry_count,
+            current.last_retry_run_ts,
+            current.consecutive_failures,
+            current.owed_occurrence(),
+        )
+
+    async def blocked(_job: CronJob) -> None:
+        entered.set()
+        await asyncio.Future()
+
+    real_merge = svc._merge_job_result
+
+    def publish_then_merge(running_job: CronJob) -> None:
+        replacement = CronService(base_dir=tmp_path)
+        replacement_job = replacement.get_job(running_job.id)
+        assert replacement_job is not None
+        if fresh_state == "completed":
+            replacement_job.last_run_ts = now + 10
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_result = "replacement result"
+            replacement_job.last_result_ts = now + 10
+            replacement_job.last_retry_count = 2
+            replacement_job.last_retry_run_ts = now + 10
+            replacement_job.consecutive_failures = 0
+            replacement_job.set_owed_occurrence(None)
+        else:
+            replacement_job.set_owed_occurrence(newer_occurrence)
+        replacement._save()
+        expected_replacement.append(runtime_state(replacement_job))
+        real_merge(running_job)
+
+    svc._on_job = blocked
+    run_task = asyncio.create_task(svc._run_job_isolated(job))
+    svc._running_tasks[job.id] = run_task
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    with patch.object(svc, "_merge_job_result", side_effect=publish_then_merge):
+        await svc.stop()
+
+    assert run_task.cancelled()
+    assert len(expected_replacement) == 1
+    stored = await asyncio.to_thread(lambda: CronService(base_dir=tmp_path).get_job(job.id))
+    assert stored is not None
+    if fresh_state == "completed":
+        assert runtime_state(stored) == expected_replacement[0]
+        hot = svc.get_job(job.id)
+        assert hot is not None
+        assert runtime_state(hot) == expected_replacement[0]
+    else:
+        assert stored.owed_occurrence() == newer_occurrence
+
+
 async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold_secs):
     """Drive the script branch with the cron pool's only worker already busy.
 
@@ -1647,9 +2977,7 @@ async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
             captured_cb = on_job
-            svc = MagicMock()
-            svc.start = AsyncMock()
-            svc.remove_job_async = AsyncMock(return_value=True)
+            svc = _mock_cron_service()
             return svc
 
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
@@ -2805,6 +4133,346 @@ class TestACancellationAtTheClaimAwaitKeepsItsOneShot:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["command", "script"])
+    async def test_pruned_persistence_cancel_after_claim_finishes_durable_handoff(
+        self, tmp_path, kind
+    ):
+        svc = CronService(base_dir=tmp_path)
+        created = (
+            _make_command_job(
+                id="j1",
+                schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+                delete_after_run=True,
+                consecutive_failures=3,
+            )
+            if kind == "command"
+            else _make_script_job(
+                id="j1",
+                schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+                delete_after_run=True,
+                consecutive_failures=3,
+            )
+        )
+        svc._jobs = [created]
+        svc._save()
+        persistence_entered = asyncio.Event()
+        persistence_release = asyncio.Event()
+        worker_claimed = threading.Event()
+        handoff_svc = _mock_cron_service()
+        handoff_svc.occurrence_for_pruned_launch.return_value = "100"
+
+        async def persist(_job_id: str, _occurrence_id: str) -> bool:
+            persistence_entered.set()
+            await persistence_release.wait()
+            return True
+
+        def pruned_launch(*_args, **_kwargs):
+            worker_claimed.set()
+            raise FileNotFoundError(
+                2,
+                "No such file or directory",
+                str(Path(sys.prefix) / "bin" / "python3.12"),
+            )
+
+        handoff_svc.persist_owed_occurrence = AsyncMock(side_effect=persist)
+        callback = _run_command_callback if kind == "command" else _run_script_callback
+        gw = _make_gw()
+        kwargs = (
+            {"cmd_result": {"status": "ok", "output": "x"}}
+            if kind == "command"
+            else {"script_result": {"status": "ok"}}
+        )
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            task = asyncio.create_task(
+                callback(
+                    gw,
+                    created,
+                    side_effect=pruned_launch,
+                    cron_svc=handoff_svc,
+                    **kwargs,
+                )
+            )
+            await asyncio.wait_for(persistence_entered.wait(), timeout=1)
+            assert worker_claimed.is_set()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            persistence_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert created.run_never_started is False
+        assert created.keep_overdue is True
+        assert created.enabled is False
+        assert created.owed_occurrence() == "100"
+        assert created.consecutive_failures == 3
+        handoff_svc.relinquish_run_result_merges.assert_called_once_with(created.id)
+        handoff_svc.quiesce_pruned.assert_called_once_with(created.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["false", "raise"])
+    async def test_cancelled_refused_handoff_keeps_fallback(self, outcome):
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        job = _make_command_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        svc = _mock_cron_service()
+        svc.occurrence_for_pruned_launch.return_value = "100"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def persist(_job_id: str, _occurrence_id: str) -> bool:
+            entered.set()
+            await release.wait()
+            if outcome == "raise":
+                raise OSError("worker failed")
+            return False
+
+        svc.persist_owed_occurrence = AsyncMock(side_effect=persist)
+        task = asyncio.create_task(_record_pruned_launch_skip(job, svc))
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert job.keep_overdue is True
+        assert job.enabled is True
+        assert job.owed_occurrence() == "100"
+        svc.relinquish_run_result_merges.assert_not_called()
+        svc.quiesce_pruned.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_kind", ["pre-commit", "commit-then-raise"])
+    async def test_cancelled_real_persistence_failure_keeps_queued_retry(
+        self, tmp_path: Path, failure_kind: str
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = TestPrunedInstallCommandSkip._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        real_flush = svc._flush_pending_owed_fires_locked
+        real_save = svc._save
+        worker_entered = threading.Event()
+        worker_release = threading.Event()
+
+        def fail_save() -> None:
+            if failure_kind == "commit-then-raise":
+                real_save()
+            raise OSError(failure_kind)
+
+        def controlled_flush() -> set[str]:
+            worker_entered.set()
+            assert worker_release.wait(timeout=5)
+            return real_flush()
+
+        with (
+            patch("kiro_crew.slack.gateway.time.time", return_value=now),
+            patch.object(svc, "_flush_pending_owed_fires_locked", side_effect=controlled_flush),
+            patch.object(svc, "_save", side_effect=fail_save),
+        ):
+            task = asyncio.create_task(_record_pruned_launch_skip(job, svc))
+            assert await asyncio.to_thread(worker_entered.wait, 2)
+            task.cancel()
+            worker_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert job.keep_overdue is True
+        assert job.owed_occurrence() == occurrence_id
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        if failure_kind == "pre-commit":
+            assert job.enabled is True
+            assert svc._pending_owed_fires == {job.id: occurrence_id}
+            assert job.id not in svc._pruned_quiesced
+            assert job.__dict__.get("_result_merge_relinquished") is None
+            assert stored.owed_occurrence() is None
+        else:
+            assert job.enabled is False
+            assert svc._pending_owed_fires == {}
+            assert job.id in svc._pruned_quiesced
+            assert job.__dict__.get("_result_merge_relinquished") is True
+            assert stored.owed_occurrence() == occurrence_id
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_durable_commit_cannot_republish_after_replacement_consumes(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        svc, job = TestPrunedInstallCommandSkip._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        real_flush = svc._flush_pending_owed_fires_locked
+        commit_finished = threading.Event()
+        worker_release = threading.Event()
+
+        def commit_then_pause() -> set[str]:
+            result = real_flush()
+            commit_finished.set()
+            assert worker_release.wait(timeout=5)
+            return result
+
+        async def handoff(running_job: CronJob) -> None:
+            await _record_pruned_launch_skip(running_job, svc)
+
+        svc._on_job = handoff
+        with (
+            patch("kiro_crew.slack.gateway.time.time", return_value=now),
+            patch.object(svc, "_flush_pending_owed_fires_locked", side_effect=commit_then_pause),
+        ):
+            run_task = asyncio.create_task(svc._run_job_isolated(job))
+            assert await asyncio.to_thread(commit_finished.wait, 2)
+            run_task.cancel()
+
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(job.id)
+            assert replacement_job is not None
+            assert replacement_job.owed_occurrence() == occurrence_id
+            replacement_job.set_owed_occurrence(None)
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = now + 60
+            replacement._save()
+
+            worker_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await run_task
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() is None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert svc._pending_owed_fires == {}
+        assert job.id in svc._pruned_quiesced
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+
+    @pytest.mark.asyncio
+    async def test_commit_then_raise_consumed_by_replacement_is_confirmed_handoff(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.slack.gateway import _record_pruned_launch_skip
+
+        now = 1767333600.0
+        occurrence_id = str(int(now) // 60)
+        replacement_run_ts = now + 60
+        svc, job = TestPrunedInstallCommandSkip._real_hot_cron(tmp_path)
+        job.strict_schedule = True
+        job.last_result = "old gateway result"
+        real_save = svc._save
+        commit_finished = threading.Event()
+        allow_raise = threading.Event()
+
+        def commit_then_pause_and_raise() -> None:
+            real_save()
+            commit_finished.set()
+            assert allow_raise.wait(timeout=5)
+            raise OSError("after commit")
+
+        async def handoff(running_job: CronJob) -> None:
+            await _record_pruned_launch_skip(running_job, svc)
+
+        svc._on_job = handoff
+        with (
+            patch("kiro_crew.slack.gateway.time.time", return_value=now),
+            patch.object(svc, "_save", side_effect=commit_then_pause_and_raise),
+        ):
+            run_task = asyncio.create_task(svc._run_job_isolated(job))
+            assert await asyncio.to_thread(commit_finished.wait, 2)
+
+            replacement = CronService(base_dir=tmp_path)
+            replacement_job = replacement.get_job(job.id)
+            assert replacement_job is not None
+            assert replacement_job.owed_occurrence() == occurrence_id
+            replacement_job.set_owed_occurrence(None)
+            replacement_job.last_status = "ok"
+            replacement_job.last_error = None
+            replacement_job.last_run_ts = replacement_run_ts
+            replacement_job.last_result = "replacement result"
+            replacement._save()
+
+            allow_raise.set()
+            await run_task
+
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert stored is not None
+        assert stored.owed_occurrence() is None
+        assert stored.last_status == "ok"
+        assert stored.last_error is None
+        assert stored.last_run_ts == replacement_run_ts
+        assert stored.last_result == "replacement result"
+        assert svc._pending_owed_fires == {}
+        assert job.id in svc._pruned_quiesced
+        assert job.id not in svc._run_tokens
+        assert job.id not in svc._result_merge_relinquished_runs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["command", "script", "agent"])
+    @pytest.mark.parametrize("pruned", [True, False], ids=["pruned", "live-install"])
+    async def test_install_enoent_classification_runs_off_loop(
+        self, kind: str, pruned: bool
+    ) -> None:
+        loop_thread = threading.get_ident()
+        probe_threads: list[int] = []
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+
+        def install_probe() -> bool:
+            probe_threads.append(threading.get_ident())
+            return pruned
+
+        def ownership_probe(_exc: FileNotFoundError) -> bool:
+            probe_threads.append(threading.get_ident())
+            return True
+
+        with (
+            patch("kiro_crew.slack.gateway._running_install_was_pruned", install_probe),
+            patch("kiro_crew.slack.gateway._enoent_names_this_install", ownership_probe),
+        ):
+            if kind == "command":
+                job = _make_command_job()
+                result, _ = await _run_command_callback(_make_gw(), job, side_effect=missing)
+                assert result is None
+                assert job.run_never_started is pruned
+            elif kind == "script":
+                job = _make_script_job()
+                result, _ = await _run_script_callback(_make_gw(), job, side_effect=missing)
+                assert result is None
+                assert job.run_never_started is pruned
+            else:
+                job = _make_llm_job()
+
+                async def fail_acquire(*_args, **_kwargs):
+                    raise missing
+
+                if pruned:
+                    result, stream = await _run_llm_callback(
+                        _make_gw_for_llm(), job, get_or_create_side_effect=fail_acquire
+                    )
+                    assert result is None
+                    stream.assert_not_awaited()
+                    assert job.run_never_started is True
+                else:
+                    with pytest.raises(FileNotFoundError):
+                        await _run_llm_callback(
+                            _make_gw_for_llm(), job, get_or_create_side_effect=fail_acquire
+                        )
+
+        assert probe_threads
+        assert all(thread_id != loop_thread for thread_id in probe_threads)
+        expected_probes = 2 if pruned else 1
+        assert len(probe_threads) == expected_probes
+
+    @pytest.mark.asyncio
     async def test_a_deny_still_leaves_retention_to_fire_time_denied(self, tmp_path):
         """The placement guard: the deny path must not acquire this marker.
 
@@ -2833,3 +4501,269 @@ class TestACancellationAtTheClaimAwaitKeepsItsOneShot:
 
         await asyncio.to_thread(svc._merge_job_result, created)
         assert any(j.id == created.id for j in svc.list_jobs()), "a denied one-shot was consumed"
+
+
+def test_pruned_install_requires_both_runtime_paths_to_be_absent(tmp_path, monkeypatch):
+    """The detector fires ONLY when both the launch interpreter and this
+    module's own file are gone. One surviving path means an unrelated
+    missing file, which must stay a real failure."""
+    from kiro_crew.slack import gateway as gateway_mod
+
+    interpreter = tmp_path / "old-install" / "python"
+    module = tmp_path / "old-install" / "gateway.py"
+    monkeypatch.setattr(gateway_mod.sys, "executable", str(interpreter))
+    monkeypatch.setattr(gateway_mod, "__file__", str(module))
+
+    assert gateway_mod._running_install_was_pruned()
+
+    module.parent.mkdir(parents=True)
+    module.write_text("# still installed\n", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+    module.unlink()
+    interpreter.write_text("", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+
+class TestPrunedInstallScriptSkip:
+    """A script cron child that FileNotFoundErrors because the running
+    install was replaced mid-update is an environmental handoff, not a job
+    failure: book it never-started, spend no strike, and let the
+    replacement gateway retry."""
+
+    @staticmethod
+    def _pruned_enoent():
+        # ENOENT that names a file UNDER the install's own interpreter prefix.
+        return FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_enoent_is_recorded_never_started(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 3
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=self._pruned_enoent())
+
+        # Never-started retention contract: last_status "error" keeps
+        # _execute from recording a success, run_never_started stops
+        # _merge_job_result deleting a due one-shot, and no auto-pause strike
+        # is spent (consecutive_failures untouched).
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_retains_a_due_one_shot(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.delete_after_run = True
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=self._pruned_enoent())
+
+        # The exact data-loss shape: a due delete_after_run one-shot inside the
+        # update handoff must NOT read as completed. run_never_started is what
+        # _merge_job_result's delete_owed guard keys on.
+        assert result is None
+        assert job.delete_after_run and job.run_never_started
+
+    @pytest.mark.asyncio
+    async def test_pruned_recurring_job_is_quiesced_in_memory_too(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=self._pruned_enoent())
+
+        # keep_overdue leaves the job permanently due on this drained gateway,
+        # so it must be disabled in memory or it refires in a zero-delay loop.
+        # 'every' jobs stay due via untouched last_run_ts — no owed marker.
+        assert job.enabled is False
+        assert job.keep_overdue is True
+        assert job.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_pruned_cron_expression_job_persists_an_owed_fire(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=self._pruned_enoent())
+
+        # A cron-expression job is only due while the current minute matches;
+        # the owed marker is what lets the replacement gateway dispatch the
+        # missed occurrence after a slow handoff.
+        assert job.owed_fire is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_during_pruning_persists_no_debt(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=self._pruned_enoent(), manual_run=True)
+
+        # A manual trigger never owed a scheduled occurrence, so no debt is
+        # persisted; the quiesce still applies (the process cannot launch).
+        assert job.owed_fire is False
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_unrelated_missing_path_still_fails_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/user-script-interp")
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # The pruned install only excuses ENOENT on the install's OWN files.
+        # A user script/wrapper deleted while the install happens to be pruned
+        # is still a real job failure and spends a strike.
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_pathless_enoent_is_a_real_failure_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        # A missing user script raised with no filename attached names nothing
+        # install-owned, so the pruned install must not excuse it.
+        missing = FileNotFoundError("Script not found")
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+
+class TestPrunedInstallAgentSkip:
+    """The agent-launch path books the same never-started skip when the
+    session acquire FileNotFoundErrors on the replaced install, and refuses
+    to silently replay a partially-completed sequence."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "agent_sequence",
+        [[], ["first", "second"]],
+        ids=["single-agent", "agent-sequence"],
+    )
+    async def test_pruned_install_enoent_skips_agent_launch(self, agent_sequence):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=agent_sequence)
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+        expected_session_key = (
+            f"cron:{job.id}:{agent_sequence[0]}" if agent_sequence else f"cron:{job.id}"
+        )
+        gw.cron_svc.clear_active_session_key.assert_called_once_with(job.id, expected_session_key)
+
+    @pytest.mark.asyncio
+    async def test_pruned_cron_expression_agent_publishes_one_occurrence(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        assert job.owed_occurrence() == "scheduled-minute"
+        assert job.enabled is False
+        gw.cron_svc.persist_owed_occurrence.assert_awaited_once_with(job.id, "scheduled-minute")
+        gw.cron_svc.quiesce_pruned.assert_called_once_with(job.id)
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_records_a_failure_not_never_started(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["first", "second"])
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        # Agent 'first' completed a turn: its side effects exist. Marking the
+        # run never-started would retain the one-shot and REPLAY that completed
+        # work on the replacement gateway — record a normal failed run instead.
+        assert result is None
+        assert job.run_never_started is False
+        assert job.last_status == "error"
+        assert "duplicating finished work" in job.last_error
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_names_previous_repeated_agent_position(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["repeat", "middle", "repeat"])
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        assert result is None
+        assert "after 'middle' completed" in job.last_error
+        assert "duplicating finished work" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_unrelated_agent_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/provider")
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with (
+            patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False),
+            pytest.raises(FileNotFoundError, match="missing/provider"),
+        ):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)

@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -61,6 +62,7 @@ from kiro_crew.config.loader import (
     config_dir,
     data_home,
     published_config_timezone,
+    published_config_timezone_authority,
 )
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
@@ -70,6 +72,10 @@ from kiro_crew.resource_status import admission_check
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
+_active_cron_run_id: ContextVar[str | None] = ContextVar(
+    "kirocrew_active_cron_run_id",
+    default=None,
+)
 
 # ── Constants ──
 
@@ -156,6 +162,11 @@ def _default_dir() -> Path:
 
 _CRONS_FILE = "crons.json"
 
+# Jobs saved before occurrence identities existed carry only ``owed_fire=true``.
+# A stable sentinel lets one of those runs claim and conditionally clear that
+# exact debt without treating a later, minute-identified publication as its own.
+_LEGACY_OWED_FIRE_ID = "legacy"
+
 # ``$skill`` token pattern (mirrors skills._DOLLAR_SKILL_PATTERN; duplicated
 # here to avoid a cron<->skills import cycle).
 _SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
@@ -178,14 +189,24 @@ class CronStoreUnreadable(ValueError):
     because the store is empty, so writing it would overwrite records that are
     still on disk. Persisting is refused AND the refusal is raised, so a
     user-initiated mutation reports failure instead of returning success for a
-    write that never happened. Background writers (the reaper merge, the job
-    result merge, the deferred-removal drain) catch it and degrade: a corrupt
-    store must not take down the scheduler loop.
+    write that never happened. Most background writers (the reaper merge, the job
+    result merge, the deferred-removal drain) catch it and degrade so a corrupt
+    store does not take down the scheduler loop; a terminal clear of an exact
+    owed occurrence is the exception, because degrading there would release
+    admission and rerun work the user cancelled or the reaper terminated.
 
     Also raised by :func:`dispatched_agents_from_disk` when the store is PRESENT
     but nothing loads from it, so a reader that must fail CLOSED (the template
     delete guard) does not mistake an unreadable store for an empty one.
     """
+
+
+class _TerminalOccurrenceUnsettled(OSError):
+    """A terminal owner could not durably clear its exact owed occurrence."""
+
+
+class _ResultOccurrenceUnsettled(OSError):
+    """A completed run could not durably settle its exact owed occurrence."""
 
 
 def _is_loadable_record(j: dict[str, Any]) -> bool:
@@ -445,6 +466,19 @@ _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
 _AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
+# A terminal exact-occurrence clear owns admission while it retries. The first
+# attempt plus these two waits absorb transient atomic-write/store failures;
+# exhaustion keeps the terminal fence for a later caller/reaper-owned retry.
+_TERMINAL_OWED_CLEAR_RETRY_DELAYS = (0.05, 0.1)
+# A completed owed payload cannot release admission while its exact occurrence
+# is still durable. The original run task remains the retry owner, backing off
+# to this cap; cancel/reap may take over through their terminal fence.
+_RESULT_OWED_CLEAR_RETRY_MAX_DELAY = 1.0
+# Once timer/run producers are joined, one pass persists queued debt, a second
+# catches an occurrence queued during that save, and a third catches one final
+# same-process race. An external producer can keep writing forever, so shutdown
+# logs and returns after this finite budget rather than hanging the gateway.
+_SHUTDOWN_OWED_DRAIN_ATTEMPTS = 3
 
 
 def _pool_queue_allowance(job: CronJob | None) -> int:
@@ -769,6 +803,31 @@ class CronJob:
     # read solely where a one-shot would otherwise be consumed by a run it never
     # had. Reset at the start of every run.
     run_never_started: bool = False
+    # A launch skipped because the RUNNING INSTALL was replaced mid-update:
+    # the run never started AND its schedule must stay owed. Unlike a bare
+    # run_never_started (overlap/starvation, where the tick was genuinely
+    # spent), _execute neither advances last_run_ts nor fires the at-job
+    # disable path when this is set, so the replacement gateway sees the
+    # job exactly as due as it was before the drained process touched it.
+    # In-memory only (reset at the start of every run, never merged).
+    keep_overdue: bool = False
+    # A cron-expression job's occurrence was owed when the running install
+    # was pruned. Unlike 'every' (still due: last_run_ts untouched) and
+    # 'at' (still due: at_ts in the past), a cron-expression job is only
+    # due while the CURRENT minute matches, so a slow update handoff would
+    # silently lose the occurrence. PERSISTED so the replacement gateway
+    # dispatches the make-up run once: _is_due treats an owed job as due
+    # regardless of the minute, and the make-up run claims its identity before
+    # execution. Locked result or terminal settlement clears only that exact
+    # identity.
+    owed_fire: bool = False
+    # Identity of the single cron-expression occurrence represented by
+    # ``owed_fire``. UTC minute is the natural identity: cron has minute
+    # granularity, the value is stable across gateways and timezone/DST
+    # rendering, and publishing the same boundary twice stays idempotent.
+    # Empty only when no debt is owed; legacy boolean-only records load with
+    # ``_LEGACY_OWED_FIRE_ID`` so their first make-up run remains claimable.
+    owed_fire_id: str = ""
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -948,6 +1007,17 @@ class CronJob:
     secret_env_pending: dict[str, str] = field(default_factory=dict)
     secret_env_pending_pin: str = ""
     secret_env_pending_ts: float = 0.0
+
+    def owed_occurrence(self) -> str | None:
+        """Return the occurrence represented by the legacy-compatible fields."""
+        if not self.owed_fire:
+            return None
+        return self.owed_fire_id or _LEGACY_OWED_FIRE_ID
+
+    def set_owed_occurrence(self, occurrence_id: str | None) -> None:
+        """Set or clear the owed occurrence while keeping both fields coherent."""
+        self.owed_fire = occurrence_id is not None
+        self.owed_fire_id = occurrence_id or ""
 
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.
@@ -1509,8 +1579,11 @@ def parse_time_string(s: str) -> float | str:
     return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
 
 
-def _job_tz(job: CronJob) -> ZoneInfo:
+def _job_tz(job: CronJob, *, default_timezone: str | None = None) -> ZoneInfo:
     """Return the job's timezone, falling back to the published default then UTC.
+
+    ``default_timezone`` freezes one published value for a store transaction;
+    ``None`` retains the lock-free live snapshot used by event-loop readers.
 
     Reads :func:`published_config_timezone` rather than loading ``config.json``.
     Both callers reach this from the event loop: :meth:`CronService._on_timer`
@@ -1522,7 +1595,10 @@ def _job_tz(job: CronJob) -> ZoneInfo:
     gateway on the following tick.
     """
     try:
-        tz_name = job.timezone or published_config_timezone() or "UTC"
+        inherited_timezone = (
+            published_config_timezone() if default_timezone is None else default_timezone
+        )
+        tz_name = job.timezone or inherited_timezone or "UTC"
         return ZoneInfo(tz_name)
     except Exception:
         logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
@@ -1994,6 +2070,11 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
     if _cron_expr is not None and not isinstance(_cron_expr, str):
         raise TypeError("cron record schedule field 'cron_expr' must be a string")
 
+    stored_owed_fire = j.get("owed_fire") is True
+    stored_owed_fire_id = _guard_str("owed_fire_id") if stored_owed_fire else ""
+    if stored_owed_fire and not stored_owed_fire_id:
+        stored_owed_fire_id = _LEGACY_OWED_FIRE_ID
+
     job = CronJob(
         id=_required_str(j, "id"),
         name=_required_str(j, "name"),
@@ -2024,6 +2105,11 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_error=_guard_opt_str("last_error"),
         created_ts=_guard_num("created_ts", 0.0),
         delete_after_run=j.get("delete_after_run", False),
+        # Strict identity check: a legacy/hand-edited store carrying the
+        # STRING "false" is truthy and would dispatch the job outside its
+        # schedule on every load.
+        owed_fire=stored_owed_fire,
+        owed_fire_id=stored_owed_fire_id,
         last_result=_guard_opt_str("last_result"),
         last_result_ts=_guard_num("last_result_ts", 0.0),
         last_result_stamp=_guard_str("last_result_stamp"),
@@ -2084,6 +2170,34 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
     return job
 
 
+def _published_timezone_authority() -> tuple[str, int]:
+    """Return one generation-qualified authority through the legacy test seam."""
+    authority = published_config_timezone_authority()
+    timezone = published_config_timezone()
+    if timezone == authority[0]:
+        return authority
+    # Existing callers patch the cron-side timezone reader to model a concurrent
+    # settings publication. Keep that seam effective while production readers use
+    # the loader's atomic immutable tuple.
+    return timezone, authority[1]
+
+
+class _CronTickSnapshot(list[CronJob]):
+    """List-compatible jobs plus inherited-timezone validation authority."""
+
+    def __init__(
+        self,
+        jobs: list[CronJob],
+        *,
+        config_timezone_authority: tuple[str, int],
+        inherited_owed_validated: bool,
+    ) -> None:
+        super().__init__(jobs)
+        self.config_timezone_authority = config_timezone_authority
+        self.config_timezone = config_timezone_authority[0]
+        self.inherited_owed_validated = inherited_owed_validated
+
+
 class CronService:
     """Background service for managing and executing scheduled jobs."""
 
@@ -2106,6 +2220,9 @@ class CronService:
         # mode this prevents.
         self._on_timer_running = False
         self._running = False
+        # Manual run_job calls remain valid before the first start. Once stop
+        # begins, admission stays closed until a later start is fully ready.
+        self._stopping = False
         # The event loop this service is bound to, captured in create()/start()
         # (the gateway's loop). _arm_timer() uses it to re-arm the timer THREAD-
         # SAFELY when it is reached OFF the loop — inside an asyncio.to_thread
@@ -2155,6 +2272,47 @@ class CronService:
         self._job_start_monotonic: dict[str, float] = {}  # job ID → monotonic start
         self._reaped_jobs: set[str] = set()  # job IDs killed by the reaper
         self._cancelled_jobs: set[str] = set()  # job IDs cancelled by the user
+        # job id -> in-process identity of the admitted run. Occurrence claims
+        # can legitimately be None, so they cannot also identify which run owns
+        # cleanup after a successor has reused the same job id.
+        self._run_tokens: dict[str, object] = {}
+        # job id -> token of a run whose confirmed durable handoff transferred
+        # both ordinary result and terminal state persistence to a replacement.
+        self._result_merge_relinquished_runs: dict[str, object] = {}
+        # job id -> persisted cron-expression occurrence claimed by the current
+        # execution. An explicit None freezes "no debt claimed" before a manual
+        # due-minute publication can update the shared job object. Cancel/reap/
+        # completion may clear only a non-None exact identity.
+        self._owed_fire_runs: dict[str, str | None] = {}
+        # job id -> run token whose cancel/reap bookkeeping is still pending.
+        # Timer and manual admission remain fenced through persistence, history,
+        # refresh, audit, and ownership cleanup.
+        self._terminal_settling: dict[str, object] = {}
+        # job id -> task owning the complete cancel/reap operation, including
+        # terminal fence retirement or publication of a retained retry owner.
+        # Shutdown joins these before consulting _terminal_retryable so it
+        # cannot miss a worker still blocked in session reset or persistence.
+        self._terminal_operations: dict[str, asyncio.Task[Any]] = {}
+        # job id -> terminal kind whose bounded exact-occurrence persistence
+        # exhausted. The same cancel/reap caller may retry under the retained
+        # token/fence; no unowned background task is created.
+        self._terminal_retryable: dict[str, str] = {}
+        # job id -> cron-expression boundary associated with the current run.
+        # Ordinary scheduled runs need it if a pruned install prevents launch;
+        # manual runs acquire one only when they mask a matching boundary.
+        self._run_occurrence_ids: dict[str, str] = {}
+        # Exact inherited occurrence -> the immutable (timezone, generation)
+        # authority used when that run captured it. The generation keeps an
+        # A -> B -> A publication distinct even though both endpoint names
+        # match; replacement-completion arbitration evaluates the occurrence
+        # under this captured timezone rather than the later live default.
+        self._run_occurrence_timezone_authorities: dict[tuple[str, str], tuple[str, int]] = {}
+        # Publication intent is queued before the worker-thread store write.
+        # A busy/unwritable store therefore leaves something for the next tick
+        # to retry, and the drained gateway is not quiesced until the write is
+        # known durable.
+        self._pending_owed_lock = threading.Lock()
+        self._pending_owed_fires: dict[str, str] = {}
         self._job_jitter: dict[str, float] = {}  # job ID → jitter seconds applied
         self._job_run_meta: dict[str, tuple[float, str]] = {}  # job_id → (start_time, trigger)
         # Where the loop-stall breaker looks for crash dumps. None = the data
@@ -2167,6 +2325,15 @@ class CronService:
         # a completed one-shot is always
         # eventually removed and can never re-fire in the meantime.
         self._pending_removals: set[str] = set()
+        # Jobs quiesced on THIS drained (pruned-install) process: launch
+        # attempts for them fail identically forever, so the due-scan skips
+        # them regardless of what a store reload says. A per-JOB-OBJECT
+        # enabled=False is not enough -- every tick's _sync() replaces
+        # self._jobs with fresh disk copies (enabled=True on disk by design,
+        # so the REPLACEMENT gateway retries), resurrecting the quiesce.
+        # Process-lifetime by intent: never persisted, never cleared -- this
+        # process can never launch again.
+        self._pruned_quiesced: set[str] = set()
         # True while a critical-posture episode is deferring scheduled
         # firings (see _on_timer). Log-throttle state only: the INFO line
         # fires once per deferral episode, not once per deferred tick.
@@ -2285,18 +2452,20 @@ class CronService:
         # off-loop re-arm during this service's lifetime self-heals to it.
         self._loop = asyncio.get_running_loop()
         await asyncio.to_thread(self._load)
-        self._running = True
         await self._history.rotate_all()
         # BEFORE the timer is armed: a job the previous gateway died running
         # has no last_run_ts for that run, so it is due again the moment the
         # timer fires. The breaker must have paused it by then or the boot
         # re-runs the crash.
         await asyncio.to_thread(self._apply_loop_stall_breaker)
+        self._running = True
+        self._stopping = False
         self._arm_timer()
         logger.info("Cron service started with %d jobs", len(self._jobs))
 
     async def stop(self) -> None:
-        """Stop the timer loop and cancel running jobs."""
+        """Stop local producers, then durably stabilize queued occurrence debt."""
+        self._stopping = True
         self._running = False
         if self._reaper_task:
             self._reaper_task.cancel()
@@ -2306,13 +2475,129 @@ class CronService:
                 pass
             self._reaper_task = None
         if self._timer_task:
-            self._timer_task.cancel()
+            timer_task = self._timer_task
             self._timer_task = None
-        for task in self._running_tasks.values():
+            timer_task.cancel()
+            if timer_task is not asyncio.current_task():
+                try:
+                    await timer_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        running_tasks = list(self._running_tasks.values())
+        for task in running_tasks:
             task.cancel()
-        if self._running_tasks:
-            await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
+        if running_tasks:
+            await asyncio.gather(*running_tasks, return_exceptions=True)
             self._running_tasks.clear()
+        await self._join_terminal_operations_for_shutdown()
+        terminal_failure: Exception | None = None
+        try:
+            await self._stabilize_terminal_retries_for_shutdown()
+        except Exception as exc:
+            terminal_failure = exc
+        try:
+            await self._stabilize_pending_owed_fires_for_shutdown()
+        except Exception as pending_failure:
+            if terminal_failure is None:
+                raise
+            raise terminal_failure from pending_failure
+        if terminal_failure is not None:
+            raise terminal_failure
+
+    async def _join_terminal_operations_for_shutdown(self) -> None:
+        """Join complete cancel/reap owners without ever awaiting this task."""
+        current = asyncio.current_task()
+        while True:
+            operations = {
+                task
+                for task in self._terminal_operations.values()
+                if task is not current and not task.done()
+            }
+            if not operations:
+                return
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in operations),
+                return_exceptions=True,
+            )
+
+    async def _stabilize_terminal_retries_for_shutdown(self) -> None:
+        """Boundedly settle retained terminal owners before shutdown returns."""
+        if not self._terminal_retryable:
+            return
+        failures: list[Exception] = []
+        for job_id, terminal in list(self._terminal_retryable.items()):
+            if self._terminal_retryable.get(job_id) != terminal:
+                continue
+            try:
+                if terminal == "cancel":
+                    await self.cancel(job_id)
+                    continue
+                if terminal != "reap":
+                    raise RuntimeError(
+                        f"cron {job_id} has unknown terminal retry owner {terminal!r}"
+                    )
+                job = next((item for item in self._jobs if item.id == job_id), None)
+                now_mono = time.monotonic()
+                wall_elapsed = time.time() - self._job_start_times.get(job_id, time.time())
+                elapsed = now_mono - self._job_start_monotonic.get(job_id, now_mono - wall_elapsed)
+                deadline = (
+                    max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS)
+                    if job
+                    else _JOB_TIMEOUT_SECS
+                ) + (_pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job))
+                await self._force_reap(job_id, elapsed, deadline)
+            except Exception as exc:
+                failures.append(exc)
+                logger.warning(
+                    "Cron shutdown could not settle retained %s operation for %s",
+                    terminal,
+                    job_id,
+                    exc_info=True,
+                )
+        if not self._terminal_retryable:
+            return
+        message = (
+            "Cron shutdown could not durably settle "
+            f"{len(self._terminal_retryable)} terminal operation(s)"
+        )
+        logger.error("%s; refusing to report clean cron shutdown", message)
+        raise RuntimeError(message) from (failures[0] if failures else None)
+
+    async def _stabilize_pending_owed_fires_for_shutdown(self) -> None:
+        """Drain debt queued by joined local producers, with a finite bound.
+
+        A save compares its captured pending identity after commit, deliberately
+        leaving a newer arrival queued. Repeating until the map is empty closes
+        that race after the timer and run tasks that can produce local debt have
+        been joined. A final read-only reconciliation resolves an atomic save
+        that committed before raising on the last attempt. If current debt still
+        exists only in memory, raise rather than report a clean cron shutdown.
+        """
+        for _attempt in range(_SHUTDOWN_OWED_DRAIN_ATTEMPTS):
+            with self._pending_owed_lock:
+                if not self._pending_owed_fires:
+                    return
+            await self._persist_pending_owed_fires()
+            with self._pending_owed_lock:
+                if not self._pending_owed_fires:
+                    return
+        try:
+            await asyncio.to_thread(self._reconcile_pending_owed_fires_locked)
+        except Exception:
+            logger.warning(
+                "Cron shutdown could not reconcile ambiguous owed-occurrence saves",
+                exc_info=True,
+            )
+        with self._pending_owed_lock:
+            remaining = len(self._pending_owed_fires)
+        if not remaining:
+            return
+        message = (
+            f"Cron shutdown could not durably hand off {remaining} owed occurrence "
+            f"publication(s) after {_SHUTDOWN_OWED_DRAIN_ATTEMPTS} attempts"
+        )
+        logger.error("%s; refusing to report clean cron shutdown", message)
+        raise RuntimeError(message)
 
     # ── Reaper ──
 
@@ -2383,19 +2668,319 @@ class CronService:
                 except Exception:
                     logger.exception("Reaper: failed to reap cron job %s", job_id)
 
+    def _clear_run_occurrence_timezone_authorities(self, job_id: str) -> None:
+        """Forget capture authority only for the run owning ``job_id``."""
+        self._run_occurrence_timezone_authorities = {
+            key: authority
+            for key, authority in self._run_occurrence_timezone_authorities.items()
+            if key[0] != job_id
+        }
+
+    def _capture_run_occurrence_timezone_authority(
+        self,
+        job: CronJob,
+        occurrence_id: str | None,
+        authority: tuple[str, int] | None = None,
+    ) -> None:
+        """Freeze inherited timezone authority for one exact run occurrence."""
+        if job.timezone or occurrence_id is None:
+            return
+        self._run_occurrence_timezone_authorities.setdefault(
+            (job.id, occurrence_id),
+            _published_timezone_authority() if authority is None else authority,
+        )
+
+    def _mint_run_token(self, job_id: str) -> object:
+        """Replace the job's run identity and clear prior outcome markers."""
+        run_token = object()
+        self._clear_run_occurrence_timezone_authorities(job_id)
+        self._run_tokens[job_id] = run_token
+        self._result_merge_relinquished_runs.pop(job_id, None)
+        self._terminal_retryable.pop(job_id, None)
+        self._reaped_jobs.discard(job_id)
+        self._cancelled_jobs.discard(job_id)
+        return run_token
+
+    def _ensure_run_token(self, job_id: str) -> object:
+        """Return the admitted run's identity, minting one for direct callers."""
+        run_token = self._run_tokens.get(job_id)
+        if run_token is None:
+            run_token = object()
+            self._clear_run_occurrence_timezone_authorities(job_id)
+            self._run_tokens[job_id] = run_token
+            self._result_merge_relinquished_runs.pop(job_id, None)
+        return run_token
+
+    def relinquish_run_result_merges(self, job_id: str) -> None:
+        """Transfer this run's persistent result merges to its replacement."""
+        run_token = self._run_tokens.get(job_id)
+        if run_token is not None:
+            self._result_merge_relinquished_runs[job_id] = run_token
+
+    def _reflect_terminal_state(
+        self,
+        job: CronJob,
+        run_token: object,
+        *,
+        last_error: str,
+        last_run_ts: float,
+    ) -> None:
+        """Update hot terminal fields only while this run owns their persistence."""
+        if self._result_merge_relinquished_runs.get(job.id) is run_token:
+            return
+        job.last_status = "error"
+        job.last_error = last_error
+        job.last_run_ts = last_run_ts
+
+    def _retire_run_ownership(
+        self, job_id: str, run_token: object, *, terminal_owner: bool = False
+    ) -> bool:
+        """Retire only the run identity this cleanup owns."""
+        if not terminal_owner and self._terminal_settling.get(job_id) is run_token:
+            return False
+        owns_run = self._run_tokens.get(job_id) is run_token
+        if owns_run:
+            self._run_tokens.pop(job_id, None)
+            self._result_merge_relinquished_runs.pop(job_id, None)
+            self._terminal_retryable.pop(job_id, None)
+            self._owed_fire_runs.pop(job_id, None)
+            self._run_occurrence_ids.pop(job_id, None)
+            self._clear_run_occurrence_timezone_authorities(job_id)
+        if terminal_owner and self._terminal_settling.get(job_id) is run_token:
+            self._terminal_settling.pop(job_id, None)
+        return owns_run
+
+    async def _await_result_merge(self, job: CronJob) -> bool:
+        """Settle a result off-loop before releasing the admitted run.
+
+        A completed payload that claimed durable debt must not run again because
+        its result save hit transient contention or I/O failure. The original
+        run task/token remains the sole retry owner and sleeps between attempts;
+        cancellation is deferred. If cancel/reap installs its terminal fence,
+        this owner yields so that exact terminal path can settle the occurrence.
+        Non-owed and never-started merges retain their one-attempt best-effort
+        behavior.
+        """
+        claimed = getattr(job, "_claimed_owed_fire", None)
+        preserve = bool(getattr(job, "_preserve_claimed_owed_fire", False))
+        if preserve and claimed is not None:
+            # stop() cancellation has no terminal owner. Queue its exact claim
+            # before the result worker's first fallible store-lock acquisition,
+            # so contention cannot retire process-only debt with the run token.
+            self._queue_owed_occurrence(job.id, claimed)
+        settlement_required = bool(
+            claimed is not None
+            and not preserve
+            and not job.run_never_started
+            and not job.keep_overdue
+        )
+        caller_cancelled = False
+        retry_delay = _TERMINAL_OWED_CLEAR_RETRY_DELAYS[0]
+        while True:
+            run_token = self._run_tokens.get(job.id)
+            if (
+                settlement_required
+                and run_token is not None
+                and self._terminal_settling.get(job.id) is run_token
+            ):
+                return True
+            operation = asyncio.create_task(asyncio.to_thread(self._merge_job_result, job))
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    caller_cancelled = True
+                except Exception:
+                    break
+            try:
+                operation.result()
+                return caller_cancelled
+            except Exception as exc:
+                retryable = isinstance(
+                    exc,
+                    (
+                        CronStoreBusy,
+                        CronStoreUnreadable,
+                        OSError,
+                        _ResultOccurrenceUnsettled,
+                    ),
+                )
+                if not settlement_required or not retryable:
+                    logger.exception("Failed to merge result for job '%s'", job.name)
+                    return caller_cancelled
+                logger.warning(
+                    "Cron result occurrence settlement for %s failed; retaining "
+                    "run admission and retrying in %.2fs",
+                    job.id,
+                    retry_delay,
+                    exc_info=True,
+                )
+            try:
+                await asyncio.sleep(retry_delay)
+            except asyncio.CancelledError:
+                caller_cancelled = True
+            retry_delay = min(retry_delay * 2, _RESULT_OWED_CLEAR_RETRY_MAX_DELAY)
+
+    async def _await_terminal_operation(self, job_id: str, operation: "asyncio.Task[Any]") -> Any:
+        """Delay caller cancellation until terminal bookkeeping completes."""
+        caller_cancelled = False
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                caller_cancelled = True
+            except Exception:
+                if not caller_cancelled:
+                    raise
+                break
+        try:
+            result = operation.result()
+        except Exception:
+            if not caller_cancelled:
+                raise
+            logger.exception(
+                "Cron terminal operation failed after caller cancellation for %s",
+                job_id,
+            )
+            raise asyncio.CancelledError from None
+        if caller_cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _merge_terminal_state_fenced(
+        self,
+        job_id: str,
+        run_token: object,
+        *,
+        last_status: str,
+        last_error: str,
+        last_run_ts: float,
+        claimed_owed_fire: str | None,
+    ) -> None:
+        """Persist terminal state unless this run transferred merge ownership."""
+        if self._result_merge_relinquished_runs.get(job_id) is run_token:
+            return
+        attempts = len(_TERMINAL_OWED_CLEAR_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                await asyncio.to_thread(
+                    self._merge_terminal_state_locked,
+                    job_id,
+                    last_status=last_status,
+                    last_error=last_error,
+                    last_run_ts=last_run_ts,
+                    claimed_owed_fire=claimed_owed_fire,
+                )
+                return
+            except _TerminalOccurrenceUnsettled:
+                if attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(_TERMINAL_OWED_CLEAR_RETRY_DELAYS[attempt])
+
+    async def _cancel_run_task_and_wait(
+        self,
+        job_id: str,
+        called_from_run: bool,
+    ) -> None:
+        """Cancel an isolated run and wait for its handoff decision to settle.
+
+        The terminal owner has already installed ``_terminal_settling`` before
+        calling this helper, so the isolated run's finally cannot retire the
+        token while it drains a submitted pruned-install persistence worker.
+        Waiting here keeps hot reflection and the locked terminal merge behind
+        that worker's relinquish-or-fallback decision. A terminal call made by
+        the run itself must not await its caller through the spawned bookkeeping
+        task; no handoff can be concurrently pending on that same call stack.
+        """
+        task = self._running_tasks.pop(job_id, None)
+        if task is None or task is asyncio.current_task() or called_from_run:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug(
+                "Cron run %s failed while terminal cleanup awaited it",
+                job_id,
+                exc_info=True,
+            )
+
     async def _force_reap(
         self, job_id: str, elapsed: float, deadline: int = _JOB_TIMEOUT_SECS
     ) -> None:
-        """Kill a cron job's session process and cancel its task."""
+        """Kill a cron run and defer caller cancellation through bookkeeping."""
+        retrying = self._terminal_retryable.get(job_id) == "reap"
+        if job_id in self._terminal_settling and not retrying:
+            return
+        if retrying:
+            run_token = self._terminal_settling[job_id]
+            self._terminal_retryable.pop(job_id, None)
+        else:
+            run_token = self._ensure_run_token(job_id)
+            self._terminal_settling[job_id] = run_token
+        self._reaped_jobs.add(job_id)
+        called_from_run = _active_cron_run_id.get() == job_id
+        operation = asyncio.create_task(
+            self._force_reap_terminal_operation(
+                job_id,
+                elapsed,
+                deadline,
+                run_token,
+                called_from_run,
+            )
+        )
+        self._terminal_operations[job_id] = operation
+        try:
+            await self._await_terminal_operation(job_id, operation)
+        finally:
+            if self._terminal_operations.get(job_id) is operation:
+                self._terminal_operations.pop(job_id, None)
+
+    async def _force_reap_terminal_operation(
+        self,
+        job_id: str,
+        elapsed: float,
+        deadline: int,
+        run_token: object,
+        called_from_run: bool,
+    ) -> None:
+        """Own force-reap work and its terminal fence through one tracked task."""
+        unsettled = False
+        try:
+            await self._force_reap_owned(
+                job_id,
+                elapsed,
+                deadline,
+                run_token,
+                called_from_run,
+            )
+        except _TerminalOccurrenceUnsettled:
+            unsettled = True
+            self._terminal_retryable[job_id] = "reap"
+            raise
+        finally:
+            if not unsettled:
+                self._retire_run_ownership(job_id, run_token, terminal_owner=True)
+
+    async def _force_reap_owned(
+        self,
+        job_id: str,
+        elapsed: float,
+        deadline: int,
+        run_token: object,
+        called_from_run: bool,
+    ) -> None:
+        """Run force-reap persistence, history, refresh, and audit."""
         # use the active per-run session key if registered;
         # fall back to the stable key for persistent or legacy callers.
         session_key = self.get_active_session_key(job_id) or f"cron:{job_id}"
-        self._reaped_jobs.add(job_id)
-        meta = self._job_run_meta.pop(job_id, None)
+        claimed_owed_fire = self._owed_fire_runs.get(job_id)
+        meta = self._job_run_meta.get(job_id)
         reap_started_at = meta[0] if meta else time.time() - elapsed
         reap_trigger = meta[1] if meta else "scheduled"
-        self._job_start_times.pop(job_id, None)  # prevent repeated reaping
-        self._job_start_monotonic.pop(job_id, None)
         # Kill the session process first.
         if self._sessions:
             try:
@@ -2412,13 +2997,10 @@ class CronService:
                 logger.exception("Reaper: reset failed for cron %s, attempting SIGKILL", job_id)
                 await self._sigkill_session(session_key)
 
-        # Cancel the asyncio task and clean up tracking state directly.
-        # Don't rely on _run_job_isolated's finally — the reaper exists for
-        # cases where the normal path is stuck (idempotent with finally).
-        task = self._running_tasks.pop(job_id, None)
-        if task and not task.done():
-            task.cancel()
-        self._executing.discard(job_id)
+        # Cancel the asyncio task directly. Admission/watchdog/provenance state
+        # remains owned by this terminal fence until exact-occurrence persistence
+        # settles below; an exhausted retry must stay visible to the reaper.
+        await self._cancel_run_task_and_wait(job_id, called_from_run)
 
         # Update job state and persist. The persist goes through the locked
         # worker-thread merge helper (offloaded via asyncio.to_thread) — NOT a
@@ -2427,25 +3009,39 @@ class CronService:
         # list, and its bounded lock spin never parks the event loop this
         # coroutine runs on. See _merge_terminal_state_locked.
         job = next((j for j in self._jobs if j.id == job_id), None)
+        last_error = f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
+        last_run_ts = time.time()
         if job:
-            last_error = f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
-            last_run_ts = time.time()
-            # Reflect into the in-memory snapshot for the history record below
-            # and any immediate reader; the authoritative persist is the locked
-            # merge, which re-derives the disk copy after _sync().
-            job.last_status = "error"
-            job.last_error = last_error
-            job.last_run_ts = last_run_ts
-            try:
-                await asyncio.to_thread(
-                    self._merge_terminal_state_locked,
-                    job_id,
-                    last_status="error",
-                    last_error=last_error,
-                    last_run_ts=last_run_ts,
-                )
-            except Exception:
-                logger.exception("Reaper: failed to persist state for cron %s", job_id)
+            # Reflect only while this run still owns runtime persistence. A
+            # confirmed handoff may have reloaded replacement-owned state into
+            # this cache; mutating it would let a later unrelated save publish
+            # the stale reap outcome even though the direct merge is fenced.
+            self._reflect_terminal_state(
+                job,
+                run_token,
+                last_error=last_error,
+                last_run_ts=last_run_ts,
+            )
+        try:
+            await self._merge_terminal_state_fenced(
+                job_id,
+                run_token,
+                last_status="error",
+                last_error=last_error,
+                last_run_ts=last_run_ts,
+                claimed_owed_fire=claimed_owed_fire,
+            )
+        except _TerminalOccurrenceUnsettled:
+            raise
+        except Exception:
+            logger.exception("Reaper: failed to persist state for cron %s", job_id)
+        self._job_run_meta.pop(job_id, None)
+        self._job_start_times.pop(job_id, None)
+        self._job_start_monotonic.pop(job_id, None)
+        self._job_jitter.pop(job_id, None)
+        self._executing.discard(job_id)
+        job = next((j for j in self._jobs if j.id == job_id), None)
+        if job:
             # Record timeout in history
             try:
                 record = CronRunRecord(
@@ -2455,8 +3051,8 @@ class CronService:
                     finished_at=time.time(),
                     duration_ms=int(elapsed * 1000),
                     status="timeout",
-                    summary=job.last_error or "",
-                    error=job.last_error or "",
+                    summary=last_error,
+                    error=last_error,
                 )
                 await self._history.append(record)
                 if self._push_refresh:
@@ -2578,26 +3174,103 @@ class CronService:
     # ── User-initiated cancellation ──
 
     async def cancel(self, job_id: str) -> bool:
-        """Cancel a running cron execution (user-initiated).
-
-        Kills the sandboxed subprocess (script/command crons) or the kiro-cli
-        session (agent crons), cancels the asyncio task, records a
-        ``cancelled`` history entry, and leaves ``consecutive_failures``
-        untouched. Returns True when a running execution was found.
-        """
-        if job_id not in self._executing:
-            return False
-        logger.info("Cancel: user-initiated cancellation of cron job %s", job_id)
+        """Cancel a run and defer caller cancellation through bookkeeping."""
+        retrying = self._terminal_retryable.get(job_id) == "cancel"
+        if retrying:
+            run_token = self._terminal_settling[job_id]
+            self._terminal_retryable.pop(job_id, None)
+        else:
+            if job_id not in self._executing or job_id in self._terminal_settling:
+                return False
+            run_token = self._ensure_run_token(job_id)
+            self._terminal_settling[job_id] = run_token
         self._cancelled_jobs.add(job_id)
-        meta = self._job_run_meta.pop(job_id, None)
+        called_from_run = _active_cron_run_id.get() == job_id
+        operation = asyncio.create_task(
+            self._cancel_terminal_operation(job_id, run_token, called_from_run)
+        )
+        self._terminal_operations[job_id] = operation
+        try:
+            return bool(await self._await_terminal_operation(job_id, operation))
+        finally:
+            if self._terminal_operations.get(job_id) is operation:
+                self._terminal_operations.pop(job_id, None)
+
+    async def _cancel_terminal_operation(
+        self,
+        job_id: str,
+        run_token: object,
+        called_from_run: bool,
+    ) -> bool:
+        """Own cancel work and its terminal fence through one tracked task."""
+        terminal_worker_completed = False
+        unsettled = False
+        try:
+            result = await self._cancel_owned(job_id, run_token, called_from_run)
+            terminal_worker_completed = True
+            return result
+        except _TerminalOccurrenceUnsettled:
+            unsettled = True
+            # The subprocess/run is already terminal, but its exact owed
+            # occurrence is still durable. Keep the token-valued admission
+            # fence and metadata for an explicit cancel retry; history/audit
+            # have not run, so no false success escaped.
+            self._terminal_retryable[job_id] = "cancel"
+            raise
+        finally:
+            if not unsettled:
+                handed_back = False
+                if not terminal_worker_completed and job_id in self._executing:
+                    run_task = self._running_tasks.get(job_id)
+                    if run_task is not None and not run_task.done():
+                        # The terminal worker failed before it could cancel/await
+                        # the isolated run. Remove only the terminal claim and its
+                        # service-side cancellation marker; the unchanged run token
+                        # stays with the live task, whose ordinary token-safe finally
+                        # remains the sole cleanup owner.
+                        if self._terminal_settling.get(job_id) is run_token:
+                            self._terminal_settling.pop(job_id, None)
+                        self._cancelled_jobs.discard(job_id)
+                        handed_back = True
+                if not handed_back:
+                    # Success, caller cancellation after a drained worker, a race in
+                    # which the run already cleaned itself, or an inconsistent
+                    # executing marker with no live task: terminal ownership ends
+                    # here and no stale admission fence survives. A failed worker
+                    # may race a run that completed under the terminal fence; that
+                    # run deliberately left its metadata for this owner, so consume
+                    # it here rather than leaking dead watchdog/provenance state.
+                    if not terminal_worker_completed:
+                        self._job_run_meta.pop(job_id, None)
+                        self._job_start_times.pop(job_id, None)
+                        self._job_start_monotonic.pop(job_id, None)
+                        self._job_jitter.pop(job_id, None)
+                        self._cancelled_jobs.discard(job_id)
+                        self._executing.discard(job_id)
+                    self._retire_run_ownership(job_id, run_token, terminal_owner=True)
+
+    async def _cancel_owned(
+        self,
+        job_id: str,
+        run_token: object,
+        called_from_run: bool,
+    ) -> bool:
+        """Run cancel persistence, history, refresh, and audit."""
+        logger.info("Cancel: user-initiated cancellation of cron job %s", job_id)
+        had_start_marker = job_id in self._job_start_times
+        meta = self._job_run_meta.get(job_id)
         started_at = meta[0] if meta else self._job_start_times.get(job_id, time.time())
         trigger = meta[1] if meta else "scheduled"
         elapsed = time.time() - started_at
-        self._job_start_times.pop(job_id, None)
-        self._job_start_monotonic.pop(job_id, None)
-        self._job_jitter.pop(job_id, None)
 
         job = next((j for j in self._jobs if j.id == job_id), None)
+        # Before the isolated coroutine starts there is no run marker yet, so
+        # the claimed job's debt is authoritative. After its start stamp exists,
+        # only _owed_fire_runs describes this execution; a refreshed disk object's
+        # debt may belong to another gateway and must not be consumed here.
+        claimed_owed_fire = self._owed_fire_runs.get(job_id)
+        if job_id not in self._owed_fire_runs and job and not had_start_marker:
+            claimed_owed_fire = job.owed_occurrence()
 
         # 1. Script/command crons: SIGTERM the sandboxed subprocess group.
         # Offloaded: kill_running_process performs blocking kernel calls.
@@ -2623,36 +3296,50 @@ class CronService:
                 logger.exception("Cancel: reset failed for cron %s, attempting SIGKILL", job_id)
                 await self._sigkill_session(session_key)
 
-        # 3. Cancel the asyncio task and clean up tracking state directly
-        # (idempotent with _run_job_isolated's finally).
-        task = self._running_tasks.pop(job_id, None)
-        if task and not task.done():
-            task.cancel()
-        self._executing.discard(job_id)
+        # 3. Cancel the asyncio task. Metadata and admission remain terminal-
+        # owned until exact-occurrence persistence settles below; an exhausted
+        # retry must stay fenced and retain its trigger/watchdog provenance.
+        await self._cancel_run_task_and_wait(job_id, called_from_run)
 
         # 4. Update job state, persist, and record history. The persist goes
         # through the locked worker-thread merge helper (offloaded via
         # asyncio.to_thread) — NOT a bare on-loop self._save() — so it re-syncs
         # under the store lock and cannot clobber a concurrent add/update
         # worker; the bounded spin never parks this loop-side coroutine.
+        last_error = f"Cancelled by user after {int(elapsed)}s"
+        last_run_ts = time.time()
         if job:
-            last_error = f"Cancelled by user after {int(elapsed)}s"
-            last_run_ts = time.time()
-            # In-memory snapshot for the history record / immediate readers;
-            # the locked merge is authoritative.
-            job.last_status = "error"
-            job.last_error = last_error
-            job.last_run_ts = last_run_ts
-            try:
-                await asyncio.to_thread(
-                    self._merge_terminal_state_locked,
-                    job_id,
-                    last_status="error",
-                    last_error=last_error,
-                    last_run_ts=last_run_ts,
-                )
-            except Exception:
-                logger.exception("Cancel: failed to persist state for cron %s", job_id)
+            # Reflect only while this run still owns runtime persistence. A
+            # confirmed handoff may have reloaded replacement-owned state into
+            # this cache, which must remain safe for later unrelated saves.
+            self._reflect_terminal_state(
+                job,
+                run_token,
+                last_error=last_error,
+                last_run_ts=last_run_ts,
+            )
+        try:
+            await self._merge_terminal_state_fenced(
+                job_id,
+                run_token,
+                last_status="error",
+                last_error=last_error,
+                last_run_ts=last_run_ts,
+                claimed_owed_fire=claimed_owed_fire,
+            )
+        except _TerminalOccurrenceUnsettled:
+            raise
+        except Exception:
+            logger.exception("Cancel: failed to persist state for cron %s", job_id)
+        self._job_run_meta.pop(job_id, None)
+        self._job_start_times.pop(job_id, None)
+        self._job_start_monotonic.pop(job_id, None)
+        self._job_jitter.pop(job_id, None)
+        self._executing.discard(job_id)
+        # The locked merge may have restored a job hidden by an earlier
+        # unreadable load; re-resolve before deciding whether to write history.
+        job = next((j for j in self._jobs if j.id == job_id), None)
+        if job:
             try:
                 record = CronRunRecord(
                     job_id=job_id,
@@ -2661,8 +3348,8 @@ class CronService:
                     finished_at=time.time(),
                     duration_ms=int(elapsed * 1000),
                     status="cancelled",
-                    summary=job.last_error or "",
-                    error=job.last_error or "",
+                    summary=last_error,
+                    error=last_error,
                 )
                 await self._history.append(record)
                 if self._push_refresh:
@@ -3405,6 +4092,11 @@ class CronService:
                             f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
                             f"got {_eff_secs}"
                         )
+                calendar_before = (
+                    job.schedule,
+                    job.timezone,
+                    tuple(job.skip_dates),
+                )
                 if "name" in kwargs and kwargs["name"]:
                     job.name = kwargs["name"]
                 if "message" in kwargs and kwargs["message"]:
@@ -3505,7 +4197,43 @@ class CronService:
                     job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
                 elif "every_secs" in kwargs and kwargs["every_secs"]:
                     job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
-                self._save()
+                schedule_authority_updated = calendar_before != (
+                    job.schedule,
+                    job.timezone,
+                    tuple(job.skip_dates),
+                )
+                if schedule_authority_updated:
+                    durable_occurrence = job.owed_occurrence()
+                    if durable_occurrence is not None and not self._occurrence_matches_calendar(
+                        job, durable_occurrence
+                    ):
+                        # Only canonical UTC-minute debt can reach False here.
+                        # Legacy/future-format identities are retained by the
+                        # validator rather than guessed at. Validation runs
+                        # after every accepted ACTUAL calendar change but before
+                        # this transaction's single save; pause and last-run are
+                        # dispatch/completion authority, not calendar validity.
+                        job.set_owed_occurrence(None)
+                try:
+                    self._save()
+                except BaseException:
+                    if schedule_authority_updated:
+                        # _save may fail before OR after atomic rename. Force an
+                        # authoritative read even when the old fingerprint still
+                        # matches: pre-commit failure restores the old calendar
+                        # and debt, while commit-then-raise retains the committed
+                        # update. If the read itself fails, the reset still makes
+                        # the next sync retry instead of preserving failed hot
+                        # mutations as authoritative.
+                        self._reset_fingerprint()
+                        try:
+                            self._load()
+                        except BaseException:
+                            logger.exception(
+                                "Failed to recover cron %s after update save error",
+                                job_id,
+                            )
+                    raise
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None
@@ -3764,6 +4492,420 @@ class CronService:
         # process constructs the log (trust-dir + HMAC key read), which must
         # never extend the store-lock hold past the CronStoreBusy timeout.
         return sorted(to_remove)
+
+    @staticmethod
+    def _newer_owed_occurrence(current: str | None, candidate: str) -> str:
+        """Choose one debt marker without replacing a newer cron boundary."""
+        if current is None or current == candidate:
+            return candidate
+        if current == _LEGACY_OWED_FIRE_ID:
+            return candidate
+        if candidate == _LEGACY_OWED_FIRE_ID:
+            return current
+        try:
+            return candidate if int(candidate) > int(current) else current
+        except ValueError:
+            # Unknown persisted identities are retained rather than guessed at.
+            return current
+
+    def _queue_owed_occurrence(self, job_id: str, occurrence_id: str) -> None:
+        """Retain the newest publication intent until a locked save settles it."""
+        with self._pending_owed_lock:
+            current = self._pending_owed_fires.get(job_id)
+            self._pending_owed_fires[job_id] = self._newer_owed_occurrence(current, occurrence_id)
+
+    @staticmethod
+    def _occurrence_matches_calendar(
+        job: CronJob,
+        occurrence_id: str,
+        *,
+        default_timezone: str | None = None,
+    ) -> bool:
+        """Whether an occurrence identity belongs to the job's current calendar.
+
+        Canonical UTC minutes are checked against schedule, timezone, and skip
+        dates only. Enabled/pause and ``last_run_ts`` are intentionally absent:
+        they govern dispatch/completion, not whether a durable occurrence was
+        minted by this calendar. Unknown identity formats stay fail-closed.
+        """
+        try:
+            occurrence_minute = int(occurrence_id)
+        except ValueError:
+            return True
+        if str(occurrence_minute) != occurrence_id:
+            return True
+        try:
+            return (
+                CronService._cron_occurrence_at(
+                    job,
+                    occurrence_minute * 60,
+                    ignore_last_run=True,
+                    default_timezone=default_timezone,
+                )
+                == occurrence_id
+            )
+        except (OSError, OverflowError, ValueError):
+            return True
+
+    def _restore_inherited_timezone_debt_locked(
+        self,
+        cleared: list[tuple[CronJob, str]],
+    ) -> None:
+        """Restore a stale clear without overwriting completion or newer debt."""
+        by_id = {job.id: job for job in self._jobs}
+        changed = False
+        for occurrence_job, occurrence_id in cleared:
+            target = by_id.get(occurrence_job.id)
+            if target is None or self._target_completed_scheduled_occurrence(
+                target,
+                occurrence_job,
+                occurrence_id,
+            ):
+                continue
+            prior = target.owed_occurrence()
+            restored = self._newer_owed_occurrence(prior, occurrence_id)
+            if restored != prior:
+                target.set_owed_occurrence(restored)
+                changed = True
+        if not changed:
+            return
+        try:
+            self._save()
+        except BaseException:
+            # Resolve a commit-then-raise before deciding which exact
+            # occurrences still need the ordinary pending-publication drain.
+            self._reset_fingerprint()
+            self._load()
+            if self._load_failed:
+                for occurrence_job, occurrence_id in cleared:
+                    self._queue_owed_occurrence(occurrence_job.id, occurrence_id)
+                raise
+            by_id = {job.id: job for job in self._jobs}
+            unsettled = False
+            for occurrence_job, occurrence_id in cleared:
+                target = by_id.get(occurrence_job.id)
+                if target is None or self._target_completed_scheduled_occurrence(
+                    target,
+                    occurrence_job,
+                    occurrence_id,
+                ):
+                    continue
+                durable = target.owed_occurrence()
+                if (
+                    durable is not None
+                    and self._newer_owed_occurrence(durable, occurrence_id) == durable
+                ):
+                    continue
+                self._queue_owed_occurrence(occurrence_job.id, occurrence_id)
+                unsettled = True
+            if unsettled:
+                raise
+
+    def _revalidate_inherited_timezone_debt_locked(
+        self,
+        config_timezone_authority: tuple[str, int],
+    ) -> tuple[str, int] | None:
+        """Clear inherited debt only under stable publication authority."""
+        if self._load_failed:
+            return None
+        candidate_authority = config_timezone_authority
+        seen_timezones = {candidate_authority[0]}
+        cleared: list[tuple[CronJob, str]] = []
+        for _attempt in range(3):
+            candidate_timezone = candidate_authority[0]
+            cleared = []
+            for job in self._jobs:
+                occurrence_id = job.owed_occurrence()
+                if job.timezone or occurrence_id is None:
+                    continue
+                if self._occurrence_matches_calendar(
+                    job,
+                    occurrence_id,
+                    default_timezone=candidate_timezone,
+                ):
+                    continue
+                cleared.append((job, occurrence_id))
+            current_authority = _published_timezone_authority()
+            if current_authority == candidate_authority:
+                break
+            if current_authority[0] in seen_timezones:
+                # A repeated value with another generation is an ABA
+                # publication, not stable authority for destructive clearing.
+                return None
+            seen_timezones.add(current_authority[0])
+            candidate_authority = current_authority
+        else:
+            # Continuous publication churn has no stable destructive authority.
+            # Preserve debt and let the next timer tick retry.
+            return None
+
+        if not cleared:
+            return candidate_authority
+        for job, _occurrence_id in cleared:
+            job.set_owed_occurrence(None)
+        try:
+            self._save()
+        except BaseException:
+            # The atomic replace may have committed before the reported error.
+            # Reload authoritative bytes: exact old debt means pre-commit
+            # failure, while a clear/replacement/newer identity covered it.
+            self._reset_fingerprint()
+            self._load()
+            if self._load_failed:
+                raise
+            by_id = {job.id: job for job in self._jobs}
+            if any(
+                (target := by_id.get(job.id)) is not None
+                and target.owed_occurrence() == occurrence_id
+                for job, occurrence_id in cleared
+            ):
+                raise
+        if _published_timezone_authority() != candidate_authority:
+            self._restore_inherited_timezone_debt_locked(cleared)
+            return None
+        return candidate_authority
+
+    def _queued_occurrence_is_current(
+        self, job: CronJob, occurrence_id: str, *, ignore_last_run: bool = False
+    ) -> bool:
+        """Whether a concrete queued minute is still owed by fresh job state.
+
+        Legacy and future-format identities cannot be reconstructed safely, so
+        retain them. Canonical UTC-minute identities are published only when the
+        freshly synced job is still enabled and its current calendar fields and
+        completion stamp all agree that the minute remains unserved. An inherited
+        occurrence captured by this run keeps its exact capture-time timezone;
+        uncaptured identities continue to use the live published default.
+        """
+        try:
+            occurrence_minute = int(occurrence_id)
+        except ValueError:
+            return True
+        if str(occurrence_minute) != occurrence_id:
+            return True
+        if not job.enabled:
+            return False
+        try:
+            if (
+                not ignore_last_run
+                and job.last_run_ts
+                and int(job.last_run_ts) // 60 >= occurrence_minute
+            ):
+                return False
+            authority = self._run_occurrence_timezone_authorities.get((job.id, occurrence_id))
+            return self._occurrence_matches_calendar(
+                job,
+                occurrence_id,
+                default_timezone=authority[0] if authority is not None else None,
+            )
+        except (OSError, OverflowError, ValueError):
+            # An identity outside datetime's platform range is not one this
+            # scheduler could have minted. Preserve it as an unknown format
+            # rather than guessing that it is obsolete.
+            return True
+
+    def _drain_pending_owed_fires_locked(self, only_job_id: str | None = None) -> set[str]:
+        """Persist queued occurrence publications. Caller MUST hold the store lock.
+
+        ``only_job_id`` confines a result-merge arbitration to its own job;
+        timer/publication drains retain the all-pending default.
+        """
+        if self._load_failed:
+            return set()
+        with self._pending_owed_lock:
+            if only_job_id is None:
+                pending = dict(self._pending_owed_fires)
+            else:
+                occurrence_id = self._pending_owed_fires.get(only_job_id)
+                pending = {only_job_id: occurrence_id} if occurrence_id is not None else {}
+        if not pending:
+            return set()
+
+        by_id = {job.id: job for job in self._jobs}
+        mutated_owed_fires: list[tuple[CronJob, str | None]] = []
+        for job_id, occurrence_id in pending.items():
+            target = by_id.get(job_id)
+            if target is None:
+                continue
+            # The queued marker came from a run object's older snapshot. The
+            # locked sync above is authoritative for pause, schedule, timezone,
+            # skip-date and last-run changes made while persistence was queued.
+            # Retire an obsolete intent without touching debt a sibling already
+            # persisted; legacy/unknown markers remain fail-safe.
+            if not self._queued_occurrence_is_current(target, occurrence_id):
+                continue
+            prior_owed_fire = target.owed_occurrence()
+            selected = self._newer_owed_occurrence(prior_owed_fire, occurrence_id)
+            if selected != prior_owed_fire:
+                mutated_owed_fires.append((target, prior_owed_fire))
+                target.set_owed_occurrence(selected)
+        if mutated_owed_fires:
+            # The queue is cleared only after this returns, so every exception
+            # leaves the exact desired occurrence available for a later tick.
+            try:
+                self._save()
+            except BaseException:
+                # _save may fail before OR after its atomic rename. Restore the
+                # hot scheduler view immediately, then force the next locked sync
+                # to reload and discover which side reached disk.
+                for target, prior_owed_fire in mutated_owed_fires:
+                    if any(current is target for current in self._jobs):
+                        target.set_owed_occurrence(prior_owed_fire)
+                self._reset_fingerprint()
+                raise
+
+        settled = set(pending)
+        with self._pending_owed_lock:
+            for job_id, occurrence_id in pending.items():
+                if self._pending_owed_fires.get(job_id) == occurrence_id:
+                    self._pending_owed_fires.pop(job_id, None)
+        return settled
+
+    def _owed_publication_is_covered(self, target: CronJob | None, occurrence_id: str) -> bool:
+        """Whether fresh store authority makes a queued publication redundant."""
+        if target is None or not self._queued_occurrence_is_current(target, occurrence_id):
+            return True
+        durable = target.owed_occurrence()
+        return (
+            durable is not None and self._newer_owed_occurrence(durable, occurrence_id) == durable
+        )
+
+    def _reconcile_pending_owed_fires_locked(self) -> set[str]:
+        """Retire pending publications already covered by fresh durable state."""
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                return set()
+            with self._pending_owed_lock:
+                pending = dict(self._pending_owed_fires)
+            by_id = {job.id: job for job in self._jobs}
+            covered = {
+                job_id
+                for job_id, occurrence_id in pending.items()
+                if self._owed_publication_is_covered(by_id.get(job_id), occurrence_id)
+            }
+            with self._pending_owed_lock:
+                for job_id in covered:
+                    if self._pending_owed_fires.get(job_id) == pending[job_id]:
+                        self._pending_owed_fires.pop(job_id, None)
+            return covered
+
+    def _ambiguous_owed_occurrence_is_covered_locked(self, job_id: str, occurrence_id: str) -> bool:
+        """Resolve a failed publication whose atomic save may have committed."""
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                return False
+            target = next((job for job in self._jobs if job.id == job_id), None)
+            with self._pending_owed_lock:
+                required = self._pending_owed_fires.get(job_id, occurrence_id)
+            covered = self._owed_publication_is_covered(target, required)
+            if covered:
+                with self._pending_owed_lock:
+                    if self._pending_owed_fires.get(job_id) == required:
+                        self._pending_owed_fires.pop(job_id, None)
+            return covered
+
+    def _flush_pending_owed_fires_locked(self) -> set[str]:
+        """Refresh and persist owed publications in one worker-thread transaction."""
+        with self._file_lock():
+            self._sync()
+            return self._drain_pending_owed_fires_locked()
+
+    async def _persist_pending_owed_fires(self) -> set[str]:
+        """Try queued publications off-loop, retaining them on every failure."""
+        try:
+            return await asyncio.to_thread(self._flush_pending_owed_fires_locked)
+        except Exception:
+            logger.warning("Cron owed-occurrence publication deferred", exc_info=True)
+            return set()
+
+    async def persist_owed_occurrence(self, job_id: str, occurrence_id: str) -> bool:
+        """Publish one occurrence durably before a drained gateway quiesces it."""
+        self._queue_owed_occurrence(job_id, occurrence_id)
+        if job_id in await self._persist_pending_owed_fires():
+            return True
+        try:
+            return await asyncio.to_thread(
+                self._ambiguous_owed_occurrence_is_covered_locked,
+                job_id,
+                occurrence_id,
+            )
+        except Exception:
+            logger.warning(
+                "Cron owed-occurrence ambiguous publication check deferred",
+                exc_info=True,
+            )
+            return False
+
+    def occurrence_for_pruned_launch(self, job: CronJob, now: float) -> str | None:
+        """Return the newest scheduled boundary a pruned launch must hand off."""
+        captured = self._run_occurrence_ids.get(job.id)
+        authority = _published_timezone_authority()
+        current = (
+            self._cron_occurrence_at(
+                job,
+                now,
+                default_timezone=authority[0],
+            )
+            if job.enabled
+            else None
+        )
+        self._capture_run_occurrence_timezone_authority(job, current, authority)
+        if captured is None:
+            return current
+        if current is None:
+            return captured
+        return self._newer_owed_occurrence(captured, current)
+
+    def quiesce_pruned(self, job_id: str) -> None:
+        """Mark a job un-launchable on this drained (pruned-install) process.
+
+        Survives store reloads (unlike a job object's in-memory ``enabled``,
+        which every ``_sync`` replaces with the on-disk copy) and is never
+        persisted -- the on-disk job stays enabled for the replacement
+        gateway. Process-lifetime by intent; there is no un-quiesce.
+        """
+        self._pruned_quiesced.add(job_id)
+
+    def run_is_manual(self, job_id: str) -> bool:
+        """Whether the in-flight run of ``job_id`` was manually triggered.
+
+        Manual identity is used when a timer scan finds a matching boundary:
+        the manual run masks normal dispatch, so that boundary is persisted as
+        one make-up occurrence. Off-boundary manual runs create no debt.
+        """
+        meta = self._job_run_meta.get(job_id)
+        return bool(meta and meta[1] == "manual")
+
+    def _capture_manual_boundary(self, job: CronJob, now: float) -> bool:
+        """Queue a newly reached scheduled minute masked by a manual run.
+
+        The run-occurrence map is the once-only capture fence. A boundary queued
+        at manual admission, or by an earlier timer scan, must not be republished
+        after a replacement has consumed it. An older captured occurrence does
+        not hide a newer boundary reached by the same manual run.
+        """
+        if not job.enabled or not self.run_is_manual(job.id):
+            return False
+        authority = _published_timezone_authority()
+        occurrence_id = self._cron_occurrence_at(
+            job,
+            now,
+            default_timezone=authority[0],
+        )
+        if occurrence_id is None:
+            return False
+        captured = self._run_occurrence_ids.get(job.id)
+        if captured is not None:
+            selected = self._newer_owed_occurrence(captured, occurrence_id)
+            if selected == captured:
+                return False
+            occurrence_id = selected
+        self._run_occurrence_ids[job.id] = occurrence_id
+        self._capture_run_occurrence_timezone_authority(job, occurrence_id, authority)
+        self._queue_owed_occurrence(job.id, occurrence_id)
+        return True
 
     def _bump_grant_epochs_for(self, removed_ids: set[str]) -> None:
         """Kill the secret grants of jobs about to be deleted from the store.
@@ -4539,6 +5681,8 @@ class CronService:
 
     async def run_job(self, job_id: str) -> bool:
         """Manually trigger a job via _run_job_isolated (records history)."""
+        if self._stopping:
+            return False
         # Refresh the store off the loop, then resolve + claim on the loop.
         #
         # The locked _sync() + snapshot runs in a worker thread (_synced_snapshot
@@ -4556,12 +5700,46 @@ class CronService:
         # claim could not observe a delete mid-way regardless. Degrades to the
         # in-memory snapshot under lock contention.
         snapshot = await asyncio.to_thread(self._synced_snapshot, True)
+        if self._stopping:
+            return False
         job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
             return False
-        if job.id in self._executing:
+        if job.id in self._executing or job.id in self._terminal_settling:
             return False
-        self._job_run_meta[job.id] = (time.time(), "manual")
+        now = time.time()
+        run_token = self._mint_run_token(job.id)
+        config_timezone_authority = _published_timezone_authority()
+        # Freeze what this manual run owned BEFORE publishing a due-minute
+        # make-up occurrence. None is a real claim: the publication belongs to
+        # the scheduled work this manual run masks, not to the manual payload.
+        claimed_owed_fire = job.owed_occurrence()
+        self._owed_fire_runs[job.id] = claimed_owed_fire
+        self._capture_run_occurrence_timezone_authority(
+            job,
+            claimed_owed_fire,
+            config_timezone_authority,
+        )
+        # A manual run beginning in a due cron minute masks the scheduled
+        # dispatch as soon as it owns _executing. Queue that exact boundary
+        # first; _run_job_isolated flushes it before the payload starts.
+        if job.enabled:
+            occurrence_id = self._cron_occurrence_at(
+                job,
+                now,
+                default_timezone=config_timezone_authority[0],
+            )
+            if occurrence_id is not None:
+                self._run_occurrence_ids[job.id] = occurrence_id
+                self._capture_run_occurrence_timezone_authority(
+                    job,
+                    occurrence_id,
+                    config_timezone_authority,
+                )
+                self._queue_owed_occurrence(job.id, occurrence_id)
+        if claimed_owed_fire is not None:
+            self._run_occurrence_ids.setdefault(job.id, claimed_owed_fire)
+        self._job_run_meta[job.id] = (now, "manual")
         self._executing.add(job.id)
         task = asyncio.create_task(self._run_job_isolated(job))
         self._running_tasks[job.id] = task
@@ -4571,9 +5749,10 @@ class CronService:
             if not task.cancelled():
                 raise  # outer coroutine was cancelled, propagate
         finally:
-            if task.done():
+            if task.done() and self._run_tokens.get(job.id) is run_token:
                 self._executing.discard(job.id)
-                self._running_tasks.pop(job.id, None)
+                if self._running_tasks.get(job.id) is task:
+                    self._running_tasks.pop(job.id, None)
         return True
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
@@ -4707,7 +5886,14 @@ class CronService:
         now = time.time()
         delays: list[float] = []
         for job in self._jobs:
-            if not job.enabled or job.id in self._executing:
+            if not job.enabled or job.id in self._executing or job.id in self._terminal_settling:
+                continue
+            if job.id in self._pruned_quiesced:
+                # The due-scan skips quiesced jobs, so letting one drive the
+                # wake computation would return 0 for an overdue job the
+                # scan then ignores -- an empty scan that re-arms immediately,
+                # in a zero-delay loop, for the drained gateway's remaining
+                # lifetime.
                 continue
             if job.schedule.kind == "every" and job.schedule.every_secs:
                 last = job.last_run_ts or job.created_ts
@@ -4853,9 +6039,19 @@ class CronService:
         :meth:`_arm_timer`) — no caller-side drain is required.
         """
         drained: list[str] = []
+        config_timezone_authority = _published_timezone_authority()
+        inherited_owed_validated = False
         try:
             with self._file_lock():
                 self._sync()
+                self._drain_pending_owed_fires_locked()
+                config_timezone_authority = _published_timezone_authority()
+                validated_authority = self._revalidate_inherited_timezone_debt_locked(
+                    config_timezone_authority
+                )
+                inherited_owed_validated = validated_authority is not None
+                if validated_authority is not None:
+                    config_timezone_authority = validated_authority
                 drained = self._drain_pending_removals_locked()
         except CronStoreBusy:
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
@@ -4866,7 +6062,11 @@ class CronService:
         # queue append cannot block the event loop either.
         for jid in drained:
             self.audit_one_shot_removal(jid, "cron_deferred_drain")
-        return list(self._jobs)
+        return _CronTickSnapshot(
+            list(self._jobs),
+            config_timezone_authority=config_timezone_authority,
+            inherited_owed_validated=inherited_owed_validated,
+        )
 
     async def _on_timer(self) -> None:
         """Fire due jobs as independent tasks (non-blocking).
@@ -4888,10 +6088,25 @@ class CronService:
         try:
             snapshot = await asyncio.to_thread(self._tick_scan_locked)
             now = time.time()
+            # A manual run that remains active when its cron minute arrives
+            # suppresses the ordinary dispatch through _executing. Publish that
+            # boundary instead. Repeated scans in the same minute use the same
+            # identity, so they cannot create duplicate make-up runs.
+            manual_boundary_found = False
+            for job in snapshot:
+                if job.id not in self._executing:
+                    continue
+                manual_boundary_found |= self._capture_manual_boundary(job, now)
+            if manual_boundary_found:
+                await self._persist_pending_owed_fires()
             due = [
                 j
                 for j in snapshot
-                if j.enabled and j.id not in self._executing and self._is_due(j, now)
+                if j.enabled
+                and j.id not in self._executing
+                and j.id not in self._terminal_settling
+                and j.id not in self._pruned_quiesced
+                and self._is_due(j, now)
             ]
 
             # An empty due-scan can only end the tick when no deferral episode is
@@ -4918,6 +6133,40 @@ class CronService:
             # long suspension stays diagnosable.
             decision = await asyncio.to_thread(admission_check)
 
+            snapshot_timezone_authority = getattr(
+                snapshot,
+                "config_timezone_authority",
+                _published_timezone_authority(),
+            )
+            inherited_owed_validated = bool(getattr(snapshot, "inherited_owed_validated", True))
+            inherited_owed_due = any(
+                not job.timezone and job.owed_occurrence() is not None for job in due
+            )
+            if inherited_owed_due and (
+                not inherited_owed_validated
+                or snapshot_timezone_authority != _published_timezone_authority()
+            ):
+                snapshot = await asyncio.to_thread(self._tick_scan_locked)
+                snapshot_timezone_authority = getattr(
+                    snapshot,
+                    "config_timezone_authority",
+                    _published_timezone_authority(),
+                )
+                inherited_owed_validated = bool(getattr(snapshot, "inherited_owed_validated", True))
+                due = [
+                    job
+                    for job in snapshot
+                    if job.enabled
+                    and job.id not in self._executing
+                    and job.id not in self._terminal_settling
+                    and job.id not in self._pruned_quiesced
+                    and self._is_due(job, now)
+                ]
+            inherited_owed_authorized = (
+                inherited_owed_validated
+                and snapshot_timezone_authority == _published_timezone_authority()
+            )
+
             # The admission await yielded the loop, so the due snapshot may be
             # stale: a manual run (run_job / cron_trigger) can have claimed — or
             # even completed — a job meanwhile, and a job can have been edited,
@@ -4940,7 +6189,13 @@ class CronService:
                 for j in due
                 if j.id in live_by_id
                 and j.id not in self._executing
+                and j.id not in self._terminal_settling
                 and j.id not in self._pending_removals
+                and (
+                    live_by_id[j.id].timezone
+                    or live_by_id[j.id].owed_occurrence() is None
+                    or inherited_owed_authorized
+                )
                 and self._is_due(live_by_id[j.id], now)
             ]
 
@@ -4977,6 +6232,58 @@ class CronService:
 
             # Fire each job independently — one hung job never blocks others.
             for j in due:
+                inherited_owed = not j.timezone and j.owed_occurrence() is not None
+                if inherited_owed and (
+                    not inherited_owed_authorized
+                    or _published_timezone_authority() != snapshot_timezone_authority
+                ):
+                    continue
+                run_token = self._mint_run_token(j.id)
+                if (
+                    inherited_owed
+                    and _published_timezone_authority() != snapshot_timezone_authority
+                ):
+                    # Publication won the race with admission. Nothing besides
+                    # the token exists yet, so retire it and let the next tick
+                    # validate under the new calendar before launching work.
+                    self._retire_run_ownership(j.id, run_token)
+                    continue
+                durable_occurrence = j.owed_occurrence()
+                occurrence_timezone_authority = (
+                    snapshot_timezone_authority
+                    if durable_occurrence is not None
+                    else _published_timezone_authority()
+                )
+                occurrence_id = durable_occurrence or self._cron_occurrence_at(
+                    j,
+                    now,
+                    default_timezone=occurrence_timezone_authority[0],
+                )
+                if (
+                    j.schedule.kind == "cron"
+                    and durable_occurrence is None
+                    and occurrence_id is None
+                ):
+                    # The live default changed after the due snapshot. Launching
+                    # now would run a calendar occurrence this authority does
+                    # not name and leave no exact identity for terminal paths.
+                    self._retire_run_ownership(j.id, run_token)
+                    continue
+                # Freeze the claim before task creation. The explicit None is
+                # load-bearing for defensive/direct callers and prevents any
+                # later publication from becoming this run's claim.
+                self._owed_fire_runs[j.id] = occurrence_id
+                if occurrence_id is not None:
+                    # A scheduled run owns its exact boundary even when no debt
+                    # existed at dispatch. A sibling may publish that boundary
+                    # while the payload runs; completion/cancel/reap must then
+                    # consume it, while preserving any newer publication.
+                    self._run_occurrence_ids[j.id] = occurrence_id
+                    self._capture_run_occurrence_timezone_authority(
+                        j,
+                        occurrence_id,
+                        occurrence_timezone_authority,
+                    )
                 self._executing.add(j.id)
                 self._job_run_meta.setdefault(j.id, (time.time(), "scheduled"))
                 task = asyncio.create_task(self._run_job_isolated(j))
@@ -4986,6 +6293,14 @@ class CronService:
 
     async def _run_job_isolated(self, job: CronJob) -> None:
         """Execute a single job and merge results back to disk."""
+        run_token = self._ensure_run_token(job.id)
+        job.__dict__.pop("_result_merge_relinquished", None)
+        if job.id not in self._owed_fire_runs:
+            # Normal dispatchers freeze this before task creation. Keep direct
+            # callers safe by freezing the current value before this method's
+            # first await too; None must remain distinguishable from absence.
+            self._owed_fire_runs[job.id] = job.owed_occurrence()
+        claimed_owed_fire = self._owed_fire_runs.get(job.id)
         meta = self._job_run_meta.get(job.id)
         started_at = meta[0] if meta else time.time()
         trigger = meta[1] if meta else "scheduled"
@@ -5025,8 +6340,26 @@ class CronService:
         # one that produced nothing.)
         job.result_produced = False
         being_cancelled = False
+        merge_cancelled = False
         marker_write: "asyncio.Future[None] | None" = None
         try:
+            if trigger == "manual":
+                # A due-minute manual run masks the scheduled dispatch. Admit
+                # its payload only after that exact occurrence is durable or
+                # fresh store authority proves it does not require publication.
+                # ``persist_owed_occurrence`` performs both checks off-loop and
+                # retains the queued identity when neither can be established.
+                occurrence_id = self._run_occurrence_ids.get(job.id)
+                if occurrence_id is not None and not await self.persist_owed_occurrence(
+                    job.id, occurrence_id
+                ):
+                    job.last_status = "error"
+                    job.last_error = (
+                        "Manual run deferred until its masked scheduled occurrence "
+                        "can be durably handed off"
+                    )
+                    job.run_never_started = True
+                    return
             # The jitter sleep MUST live inside this try: hourly/daily jobs
             # sleep up to 59 min here, and a user cancel() during that window
             # raises CancelledError at the sleep — if that happened BEFORE the
@@ -5062,7 +6395,11 @@ class CronService:
                     self._push_refresh("crons")
             except Exception:
                 logger.debug("push_refresh failed on job start", exc_info=True)
-            await self._execute_with_timeout(job)
+            run_context = _active_cron_run_id.set(job.id)
+            try:
+                await self._execute_with_timeout(job)
+            finally:
+                _active_cron_run_id.reset(run_context)
         except asyncio.CancelledError:
             # stop() cancels this task WITHOUT marking _cancelled_jobs, so the
             # finally must know not to clear the last completed run's result.
@@ -5084,31 +6421,31 @@ class CronService:
                 await asyncio.to_thread(cron_inflight.clear_marker, self._dir, job.id)
             except Exception:
                 logger.debug("in-flight marker not cleared for %s", job.id, exc_info=True)
-            self._job_start_times.pop(job.id, None)
-            self._job_start_monotonic.pop(job.id, None)
-            self._job_jitter.pop(job.id, None)
-            self._job_run_meta.pop(job.id, None)
-            reaped = job.id in self._reaped_jobs
-            self._reaped_jobs.discard(job.id)
-            cancelled = job.id in self._cancelled_jobs
-            self._cancelled_jobs.discard(job.id)
-            self._executing.discard(job.id)
-            self._running_tasks.pop(job.id, None)
-            # Notify dashboard that the job has finished (clears the badge).
-            try:
-                if self._push_refresh:
-                    self._push_refresh("crons")
-            except Exception:
-                logger.debug("push_refresh failed on job end", exc_info=True)
-            if not reaped and not cancelled:
-                # For 'every' jobs, use started_at to prevent cumulative drift.
+            owns_run = self._run_tokens.get(job.id) is run_token
+            reaped = owns_run and job.id in self._reaped_jobs
+            cancelled = owns_run and job.id in self._cancelled_jobs
+            # Keep the execution/task admission claims through the off-loop
+            # result merge below. The durable store can still hold this run's
+            # due occurrence while that worker waits for the file lock; clearing
+            # either claim here lets a timer or manual trigger start the same
+            # occurrence a second time before its first completion is durable.
+            result_merge_relinquished = (
+                bool(job.__dict__.pop("_result_merge_relinquished", False))
+                or self._result_merge_relinquished_runs.get(job.id) is run_token
+            )
+            if owns_run and not reaped and not cancelled:
+                # For 'every' jobs, use started_at to prevent cumulative drift,
+                # unless the run is keep_overdue (pruned-install skip): _execute
+                # deliberately left last_run_ts untouched so the replacement
+                # gateway retries the owed run immediately, and stamping
+                # started_at here would silently re-consume it.
                 # `_execute` bound this run's retry count to the `last_run_ts` it
                 # stamped; moving that stamp has to move the binding with it, or
                 # the pair disagrees for every completed `every` run and the
                 # Schedule page never shows a count. Only a bound pair moves: a
                 # run that timed out never reached `_execute`'s stamp, so its
                 # pair is (previous run, this run) and stays mismatched.
-                if job.schedule.kind == "every":
+                if job.schedule.kind == "every" and not job.keep_overdue:
                     if job.last_retry_run_ts == job.last_run_ts:
                         job.last_retry_run_ts = started_at
                     job.last_run_ts = started_at
@@ -5116,55 +6453,81 @@ class CronService:
                 # what let the fire-time deny and script Skip paths keep a result.
                 if (job.command or job.script) and not being_cancelled:
                     job.clear_carried_result()
-                try:
-                    # Offload the lock+sync+save merge to a worker thread:
-                    # _merge_job_result enters the bounded sync _file_lock,
-                    # whose spin does time.sleep(poll) for up to
-                    # _FILE_LOCK_TIMEOUT_SECS under contention. Calling it
-                    # directly here — on the gateway event loop, since
-                    # _run_job_isolated is a loop task — would park the whole
-                    # loop (chat, heartbeat, timer) for that window. to_thread
-                    # is safe for the same reason the batch-remove path uses it
-                    # (flock on separate fds mutually excludes in-process too,
-                    # and the self._jobs reassignment is an atomic reference
-                    # swap). CronStoreBusy (a TimeoutError) on sustained
-                    # contention is caught below and logged — the merge is
-                    # best-effort and the next run / reaper re-persists.
-                    await asyncio.to_thread(self._merge_job_result, job)
-                except Exception:
-                    logger.exception("Failed to merge result for job '%s'", job.name)
-                # Record history
-                try:
-                    status = "success" if job.last_status == "ok" else "failure"
-                    # Attribute last_result to this run only if the run
-                    # actually produced it (set_run_result sets the marker).
-                    # Reading it unconditionally recorded the PREVIOUS run's
-                    # result as this run's summary/trace whenever the run
-                    # ended without producing one (observed in the wild: a
-                    # timed-out run's history row carried the prior success's
-                    # summary verbatim — fabricated history on a
-                    # status=failure record).
-                    run_result = job.last_result if job.result_produced else None
-                    record = CronRunRecord(
-                        job_id=job.id,
-                        trigger=trigger,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration_ms=int((finished_at - exec_started_at) * 1000),
-                        status=status,
-                        # Uncut on purpose: CronHistoryStore.append is the one
-                        # truncation site, applying the configured cap through
-                        # truncate_summary, which keeps URLs and the outcome
-                        # line. A slice here would cut ahead of both.
-                        summary=run_result or job.last_error or "",
-                        trace=run_result or "",
-                        error=job.last_error or "",
+                if not result_merge_relinquished:
+                    # Preserve the one-argument merge call surface used by
+                    # structural and off-loop spies. The attribute exists
+                    # only for this worker-thread handoff.
+                    # Service shutdown has no terminal owner to settle this
+                    # run's claimed occurrence. Keep the identity available
+                    # for locked replacement-completion arbitration while a
+                    # distinct transient signal prevents ordinary clearing.
+                    # Explicit cancel/reap skip this merge and settle through
+                    # their exact-identity terminal path instead.
+                    job._claimed_owed_fire = claimed_owed_fire  # type: ignore[attr-defined]
+                    job._preserve_claimed_owed_fire = (  # type: ignore[attr-defined]
+                        being_cancelled
                     )
-                    await self._history.append(record)
+                    try:
+                        merge_cancelled = await self._await_result_merge(job)
+                    finally:
+                        job.__dict__.pop("_preserve_claimed_owed_fire", None)
+                        job.__dict__.pop("_claimed_owed_fire", None)
+                # A cancel/reap can acquire terminal ownership while the
+                # result worker is draining. Its own terminal history must be
+                # the only row for this run.
+                if self._terminal_settling.get(job.id) is not run_token:
+                    try:
+                        status = "success" if job.last_status == "ok" else "failure"
+                        # Attribute last_result to this run only if the run
+                        # actually produced it (set_run_result sets the marker).
+                        # Reading it unconditionally recorded the PREVIOUS run's
+                        # result as this run's summary/trace whenever the run
+                        # ended without producing one (observed in the wild: a
+                        # timed-out run's history row carried the prior success's
+                        # summary verbatim — fabricated history on a
+                        # status=failure record).
+                        run_result = job.last_result if job.result_produced else None
+                        record = CronRunRecord(
+                            job_id=job.id,
+                            trigger=trigger,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            duration_ms=int((finished_at - exec_started_at) * 1000),
+                            status=status,
+                            # Uncut on purpose: CronHistoryStore.append is the one
+                            # truncation site, applying the configured cap through
+                            # truncate_summary, which keeps URLs and the outcome
+                            # line. A slice here would cut ahead of both.
+                            summary=run_result or job.last_error or "",
+                            trace=run_result or "",
+                            error=job.last_error or "",
+                        )
+                        await self._history.append(record)
+                        if self._push_refresh:
+                            self._push_refresh("cron_history")
+                    except Exception:
+                        logger.exception("Failed to record history for job '%s'", job.name)
+            terminal_owner = self._terminal_settling.get(job.id) is run_token
+            if owns_run:
+                if not terminal_owner:
+                    self._job_start_times.pop(job.id, None)
+                    self._job_start_monotonic.pop(job.id, None)
+                    self._job_jitter.pop(job.id, None)
+                    self._job_run_meta.pop(job.id, None)
+                    self._reaped_jobs.discard(job.id)
+                    self._cancelled_jobs.discard(job.id)
+                # A terminal owner retains its token-valued fence after the
+                # execution claim is released, so admission remains closed
+                # until cancel/reap persistence, history, and audit settle.
+                self._executing.discard(job.id)
+                if self._running_tasks.get(job.id) is asyncio.current_task():
+                    self._running_tasks.pop(job.id, None)
+                try:
                     if self._push_refresh:
-                        self._push_refresh("cron_history")
+                        self._push_refresh("crons")
                 except Exception:
-                    logger.exception("Failed to record history for job '%s'", job.name)
+                    logger.debug("push_refresh failed on job end", exc_info=True)
+            self._retire_run_ownership(job.id, run_token)
             # Re-arm now rather than waiting for whatever wake was already
             # armed: a job that ran for most of its interval was invisible to
             # every _next_wake_secs() computed while self._executing held it
@@ -5177,8 +6540,10 @@ class CronService:
             # isn't running, and the self._on_timer_running guard there
             # covers the one case where this job's own completion happens to
             # race an in-flight dispatch sweep.
-            if self._running:
+            if owns_run and self._running:
                 self._arm_timer()
+            if merge_cancelled:
+                raise asyncio.CancelledError
 
     @staticmethod
     def _compute_jitter(job: CronJob) -> float:
@@ -5227,6 +6592,28 @@ class CronService:
         return 0.0
 
     @staticmethod
+    def _cron_occurrence_at(
+        job: CronJob,
+        now: float,
+        *,
+        ignore_last_run: bool = False,
+        default_timezone: str | None = None,
+    ) -> str | None:
+        """Return the matching UTC-minute identity, ignoring persisted debt."""
+        schedule = job.schedule
+        cron_expr = getattr(schedule, "cron_expr", None)
+        if getattr(schedule, "kind", None) != "cron" or not cron_expr:
+            return None
+        dt = datetime.fromtimestamp(now, tz=_job_tz(job, default_timezone=default_timezone))
+        if not cron_expr_matches(cron_expr, dt):
+            return None
+        if not ignore_last_run and job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
+            return None
+        if job.skip_dates and dt.strftime("%Y-%m-%d") in job.skip_dates:
+            return None
+        return str(int(now) // 60)
+
+    @staticmethod
     def _is_due(job: CronJob, now: float) -> bool:
         if job.schedule.kind == "every" and job.schedule.every_secs:
             last = job.last_run_ts or job.created_ts
@@ -5236,12 +6623,12 @@ class CronService:
             if now < job.schedule.at_ts:
                 return False
         elif job.schedule.kind == "cron" and job.schedule.cron_expr:
-            tz = _job_tz(job)
-            dt = datetime.fromtimestamp(now, tz=tz)
-            if not cron_expr_matches(job.schedule.cron_expr, dt):
-                return False
-            # Don't re-fire within the same UTC minute (immune to DST ambiguity)
-            if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
+            # An occurrence owed from a pruned-install skip is due regardless
+            # of the current minute: the matching minute passed while no
+            # gateway could launch anything, and losing it silently is the
+            # data loss the marker exists to prevent. skip_dates below still
+            # applies.
+            if job.owed_occurrence() is None and CronService._cron_occurrence_at(job, now) is None:
                 return False
         else:
             return False
@@ -5336,6 +6723,12 @@ class CronService:
         # everything after the await) cannot leak a half-spent budget into the
         # next run's retry allowance.
         retries = 0
+        job.keep_overdue = False
+        # Starting an owed run consumes only the occurrence frozen before the
+        # run's first await. A sibling or due-minute manual publication may
+        # update the shared job object later; only the locked result merge may
+        # settle that synchronized state.
+        claimed_owed_fire = getattr(self, "_owed_fire_runs", {}).get(job.id)
         try:
             if self._on_job:
                 try:
@@ -5378,7 +6771,37 @@ class CronService:
             job.last_error = str(exc)
             logger.error("Cron job '%s' failed: %s", job.name, exc)
 
-        job.last_run_ts = time.time()
+        # Restore un-run debt ONLY for a run that never started (overlap,
+        # pool starvation, pruned-install skip) -- states that either clear
+        # on their own or re-set the debt themselves. keep_overdue is the
+        # independent pruned-launch proof when generic cancellation cleared
+        # run_never_started. A fire-time POLICY denial does NOT restore: the
+        # denial can persist indefinitely, and an owed job is due on every
+        # poll, so a restored debt would refire (and write history) every poll
+        # for as long as the policy holds.
+        if (job.run_never_started or job.keep_overdue) and claimed_owed_fire is not None:
+            restored = self._newer_owed_occurrence(job.owed_occurrence(), claimed_owed_fire)
+            job.set_owed_occurrence(restored)
+
+        # A pruned-install skip must leave the schedule exactly as owed as it
+        # found it: the drained process cannot run anything ever again, so
+        # advancing last_run_ts would delay the replacement gateway's retry,
+        # and the fired/parked disable below would durably lose a plain
+        # at-job's only execution. The refire loop this would otherwise cause
+        # on the drained process is quiesced by the in-memory enabled=False
+        # in _record_pruned_launch_skip, which the merge never persists for
+        # the shapes it retains.
+        if job.keep_overdue:
+            return
+
+        completed_at = time.time()
+        # Close the timer snapshot-to-scan race while this manual run still owns
+        # its trigger metadata and before this completion stamp makes the same
+        # minute look already served. Failed saves retain the queued publication
+        # for the next locked timer transaction.
+        if self._capture_manual_boundary(job, completed_at):
+            await self._persist_pending_owed_fires()
+        job.last_run_ts = completed_at
         # Retry telemetry is stamped HERE, with the `last_run_ts` it describes,
         # so the two can never disagree for a run that completed. Stamping it
         # anywhere inside the callback would bind it to the PREVIOUS run's
@@ -5402,7 +6825,43 @@ class CronService:
         if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
             job.enabled = False
 
-    def _merge_job_result(self, job: CronJob) -> None:
+    def _target_completed_scheduled_occurrence(
+        self,
+        target: CronJob,
+        occurrence_job: CronJob,
+        occurrence_id: str | None,
+    ) -> bool:
+        """Whether fresh state proves one exact scheduled occurrence settled.
+
+        Inherited schedules are evaluated under the immutable authority saved
+        when this run captured the occurrence. A live default may have changed
+        while a never-started handoff was settling; using it here would reject
+        a valid replacement completion and let stale runtime fields overwrite it.
+        """
+        if occurrence_id is None or target.owed_occurrence() == occurrence_id:
+            return False
+        try:
+            occurrence_minute = int(occurrence_id)
+            if str(occurrence_minute) != occurrence_id:
+                return False
+            if target.last_run_ts is None or int(target.last_run_ts) // 60 < occurrence_minute:
+                return False
+            authority = self._run_occurrence_timezone_authorities.get(
+                (occurrence_job.id, occurrence_id)
+            )
+            return (
+                CronService._cron_occurrence_at(
+                    occurrence_job,
+                    occurrence_minute * 60,
+                    ignore_last_run=True,
+                    default_timezone=authority[0] if authority is not None else None,
+                )
+                == occurrence_id
+            )
+        except (OSError, OverflowError, TypeError, ValueError):
+            return False
+
+    def _merge_job_result(self, job: CronJob, claimed_owed_fire: str | None = None) -> None:
         """Merge a single job's runtime state back to disk.
 
         Enters the bounded sync :meth:`_file_lock` (which spins with
@@ -5412,20 +6871,185 @@ class CronService:
         ``asyncio.to_thread`` so the spin never parks the loop. Sync/CLI
         contexts with no running loop may call it directly.
         """
+        if claimed_owed_fire is None:
+            claimed_owed_fire = getattr(job, "_claimed_owed_fire", None)
+        preserve_claimed_owed_fire = bool(getattr(job, "_preserve_claimed_owed_fire", False))
+        result_settlement_required = bool(
+            claimed_owed_fire is not None
+            and not preserve_claimed_owed_fire
+            and not job.run_never_started
+            and not job.keep_overdue
+        )
         with self._file_lock():
             self._sync()
+            if result_settlement_required and self._load_failed:
+                raise _ResultOccurrenceUnsettled(
+                    f"result for {job.id} cannot establish fresh cron store authority"
+                )
             by_id = {j.id: j for j in self._jobs}
+            if result_settlement_required and job.id not in by_id:
+                return
+            merged_owed_fire: str | None = None
+            owed_restore: tuple[CronJob, str | None] | None = None
             if job.id in by_id:
-                by_id[job.id].last_run_ts = job.last_run_ts
-                by_id[job.id].last_status = job.last_status
-                by_id[job.id].last_error = job.last_error
+                target = by_id[job.id]
+                with self._pending_owed_lock:
+                    pending_owed_fire = self._pending_owed_fires.get(job.id)
+                if job.run_never_started or job.keep_overdue or preserve_claimed_owed_fire:
+                    fallback_occurrences = {
+                        occurrence
+                        for occurrence in (
+                            claimed_owed_fire,
+                            self._run_occurrence_ids.get(job.id),
+                            job.owed_occurrence(),
+                        )
+                        if occurrence is not None
+                    }
+                    if not fallback_occurrences and pending_owed_fire is not None:
+                        fallback_occurrences.add(pending_owed_fire)
+                    completed_occurrences = {
+                        occurrence
+                        for occurrence in fallback_occurrences
+                        if self._target_completed_scheduled_occurrence(
+                            target,
+                            job,
+                            occurrence,
+                        )
+                    }
+                    if completed_occurrences:
+                        # Fresh completion owns every runtime field. Retire only
+                        # this drained run's matching process-local intent.
+                        with self._pending_owed_lock:
+                            current_pending = self._pending_owed_fires.get(job.id)
+                            if current_pending in completed_occurrences:
+                                self._pending_owed_fires.pop(job.id, None)
+                        # A newer pending boundary is not covered by completion
+                        # of the old occurrence. Persist it through the ordinary
+                        # queue drain, which mutates only owed identity on the
+                        # freshly synced replacement object and retains exact
+                        # retry/fingerprint semantics across pre/post-commit
+                        # save failures and concurrent newer arrivals.
+                        self._drain_pending_owed_fires_locked(job.id)
+                        return
+                    if preserve_claimed_owed_fire and claimed_owed_fire is not None:
+                        # Shutdown cancelled the payload after this process
+                        # claimed a scheduled minute, but the claim may never
+                        # have existed on disk. Fresh replacement completion was
+                        # arbitrated above. If it did not settle the occurrence,
+                        # persist only debt against the fresh target and return
+                        # before copying drained runtime/result fields.
+                        if self._occurrence_matches_calendar(target, claimed_owed_fire):
+                            prior_owed_fire = target.owed_occurrence()
+                            merged_owed_fire = self._newer_owed_occurrence(
+                                prior_owed_fire,
+                                claimed_owed_fire,
+                            )
+                            if merged_owed_fire != prior_owed_fire:
+                                target.set_owed_occurrence(merged_owed_fire)
+                                try:
+                                    self._save()
+                                except BaseException:
+                                    if any(current is target for current in self._jobs):
+                                        target.set_owed_occurrence(prior_owed_fire)
+                                    self._reset_fingerprint()
+                                    self._queue_owed_occurrence(
+                                        job.id,
+                                        claimed_owed_fire,
+                                    )
+                                    raise
+                                with self._pending_owed_lock:
+                                    pending = self._pending_owed_fires.get(job.id)
+                                    if (
+                                        pending is not None
+                                        and self._newer_owed_occurrence(
+                                            merged_owed_fire,
+                                            pending,
+                                        )
+                                        == merged_owed_fire
+                                    ):
+                                        self._pending_owed_fires.pop(job.id, None)
+                        return
+                # A manual boundary publication may have failed before this
+                # result merge. Stage its still-valid queued minute against the
+                # freshly synced target BEFORE this run's completion stamp is
+                # copied below, then settle it only after the shared save. A
+                # concurrent pause/calendar/last-run change makes the intent
+                # obsolete instead; retire only the exact snapshot so a newer
+                # concurrent arrival survives.
+                with self._pending_owed_lock:
+                    pending_owed_fire = self._pending_owed_fires.get(job.id)
+                if pending_owed_fire is not None:
+                    same_hot_run_completion = (
+                        target is job
+                        and not job.run_never_started
+                        and self._run_occurrence_ids.get(job.id) == pending_owed_fire
+                    )
+                    if self._queued_occurrence_is_current(
+                        target,
+                        pending_owed_fire,
+                        ignore_last_run=same_hot_run_completion,
+                    ):
+                        prior_owed_fire = target.owed_occurrence()
+                        merged_owed_fire = self._newer_owed_occurrence(
+                            prior_owed_fire, pending_owed_fire
+                        )
+                        if merged_owed_fire != prior_owed_fire:
+                            owed_restore = (target, prior_owed_fire)
+                            target.set_owed_occurrence(merged_owed_fire)
+                    else:
+                        with self._pending_owed_lock:
+                            if self._pending_owed_fires.get(job.id) == pending_owed_fire:
+                                self._pending_owed_fires.pop(job.id, None)
+                target.last_run_ts = job.last_run_ts
+                target.last_status = job.last_status
+                target.last_error = job.last_error
+                # Debt is occurrence-claimed rather than copied as a boolean.
+                # Completion clears only the identity this run started with;
+                # a never-started/pruned run republishes its boundary, choosing
+                # the newer of it and any sibling publication already on disk.
+                # keep_overdue is an independent never-started proof for the
+                # occurrence merge only; schedule and failure fields retain
+                # their existing controls below.
+                if job.run_never_started or job.keep_overdue:
+                    live_owed_fire = job.owed_occurrence()
+                    if claimed_owed_fire is not None:
+                        live_owed_fire = self._newer_owed_occurrence(
+                            live_owed_fire, claimed_owed_fire
+                        )
+                    if live_owed_fire is not None and self._queued_occurrence_is_current(
+                        target, live_owed_fire
+                    ):
+                        prior_owed_fire = target.owed_occurrence()
+                        merged_owed_fire = self._newer_owed_occurrence(
+                            prior_owed_fire, live_owed_fire
+                        )
+                        if merged_owed_fire != prior_owed_fire:
+                            if owed_restore is None:
+                                owed_restore = (target, prior_owed_fire)
+                            target.set_owed_occurrence(merged_owed_fire)
+                elif (
+                    not preserve_claimed_owed_fire
+                    and claimed_owed_fire is not None
+                    and target.owed_occurrence() == claimed_owed_fire
+                ):
+                    if owed_restore is None:
+                        owed_restore = (target, target.owed_occurrence())
+                    target.set_owed_occurrence(None)
                 # Only propagate enabled=False for one-shot at-jobs that fired.
                 # Never overwrite enabled for recurring jobs — user_paused is the
                 # sole authority for user-controlled pause/resume state.
                 # Propagate the fired/parked disable for at-jobs — including a
                 # fire-time-DENIED one (parked disabled instead of deleted so
-                # it cannot refire every tick yet stays re-enableable).
-                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
+                # it cannot refire every tick yet stays re-enableable). A
+                # keep_overdue (pruned-install) skip is EXCLUDED: its
+                # enabled=False is a drained-process quiesce only, and the
+                # on-disk job must stay enabled for the replacement gateway to
+                # retry.
+                if (
+                    job.schedule.kind == "at"
+                    and not job.keep_overdue
+                    and (not job.delete_after_run or job.fire_time_denied)
+                ):
                     by_id[job.id].enabled = job.enabled
                     by_id[job.id].user_paused = not job.enabled
                 # auto_paused is execution-owned (repeated-failure auto-pause and
@@ -5475,8 +7099,11 @@ class CronService:
             # unreadable store to an empty job list WITHOUT raising, so presence
             # is exactly what a corrupt store destroys, and the deferred queue
             # below then never fired for a delete that was still owed on disk.
+            # A cancelled pruned handoff can lose run_never_started after its
+            # worker was claimed, but keep_overdue independently proves that the
+            # payload never launched and the replacement gateway owns the work.
             delete_owed = job.delete_after_run and not (
-                job.fire_time_denied or job.run_never_started
+                job.fire_time_denied or job.run_never_started or job.keep_overdue
             )
             removed_one_shot = False
             restore: list[tuple[CronJob, str]] = []
@@ -5526,6 +7153,15 @@ class CronService:
             try:
                 self._save()
             except BaseException as exc:
+                # The owed mutation is safe only once its save is known durable.
+                # A failure may happen on either side of atomic rename, so
+                # restore hot reads and force the next locked sync to arbitrate
+                # against disk before any later writer can serialize this cache.
+                if owed_restore is not None:
+                    owed_target, prior_owed_fire = owed_restore
+                    if any(current is owed_target for current in self._jobs):
+                        owed_target.set_owed_occurrence(prior_owed_fire)
+                    self._reset_fingerprint()
                 # EVERY save failure rolls back the child release, not just
                 # CronStoreUnreadable: the release lives in memory only until the
                 # save lands it, so a bare OSError (ENOSPC/EROFS/EIO out of
@@ -5553,6 +7189,31 @@ class CronService:
                 # with what is present and drops the rest.
                 if delete_owed:
                     self._pending_removals.add(job.id)
+                if result_settlement_required:
+                    # A successful payload may not release its run token while
+                    # the exact claimed occurrence remains durable. Resolve
+                    # pre/post-rename ambiguity under this lock: committed
+                    # clear, replacement deletion/completion, or newer debt
+                    # settles; exact old debt or unreadable authority retries.
+                    self._reset_fingerprint()
+                    try:
+                        self._load()
+                    except BaseException:
+                        logger.exception(
+                            "Cron result occurrence arbitration failed for %s",
+                            job.id,
+                        )
+                    if self._load_failed:
+                        raise _ResultOccurrenceUnsettled(
+                            f"result for {job.id} cannot establish fresh cron store authority"
+                        ) from exc
+                    fresh = next((item for item in self._jobs if item.id == job.id), None)
+                    if fresh is not None and fresh.owed_occurrence() == claimed_owed_fire:
+                        raise _ResultOccurrenceUnsettled(
+                            f"result for {job.id} did not clear owed occurrence "
+                            f"{claimed_owed_fire}: {exc}"
+                        ) from exc
+                    return
                 if isinstance(exc, CronStoreUnreadable):
                     # Return WITHOUT auditing: the emit below records only a SAVED
                     # removal, and nothing was saved. Auditing here would file a
@@ -5564,12 +7225,58 @@ class CronService:
                 # store-unreadable case: surface it rather than reporting a quiet
                 # no-op after the disk refused the write.
                 raise
+            # The fallback merge can settle the same publication that remained
+            # queued after a transient worker failure. Retire it only after the
+            # save above proves the occurrence durable, and only when that saved
+            # identity covers the current pending value. A later boundary may
+            # arrive while the save is in flight and must remain queued.
+            if merged_owed_fire is not None:
+                with self._pending_owed_lock:
+                    pending_owed_fire = self._pending_owed_fires.get(job.id)
+                    if (
+                        pending_owed_fire is not None
+                        and self._newer_owed_occurrence(merged_owed_fire, pending_owed_fire)
+                        == merged_owed_fire
+                    ):
+                        self._pending_owed_fires.pop(job.id, None)
         if removed_one_shot:
             # The delete_after_run consume is an automated removal with no
             # handler-level caller, so the emit lives with the removal.
             # AFTER the lock: only a saved removal is recorded, and
             # the sel call never extends the store-lock hold.
             self.audit_one_shot_removal(job.id, "cron_run_complete")
+
+    @contextmanager
+    def _terminal_authority_locked(
+        self, job_id: str, claimed_owed_fire: str | None
+    ) -> Iterator[None]:
+        """Hold the store lock after proving fresh authority for a terminal merge.
+
+        With an exact claim, lock acquisition, sync/read exceptions, and a
+        fail-soft ``_load_failed`` result all mean the store cannot prove that a
+        missing target represents a real deletion/replacement. Convert only that
+        pre-authority span to the retryable terminal failure; exceptions after
+        ``yield`` retain their existing save-specific handling.
+        """
+        authority_established = False
+        try:
+            with self._file_lock():
+                self._sync()
+                if claimed_owed_fire is not None and self._load_failed:
+                    raise _TerminalOccurrenceUnsettled(
+                        f"terminal state for {job_id} is unresolved: cron store unreadable"
+                    )
+                authority_established = True
+                yield
+        except _TerminalOccurrenceUnsettled:
+            raise
+        except Exception as exc:
+            if claimed_owed_fire is not None and not authority_established:
+                raise _TerminalOccurrenceUnsettled(
+                    f"terminal state for {job_id} could not establish fresh store authority: "
+                    f"{exc}"
+                ) from exc
+            raise
 
     def _merge_terminal_state_locked(
         self,
@@ -5578,8 +7285,13 @@ class CronService:
         last_status: str,
         last_error: str,
         last_run_ts: float,
+        claimed_owed_fire: str | None = None,
     ) -> None:
         """Persist a job's terminal runtime state under the store lock.
+
+        ``claimed_owed_fire`` is optional so an ordinary cancellation/reap cannot
+        overwrite debt written concurrently by another gateway. A make-up run
+        passes its identity and clears only a matching stored occurrence.
 
         Used for the reaper timeout (:meth:`_force_reap`) and user cancel
         (:meth:`cancel`) paths. Mutating the in-memory job and calling a bare,
@@ -5596,10 +7308,13 @@ class CronService:
         fields to the disk copy and ``_save()``s — the whole read-modify-write
         is one lock transaction. Both loop-side callers offload it via
         ``asyncio.to_thread`` so the spin never parks the gateway loop. A
-        missing id (removed meanwhile) is a no-op.
+        missing id (removed meanwhile) is a no-op. When a save that clears an
+        exact claim raises, this method reloads under the same lock: a committed
+        clear/newer authority returns normally; the exact claim still durable or
+        unreadable raises :class:`_TerminalOccurrenceUnsettled` for bounded,
+        admission-fenced retry.
         """
-        with self._file_lock():
-            self._sync()
+        with self._terminal_authority_locked(job_id, claimed_owed_fire):
             by_id = {j.id: j for j in self._jobs}
             target = by_id.get(job_id)
             if target is None:
@@ -5607,12 +7322,48 @@ class CronService:
             target.last_status = last_status
             target.last_error = last_error
             target.last_run_ts = last_run_ts
-            # BACKGROUND writer: reached from the reaper timeout and user
-            # cancel. An unreadable store must not abort the reaper loop.
+            prior_owed_fire = target.owed_occurrence()
+            owed_mutated = claimed_owed_fire is not None and prior_owed_fire == claimed_owed_fire
+            if owed_mutated:
+                target.set_owed_occurrence(None)
+            # BACKGROUND writer: reached from reaper timeout and user cancel.
+            # Ordinary terminal fields remain best-effort, but a claimed owed
+            # occurrence is work ownership: unreadable/pre-commit failure must
+            # keep admission fenced until arbitration or an owned retry settles it.
             try:
                 self._save()
-            except CronStoreUnreadable as exc:
-                logger.warning("Cron terminal state not persisted: %s", exc)
+            except BaseException as exc:
+                if owed_mutated:
+                    if any(current is target for current in self._jobs):
+                        target.set_owed_occurrence(prior_owed_fire)
+                    # _save may have failed before OR after atomic rename. Reload
+                    # under this same lock to resolve the ambiguity before the
+                    # terminal owner can release admission: a committed clear,
+                    # replacement completion, or newer sibling debt settles this
+                    # run; the exact old identity still on disk does not.
+                    self._reset_fingerprint()
+                    try:
+                        self._load()
+                    except BaseException:
+                        logger.exception(
+                            "Cron terminal occurrence arbitration failed for %s",
+                            job_id,
+                        )
+                    if self._load_failed:
+                        raise _TerminalOccurrenceUnsettled(
+                            f"terminal state for {job_id} is unresolved: cron store unreadable"
+                        ) from exc
+                    fresh = next((job for job in self._jobs if job.id == job_id), None)
+                    if fresh is not None and fresh.owed_occurrence() == claimed_owed_fire:
+                        raise _TerminalOccurrenceUnsettled(
+                            f"terminal state for {job_id} did not clear owed occurrence "
+                            f"{claimed_owed_fire}: {exc}"
+                        ) from exc
+                    return
+                if isinstance(exc, CronStoreUnreadable):
+                    logger.warning("Cron terminal state not persisted: %s", exc)
+                    return
+                raise
 
     # ── Loop-stall breaker ──
 
@@ -6201,9 +7952,11 @@ class CronService:
         _enable_job_locked              _file_lock  enable_job_async → to_thread; sync CLI/MCP
         _ack_job_locked                 _file_lock  ack_job_async → to_thread; sync
         _unack_job_locked               _file_lock  unack_job_async → to_thread; sync
-        _merge_job_result               _file_lock  _run_job_isolated → to_thread; BACKGROUND
-        _merge_terminal_state_locked    _file_lock  _force_reap / cancel → to_thread; BACKGROUND
-        _drain_pending_removals_locked    (caller)  _tick_scan_locked holds _file_lock; BACKGROUND
+        _merge_job_result                _file_lock  _run_job_isolated → to_thread; BACKGROUND
+        _merge_terminal_state_locked     _file_lock  _force_reap / cancel → to_thread; BACKGROUND
+        _flush_pending_owed_fires_locked _file_lock  publish/timer tick → to_thread; BACKGROUND
+        _drain_pending_owed_fires_locked   (caller)  _tick_scan_locked holds _file_lock; BACKGROUND
+        _drain_pending_removals_locked     (caller)  _tick_scan_locked holds _file_lock; BACKGROUND
         _load (self._jobs = …)            (caller)  _sync() under _file_lock; else construction/start
         ==============================  ==========  ======================================
 
@@ -6235,6 +7988,8 @@ class CronService:
                     "last_error": j.last_error,
                     "created_ts": j.created_ts,
                     "delete_after_run": j.delete_after_run,
+                    "owed_fire": j.owed_fire,
+                    "owed_fire_id": j.owed_fire_id if j.owed_fire else "",
                     "last_result": j.last_result,
                     "last_result_ts": j.last_result_ts,
                     "last_result_stamp": j.last_result_stamp,

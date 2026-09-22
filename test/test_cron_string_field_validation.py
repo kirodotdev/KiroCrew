@@ -335,6 +335,8 @@ class TestAntiDrift:
     # - last_result_stamp: the run stamp, rendered by set_run_result() beside
     #   last_result and never accepted from a caller, so there is no boundary
     #   schema for its cap to mirror
+    # - owed_fire_id: derived internally from a UTC cron boundary or the legacy
+    #   boolean sentinel; no creation/update surface accepts it
     # - last_posted_hash: set by dedup logic when a Slack post is delivered
     # - last_failure_hash: set by dedup logic when a failure notification fires
     # - approval_mode: validated by a separate finite-set check, not length
@@ -347,6 +349,7 @@ class TestAntiDrift:
             "last_error",
             "last_result",
             "last_result_stamp",
+            "owed_fire_id",
             "last_posted_hash",
             "last_failure_hash",
             "approval_mode",

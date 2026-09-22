@@ -4,10 +4,10 @@
 ``CronService._on_timer``'s due-scan reaches ``_job_tz`` for every
 cron-expression job that carries no zone of its own, on every tick -- so the
 value is PUBLISHED by each successful ``KiroCrewConfig.load`` rather than read
-from ``config.json`` at the point of use. These tests pin the two properties
-that makes that safe to rely on: a settings change still reaches a gateway that
-is already running, and a load that finishes late cannot reinstate what it read
-early.
+from ``config.json`` at the point of use. These tests pin the properties that
+make that safe to rely on: a settings change still reaches a gateway that is
+already running, a load that finishes late cannot reinstate what it read early,
+and an A -> B -> A value sequence retains a distinct publication authority.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from kiro_crew.config.loader import (
     next_config_load_ticket,
     publish_config_timezone,
     published_config_timezone,
+    published_config_timezone_authority,
 )
 from kiro_crew.cron import CronJob, _job_tz
 
@@ -46,6 +47,7 @@ def _reset_published_timezone() -> None:
 
     _loader._CONFIG_TIMEZONE = ""
     _loader._CONFIG_TIMEZONE_TICKET = 0
+    _loader._CONFIG_TIMEZONE_AUTHORITY = ("", 0)
 
 
 #: Offset putting a test's ticket far beyond anything a real load will draw in
@@ -204,6 +206,34 @@ class TestConcurrentLoadsAreOrdered:
             publish_config_timezone(_cfg_with_tz("America/Toronto"), next_config_load_ticket())
             publish_config_timezone(_cfg_with_tz("Asia/Tokyo"), next_config_load_ticket())
             assert published_config_timezone() in ("Asia/Tokyo", _live_default())
+        finally:
+            _reset_published_timezone()
+
+    def test_authority_generation_exposes_timezone_aba(self) -> None:
+        """Returning to the same zone still carries a different authority."""
+        _reset_published_timezone()
+        base = _dominating_ticket()
+        try:
+            publish_config_timezone(_cfg_with_tz("UTC"), base)
+            before = published_config_timezone_authority()
+            publish_config_timezone(_cfg_with_tz("America/Los_Angeles"), base + 1)
+            publish_config_timezone(_cfg_with_tz("UTC"), base + 2)
+            after = published_config_timezone_authority()
+
+            assert before[0] == after[0] == "UTC"
+            assert after[1] == before[1] + 2
+        finally:
+            _reset_published_timezone()
+
+    def test_same_timezone_publication_keeps_semantic_generation(self) -> None:
+        """A newer ordering ticket alone does not invalidate calendar authority."""
+        _reset_published_timezone()
+        base = _dominating_ticket()
+        try:
+            publish_config_timezone(_cfg_with_tz("UTC"), base)
+            before = published_config_timezone_authority()
+            publish_config_timezone(_cfg_with_tz("UTC"), base + 1)
+            assert published_config_timezone_authority() == before
         finally:
             _reset_published_timezone()
 

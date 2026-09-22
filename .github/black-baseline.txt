@@ -453,7 +453,6 @@ test/test_context_ui_language.py
 test/test_continuable_followups.py
 test/test_crash_dump_store.py
 test/test_crash_guard.py
-test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py

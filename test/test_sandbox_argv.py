@@ -23,6 +23,7 @@ from kiro_crew.sandbox import (
     _CC_FILES,
     _SENSITIVE_ENV_PREFIXES,
     _STRICT_DIRS,
+    CHILD_START_ACK_FD_ENV,
     _build_launcher_script,
     _build_seatbelt_profile,
     _resolve_agent_executable,
@@ -31,6 +32,8 @@ from kiro_crew.sandbox import (
     namespace_argv,
     reset_backend,
     sandbox_exec_argv,
+    scrub_agent_denied_env,
+    scrub_agent_subprocess_env,
     wrap_argv,
 )
 
@@ -1596,6 +1599,21 @@ class TestBuildLauncherScript:
         assert script.index("import sys") < script.index("sys.path[:]")
 
     @_POSIX_ONLY
+    def test_original_launcher_acknowledges_before_payload_exec(self):
+        script = _build_launcher_script("strict")
+        pop = f'os.environ.pop({CHILD_START_ACK_FD_ENV!r}, "")'
+        write = 'os.write(_start_ack_fd, b"\\x01")'
+        close = "os.close(_start_ack_fd)"
+        payload_exec = "os.execvp(argv[0], argv)"
+
+        assert pop in script
+        assert write in script
+        assert close in script
+        assert script.index(pop) < script.index(write) < script.index(close)
+        assert script.index(close) < script.index(payload_exec)
+        compile(script, "<launcher-ack>", "exec")
+
+    @_POSIX_ONLY
     def test_launcher_has_no_unimportable_kiro_crew_refs(self):
         """The launcher runs as a standalone ~/.kirocrew/run script with the
         launcher dir scrubbed from sys.path, so it CANNOT import kiro_crew.
@@ -1958,6 +1976,34 @@ class TestSandboxExecArgv:
             assert "-f" in argv
             assert profile_path is not None
             assert os.path.exists(profile_path)
+        finally:
+            if profile_path:
+                os.unlink(profile_path)
+
+    @pytest.mark.parametrize("foreign_value", ["not-a-fd", "19"])
+    def test_parent_only_ack_key_is_scrubbed_before_agent_launch(self, monkeypatch, foreign_value):
+        env = {
+            "PATH": "/usr/bin",
+            "ORDINARY_AGENT_VALUE": "kept",
+            CHILD_START_ACK_FD_ENV: foreign_value,
+        }
+        for scrub in (scrub_agent_denied_env, scrub_agent_subprocess_env):
+            scrubbed = scrub(env)
+            assert CHILD_START_ACK_FD_ENV not in scrubbed
+            assert scrubbed["ORDINARY_AGENT_VALUE"] == "kept"
+
+        monkeypatch.setenv(CHILD_START_ACK_FD_ENV, foreign_value)
+        argv, profile_path = sandbox_exec_argv(["kiro-cli", "acp"], "standard")
+        try:
+            confiner = next(
+                i for i, arg in enumerate(argv) if os.path.basename(arg) == "sandbox-exec"
+            )
+            unset_index = next(
+                index
+                for index, arg in enumerate(argv[:-1])
+                if arg == "-u" and argv[index + 1] == CHILD_START_ACK_FD_ENV
+            )
+            assert unset_index < confiner
         finally:
             if profile_path:
                 os.unlink(profile_path)
@@ -2526,6 +2572,44 @@ class TestCgroupScopeArgv:
             # CPUQuota is opt-in: absent unless max_cpu_percent > 0.
             assert not any(a.startswith("CPUQuota=") for a in out)
             assert out[out.index("--") + 1 :] == ["kiro-cli", "chat"]
+        finally:
+            self._reset_probe()
+
+    def test_inner_argv_requires_the_exact_trusted_cgroup_envelope(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(8192, 8192, 50, 0),
+                ),
+                patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
+            ):
+                wrapped = sb.cgroup_scope_argv(["/managed/python", "launcher.py"])
+                assert sb.cgroup_scope_inner_argv(wrapped) == (
+                    "/managed/python",
+                    "launcher.py",
+                )
+
+                wrong_scope = list(wrapped)
+                wrong_scope[2] = "--service"
+                assert sb.cgroup_scope_inner_argv(wrong_scope) is None
+
+                wrong_slice = list(wrapped)
+                wrong_slice[4] = "--slice=other.slice"
+                assert sb.cgroup_scope_inner_argv(wrong_slice) is None
+
+                wrong_property = list(wrapped)
+                wrong_property[6] = "TasksMax=unlimited"
+                assert sb.cgroup_scope_inner_argv(wrong_property) is None
+
+                extra_property = list(wrapped)
+                boundary = extra_property.index("--")
+                extra_property[boundary:boundary] = ["-p", "Delegate=yes"]
+                assert sb.cgroup_scope_inner_argv(extra_property) is None
         finally:
             self._reset_probe()
 
