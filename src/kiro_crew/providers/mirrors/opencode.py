@@ -337,7 +337,14 @@ def opencode_projection(
         # gained one.
         out.append(without_stdio_tag(dict(stub)))
     return SessionProjection(
-        params={"mcpServers": out}, derived_spec_snapshot=projection.derived_spec_snapshot
+        params={"mcpServers": out},
+        # The restriction half of ``withheld`` above, identity half excluded: an
+        # identity-bound name is withheld from the spec-described element precisely so
+        # Crew can author its own, while these names must not come back at all -- this
+        # transport has no deny channel, so the withhold IS the enforcement.
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=projection.restricted | narrowed_plane,
+        derived_spec_snapshot=projection.derived_spec_snapshot,
     )
 
 

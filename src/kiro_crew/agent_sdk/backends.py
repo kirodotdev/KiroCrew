@@ -822,19 +822,58 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # ``members.member_dispatch_session_server`` carrying this session's key and its
 # signed stub token, the same way the projection rebuilds the control plane.
 #
-# opencode is excluded, and not for want of a mount: it is a member of
-# ``ACP_BACKENDS_SESSION_MCP_ARRAY`` and its sessions carry Crew's control plane, so
-# the transport a member dispatch rides on exists, and its routing
-# (``VERIFIED_SEEDED_SETTINGS``) sits inside ``tool_gate.ENFORCED_ROUTINGS`` as
-# well. What it lacks is the DECISION for THIS harness. The one above is codex's,
-# and H6 is explicit that supporting one harness establishes nothing about another,
-# so it does not carry over. Without it an opencode member session stays plain chat:
-# the dispatch tools are simply not mounted, never mounted-and-refused.
+# opencode is a member, and it holds the same two things:
+#
+#   * the per-session mount exists -- opencode is in
+#     ``ACP_BACKENDS_SESSION_MCP_ARRAY`` and ``providers/mirrors/opencode.py``
+#     projects the array onto ``session/new``, so the dispatch element rides the
+#     channel the session's own servers ride. The harness reads no agent file of
+#     Crew's, so that array is the ONLY channel any tool set reaches it on;
+#   * the session is GATED -- its routing is ``VERIFIED_SEEDED_SETTINGS``, one of
+#     the three mechanisms in ``tool_gate.ENFORCED_ROUTINGS``. The value is seeded
+#     on ``OPENCODE_CONFIG_CONTENT`` and READ BACK from the harness's own config
+#     resolution before the first prompt, so a session that cannot establish the
+#     asking posture is REFUSED rather than run. The read-back is what makes this
+#     routing VERIFIED rather than merely seeded, and it is the whole of the
+#     difference from claude's.
+#
+# H6 is explicit that supporting one harness establishes nothing about another, so
+# the decision above is codex's alone and this membership carries its own: a member
+# DM thread on opencode holds the session-control tools.
+#
+# The mount asks for no owned permission file here, and must not: the client's
+# fallback answers for an UNENFORCED routing alone (``tool_gate.is_enforced`` is true
+# for this one), and ``providers/mirrors/opencode.py`` documents
+# ``permission_surface_owned`` as accepted-and-ignored for that same reason -- the
+# flag stands in for a read-back this harness performs, and no opencode session owns
+# a ``settings.local.json`` to satisfy it with.
+#
+# Membership un-withholds nothing, for the reason it un-withholds nothing on codex:
+# ``mirrors.identity.identity_bound_crew_servers`` keeps the dashboard server out of
+# the SPEC projection, because an element the agent file names carries no session
+# identity, while the entry mounted here is Crew's own and carries this session's key
+# and its signed stub token.
+#
+# One restriction the mount must NOT step over, and this harness is the only member it
+# binds: switching off a tool of the dashboard server is honoured here by withholding
+# the whole server (``registry.PerToolDeny.WHOLE_SERVER`` -- no deny slot on the
+# element, no file of Crew's, and no structured identity on a tool call to refuse by).
+# So ``AcpClient._append_member_dispatch_server`` withholds the mount for a member
+# whose dashboard server is narrowed, and that thread runs as plain chat rather than
+# reaching a tool the operator switched off. codex and claude keep their mounts there:
+# both hold a second channel that still refuses the call.
+#
+# Switching that server off WHOLE (``disabled``) is a stronger rule and carries no
+# backend condition, because the form has no per-call spelling for any harness to
+# refuse by (``acp.session_mcp.session_mcp_disabled_servers``). It binds on BOTH paths
+# that compose a session's array -- ``AcpClient``'s, which opencode and claude take,
+# and ``AcpRuntime``'s create and resume paths, which codex and KAS take -- so the
+# operator's switch-off reaches a member session whichever one runs.
 #
 # pi is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: the array is
 # accepted and never forwarded to the agent, so a member dispatch mounted through it
 # would be inert.
-# deepseek is excluded, and it fails a HARDER test than either of the two above. It
+# deepseek is excluded, and it fails a HARDER test than pi above. It
 # does have the mount -- it is a member of ``ACP_BACKENDS_SESSION_MCP_ARRAY`` -- so
 # codex's first precondition holds. Codex's second does not: its routing is
 # ``Routing.UNVERIFIED``, outside ``tool_gate.ENFORCED_ROUTINGS``, so a session that
@@ -842,17 +881,35 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # into such a session would hand Crew's own control plane to a harness whose tool
 # calls Crew does not decide. A member session on it stays plain chat.
 #
-# WHERE the mount happens differs by backend, and codex's is the runtime's.
+# WHERE the mount happens differs by backend, and opencode's is the client's.
 # ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
-# CLIENT composes -- claude's -- and codex is not one of them: its array comes from
-# ``AcpRuntime._mirrored_session_mcp`` and ``create_session`` / ``load_session``
-# append the entry themselves, on a non-empty ``member_session_key`` alone. That key
-# is where membership is read (``providers/acp.py`` ``_member_session_key``), which
-# is why adding a backend here is the whole of the change for a runtime-served
-# harness. Both establishment paths carry it, because ``session/load``
-# re-initializes a session's MCP servers and a resume that skipped the append would
-# strip a member thread of its tools mid-conversation.
-ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
+# CLIENT composes -- claude's and opencode's -- while codex and KAS are served by
+# ``AcpRuntime``: their arrays come from ``AcpRuntime._mirrored_session_mcp`` and
+# ``create_session`` / ``load_session`` append the entry themselves, on a non-empty
+# ``member_session_key``. That key is where membership is read
+# (``providers/acp.py`` ``_member_session_key``), which is why adding a backend here
+# is the whole of the change for a runtime-served harness. Both establishment paths
+# carry it, because ``session/load`` re-initializes a session's MCP servers and a
+# resume that skipped the append would strip a member thread of its tools
+# mid-conversation.
+#
+# The client path's own PRECONDITION is read from the routing rather than from one
+# harness's flag: ``tool_gate.is_enforced``. A harness whose routing this core
+# enforces needs nothing further -- an ungated session never reaches a prompt. A
+# harness whose routing is declared-but-unenforced (claude) additionally needs Crew
+# to OWN the session's native permission file, because a tool pre-approved in a file
+# Crew does not own never sends ``session/request_permission`` and Crew's gate never
+# fires. Reading the flag for a harness whose mirror documents it as
+# accepted-and-ignored would withhold every member's tools on a condition that
+# cannot describe that backend.
+ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+    }
+)
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer).
 # claude-agent-acp does not implement it, so a steer sent there is answered with

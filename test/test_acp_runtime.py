@@ -5809,6 +5809,204 @@ def _without_identity_env(elements):
     return out
 
 
+class TestRuntimeMemberDispatchDisabled:
+    """A switched-off dashboard server is not mounted on EITHER runtime path.
+
+    ``AcpRuntime`` composes the array for an ``ACP_BACKENDS_ACP_RUNTIME`` host, and the
+    member entry it appends is outside every rule that array is filtered by -- the
+    ``tools`` allowlist that keeps a disabled server out of a projected array never
+    sees an element appended after it. ``disabled`` also has no per-tool or per-call
+    spelling, so no harness can refuse a call to a server it was handed: not mounting
+    it is the only place the operator's switch-off can be honoured.
+
+    Both paths are pinned because ``session/load`` RE-INITIALIZES the session's
+    servers, so a resume that did not ask would re-mount a server the original
+    ``session/new`` withheld.
+    """
+
+    MEMBER_KEY = "dashboard_member-autofix"
+
+    @staticmethod
+    def _switch_off(monkeypatch, tmp_path, *, disabled: bool):
+        """Write the switch where the dashboard's own MCP action writes it."""
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        settings = tmp_path / "mcp.json"
+        entry = {"disabled": True} if disabled else {}
+        settings.write_text(
+            json.dumps({"mcpServers": {MEMBER_DISPATCH_SERVER: entry}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", settings)
+        return MEMBER_DISPATCH_SERVER
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("disabled", [True, False])
+    async def test_create_session_asks_before_mounting(self, monkeypatch, tmp_path, disabled):
+        server = self._switch_off(monkeypatch, tmp_path, disabled=disabled)
+        rt, _, _ = _make_runtime()
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-new", "modes": {"currentModeId": "kirocrew"}}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        await rt.create_session(cwd="/work", agent="kirocrew", member_session_key=self.MEMBER_KEY)
+        params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
+        names = [e["name"] for e in params["mcpServers"]]
+        assert (server in names) is (not disabled), names
+
+    def test_the_scope_comes_from_the_one_decider(self):
+        """The switch-off has to be read where this host resolves its agent.
+
+        ``session_mcp`` resolves a spec project-nearest and does NOT fall back, so on a
+        host that runs the USER-level agent (KAS) a same-named file in the checkout would
+        decide the answer for a session that never reads it: a disable written where that
+        session's agent actually lives would read as "not disabled" and the withdrawn
+        server would mount. Asserted against ``overlay_project_scope`` rather than
+        against a literal, because that function is the decider the array's own
+        projection uses and these two must not come apart.
+        """
+        from kiro_crew.acp.runtime import _disable_check_scope
+        from kiro_crew.agent_sdk.backends import overlay_project_scope
+
+        for backend in ("kas", "codex", "kiro", "opencode", "claude"):
+            assert _disable_check_scope(backend, "/work") == overlay_project_scope(
+                backend, "/work"
+            ).get("work_dir"), backend
+        # The case the mismatch would hide: KAS reads no checkout at all.
+        assert _disable_check_scope("kas", "/work") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("disabled", [True, False])
+    async def test_the_kas_grant_follows_the_withhold(self, monkeypatch, tmp_path, disabled):
+        """Withholding the mount has to withhold the GRANT with it.
+
+        ``member_dispatch=True`` widens the KAS agent payload: the dashboard server joins
+        ``tools`` and the member verbs join ``allowedTools``, which is an approval-free
+        path. A grant that outlived the withhold would leave a switched-off server both
+        named and pre-approved on the very session that is not mounting it -- worse than
+        an unguarded mount, because nothing would even ask.
+
+        Read off the flag reaching ``_kas_custom_agents`` rather than off a KAS wire
+        payload: ``create_session`` enters that seam for every host (it answers None for a
+        non-KAS one), so the decision is observable without a KAS session to drive.
+        """
+        from kiro_crew.acp.harness.base import SessionExtras
+
+        self._switch_off(monkeypatch, tmp_path, disabled=disabled)
+        rt, _, _ = _make_runtime()
+        seen: list[bool] = []
+
+        async def _capture(_agent, *, member_dispatch=False, session_key=""):
+            seen.append(member_dispatch)
+            return SessionExtras(custom_agents=None, derived_spec_snapshot=None)
+
+        monkeypatch.setattr(rt, "_kas_custom_agents", _capture)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-new", "modes": {"currentModeId": "kirocrew"}}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        await rt.create_session(cwd="/work", agent="kirocrew", member_session_key=self.MEMBER_KEY)
+        assert seen == [not disabled], (seen, disabled)
+
+    def test_the_resume_path_carries_the_same_grant_expression(self):
+        """The resume half, pinned where it can be: its own source.
+
+        The seam is entered only for KAS on that path -- by design, so the kiro resume
+        reaches a comparison and stops -- and driving a KAS resume needs the whole
+        re-attach and activation bracket this suite's fake transport does not answer. A
+        source pin still fails if the term is dropped from one path and kept on the other,
+        which is the drift that matters: the two halves of one feature disagreeing.
+        """
+        import inspect
+
+        from kiro_crew.acp.runtime import AcpRuntime
+
+        for method in (AcpRuntime.create_session, AcpRuntime.load_session):
+            source = inspect.getsource(method)
+            assert (
+                "member_dispatch=bool(member_session_key) and not member_withheld" in source
+            ), method.__name__
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["create", "load"])
+    async def test_both_paths_pass_that_scope(self, monkeypatch, path):
+        """Not just the helper: the value each path actually hands the reader."""
+        from kiro_crew.acp import runtime as runtime_mod
+
+        seen: list[object] = []
+
+        def _capture(_name, _agent, *, work_dir=None):
+            seen.append(work_dir)
+            return False
+
+        monkeypatch.setattr(runtime_mod, "session_mcp_server_is_disabled", _capture)
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-new", "modes": {"currentModeId": "kirocrew"}}
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        # A sentinel rather than a checkout path: the default runtime backend is not
+        # user-level-only, so its scope and the raw session checkout are the SAME
+        # string, and a call site that skipped the decider would pass that assertion.
+        # Identity against the decider's answer cannot be reached any other way.
+        scope = object()
+        monkeypatch.setattr(runtime_mod, "_disable_check_scope", lambda _backend, _wd: scope)
+        if path == "create":
+            await rt.create_session(
+                cwd="/work", agent="kirocrew", member_session_key=self.MEMBER_KEY
+            )
+        else:
+            await rt.load_session(
+                "/home/u/.kiro/sessions/cli/sid-123.json",
+                "sid-123",
+                cwd="/work",
+                agent="kirocrew",
+                member_session_key=self.MEMBER_KEY,
+            )
+        assert len(seen) == 1, seen
+        assert seen[0] is scope, seen
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("disabled", [True, False])
+    async def test_load_session_asks_again_on_resume(self, monkeypatch, tmp_path, disabled):
+        server = self._switch_off(monkeypatch, tmp_path, disabled=disabled)
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        await rt.load_session(
+            "/home/u/.kiro/sessions/cli/sid-123.json",
+            "sid-123",
+            cwd="/work",
+            agent="kirocrew",
+            member_session_key=self.MEMBER_KEY,
+        )
+        params = next(p for m, p in sent if m == METHOD_SESSION_LOAD)
+        names = [e["name"] for e in params["mcpServers"]]
+        assert (server in names) is (not disabled), names
+
+
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,

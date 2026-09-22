@@ -87,7 +87,7 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
     advertised_models_from_session,
 )
-from kiro_crew.acp.session_mcp import agent_spec_snapshot
+from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -1346,6 +1346,24 @@ def _ref_spec_snapshot(agent: str | None, work_dir: str | Path) -> dict[str, Any
     except Exception:
         logger.debug("unresolved-ref guard: agent spec unreadable", exc_info=True)
         return None
+
+
+def _disable_check_scope(backend: str, work_dir: Any) -> Any:
+    """The checkout a switched-off-server check may read *backend*'s spec from.
+
+    ``None`` for a host that resolves its agent at the USER level only, and the
+    session's checkout for every other. Read from :func:`overlay_project_scope`, the
+    one decider, rather than spelled again here: the question is the same one the
+    array's own projection asks, and answering it twice is how the two scopes come
+    apart.
+
+    The mismatch this exists to prevent is specific. ``session_mcp`` resolves a spec
+    project-nearest and does NOT fall back, so on a user-level host a same-named file
+    in the checkout would decide the answer for a session running the user-level
+    agent: a switch-off written where that session's agent actually lives would read
+    as "not disabled", and the server it withdraws would mount.
+    """
+    return overlay_project_scope(backend, work_dir).get("work_dir")
 
 
 def _pooled_session_servers_and_ref_spec(
@@ -5562,13 +5580,30 @@ class AcpRuntime:
             # judge against and stays silent -- as the client does with no warmed
             # snapshot.
             stub_token = ""
+        member_withheld = False
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time like the projection seams below.
-            from kiro_crew.members import member_dispatch_session_server
+            from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-            member_entry = await asyncio.to_thread(
-                member_dispatch_session_server, member_session_key, stub_token
+            # The operator's switch-off of the dashboard server, asked on THIS path
+            # too. ``disabled`` has no per-tool or per-call spelling, so a harness
+            # handed the server cannot refuse a call to it, and the ``tools``
+            # allowlist that keeps a disabled server out of a projected array does
+            # not reach an entry appended here. Only a member session reaches this
+            # branch, so no other host gains a suspension point (H13).
+            member_withheld = await asyncio.to_thread(
+                session_mcp_server_is_disabled,
+                MEMBER_DISPATCH_SERVER,
+                agent or self._agent,
+                work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            )
+            member_entry = (
+                None
+                if member_withheld
+                else await asyncio.to_thread(
+                    member_dispatch_session_server, member_session_key, stub_token
+                )
             )
             if member_entry is not None:
                 # Session-level entries outrank same-named spec entries, so drop
@@ -5576,6 +5611,14 @@ class AcpRuntime:
                 mcp_servers = [e for e in mcp_servers if e.get("name") != member_entry["name"]] + [
                     member_entry
                 ]
+            elif member_withheld:
+                logger.warning(
+                    "member session %s: %s is switched off for this session "
+                    "(disabled), so session control is not mounted — the DM thread "
+                    "runs as plain chat; re-enable that server to restore it",
+                    member_session_key,
+                    MEMBER_DISPATCH_SERVER,
+                )
             else:
                 logger.warning(
                     "member session %s: dashboard server unresolved — the DM "
@@ -5592,7 +5635,12 @@ class AcpRuntime:
         # argument, and no new failure mode (harness-parity H13).
         kas_extras = await self._kas_custom_agents(
             active_agent,
-            member_dispatch=bool(member_session_key),
+            # The GRANT follows the same answer the mount does. This widening adds
+            # ``@kirocrew-dashboard`` to the KAS agent's ``tools`` and merges the member
+            # verbs into ``allowedTools``, which is an approval-free path: a grant that
+            # outlived the withhold would leave the switched-off server both named and
+            # pre-approved on the very session that is not mounting it.
+            member_dispatch=bool(member_session_key) and not member_withheld,
             session_key=session_key,
         )
         kas_agents = kas_extras.custom_agents
@@ -6258,18 +6306,41 @@ class AcpRuntime:
                 pooled, active_agent, session_work_dir
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        member_withheld = False
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
-            from kiro_crew.members import member_dispatch_session_server
+            from kiro_crew.members import MEMBER_DISPATCH_SERVER, member_dispatch_session_server
 
-            member_entry = await asyncio.to_thread(
-                member_dispatch_session_server, member_session_key, stub_token
+            # Asked on the resume path for the reason it is asked on create, and it
+            # matters MORE here: session/load re-initializes the session's servers, so
+            # an unasked question would re-mount a switched-off server onto a
+            # conversation whose session/new withheld it.
+            member_withheld = await asyncio.to_thread(
+                session_mcp_server_is_disabled,
+                MEMBER_DISPATCH_SERVER,
+                active_agent,
+                work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+            )
+            member_entry = (
+                None
+                if member_withheld
+                else await asyncio.to_thread(
+                    member_dispatch_session_server, member_session_key, stub_token
+                )
             )
             if member_entry is not None:
                 mcp_servers = [e for e in mcp_servers if e.get("name") != member_entry["name"]] + [
                     member_entry
                 ]
+            elif member_withheld:
+                logger.warning(
+                    "member session %s: %s is switched off for this session "
+                    "(disabled), so session control is not mounted on resume — the DM "
+                    "thread runs as plain chat; re-enable that server to restore it",
+                    member_session_key,
+                    MEMBER_DISPATCH_SERVER,
+                )
             else:
                 logger.warning(
                     "member session %s: dashboard server unresolved on resume — "
@@ -6324,7 +6395,8 @@ class AcpRuntime:
         if self._acp_backend == ACP_BACKEND_KAS:
             kas_extras = await self._kas_custom_agents(
                 active_agent,
-                member_dispatch=bool(member_session_key),
+                # The grant follows the withhold here too -- see create_session().
+                member_dispatch=bool(member_session_key) and not member_withheld,
                 session_key=session_key,
             )
             kas_agents = kas_extras.custom_agents

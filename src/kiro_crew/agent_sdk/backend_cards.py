@@ -17,9 +17,10 @@ projection, and a ``frozenset`` is why they are only two: it carries one bit -- 
 or out -- so nothing about a non-member is legible in the source data, and three
 reasons a reader wants told apart collapse into one absence: cannot do it, does it
 differently, and nobody has measured it. ``ACP_BACKENDS_MEMBER_DISPATCH`` shows the
-collapse: codex is a non-member because, in the set's own words, "what is missing is
-a DECISION, not a mechanism", opencode is a non-member on the same words, and KAS is
-a member on a captured mount.
+collapse: pi is a non-member because a mount there is INERT (the array is accepted
+and never forwarded), deepseek is a non-member on a deliberate refusal -- it has the
+mount, and its routing sits outside ``tool_gate.ENFORCED_ROUTINGS`` -- and KAS is a
+member on a captured mount.
 
 The third level is NOT derived from the sets, because it is not in them. It is
 :data:`DECLARED_UNMEASURED`, a per-harness per-line table carrying a reason per
@@ -41,9 +42,9 @@ projection exists to remove:
   says the gap is evidence. ``test_backend_cards`` reads that comment and fails an
   entry the vocabulary does not support, so the table cannot drift away from the
   prose and the threshold is a gate rather than a convention to remember;
-* "a decision is missing" is not this state. codex and opencode have no member
-  dispatch because nobody decided to mount session control into their threads, so
-  the feature does not work today and NOT AVAILABLE is the true mark. Unmeasured is
+* "a decision is missing" is not this state. deepseek has no member dispatch because
+  mounting Crew's control plane into a session nothing gates is refused, so the
+  feature does not work there today and NOT AVAILABLE is the true mark. Unmeasured is
   for a line whose answer is unknown, never for one whose answer is no;
 * an entry may not contradict the projection. A member has demonstrated the
   capability, so :func:`_card_lines` applies an entry only to a line that is already

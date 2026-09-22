@@ -491,28 +491,53 @@ itself opened. Member sessions also bypass the provider warm pool
 default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
-claude seam, KAS and codex); kiro-cli v2 reads its template from disk and
+claude seam, KAS, codex and opencode); kiro-cli v2 reads its template from disk and
 exposes no per-session channel, so a member session on it runs as plain chat —
 the tools are simply not mounted, never mounted-and-refused. Codex qualifies
 because `providers/mirrors/codex.py` already gives it a per-session array and
 its routing is `SESSION_CONFIG`, a member of `ENFORCED_ROUTINGS`, so
 `_apply_session_permission_routing` refuses the session outright when
 `mode=read-only` cannot be armed — what was missing was the decision, not a
-mechanism.
+mechanism. `tool_gate.is_enforced` is true for opencode as well, on
+`VERIFIED_SEEDED_SETTINGS`: the value is seeded into the child's environment and READ
+BACK from the harness's own config resolution before the first prompt, so a session
+that cannot establish the asking posture is refused there too, and
+`providers/mirrors/opencode.py` documents `permission_surface_owned` as
+accepted-and-ignored for exactly that reason.
 
 Which code appends the entry depends on who composes the array.
 `AcpClient._append_member_dispatch_server` serves the backends whose array the
-CLIENT builds — claude's — and honours the permission-surface precondition there,
-because claude's routing is `SEEDED_SETTINGS`, declared and not enforced, so
-owning `settings.local.json` (`_claude_settings_authored`) stands in for the
-read-back this core does not have. A runtime-served harness never reaches that
-helper: codex's array comes from `AcpRuntime._mirrored_session_mcp`, and
-`create_session` / `load_session` append the member entry themselves keyed on a
-non-empty `member_session_key`, which `AcpProvider._member_session_key` returns
-only for a member key on a backend in the set. The agent spec cannot supply the
-server instead: `mirrors.identity.identity_bound_crew_servers` withholds the
-spec-described spelling of it, because such an element carries no session identity
-and would answer `identity_unattested` to every verb. Because the mount is
+CLIENT builds — claude's and opencode's — and honours the permission-surface
+precondition there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`,
+declared and not enforced, so owning `settings.local.json`
+(`_claude_settings_authored`) stands in for the read-back this core does not have,
+while a harness whose routing is enforced must not be held to a file it never writes.
+A runtime-served harness never reaches that helper: codex's array comes from
+`AcpRuntime._mirrored_session_mcp`, and `create_session` / `load_session` append the
+member entry themselves keyed on a non-empty `member_session_key`, which
+`AcpProvider._member_session_key` returns only for a member key on a backend in the
+set. The agent spec cannot supply the server instead:
+`mirrors.identity.identity_bound_crew_servers` withholds the spec-described spelling
+of it, because such an element carries no session identity and would answer
+`identity_unattested` to every verb.
+
+Two operator switch-offs bind the mount, and both are asked wherever the array is
+composed. Switching the dashboard server off WHOLE (`disabled`) withholds it with no
+backend condition: the form has no per-call spelling, so no harness can refuse a call
+to a server it was handed, and the `tools` allowlist that keeps a disabled server out
+of the spec-described half of the array does not reach an element a composer appends
+itself. `AcpClient` reads the projection's `disabled_servers`; `AcpRuntime` asks
+`session_mcp.session_mcp_server_is_disabled` on its create and resume paths, through
+that reader rather than a projection field because KAS has no mirror to carry one, and
+from the spec scope its host actually resolves the agent from
+(`overlay_project_scope`). On KAS the member GRANT follows the same answer, since the
+widening is approval-free. The resume half matters on its own: `session/load`
+re-initializes the session's servers and would otherwise re-mount what `session/new`
+withheld. Switching off one TOOL of that server is narrower and is weighed against the
+backend: where withholding the server is the whole of its per-tool deny channel
+(`mirrors.registry.PerToolDeny.WHOLE_SERVER`, opencode today) the mount is withheld
+too, while codex refuses the call at permission time and claude's deny rules refuse it
+inside the adapter, so both keep their mounts. Because the mount is
 session-scoped, no other session on the same agent template gains the tools,
 preserving the two-part grant for ordinary agents (the switch AND the
 per-agent server assignment).

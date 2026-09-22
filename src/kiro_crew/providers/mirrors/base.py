@@ -113,6 +113,33 @@ class SessionProjection:
 
     params: dict[str, Any]
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    disabled_servers: frozenset[str] = frozenset()
+    """Servers this session switches off WHOLE (``disabled: true``).
+
+    Carried for the same caller ``restricted_servers`` is carried for, and it is the
+    STRONGER of the two: a per-tool narrowing may be honoured by a harness that
+    refuses the call, while a whole-server disable has no per-call form at all, so no
+    backend can refuse a call to a server it was handed. The spec-described half of
+    the array honours it through the ``tools`` allowlist; an element a caller appends
+    itself is outside that rule and reads this instead.
+    """
+    restricted_servers: frozenset[str] = frozenset()
+    """Server names this parse did not mount because their spec narrows them PER TOOL.
+
+    The RESTRICTION half of :func:`~kiro_crew.providers.mirrors.identity.withheld_servers`
+    and not the identity half, because the two are un-withheld by different things: an
+    identity-bound name is withheld from the SPEC-described element and is meant to be
+    re-added as an element Crew authors, while a restricted name must not come back at
+    all on a transport where withholding is the only way the restriction is honoured.
+
+    A third client obligation, and the one a caller that appends an element of its OWN
+    has to read: the member-dispatch entry carries a server name, and re-adding a name
+    from this set on a backend whose ``registry.PerToolDeny`` is ``WHOLE_SERVER`` makes a
+    tool the user switched off callable again, with no second channel to refuse it (see
+    ``AcpClient._append_member_dispatch_server``). Empty is the honest answer for a mirror
+    that keeps a narrowed server MOUNTED because its transport honours the restriction
+    another way -- claude re-expresses it as ``permissions.deny`` rules.
+    """
     derived_spec_snapshot: Any = None
     """The ``agent.DerivedSpecSnapshot`` the ``mcpServers`` array was built from.
 

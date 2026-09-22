@@ -542,6 +542,68 @@ def session_mcp_disabled_tools(
     return frozenset(pairs)
 
 
+def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
+    """Every server switched off WHOLE by ``disabled: true``, from both sources.
+
+    A different question from :func:`session_mcp_restricted_servers`, and the
+    difference is what makes this its own function: a per-tool narrowing leaves a
+    server the user still wants, while ``disabled`` withdraws the server itself. The
+    array honours that through the ``tools`` allowlist -- ``agent.build_agent_config``
+    strips a disabled server's ``@alias``, so nothing mounts it -- but an allowlist
+    only governs elements the SPEC describes. A caller that appends an element of its
+    OWN (``AcpClient._append_member_dispatch_server``, which mounts a server the
+    template deliberately does not name) is outside that rule and has to ask this.
+
+    Unlike the restriction sets there is no backend condition on the answer: a
+    whole-server disable has no per-call form, so no harness can refuse a call to a
+    server it was handed. The only faithful action anywhere is not mounting it.
+
+    Same two sources as :func:`session_mcp_disabled_tools`, unioned for the same
+    reason -- a switch-off can only ever switch off -- and taken as the caller's
+    ALREADY-PARSED bytes so this cannot disagree with the array built beside it. The
+    control plane is NOT exempt: ``disabled`` on ``kirocrew-core`` is the user
+    saying so, and this function only reports it. Free of I/O.
+    """
+    names: set[str] = set()
+    for source in (spec, settings):
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("mcpServers")
+        if not isinstance(raw, dict):
+            continue
+        for name, entry in raw.items():
+            if isinstance(entry, dict) and entry.get("disabled"):
+                names.add(str(name))
+    return frozenset(names)
+
+
+def session_mcp_server_is_disabled(
+    name: str, agent: str | None, *, work_dir: str | Path | None = None
+) -> bool:
+    """Whether *name* is switched off WHOLE for a session running as *agent*.
+
+    The reading form of :func:`session_mcp_disabled_servers`, for a caller that holds
+    no parse of its own to pass in. ``AcpRuntime`` is that caller: it composes the
+    array for an ``ACP_BACKENDS_ACP_RUNTIME`` host, and half of those hosts have no
+    mirror to carry the answer down -- KAS projects through ``acp.kas_agents`` rather
+    than through an ``mcpServers`` array at all -- so a field on the mirrored
+    projection would answer for one of them and not the other.
+
+    One read of each source, which on a mirrored host is a SECOND read of files its
+    projection also read. The direction that costs is the safe one: a switch-off can
+    only ever switch off, so the window between two reads can withhold a mount whose
+    switch-off arrived a moment ago and can never mount one it missed. A caller that
+    HAS the parse uses :func:`session_mcp_disabled_servers` instead and keeps its
+    answers on one read.
+
+    Blocking (reads the agent spec and the global settings file); callers run it off
+    the event loop. Never raises: an unreadable source switches nothing off, the same
+    contract :func:`session_mcp_disabled_tools` keeps.
+    """
+    spec = _agent_spec_for(agent, work_dir) if agent else None
+    return name in session_mcp_disabled_servers(spec, _global_settings())
+
+
 def session_mcp_restricted_servers(disabled_tools: Collection[tuple[str, str]]) -> frozenset[str]:
     """Servers whose per-TOOL narrowing no transport can carry as an element.
 
@@ -634,6 +696,10 @@ class SessionMcpProjection(NamedTuple):
     #: Every ``(server, tool)`` the spec switches off, no server exempt
     #: (:func:`session_mcp_disabled_tools`).
     disabled_tools: frozenset[tuple[str, str]]
+    #: Servers switched off WHOLE by ``disabled: true``
+    #: (:func:`session_mcp_disabled_servers`). Separate from ``restricted`` because
+    #: no backend has a per-call form for it, so nothing may mount one.
+    disabled_servers: frozenset[str]
     #: The ``tools`` allowlist the translated half was filtered by, so a caller
     #: appending elements of its own (pooled stubs) can hold them to the same one.
     allowlist: ToolsAllowlist
@@ -682,6 +748,7 @@ def session_mcp_projection(
         ),
         restricted=session_mcp_restricted_servers(disabled_tools),
         disabled_tools=disabled_tools,
+        disabled_servers=session_mcp_disabled_servers(spec, settings),
         allowlist=_tools_allowlist(spec),
         derived_spec_snapshot=snapshot,
     )

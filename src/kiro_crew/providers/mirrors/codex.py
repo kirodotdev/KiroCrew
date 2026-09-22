@@ -404,6 +404,12 @@ def codex_projection(
     return SessionProjection(
         params={"mcpServers": out},
         denied_tools=denied,
+        # Recorded for the caller, not acted on differently here: this backend's
+        # ``PerToolDeny`` is ``PER_CALL`` and ``denied_tools`` above carries every
+        # switched-off pair, control plane included, so a name here stays refusable at
+        # permission time even when something re-adds it.
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=projection.restricted,
         derived_spec_snapshot=projection.derived_spec_snapshot,
     )
 

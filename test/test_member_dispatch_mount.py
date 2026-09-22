@@ -26,6 +26,7 @@ hand session control to every session of the agent.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +41,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
 )
@@ -60,7 +62,7 @@ class TestCapabilitySet:
         channel, so it must never be in the set: a member session on it runs as
         plain chat rather than mounted-and-refused."""
         assert ACP_BACKENDS_MEMBER_DISPATCH == frozenset(
-            {ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+            {ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MEMBER_DISPATCH
 
@@ -74,6 +76,31 @@ class TestCapabilitySet:
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_MEMBER_DISPATCH
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_MCP_ARRAY
         assert acp_tool_gate.is_enforced(ACP_BACKEND_CODEX) is True
+
+    def test_the_precondition_is_read_from_the_routing(self):
+        """Opposite answers from one question, and claude's answer must not move.
+
+        The client's owned-file fallback answers for an UNENFORCED routing alone.
+        claude's is declared and unenforced, so owning ``settings.local.json`` stands
+        in for the read-back this core does not have. opencode's IS enforced, and its
+        mirror documents ``permission_surface_owned`` as accepted-and-ignored, so
+        asking for an owned file there would withhold every member's tools on a
+        condition that cannot describe the backend.
+        """
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_CLAUDE) is False
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is True
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_CODEX) is True
+
+    def test_opencode_holds_both_things_membership_needs(self):
+        """The mount it rides, and the gate that makes the mount safe.
+
+        Its routing is ``VERIFIED_SEEDED_SETTINGS`` rather than codex's
+        ``SESSION_CONFIG``, and H6 means codex's membership establishes nothing here
+        -- so both facts are asserted for THIS harness rather than inherited.
+        """
+        assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_MEMBER_DISPATCH
+        assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_SESSION_MCP_ARRAY
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is True
 
 
 class TestMemberDispatchSessionServer:
@@ -235,6 +262,9 @@ class _ClientStub:
     _session_key = MEMBER_KEY
     _claude_settings_authored = True
     _stub_session_token = "e" * 64
+    # The real predicate, not a double: it is the thing that decides whether a
+    # restricted server may be re-added, and a stubbed answer would test the stub.
+    _withhold_is_the_only_deny_channel = AcpClient._withhold_is_the_only_deny_channel
 
 
 def _base_servers() -> list[dict]:
@@ -338,6 +368,300 @@ class TestCodexMemberMount:
         )
         assert [e["name"] for e in kept] == ["kirocrew-core", MEMBER_DISPATCH_SERVER]
         assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in kept[-1]["env"]
+
+
+class TestOpencodeMemberAppend:
+    """An opencode member session mounts without owning any permission file.
+
+    Same precondition shape as codex, reached through a DIFFERENT routing:
+    ``VERIFIED_SEEDED_SETTINGS`` is enforced because the seeded value is read back
+    from the harness's own config resolution before the first prompt. The mutation
+    these carry is the precondition itself -- read claude's flag on this backend and
+    the first test withholds the entry, which is the state the mirror's own docstring
+    says must not happen (``permission_surface_owned`` is accepted and ignored here,
+    so no opencode session can ever satisfy it).
+    """
+
+    @staticmethod
+    def _opencode_stub(**over):
+        stub = _ClientStub()
+        stub.backend = ACP_BACKEND_OPENCODE
+        # opencode writes no ``settings.local.json`` and claude's writer is the only
+        # thing that sets this flag, so a stub leaving it True models a client that
+        # cannot exist on this backend.
+        stub._claude_settings_authored = False
+        for name, value in over.items():
+            setattr(stub, name, value)
+        return stub
+
+    def _run(self, stub) -> list[dict]:
+        return AcpClient._append_member_dispatch_server(stub, _base_servers())
+
+    def test_member_session_gains_the_entry(self):
+        out = self._run(self._opencode_stub())
+        assert [e["name"] for e in out] == ["kirocrew-core", MEMBER_DISPATCH_SERVER]
+        env = out[-1]["env"]
+        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in env
+        token = {"name": STUB_SESSION_TOKEN_ENV, "value": _ClientStub._stub_session_token}
+        assert token in env
+
+    def test_non_member_session_is_untouched(self):
+        """The mount is SESSION-scoped, which is why it is not in the agent
+        template: an ordinary opencode session on the same agent gains nothing."""
+        stub = self._opencode_stub(_session_key="dashboard_abc123")
+        assert self._run(stub) == _base_servers()
+
+    def test_an_empty_session_key_is_untouched(self):
+        """A pooled child claimed later has no key yet, and a mount with no identity
+        would answer ``identity_unattested`` to every verb."""
+        stub = self._opencode_stub(_session_key="")
+        assert self._run(stub) == _base_servers()
+
+
+class TestOpencodeSessionArray:
+    """The whole array an opencode ``session/new`` would carry, not just the append.
+
+    The claim membership makes is about the ARRAY: a member DM thread on this harness
+    holds the session-control tools. So these drive
+    ``AcpClient._resolve_session_mcp_servers`` with the REAL opencode mirror over a
+    real agent spec, and read the elements that come out. Nothing here asserts set
+    membership -- that would be the claim proving itself.
+
+    The spec's own ``kirocrew-dashboard`` is the case the projection must NOT supply:
+    ``mirrors.identity.identity_bound_crew_servers`` withholds it because a
+    spec-described element carries no session identity, so the entry in the array has
+    to be the one this session's mount places.
+    """
+
+    @staticmethod
+    def _client(agents_dir: Path, tmp_path: Path, session_key: str):
+        from kiro_crew.acp.client import AcpClient as _C
+
+        client = object.__new__(_C)
+        # ``backend`` is a read-only property over this attribute on the real class.
+        client._acp_backend = ACP_BACKEND_OPENCODE
+        client._mcp_gateway_overlay = None  # shared gateway off: no broker stubs
+        client._agent = "kirocrew"
+        client._work_dir = tmp_path / "work"
+        client._session_key = session_key
+        client._channel_id = "dashboard"
+        client._stub_session_token = "f" * 64
+        client._claude_settings_authored = False
+        return client
+
+    @pytest.fixture
+    def agents_dir(self, tmp_path, monkeypatch):
+        """The documented seam for driving a mirror over a spec on disk.
+
+        Same one ``test_opencode_session_mcp.py`` uses: materialization would
+        otherwise rebuild the managed default and overwrite the spec under test.
+        """
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.acp import session_mcp
+
+        d = tmp_path / "agents"
+        d.mkdir()
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
+        monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
+        managed = {
+            "kirocrew-core": {"command": "/opt/kirocrew", "args": ["mcp-core"]},
+            "kirocrew-dashboard": {"command": "/opt/kirocrew", "args": ["mcp-dashboard"]},
+        }
+        monkeypatch.setattr(
+            session_mcp,
+            "managed_mcp_spec_entry",
+            lambda name: dict(managed[name]) if name in managed else None,
+        )
+        monkeypatch.setattr(session_mcp, "_mcp_registry_mode", lambda: False)
+        (d / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "kirocrew-core": {"command": "/opt/kirocrew", "args": ["mcp-core"]},
+                        MEMBER_DISPATCH_SERVER: {
+                            "command": "/opt/kirocrew",
+                            "args": ["mcp-dashboard"],
+                        },
+                    },
+                    "tools": ["@kirocrew-core", "@" + MEMBER_DISPATCH_SERVER],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return d
+
+    def test_a_member_session_carries_the_dashboard_element_last(
+        self, agents_dir, tmp_path, monkeypatch
+    ):
+        client = self._client(agents_dir, tmp_path, MEMBER_KEY)
+        out = client._resolve_session_mcp_servers()
+        names = [e["name"] for e in out]
+        assert names[-1] == MEMBER_DISPATCH_SERVER, names
+        assert names.count(MEMBER_DISPATCH_SERVER) == 1, names
+        assert "kirocrew-core" in names, names
+        env = {p["name"]: p["value"] for p in out[-1]["env"]}
+        assert env["KIROCREW_SESSION_KEY"] == MEMBER_KEY
+        assert env[STUB_SESSION_TOKEN_ENV] == client._stub_session_token
+
+    def test_an_ordinary_session_carries_no_dashboard_element(
+        self, agents_dir, tmp_path, monkeypatch
+    ):
+        """And the spec DECLARED it, which is the point: the projection withholds a
+        spec-described control-plane server, so an ordinary session on this very
+        template cannot reach session control."""
+        client = self._client(agents_dir, tmp_path, "dashboard_abc123")
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+    def test_a_disabled_dashboard_server_withholds_the_mount(
+        self, agents_dir, tmp_path, monkeypatch
+    ):
+        """``disabled`` is the stronger switch and binds on every backend.
+
+        A per-tool narrowing can be honoured by a harness that refuses the call; a
+        whole-server disable has no per-call form at all, so nothing downstream can
+        refuse a call to a server it was handed. The ``tools`` allowlist keeps a
+        disabled server out of the spec-described half of the array, but this entry is
+        appended after that filter and would otherwise walk straight past it.
+        """
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps({"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabled": True}}}),
+            encoding="utf-8",
+        )
+        client = self._client(agents_dir, tmp_path, MEMBER_KEY)
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+    def test_a_switched_off_dashboard_tool_withholds_the_whole_mount(
+        self, agents_dir, tmp_path, monkeypatch
+    ):
+        """The one way this mount can make a session WORSE than no mount at all.
+
+        opencode's declared per-tool deny is ``WHOLE_SERVER``: there is no deny slot on
+        the element, no file of Crew's, and no structured identity on a tool call for
+        the client to refuse by, so withholding the narrowed server IS the enforcement.
+        Re-adding it for a member would put a tool the operator switched off back within
+        reach, and nothing downstream would refuse the call. The thread runs as plain
+        chat instead.
+
+        The restriction is written the way the dashboard's tool-off action writes it --
+        to the global MCP settings file, which for Crew's own managed servers is the only
+        place it can live.
+        """
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabledTools": ["session_stop"]}}}
+            ),
+            encoding="utf-8",
+        )
+        client = self._client(agents_dir, tmp_path, MEMBER_KEY)
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+
+class TestRestrictedServerIsNotReAdded:
+    """The append may not un-withhold a narrowed server -- but only where that would
+    actually widen anything.
+
+    Three answers from one declaration (``registry.PerToolDeny``), which is why the
+    client reads that rather than a membership set of its own: withholding is the whole
+    enforcement on opencode, while codex still refuses the call at permission time from
+    ``denied_tools`` and claude's ``permissions.deny`` rules refuse it inside the
+    adapter. Withholding the mount on either of those two would cost a member thread
+    its tools and buy nothing.
+    """
+
+    @staticmethod
+    def _run(backend: str, restricted):
+        stub = _ClientStub()
+        stub.backend = backend
+        stub._claude_settings_authored = True  # so claude reaches the second check
+        return AcpClient._append_member_dispatch_server(stub, _base_servers(), restricted)
+
+    def test_opencode_withholds(self):
+        out = self._run(ACP_BACKEND_OPENCODE, frozenset({MEMBER_DISPATCH_SERVER}))
+        assert out == _base_servers()
+
+    def test_opencode_still_mounts_when_another_server_is_the_restricted_one(self):
+        """Scoped to the name being mounted: a third-party server's restriction says
+        nothing about this one."""
+        out = self._run(ACP_BACKEND_OPENCODE, frozenset({"some-third-party"}))
+        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE])
+    def test_a_backend_with_a_second_deny_channel_keeps_its_mount(self, backend):
+        out = self._run(backend, frozenset({MEMBER_DISPATCH_SERVER}))
+        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
+
+    def test_the_channel_question_is_answered_from_the_declaration(self):
+        """And it is the declaration the projection itself acts on, so the two cannot
+        disagree about one backend."""
+        from kiro_crew.providers.mirrors import PerToolDeny, projection_for
+
+        assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        assert projection_for(ACP_BACKEND_CODEX).per_tool_deny is PerToolDeny.PER_CALL
+        assert projection_for(ACP_BACKEND_CLAUDE).per_tool_deny is PerToolDeny.SETTINGS_FILE
+
+    def test_an_undeclared_backend_fails_closed(self):
+        """``projection_for`` raises for a backend with no declaration, and an unknown
+        deny channel cannot be shown to make a re-add safe. The cost is plain chat."""
+        stub = _ClientStub()
+        stub.backend = "no-such-backend"
+        assert AcpClient._withhold_is_the_only_deny_channel(stub) is True
+
+
+class TestDisabledServerIsNeverMounted:
+    """``disabled`` stops the client's mount with no backend condition.
+
+    The contrast with :class:`TestRestrictedServerIsNotReAdded` is the point: there,
+    codex and claude keep the mount because each still refuses the CALL. A whole-server
+    disable has no per-call form for either of them to refuse by, so there is nothing
+    to weigh and no backend is exempt on this path.
+
+    Scope worth stating, since these parametrize over backends: they pin the CLIENT
+    path, which is opencode's. The other composer is pinned beside its own code, in
+    ``test_acp_runtime.py::TestRuntimeMemberDispatchDisabled`` -- both of
+    ``AcpRuntime``'s paths, create and resume.
+    """
+
+    @staticmethod
+    def _run(backend: str, disabled):
+        stub = _ClientStub()
+        stub.backend = backend
+        stub._claude_settings_authored = True
+        return AcpClient._append_member_dispatch_server(
+            stub, _base_servers(), frozenset(), disabled
+        )
+
+    @pytest.mark.parametrize(
+        "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE]
+    )
+    def test_every_dispatch_backend_withholds(self, backend):
+        assert self._run(backend, frozenset({MEMBER_DISPATCH_SERVER})) == _base_servers()
+
+    @pytest.mark.parametrize(
+        "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE]
+    )
+    def test_another_disabled_server_does_not_withhold_this_one(self, backend):
+        out = self._run(backend, frozenset({"some-third-party"}))
+        assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
+
+    def test_the_parse_reads_both_sources_and_exempts_nothing(self):
+        """Including the control plane: ``disabled`` there is the user saying so, and
+        this function's job is to report it rather than to judge it."""
+        from kiro_crew.acp.session_mcp import session_mcp_disabled_servers
+
+        spec = {"mcpServers": {"from-spec": {"disabled": True}, "on": {}}}
+        settings = {"mcpServers": {"kirocrew-core": {"disabled": True}}}
+        assert session_mcp_disabled_servers(spec, settings) == frozenset(
+            {"from-spec", "kirocrew-core"}
+        )
+        assert session_mcp_disabled_servers(None, "not a dict") == frozenset()
 
 
 class TestRuntimeMemberThreading:
