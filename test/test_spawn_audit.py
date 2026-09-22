@@ -391,6 +391,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent can write to names the executable; a resource ceiling / sandbox
         # adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
+        # The spec-permissions version gate: the same fixed argv
+        # ``[<kiro-cli>, "--version"]`` as the diagnostics probe above, 5s timeout,
+        # no shell, no cwd, pinned through ``pin_kiro_cli`` (no pin, no spawn), and
+        # cached per binary identity so it runs once per install rather than once
+        # per spec rebuild. Its answer decides whether ``agent.py`` writes the KAS
+        # ``permissions`` block a pre-2.23 kiro-cli refuses; nothing an agent says
+        # in a turn reaches the argv, and a sandbox adds nothing to ``--version``.
+        "kiro_cli.py::installed_kiro_cli_version",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",

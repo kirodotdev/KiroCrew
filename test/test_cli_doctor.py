@@ -1533,6 +1533,21 @@ class TestDoctorKas:
             cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: self._Cfg(backend))
         )
 
+    @pytest.fixture(autouse=True)
+    def _accepting_cli(self, monkeypatch):
+        """Pin the installed kiro-cli to one that accepts the spec ``permissions``
+        field, so the cases here stay about the relay and the engine.
+
+        Unpinned, the new auto-approve row would spawn the test host's own
+        kiro-cli -- absent on CI, which reads as refusing and appends an issue the
+        engine cases do not expect.
+        """
+        monkeypatch.setattr(
+            cli_doctor,
+            "installed_kiro_cli_version",
+            lambda: cli_doctor.SPEC_PERMISSIONS_MIN_VERSION,
+        )
+
     def _patch_vault(self, monkeypatch, holds: bool = False, detail: str | None = None) -> None:
         """Stub both vault probes so no test reads the developer's real vault.
 
@@ -1747,6 +1762,80 @@ class TestDoctorKas:
         assert host_auth.entitlement_label("kas") in out
         assert host_auth.ENTITLEMENT_HOST_IDENTITY_STORE not in out
         assert not hasattr(cli_doctor, "_kas_version_label")
+
+
+class TestTheKasBlockReportsAWithheldPermissionsField:
+    """The one place a withheld KAS auto-approve is visible.
+
+    The spec ``permissions`` block is how Crew's auto-approve list reaches KAS's
+    policy engine, and ``agent.py`` writes it only when the installed kiro-cli
+    accepts the field: an older release validates specs with
+    ``deny_unknown_fields``, so the key would make the whole spec unreadable and
+    drop every Crew MCP server. Withholding it is the smaller loss but still a
+    loss, so it is reported -- and only here, because it costs nothing until KAS
+    is the selected backend.
+    """
+
+    def _run(self, monkeypatch, capsys, version) -> tuple[str, list[str]]:
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig,
+            "load",
+            classmethod(lambda cls: type("C", (), {"agent": type("A", (), {"acp_backend": "kas"})()})()),
+        )
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        # A help text the engine probe is satisfied by, so the only issue any case
+        # here can append is the one the auto-approve row is responsible for.
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: f"--agent-engine <ENGINE>  {cli_doctor.KAS_RELAY_ENGINE}",
+        )
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: version)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        return capsys.readouterr().out, issues
+
+    def test_an_accepting_cli_reports_the_block_as_written(self, monkeypatch, capsys) -> None:
+        out, issues = self._run(monkeypatch, capsys, cli_doctor.SPEC_PERMISSIONS_MIN_VERSION)
+        assert "auto-approve: ✅" in out
+        assert issues == []
+
+    def test_a_refusing_cli_names_the_version_and_the_floor(self, monkeypatch, capsys) -> None:
+        """Both numbers, because the fix is "update past this floor"."""
+        floor = cli_doctor.SPEC_PERMISSIONS_MIN_VERSION
+        out, issues = self._run(monkeypatch, capsys, (floor[0], floor[1] - 1, 0))
+        assert "auto-approve: ❌" in out
+        assert f"{floor[0]}.{floor[1] - 1}.0" in out
+        assert ".".join(str(part) for part in floor) in out
+        assert "kiro-cli is too old to carry the KAS `permissions` block" in issues
+
+    def test_an_unknown_version_is_its_own_row_and_names_the_pin_remedy(
+        self, monkeypatch, capsys
+    ) -> None:
+        """Unknown is not "too old": the writer withholds a NEW block but keeps one
+        already on disk, and the remedy is a probeable binary, not an update."""
+        out, issues = self._run(monkeypatch, capsys, None)
+        assert "auto-approve: ⚠️" in out
+        assert "version unknown" in out
+        assert cli_doctor.PATH_ONLY_INSTALL_NOTE in out
+        assert "already on disk is kept" in out
+        assert "update kiro-cli" not in out
+        assert issues == ["kiro-cli version unknown, so the KAS `permissions` block is not seeded"]
+
+    def test_the_row_is_silent_when_kas_is_not_the_backend(self, monkeypatch, capsys) -> None:
+        """A kiro-cli or Claude Code install loses nothing, so it hears nothing."""
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig,
+            "load",
+            classmethod(lambda cls: type("C", (), {"agent": type("A", (), {"acp_backend": ""})()})()),
+        )
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: None)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        assert "auto-approve:" not in capsys.readouterr().out
+        assert issues == []
 
 
 class TestPathLauncherOwnership:

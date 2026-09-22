@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 import urllib.request
 from collections.abc import Mapping
@@ -12,6 +13,7 @@ from pathlib import Path
 from kiro_crew import identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.env import augmented_path
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 KIRO_CLI_NAME = "kiro-cli"
 
@@ -34,6 +36,98 @@ _API_KEY_ENV = "KIRO_API_KEY"
 _IDC_PROBE_READ_ID = "kiro_cli.idc_identity_probe"
 
 _STATE_DB_TIMEOUT_SECS = 5.0
+
+#: Lowest kiro-cli release observed to ACCEPT a top-level ``permissions`` block in
+#: an agent spec.
+#:
+#: kiro-cli validates agent specs with serde ``deny_unknown_fields``, so a release
+#: whose schema lacks the field does not ignore it -- it refuses the WHOLE file,
+#: drops the agent from its table, and every Kiro Crew MCP server is silently
+#: absent from the session while ``--agent kirocrew`` resolves to the default
+#: agent. Observed refusing on 2.10.0 and accepting on 2.23.0.
+#:
+#: The floor is the release actually PROBED, for the same reason
+#: :data:`~kiro_crew.mcp_hot_reload.MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION` states:
+#: lowering it once an older release is verified is a one-line change, while
+#: granting it to a release that refuses the field costs the user every tool with
+#: nothing red to say why.
+SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
+
+#: ``--version`` is a local read of an already-resolved binary, so it gets the
+#: same short leash the readiness probe puts on its own first execution.
+_VERSION_PROBE_TIMEOUT_SECS = 5
+
+#: One answer per binary IDENTITY, not per process: keyed by the pinned path and
+#: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
+#: instead of leaving a whole gateway lifetime on a stale verdict.
+_version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+
+
+def spec_permissions_supported(version: tuple[int, int, int] | None) -> bool:
+    """Pure gate: does a kiro-cli at *version* accept a spec ``permissions`` block?
+
+    An unknown version is not "probably new enough": it is False. The two losses
+    are not symmetric. Writing the field on a release that refuses it costs the
+    whole spec -- no MCP servers, no tools, no Kiro Crew agent at all.
+    Withholding it costs the KAS mode listing for that agent. So the unknown case
+    takes the smaller loss.
+    """
+    if version is None:
+        return False
+    return version >= SPEC_PERMISSIONS_MIN_VERSION
+
+
+def installed_kiro_cli_version() -> tuple[int, int, int] | None:
+    """The pinned kiro-cli's version, or ``None`` when it cannot be established.
+
+    Blocking: one bounded ``--version`` spawn on the first call per binary
+    identity, cached by path and mtime thereafter. The binary comes from
+    :func:`pin_kiro_cli` -- an absolute path from the known install directories
+    with the inherited ``PATH`` excluded -- because a bare argv0 would be
+    re-resolved inside ``exec`` against a ``PATH`` that can lead with an
+    agent-writable directory. No pin means no spawn and no answer.
+
+    Never raises. Every failure (absent binary, refused spawn, timeout,
+    unparseable output) gives the same answer as an old CLI: unknown, which the
+    gate reads as "do not write the field".
+    """
+    # The ``--version`` line and the handshake's ``agentInfo.version`` are the
+    # same spelling, so the parser is shared rather than copied. Imported here
+    # because ``mcp_hot_reload`` reaches ``acp_backends``, and this module is a
+    # leaf every setup and launch path imports at boot.
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    try:
+        binary, _unpinned = pin_kiro_cli()
+    except Exception:  # noqa: BLE001 - an unanswerable probe is not an error here
+        return None
+    if binary is None:
+        return None
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _version_cache:
+        return _version_cache[key]
+    version: tuple[int, int, int] | None = None
+    completed: subprocess.CompletedProcess[str] | None
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            timeout=_VERSION_PROBE_TIMEOUT_SECS,
+            check=False,
+            # Pinned UTF-8 rather than bare text=True: a platform-locale decode
+            # could mangle the version token and report a supported kiro-cli as
+            # unparseable, which this gate reads as refusing.
+            **UTF8_TEXT,
+        )
+    except Exception:  # noqa: BLE001 - see the docstring: unknown, never raising
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        version = parse_kiro_cli_version(completed.stdout or completed.stderr or "")
+    _version_cache[key] = version
+    return version
 
 
 def kiro_cli_state_dbs(

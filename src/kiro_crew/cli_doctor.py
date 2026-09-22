@@ -90,7 +90,14 @@ from kiro_crew.extras import (
     pip_install_command,
     pip_install_command_for,
 )
-from kiro_crew.kiro_cli import mcp_governance_may_apply, resolve_kiro_cli
+from kiro_crew.kiro_cli import (
+    PATH_ONLY_INSTALL_NOTE,
+    SPEC_PERMISSIONS_MIN_VERSION,
+    installed_kiro_cli_version,
+    mcp_governance_may_apply,
+    resolve_kiro_cli,
+    spec_permissions_supported,
+)
 from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
@@ -3858,6 +3865,43 @@ def _report_kas_backend(issues: list[str]) -> None:
             f"  token:       ➖ {entitlement_label(ACP_BACKEND_KAS)} "
             "(see the sign-in rows above)"
         )
+    _report_kas_spec_permissions(issues)
+
+
+def _report_kas_spec_permissions(issues: list[str]) -> None:
+    """Whether this kiro-cli can carry the spec ``permissions`` block KAS reads.
+
+    The block is how Crew's auto-approve list reaches KAS's policy engine, and it
+    is written only when the installed kiro-cli accepts the field: that binary
+    validates specs with serde ``deny_unknown_fields``, so a release predating the
+    field refuses the WHOLE spec and drops every Crew MCP server from the session.
+    Withholding it is the smaller loss, but it IS a loss, and this is the only
+    place it is visible. Reported inside the KAS block rather than
+    beside the model rows because it costs nothing until KAS is the selected
+    backend -- which is exactly when this block prints.
+    """
+    version = installed_kiro_cli_version()
+    if spec_permissions_supported(version):
+        print("  auto-approve: ✅ spec `permissions` block written (KAS reads it)")
+        return
+    floor = ".".join(str(part) for part in SPEC_PERMISSIONS_MIN_VERSION)
+    if version is None:
+        # Not "too old": the version could not be read at all, most often because
+        # kiro-cli resolves only through PATH and the probe spawns pinned paths
+        # only. The writer withholds a NEW block here but keeps one already on
+        # disk, so the remedy is to make the binary probeable, not to update it.
+        print("  auto-approve: ⚠️  spec `permissions` block not seeded: kiro-cli version unknown")
+        print(f"               ({PATH_ONLY_INSTALL_NOTE}). A block already on disk is kept.")
+        issues.append("kiro-cli version unknown, so the KAS `permissions` block is not seeded")
+        return
+    shown = ".".join(str(part) for part in version)
+    print(f"  auto-approve: ❌ withheld: this kiro-cli ({shown}) refuses the field")
+    print("               It validates specs with deny_unknown_fields, so writing " "`permissions`")
+    print("               would make the whole spec unreadable and drop every Kiro " "Crew MCP")
+    print(f"               server. Fix: update kiro-cli to {floor} or newer. If the spec")
+    print("               already carries the block, `kirocrew setup --agent-only --clean`")
+    print("               rebuilds it without the key.")
+    issues.append("kiro-cli is too old to carry the KAS `permissions` block")
 
 
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:

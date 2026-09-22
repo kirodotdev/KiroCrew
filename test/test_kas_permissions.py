@@ -15,6 +15,10 @@ KAS's own policy engine, and getting one wrong is silent in both directions.
 * And the field's PRESENCE decides whether KAS will load the on-disk profile,
   which is why the disk writer keeps an empty policy where the wire projection
   drops the key.
+* But the field only reaches disk when the installed kiro-cli accepts it. That
+  binary validates specs with ``deny_unknown_fields`` and serves KAS as well as
+  its own backend, so a release predating the field refuses the whole spec and
+  cannot be the relay the field exists for.
 """
 
 from __future__ import annotations
@@ -28,6 +32,32 @@ from kiro_crew.acp.kas_permissions import (
     allowed_tools_to_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION, spec_permissions_supported
+
+#: A release that accepts the field, and one that refuses it. Expressed against
+#: the floor rather than as literals so raising the floor cannot leave a test
+#: asserting the old boundary.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+
+
+@pytest.fixture
+def installed_cli(monkeypatch):
+    """Pin what ``_seed_kas_permissions`` believes the installed kiro-cli is.
+
+    Patched at ``kiro_crew.kiro_cli`` because the seed imports the name
+    function-locally, so the lookup happens in the owning module at call time.
+    Without this the answer is whatever the test HOST has installed -- which on
+    CI is nothing, and "unknown" reads as refusing.
+    """
+
+    def _pin(version):
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.installed_kiro_cli_version",
+            lambda: version,
+        )
+
+    return _pin
 
 
 def _rule(policy: dict, capability: str) -> dict:
@@ -281,6 +311,11 @@ class TestTheDiskWriter:
     independently of whether it grants anything.
     """
 
+    @pytest.fixture(autouse=True)
+    def _accepting_cli(self, installed_cli):
+        """Every case here is about WHAT is written, not WHETHER."""
+        installed_cli(_ACCEPTS)
+
     @staticmethod
     def _config(**over) -> dict:
         base: dict = {"name": "kirocrew", "tools": ["fs_read"], "allowedTools": ["web_fetch"]}
@@ -360,3 +395,170 @@ class TestTheDiskWriter:
         once = dict(config["permissions"])
         _seed_kas_permissions(config)
         assert config["permissions"] == once
+
+
+class TestTheInstalledCliDecidesWhetherTheFieldIsWrittenAtAll:
+    """The field is a total loss on a CLI that refuses it.
+
+    kiro-cli validates agent specs with serde ``deny_unknown_fields``, so a
+    release whose schema predates ``permissions`` does not ignore the key: it
+    refuses the whole file, drops the agent from its table, and every Kiro Crew
+    MCP server is absent from the session. The user sees "agent specs rejected"
+    and has no working tools. Nothing is given up by withholding the field
+    there, because the same binary serves KAS, so a release that cannot read the
+    key cannot be the relay that honours it either.
+    """
+
+    @staticmethod
+    def _config(**over) -> dict:
+        base: dict = {"name": "kirocrew", "tools": ["fs_read"], "allowedTools": ["web_fetch"]}
+        base.update(over)
+        return base
+
+    def test_an_accepting_cli_gets_the_block(self, installed_cli):
+        installed_cli(_ACCEPTS)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert config["permissions"] == {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+    def test_a_refusing_cli_gets_no_block(self, installed_cli):
+        installed_cli(_REFUSES)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    def test_an_unknown_version_is_not_treated_as_new_enough(self, installed_cli):
+        """Absent, unspawnable or unparseable all arrive here as None.
+
+        The two losses are not symmetric: guessing "new enough" costs the whole
+        spec, guessing "too old" costs the KAS mode listing.
+        """
+        installed_cli(None)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    @pytest.mark.parametrize("version", [_REFUSES, None], ids=["refusing", "unknown"])
+    def test_a_block_already_on_disk_is_kept_whatever_the_cli_says(self, installed_cli, version):
+        """Seed, never refresh -- and never remove either.
+
+        A hand-written policy is the user's; the gate decides only whether a
+        NEW block is written. A spec an older release already refuses is
+        repaired by ``setup --agent-only --clean``, which rebuilds from defaults
+        and, through this same gate, leaves the key out.
+        """
+        installed_cli(version)
+        policy = {"rules": [{"capability": "shell", "match": ["ls *"], "effect": "allow"}]}
+        config = self._config(permissions=dict(policy))
+        _seed_kas_permissions(config)
+        assert config["permissions"] == policy
+
+    def test_an_accepting_cli_still_never_edits_an_existing_block(self, installed_cli):
+        """The seed-never-refresh rule is unchanged where the field is legal."""
+        installed_cli(_ACCEPTS)
+        existing = {"rules": [{"capability": "shell", "effect": "deny"}]}
+        config = self._config(permissions=dict(existing))
+        _seed_kas_permissions(config)
+        assert config["permissions"] == existing
+
+    @pytest.mark.parametrize(
+        "version,supported",
+        [
+            (None, False),
+            ((2, 10, 0), False),
+            (_REFUSES, False),
+            (_ACCEPTS, True),
+            ((99, 0, 0), True),
+        ],
+        ids=["unknown", "reported-2.10.0", "just-below-floor", "at-floor", "far-above"],
+    )
+    def test_the_gate_itself_is_pure_and_fails_closed(self, version, supported):
+        assert spec_permissions_supported(version) is supported
+
+
+class TestTheVersionProbeItself:
+    """Every test above pins the probe's answer. These pin the probe.
+
+    The probe swallows every failure into ``None`` by design, which is also what
+    would hide a broken probe: a missing import or a wrong spawn keyword raises
+    inside the ``try`` and reads as "unknown", and every caller then withholds
+    the field on a CLI that accepts it. So the spawn is observed, not stubbed.
+    """
+
+    @pytest.fixture
+    def pinned(self, monkeypatch, tmp_path):
+        """A pinned binary that exists on disk, and a recorder for the spawn."""
+        import subprocess
+
+        from kiro_crew import kiro_cli
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_text("")
+        monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
+        monkeypatch.setattr(kiro_cli, "_version_cache", {})
+        calls: list[dict] = []
+
+        def _install(stdout: str, returncode: int = 0):
+            def _run(argv, **kwargs):
+                calls.append({"argv": argv, **kwargs})
+                return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+            monkeypatch.setattr(kiro_cli.subprocess, "run", _run)
+            return calls
+
+        return binary, _install
+
+    def test_the_pinned_binary_is_asked_and_its_answer_parsed(self, pinned):
+        from kiro_crew.kiro_cli import installed_kiro_cli_version
+
+        binary, install = pinned
+        calls = install("kiro-cli 2.23.0\n")
+        assert installed_kiro_cli_version() == (2, 23, 0)
+        assert calls[0]["argv"] == [str(binary), "--version"]
+
+    def test_the_output_is_decoded_as_utf8_not_the_platform_locale(self, pinned):
+        """A locale decode can mangle the token, and mangled reads as refusing."""
+        from kiro_crew.kiro_cli import installed_kiro_cli_version
+
+        _binary, install = pinned
+        calls = install("kiro-cli 2.23.0\n")
+        installed_kiro_cli_version()
+        assert calls[0]["encoding"] == "utf-8"
+        assert calls[0]["timeout"] > 0
+
+    def test_a_non_zero_exit_or_garbage_is_unknown(self, pinned):
+        from kiro_crew import kiro_cli
+        from kiro_crew.kiro_cli import installed_kiro_cli_version
+
+        _binary, install = pinned
+        install("kiro-cli 2.23.0\n", returncode=1)
+        assert installed_kiro_cli_version() is None
+        kiro_cli._version_cache.clear()
+        install("no version here\n")
+        assert installed_kiro_cli_version() is None
+
+    def test_one_spawn_per_binary_identity(self, pinned):
+        """Cached by path and mtime: a swapped binary is asked again."""
+        import os
+
+        from kiro_crew.kiro_cli import installed_kiro_cli_version
+
+        binary, install = pinned
+        calls = install("kiro-cli 2.23.0\n")
+        installed_kiro_cli_version()
+        installed_kiro_cli_version()
+        assert len(calls) == 1
+        stamp = binary.stat().st_mtime_ns + 1_000_000_000
+        os.utime(binary, ns=(stamp, stamp))
+        installed_kiro_cli_version()
+        assert len(calls) == 2
+
+    def test_no_pin_means_no_spawn(self, monkeypatch):
+        from kiro_crew import kiro_cli
+
+        monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, True))
+        monkeypatch.setattr(kiro_cli, "_version_cache", {})
+        monkeypatch.setattr(
+            kiro_cli.subprocess, "run", lambda *a, **k: pytest.fail("spawned without a pin")
+        )
+        assert kiro_cli.installed_kiro_cli_version() is None

@@ -4116,6 +4116,21 @@ def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
 def _seed_kas_permissions(config: dict[str, Any]) -> None:
     """Give the spec a KAS ``permissions`` block if it has none. Never edit one.
 
+    **Only when the installed kiro-cli accepts the field.** kiro-cli validates
+    agent specs with serde ``deny_unknown_fields`` and serves the KAS backend as
+    well as its own, so one binary decides both questions: a release whose schema
+    predates ``permissions`` refuses the ENTIRE spec, drops the agent from its
+    table, and leaves every Kiro Crew MCP server absent from the session -- and
+    that same release cannot be the KAS relay the field exists for. Withholding
+    it there gives up nothing that release could have honoured, while writing it
+    gives up the whole spec. An UNKNOWN version (no pinned binary, a refused
+    spawn, unparseable output) withholds too: a wrong guess costs the whole spec.
+
+    A block already on disk is never removed here, whatever the version says --
+    the same seed-never-refresh rule below. A spec an older release already
+    refuses is repaired by ``kirocrew setup --agent-only --clean``, which
+    rebuilds from defaults and, through this gate, leaves the key out.
+
     Two things ride on this field, and the second is the surprising one:
 
     1. It is how the auto-approve list reaches the KAS backend at all, since
@@ -4146,6 +4161,15 @@ def _seed_kas_permissions(config: dict[str, Any]) -> None:
     when Crew is NOT injecting an agent.
     """
     if config.get("permissions") is not None:
+        return
+
+    # Function-local like every import here; bounded and cached inside.
+    from kiro_crew.kiro_cli import (  # noqa: PLC0415 - boot path
+        installed_kiro_cli_version,
+        spec_permissions_supported,
+    )
+
+    if not spec_permissions_supported(installed_kiro_cli_version()):
         return
 
     # Routed through the agent-sdk boundary: ``drivers.acp`` is the one layer
