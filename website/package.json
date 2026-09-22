@@ -32,6 +32,7 @@
     "gen:settings": "node scripts/gen-settings-registry.mjs",
     "lint:theme-colors": "node scripts/check-theme-colors.mjs",
     "lint:phantom-classes": "node scripts/check-phantom-classes.mjs",
+    "lint:restyle-ratchet": "node scripts/check-restyle-ratchet.mjs",
     "lint:i18n": "node scripts/check-i18n-strings.mjs",
     "i18n:pseudo": "node scripts/gen-pseudolocale.mjs",
     "i18n:render": "node scripts/check-i18n-render.mjs --build",

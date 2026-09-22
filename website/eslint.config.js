@@ -172,10 +172,14 @@ export default [
     //   require-static-classes  — a className built from an opaque value on a
     //                             ui/ component; the other two rules cannot read it.
     //
-    // no-restyle is NOT enabled: the tree carries ~300 call sites that restyle
-    // ui/ components (DropdownMenuItem, TableCell, …) and CI runs --max-warnings 0,
-    // so 'warn' would fail the build outright. Enabling it is a design decision
-    // (fix the sites or write per-component contracts), not a lint toggle.
+    // no-restyle is NOT enabled here: the tree carries a few hundred call sites
+    // that restyle ui/ components (DropdownMenuItem, TableCell, …) and CI runs
+    // --max-warnings 0, so 'warn' would fail the build outright. Enabling it is a
+    // design decision (fix the sites or write per-component contracts), not a
+    // lint toggle. The backlog is held where it is by scripts/check-restyle-
+    // ratchet.mjs, which runs the rule through its own config against a per-file
+    // baseline that can only shrink. Keep that script's CONFIG in step with the
+    // parser options and carve-outs of this block.
     // no-inline-styles and no-arbitrary-values are off by design: inline
     // `style={}` is the mandated styling method for apps (docs/app-kit), and the
     // theme's translucent surfaces are `bg-[color-mix(…)]` arbitrary values

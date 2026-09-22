@@ -516,9 +516,24 @@ Three of those rules are enforced by `@shadcn/lint` inside the blocking
   shared class string becomes a small wrapper component (`FilterMenuLabel`),
   a helper call gets a `cn(...)`.
 
-`shadcn/no-restyle` is deliberately off: ~300 call sites restyle `ui/`
-primitives today and the gate is a hard zero, so turning it on is a design
-decision (fix the sites or write per-component contracts), not a lint toggle.
+`shadcn/no-restyle` — a `className` that changes what a `ui/` primitive owns
+(its color, spacing, shape, typography) — is off in that gate: a few hundred
+call sites restyle primitives today and the gate is a hard zero, so turning it
+on is a design decision (fix the sites or write per-component contracts), not a
+lint toggle. What IS enforced is that the backlog cannot grow.
+`scripts/check-restyle-ratchet.mjs` (`npm run lint:restyle-ratchet`, run by
+CI beside the phantom-classes gate) lints with the rule through its own config
+(`allow: ['layout']`, so margins and widths pass) and holds every file at the
+count recorded in `scripts/restyle-baseline.json`: a file whose count rises, or
+a file with findings and no entry, fails the build; a file whose count fell is
+printed so you can lower the ceiling with
+`npm run lint:restyle-ratchet -- --update-baseline`, which only ever lowers a
+number or prunes an entry that reached 0. Lowering a count is the only edit the
+script makes; the one hand edit is moving an entry to a file's new path when
+the file moves (the count may not grow). Adding a restyle to a file at its
+ceiling means using the primitive's own variant or size prop, keeping layout
+classes at the call site, or wrapping the primitive in a small named component
+that carries the class in the component file — not raising the number.
 `no-inline-styles` and `no-arbitrary-values` stay off by design — inline
 `style={}` is the mandated method for apps, and translucent theme surfaces are
 `bg-[color-mix(…)]` because the color tokens carry no alpha channel.

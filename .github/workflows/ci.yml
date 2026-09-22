@@ -2425,6 +2425,24 @@ jobs:
           npm run lint:phantom-classes -- --test
           npm run lint:phantom-classes
 
+      - name: Check no file restyles more ui/ primitives than the baseline allows
+        # `shadcn/no-restyle` stays off in eslint.config.js: the tree carries a
+        # few hundred call sites that restyle ui/ primitives and the eslint gate
+        # is a hard zero. Off means the backlog can grow silently, so this step
+        # runs the rule through its own config and holds each file at the count
+        # recorded in website/scripts/restyle-baseline.json — a rise or a new
+        # file fails, a fall is printed so the author can lower the ceiling with
+        # `--update-baseline`, which never raises a number. Whole-tree, no base
+        # ref: the baseline is committed, so the gate is complete for regression
+        # without a diff.
+        working-directory: website
+        run: |
+          # Self-test first: it plants one restyled primitive and asserts the
+          # rule fires under this config, so a plugin or parser change that
+          # silences the rule fails here instead of passing every count as 0.
+          npm run lint:restyle-ratchet -- --test
+          npm run lint:restyle-ratchet
+
   # Prove `npm ci` still works on the OLDEST Node the frontend claims to support.
   # Every other job here runs the .nvmrc toolchain (Node 24 / npm 11), and npm 11
   # and npm 10 (Node 22) build different ideal trees for an OPTIONAL PEER
