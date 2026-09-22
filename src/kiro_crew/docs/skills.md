@@ -51,6 +51,27 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
 
+## Inspecting Skills from the CLI
+
+Use the read-only CLI commands to inspect candidates and the live catalog:
+
+```bash
+kirocrew skills list                         # pending candidates (default)
+kirocrew skills list --live                  # active skills
+kirocrew skills list --all --json            # both sets as JSON
+kirocrew skills show <slug>                  # body, metadata, validation status
+```
+
+Skill-derived output has terminal controls removed before URL and credential redaction.
+Each `SKILL.md` and helper-script line starts with `| ` so candidate text cannot imitate the
+command's validation section. `show` reads bounded body and helper previews and marks omitted
+content with `[truncated N bytes]`; it never loads an unbounded candidate file for display.
+The validation block comes from the loader's original-byte, fail-closed verdict. If that verdict
+cannot be computed, the CLI reports `status: unavailable` rather than a clean result. A malformed
+helper is named in that block while readable sections still print. A malformed `SKILL.md` or a
+filesystem read failure produces a coded error without a traceback. Approve or dismiss a candidate
+in **Skills → Pending review** in the dashboard; the CLI does not expose those mutations.
+
 ## Creating Skills
 
 ### Via Dashboard
