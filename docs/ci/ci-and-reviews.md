@@ -1673,14 +1673,14 @@ silently (zero jobs, nothing on the PR) when any expression-bearing string excee
 /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-head-sha>: <one-sentence reason>
 ```
 
-`scope` targets the [Security Scope Review](#security-scope-review-what-a-tightening-newly-refuses) lanes. Each target names a lane by its command spelling, which is resolved to the reviewer through that lane's comment key — so `gpt` is the `codex-ai-review` lane's reviewer `GPT`, and `fable` is the `claude-ai-review` lane's reviewer `OPUS`.
+`scope` targets the [Security Scope Review](#security-scope-review-what-a-tightening-newly-refuses) lanes. Each target names a lane by its command spelling, and `pr_status.py` resolves that spelling to a reviewer through the lane's comment key — so `gpt` is the `codex-ai-review` lane's reviewer `GPT`, and `fable` is the `claude-ai-review` lane's reviewer `OPUS`. `scope` is the exception: its lane consumes the record like any other, but it has no reviewer binding, so the script has no row to report it under.
 
 `pr_status.py` reads the marker too, and reports an accepted record as its own row —
 `GPT: OVERRIDDEN by @<actor>` — rather than as a fresh stamp. The two markers prove
 different things: `[<NAME>-REVIEWED] <sha>` is proof a **model** produced a verdict for
 this commit, and the override record is proof a **human** adjudicated it on a path where
-the model is deliberately not re-run, so no stamp exists to find. Before that, an
-accepted override turned the lane's check green while the canonical script still reported
+the model is deliberately not re-run, so no stamp exists to find. Without that, an
+accepted override turns the lane's check green while the canonical script still reports
 `stale reviewer stamp(s)` for it. The record must name the head **exactly**: it is written
 by the workflow from `.head.sha`, so the prefix-and-elision tolerance that exists for
 model-transcribed stamps does not apply. A record naming one lane also keeps that lane in

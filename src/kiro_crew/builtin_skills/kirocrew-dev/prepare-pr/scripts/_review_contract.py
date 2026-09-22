@@ -89,7 +89,6 @@ _COMMENT_KEY_RE = re.compile(r"\A\s*<!--\s*([a-z0-9-]+)\s*-->")
 # attribution is not a record, and the lanes resolve such a comment to inactive
 # rather than clearing on it. A future field added ahead of `actor=` stops
 # matching here, which withholds the clearance -- the fail-closed direction.
-OVERRIDE_PREFIX = "<!-- ai-review-human-override "
 OVERRIDE_MARKER_RE = re.compile(
     r"\A<!-- ai-review-human-override target=([a-z0-9-]+) head=([0-9a-fA-F]{7,40})"
     r" actor=(\S+) source=([0-9]+) -->"
@@ -101,13 +100,18 @@ OVERRIDE_TARGET_ALL = "all"
 # what a lane is called -- so a ``--marker-bindings`` override flows through and
 # this table cannot drift into disagreeing with it. `fable` is the override
 # spelling of the lane whose key is `claude-ai-review`, i.e. reviewer OPUS.
+#
+# One target the command accepts is deliberately ABSENT: `scope`, whose lane
+# writes `<!-- security-scope-review -->` and has no entry in
+# DEFAULT_MARKER_BINDINGS, so there is no reviewer for a row to resolve to and a
+# row would clear no lane. The parity test derives this table from the lane
+# workflows, so binding that lane fails a test until the row is added.
 DEFAULT_OVERRIDE_TARGET_KEYS = (
     ("gpt", "codex-ai-review"),
     ("fable", "claude-ai-review"),
     ("design", "design-review"),
     ("ux", "ux-review"),
     ("first-principles", "first-principles-review"),
-    ("scope", "security-scope-review"),
 )
 FINDING_RE = re.compile(
     r"^\s*(?:\*\*)?(BLOCKING|FINDING)(?:\*\*)?\s*(?:--|\u2014)\s*"
@@ -179,11 +183,11 @@ def human_override_actors(comments, head_sha, bindings, authors=DEFAULT_MARKER_A
 
     ``named`` maps reviewer name to actor for records naming ONE lane. Those
     ENROL their lane into the evaluation, because the record is independent
-    proof that lane was answered for and must keep standing on its own. Today a
-    lane enters the discovered set only via a stamp, so on the PR that surfaced
-    this the lane was present only because of a DUPLICATE comment from an older
-    head; deleting that duplicate made the lane vanish and the report go clean
-    having proved nothing. An enrolling record closes that exit.
+    proof that lane was answered for and has to keep standing on its own. A
+    stamp is otherwise the only thing that puts a lane in the discovered set, so
+    a lane whose only stamp sits in a DUPLICATE comment from an older head drops
+    out of the evaluation the moment that comment is deleted, and the report
+    reads clean having proved nothing. An enrolling record closes that exit.
 
     ``blanket`` is the actor of a ``target=all`` record, or "". It SATISFIES
     every lane already under evaluation but enrols none: in discovery mode a

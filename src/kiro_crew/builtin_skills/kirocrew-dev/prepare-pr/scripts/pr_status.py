@@ -109,11 +109,6 @@ design_lane_verdicts = _review_contract.design_lane_verdicts
 unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
 unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
-OVERRIDE_MARKER_RE = _review_contract.OVERRIDE_MARKER_RE
-OVERRIDE_TARGET_ALL = _review_contract.OVERRIDE_TARGET_ALL
-DEFAULT_OVERRIDE_TARGET_KEYS = _review_contract.DEFAULT_OVERRIDE_TARGET_KEYS
-parse_override_record = _review_contract.parse_override_record
-override_reviewer_names = _review_contract.override_reviewer_names
 human_override_actors = _review_contract.human_override_actors
 
 
@@ -1100,9 +1095,9 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
             if sha_matches(sha, head_sha):
                 blocking.add(name or "(unattributed)")
     # Accepted human overrides for THIS head. A record naming one lane enrols
-    # it, so the answer no longer depends on a stale duplicate comment being
-    # the only thing that put the lane in the set; a `target=all` record
-    # answers for the lanes already under evaluation without inventing any.
+    # it, so that lane's presence in the set rests on the record itself rather
+    # than on a stale duplicate comment; a `target=all` record answers for the
+    # lanes already under evaluation without enrolling any.
     named_overrides, blanket_actor = human_override_actors(
         comments,
         head_sha,

@@ -3232,7 +3232,7 @@ def test_a_lane_cannot_forge_another_lanes_design_items() -> None:
 # a stampless "human override accepted" body, because no model verdict exists
 # to stamp. Both halves are real: the `[<NAME>-REVIEWED]` stamp stays the proof
 # a MODEL ran, and the override record is independent proof a HUMAN adjudicated
-# this head. This script consumed only the first, so an accepted override read
+# this head. A consumer that reads only the first reads an accepted override
 # as an unreviewed head.
 # ---------------------------------------------------------------------------
 
@@ -3279,8 +3279,8 @@ def _override_lane_comment(head: str = _HEAD, actor: str = "maintainer") -> dict
 
 
 def test_accepted_override_satisfies_the_clause_for_that_head(capsys) -> None:
-    """The real shape from the PR that surfaced this: the lane's live comment
-    was rewritten stampless, a duplicate from an earlier head still carries
+    """The shape this produces in practice: the lane's live comment is
+    rewritten stampless, a duplicate from an earlier head still carries
     that older `[GPT-REVIEWED]`, and the override record names this head."""
     module = _load_script()
     comments = json.dumps(
@@ -3316,9 +3316,9 @@ def test_override_reports_a_human_decision_not_a_model_review(capsys) -> None:
 def test_override_keeps_the_lane_visible_with_no_stamp_anywhere(capsys) -> None:
     """Deleting the duplicate comment must not be a way to pass.
 
-    The orphan stamp is the ONLY reason GPT enters the discovered reviewer set
-    today, so removing it made the lane vanish from the evaluation entirely --
-    a clean report that proves nothing. An override record for this head keeps
+    A stamp is otherwise the ONLY thing that puts GPT in the discovered reviewer
+    set, so removing that comment takes the lane out of the evaluation entirely
+    -- a clean report that proves nothing. An override record for this head keeps
     the lane in the universe and answers for it."""
     module = _load_script()
     comments = json.dumps([_override_comment()])
@@ -3394,9 +3394,7 @@ def test_override_naming_another_head_does_not_clear() -> None:
     ):
         module = _load_script()
         comments = json.dumps([_override_lane_comment(), _override_comment(head=head)])
-        _install_fake_gh(
-            module, _pr_payload(_clean_checks(), headRefOid=oid), comments=comments
-        )
+        _install_fake_gh(module, _pr_payload(_clean_checks(), headRefOid=oid), comments=comments)
         assert module.main(["pr_status.py", "42", "--reviewers", "GPT"]) == 20, head
 
 
@@ -3425,7 +3423,7 @@ def test_malformed_override_marker_does_not_clear() -> None:
         {"marker": f"<!-- ai-review-human-override target=gpt head={_HEAD} -->"},
         {"marker": f"<!-- ai-review-human-override target=gpt head={_HEAD} actor=m -->"},
         {"marker": f"<!-- ai-review-human-override target=gpt head={_HEAD} source=1 -->"},
-        {"marker": f"<!-- ai-review-human-override target=gpt actor=m source=1 -->"},
+        {"marker": "<!-- ai-review-human-override target=gpt actor=m source=1 -->"},
         {"marker": marker.format(_HEAD, "m", "not-a-number")},
         {"marker": marker.format("zz" * 20, "m", "1")},
         {"lead": "Heads up:\n"},
@@ -3523,11 +3521,16 @@ def test_the_override_marker_contract_matches_producer_and_consumers() -> None:
     The consumer regex pins the producer's exact byte shape, so a field inserted
     ahead of ``actor=`` would stop clearing overrides -- fail-closed, but
     silently. Deriving the shape from the producer file turns that into a test
-    failure. The second half pins the target table: every spelling a lane
-    workflow consumes has to resolve to the reviewer that lane's comment key is
-    bound to, or an override for it would answer for nothing.
+    failure.
+
+    The target table is derived the same way. Each lane file carries BOTH the
+    target spelling it consumes and its own comment key, so the table must map
+    exactly the targets whose lane has a reviewer binding. A row for a lane with
+    no binding resolves to nothing and would clear nothing; a bound lane missing
+    from the table would ignore a recorded judgment. Both fail here.
     """
     module = _load_script()
+    contract = module._review_contract
     workflows = ROOT / ".github" / "workflows"
     producer = (workflows / "ai-review-human-override.yml").read_text(encoding="utf-8")
     marker_line = next(ln for ln in producer.splitlines() if 'marker="<!--' in ln)
@@ -3539,25 +3542,29 @@ def test_the_override_marker_contract_matches_producer_and_consumers() -> None:
         .replace("$ACTOR", "maintainer")
         .replace("$COMMENT_ID", _OVERRIDE_SOURCE)
     )
-    match = module.OVERRIDE_MARKER_RE.match(rendered)
+    match = contract.OVERRIDE_MARKER_RE.match(rendered)
     assert match is not None, rendered
     assert match.groups() == ("gpt", _HEAD, "maintainer", _OVERRIDE_SOURCE), rendered
 
-    consumed: set[str] = set()
-    for path in sorted(workflows.glob("*.yml")):
-        consumed.update(
-            re.findall(
-                r"<!-- ai-review-human-override target=([a-z-]+) head=",
-                path.read_text(encoding="utf-8"),
-            )
-        )
-    assert module.OVERRIDE_TARGET_ALL in consumed, consumed
-    known = dict(module.DEFAULT_OVERRIDE_TARGET_KEYS)
-    assert consumed - {module.OVERRIDE_TARGET_ALL} <= set(known), consumed
-
     bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+    derived: dict[str, str] = {}
+    blanket = False
+    for path in sorted(workflows.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        targets = set(re.findall(r"<!-- ai-review-human-override target=([a-z-]+) head=", text))
+        if not targets:
+            continue
+        blanket = blanket or contract.OVERRIDE_TARGET_ALL in targets
+        keys = [key for key in bindings if "<!-- {} -->".format(key) in text]
+        assert len(keys) <= 1, (path.name, keys)
+        for target in targets - {contract.OVERRIDE_TARGET_ALL}:
+            for key in keys:
+                derived[target] = key
+    assert blanket, "no lane consumes target=all"
+    assert derived == dict(contract.DEFAULT_OVERRIDE_TARGET_KEYS), derived
+
     reachable = {
-        name for target in known for name in module.override_reviewer_names(target, bindings)
+        name for target in derived for name in contract.override_reviewer_names(target, bindings)
     }
     assert reachable == set(bindings.values()), reachable
 
