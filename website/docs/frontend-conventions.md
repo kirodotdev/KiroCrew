@@ -525,12 +525,16 @@ lint toggle. What IS enforced is that the backlog cannot grow.
 CI beside the phantom-classes gate) lints with the rule through its own config
 (`allow: ['layout']`, so margins and widths pass) and holds every file at the
 count recorded in `scripts/restyle-baseline.json`: a file whose count rises, or
-a file with findings and no entry, fails the build; a file whose count fell is
-printed so you can lower the ceiling with
+a file with findings and no entry, fails the build; a file whose count fell
+fails too, until you record the drop with
 `npm run lint:restyle-ratchet -- --update-baseline`, which only ever lowers a
-number or prunes an entry that reached 0. Lowering a count is the only edit the
-script makes; the one hand edit is moving an entry to a file's new path when
-the file moves (the count may not grow). Adding a restyle to a file at its
+number or prunes an entry that reached 0 — so progress is locked in, not left
+to a log line. Lowering a count is the only edit the script makes; the one hand
+edit is moving an entry to a file's new path when the file moves (the count may
+not grow). It is a separate script rather than ESLint's bulk suppressions
+because editors lint through the Node API, which ignores the suppressions
+file, and the CLI loads that file for every config, which would fail the i18n
+eslint run on "unused" entries. Adding a restyle to a file at its
 ceiling means using the primitive's own variant or size prop, keeping layout
 classes at the call site, or wrapping the primitive in a small named component
 that carries the class in the component file — not raising the number.

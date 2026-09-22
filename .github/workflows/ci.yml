@@ -2431,10 +2431,13 @@ jobs:
         # is a hard zero. Off means the backlog can grow silently, so this step
         # runs the rule through its own config and holds each file at the count
         # recorded in website/scripts/restyle-baseline.json — a rise or a new
-        # file fails, a fall is printed so the author can lower the ceiling with
-        # `--update-baseline`, which never raises a number. Whole-tree, no base
-        # ref: the baseline is committed, so the gate is complete for regression
-        # without a diff.
+        # file fails; a fall fails too until `--update-baseline` records it, so
+        # progress is locked in rather than left to a log line. That flag never
+        # raises a number. Whole-tree, no base ref: the baseline is committed,
+        # so the gate is complete for regression without a diff. Not eslint's
+        # own bulk suppressions: the Node API editors use ignores that file, and
+        # the CLI loads it for every config, so the i18n eslint run would fail
+        # on "unused" entries (both measured; see the script header).
         working-directory: website
         run: |
           # Self-test first: it plants one restyled primitive and asserts the

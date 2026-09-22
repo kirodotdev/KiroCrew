@@ -17,9 +17,11 @@
  * widths still pass — tallies the findings per file, and compares each count
  * against `restyle-baseline.json` beside this script. The baseline is the
  * ceiling: a file whose count RISES fails, a file absent from the baseline with
- * any finding fails, a file whose count FELL is printed so the author can lower
- * the ceiling. Nothing else is charged to the change: the backlog is frozen at
- * the recorded numbers, and the recorded numbers can only go down.
+ * any finding fails, and a file whose count FELL fails too, naming the command
+ * that records the drop — a fall that is merely printed is progress nobody
+ * locked in, and the file can grow back to its old number unnoticed. Nothing
+ * else is charged to the change: the backlog is frozen at the recorded numbers,
+ * and the recorded numbers can only go down.
  *
  * Per file rather than one total on purpose. A single number is the shape the
  * i18n gates learned to avoid (see the comment on that step in ci.yml): another
@@ -39,9 +41,29 @@
  *     therefore a reviewable event, not a silent one — the gate itself fails
  *     closed while the file is absent.
  *
+ * ## Why not ESLint's own bulk suppressions
+ *
+ * `eslint --suppress-rule shadcn/no-restyle` writes the same per-file count
+ * ceiling to `eslint-suppressions.json`, and the CLI fails on excess and on
+ * unused entries. Two measured gaps keep the rule out of eslint.config.js:
+ *
+ *   1. Only the CLI applies that file. The Node API (`new ESLint().lintFiles`)
+ *      reports every suppressed error — measured: 6 of 6 on RepoSwitcher.tsx
+ *      with the suppressions file present — and editors integrate through the
+ *      Node API, so the rule at `error` puts a few hundred red marks in front
+ *      of every contributor while CI stays green.
+ *   2. The CLI loads `eslint-suppressions.json` from the cwd for EVERY config.
+ *      `check-i18n-strings.mjs` drives a second CLI run with
+ *      eslint.i18n.config.js, where no `no-restyle` finding exists, so every
+ *      entry is "unused" and that run exits 2 — measured — unless it grows a
+ *      `--pass-on-unpruned-suppressions` it has no other reason to carry.
+ *
+ * A separate script with its own config has neither problem, which is also
+ * why check-phantom-classes.mjs and the i18n gates run outside `npm run lint`.
+ *
  * ## Usage
  *
- *     # gate: exit 1 if any file's count rose or a new file has findings
+ *     # gate: exit 1 if any file's count rose, fell, or a new file has findings
  *     npm run lint:restyle-ratchet
  *
  *     # record progress: lower counts, prune zeros (never raises, never adds)
@@ -116,7 +138,7 @@ const relKey = (abs) => relative(REPO_ROOT, abs).split('\\').join('/')
 /** `{ [file]: count }` over every lint result, plus the files ESLint could not
  *  parse. A fatal message means the file's sites were never counted, so the
  *  caller must fail rather than read the missing count as zero. */
-export function tally(results) {
+function tally(results) {
   const counts = {}
   const unparsed = []
   for (const r of results) {
@@ -140,7 +162,7 @@ async function scanTree() {
 /** Parse the baseline, or throw with the reason. Shape is `{ "<file>": <n> }`
  *  with every `n` a positive integer: a zero or a non-number would be an entry
  *  the ratchet cannot reason about, so it is refused rather than coerced. */
-export function parseBaseline(text) {
+function parseBaseline(text) {
   let data
   try {
     data = JSON.parse(text)
@@ -164,7 +186,7 @@ function readBaseline() {
 
 /** Sorted keys, two-space indent, trailing newline — one canonical spelling so
  *  a regenerated file diffs only where a number moved. */
-export function serializeBaseline(counts) {
+function serializeBaseline(counts) {
   const sorted = Object.fromEntries(
     Object.keys(counts)
       .sort()
@@ -177,8 +199,11 @@ export function serializeBaseline(counts) {
  *
  *  - `grown`   — recorded file whose count rose: `{ file, from, to }`
  *  - `added`   — file with findings and no entry: `{ file, to }`
- *  - `shrunk`  — recorded file whose count fell (or vanished): `{ file, from, to }` */
-export function compare(baseline, current) {
+ *  - `shrunk`  — recorded file whose count fell (or vanished): `{ file, from, to }`
+ *
+ *  All three fail the gate; `shrunk` is the one the author fixes by recording,
+ *  not by editing code. */
+function compare(baseline, current) {
   const grown = []
   const added = []
   const shrunk = []
@@ -196,7 +221,7 @@ export function compare(baseline, current) {
 
 /** The baseline after `--update-baseline`: `min(recorded, current)` per
  *  recorded file, zeros dropped, nothing added. */
-export function shrink(baseline, current) {
+function shrink(baseline, current) {
   const next = {}
   for (const [file, from] of Object.entries(baseline)) {
     const n = Math.min(from, current[file] ?? 0)
@@ -229,24 +254,24 @@ function report(baseline, current) {
   )
   if (shrunk.length) {
     console.log(
-      `::notice::${GATE}: ${shrunk.length} file(s) now have fewer restyle ` +
-        `sites than the baseline records. Lower the ceiling so it stays ` +
-        `honest: ${UPDATE_CMD}`,
+      `::error::${GATE}: ${shrunk.length} file(s) now have fewer restyle sites ` +
+        `than the baseline records. Record the progress so the ceiling cannot ` +
+        `drift back up: ${UPDATE_CMD}`,
     )
     for (const s of shrunk) console.log(`  ${s.file}: ${s.from} -> ${s.to}`)
   }
-  if (grown.length === 0 && added.length === 0) {
-    console.log(`${GATE}: no file restyles more ui/ primitives than the baseline allows \u2713`)
-    return 0
+  if (grown.length || added.length) {
+    console.log(
+      `::error::${GATE}: ${grown.length + added.length} file(s) restyle more ui/ ` +
+        `primitives than ${BASELINE_REL} allows:`,
+    )
+    for (const g of grown) console.log(`  ${g.file}: ${g.from} -> ${g.to}`)
+    for (const a of added) console.log(`  ${a.file}: (not in baseline) -> ${a.to}`)
+    console.log(REMEDY)
   }
-  console.log(
-    `::error::${GATE}: ${grown.length + added.length} file(s) restyle more ui/ ` +
-      `primitives than ${BASELINE_REL} allows:`,
-  )
-  for (const g of grown) console.log(`  ${g.file}: ${g.from} -> ${g.to}`)
-  for (const a of added) console.log(`  ${a.file}: (not in baseline) -> ${a.to}`)
-  console.log(REMEDY)
-  return 1
+  if (grown.length || added.length || shrunk.length) return 1
+  console.log(`${GATE}: every file matches the baseline \u2713`)
+  return 0
 }
 
 function reportUnparsed(unparsed) {
@@ -404,7 +429,7 @@ async function main(argv) {
   return gate()
 }
 
-// Run only as a program, so importing `compare` / `shrink` for a unit test does
+// Run only as a program: an `import` of this module (a future unit test) must
 // not lint the tree and call `process.exit` mid-collection.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.exit(await main(process.argv.slice(2)))
