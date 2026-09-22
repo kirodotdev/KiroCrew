@@ -87,6 +87,13 @@ shortcuts). A pick sends `agent_kind` with the name on slot create and on
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list
 projection exposes it, so a same-name member and template are distinct sessions. A
+local switch publishes the name and kind together and writes them to history in one
+operation. Remote create, switch and adopt carry the kind across the gateway boundary
+and mirror the same pair locally. A successful local metadata write makes that pair
+restart-safe on either machine. If the peer commits but the local metadata write
+fails, the response says `local_persistence: pending`, the live slot stays aligned
+with the peer, and the dirty-slot flush retries the local record; until that retry
+lands, a local restart can restore the prior pair. A
 member DM thread's pin covers the namespace too: the same name picked as a template
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.
@@ -514,7 +521,8 @@ name, and it resolves an empty crew too so the concrete template stays inside
 | Test | What it holds |
 |---|---|
 | `test/test_agent_execution_catalog.py` | Read-only catalog, same-name member/template choices, requesting-project isolation, private-template exclusion and explicit discovery failure |
-| `test/test_chat_agent_kind.py` | `agent_kind` on slot create and switch: template picks skip the member store pin, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
+| `test/test_chat_agent_kind.py` | `agent_kind` on local and remote slot create and switch: template picks skip the member store pin, name and kind persist atomically, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
+| `test/test_remote_crew_execution.py`, `test/test_remote_crew_adopt.py` | Remote create, switch and adopt preserve the selected agent namespace across the gateway boundary and in mirrored history |
 | `test/test_open_slots_persistence.py` (`test_restore_carries_the_agent_selection_namespace`) | A template-picked slot restores as a template pick; an unknown persisted kind reads as name-only |
 | `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; a named crew returns its bindings; an unknown name returns `error` plus `available`; the schema accepts spaces and dots in a crew name |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |

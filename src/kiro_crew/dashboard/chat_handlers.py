@@ -2940,6 +2940,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # surrounding resolve/normalize steps are skipped for every peer-bound
         # create precisely because they answer from THIS machine's roster.
         agent = peer_meta.get("agent", "")
+        agent_kind = peer_meta.get("agent_kind", "")
         # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
         # happens outside the `suspend_slots_push` block below. That suspension is
         # process-wide: holding it across a transcript read would defer every other
@@ -2967,6 +2968,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 state,
                 instance_id,
                 agent=agent,
+                agent_kind=agent_kind,
                 model=model,
                 memory_mode=memory_mode,
             )
@@ -3181,6 +3183,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+            slot.agent_kind = agent_kind
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -6597,6 +6600,14 @@ async def _apply_remote_pick_locked(
             # the header and PERSISTED to history below, so an unscrubbed
             # credential here outlives the session.
             slot.workspace = redact_peer_text(peer_workspace)
+        accepted_kind = accepted.get("agent_kind")
+        requested_kind = body.get("agent_kind")
+        if accepted_kind in ("member", "template"):
+            slot.agent_kind = accepted_kind
+        elif requested_kind in ("member", "template"):
+            slot.agent_kind = requested_kind
+        else:
+            slot.agent_kind = ""
     if control == "model":
         # Same reason the local path bumps it: an explicit pick has to outrank
         # the model-fallback restore probe.
@@ -6615,6 +6626,9 @@ async def _apply_remote_pick_locked(
         # agent is, so it goes in the same write — persisting one without the
         # other would restore the pair inconsistent after a restart.
         persisted["workspace"] = slot.workspace
+    if control == "agent":
+        persisted["agent_kind"] = slot.agent_kind
+    local_persistence_pending = False
     if state.conversation_log and not slot.is_restricted:
         try:
             # update_metadata takes a flock and closes fds — blocking-on-loop
@@ -6637,12 +6651,21 @@ async def _apply_remote_pick_locked(
             # turns run; reporting failure would roll the header back to a value
             # the peer no longer holds.
             slot._dirty = True
+            local_persistence_pending = True
             logger.warning(
                 "Failed to persist remote %s pick for slot %s", control, slot.key, exc_info=True
             )
     logger.info("Remote slot %s %s set to %r on %s", slot.key, control, value, slot.instance_id)
     state.push_slots_update()
-    return web.json_response({"ok": True, control: value, "remote": True})
+    response = {"ok": True, control: value, "remote": True}
+    if control == "agent":
+        response["agent_kind"] = slot.agent_kind
+    if local_persistence_pending:
+        response["local_persistence"] = "pending"
+        response["warning"] = (
+            "The remote selection was applied, but its local restart record is still pending."
+        )
+    return web.json_response(response)
 
 
 async def _record_explicit_agent_selection(
@@ -6917,7 +6940,13 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # A bound session has no local ACP session to reset — the whole
         # transaction below would resolve a crew on the wrong machine. The pick
         # travels instead, and the slot is mirrored only after the peer took it.
-        return await _apply_remote_pick(request, state, slot, "agent", {"agent": agent_name})
+        return await _apply_remote_pick(
+            request,
+            state,
+            slot,
+            "agent",
+            {"agent": agent_name, "agent_kind": agent_kind},
+        )
 
     # The whole resolve -> reset -> commit section runs under the slot's
     # lock: the awaits yield the event loop, and an interleaved second switch
@@ -7043,6 +7072,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # otherwise deliberately not rolled back on a failing reset (see the
         # teardown_incomplete comment), so this is the ONE case that unwinds.
         prior_agent = slot.agent
+        prior_agent_kind = slot.agent_kind
         # Stored verbatim — never rewritten to whatever currently answers. See
         # the same reasoning in api_chat_slot_create.
         new_workspace = slot.workspace
@@ -7058,37 +7088,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         pre_await_project = slot.project
         pre_await_memory_store = slot.memory_store
 
-        # Commit the agent BEFORE any await in this section: a message send
-        # landing while the resolution warm-up or the reset await is in
-        # flight creates a fresh session from the slot's CURRENT bindings,
-        # so the new agent must already be visible or that session
-        # cold-starts on the old binding and stays stale after the switch
-        # reports success. NO rollback on a POST-POP teardown failure: the
-        # reset pops the session from the map before shutting the process
-        # down, so once the pop has happened the old binding's session no
-        # longer exists — every future send cold-starts on the NEW binding,
-        # and a replacement session created by a concurrent send mid-reset
-        # already runs it. Restoring the old label would advertise a binding
-        # nothing runs (and tear against that replacement). That the pop
-        # happened is VERIFIED, not assumed: the reset below routes through
-        # _reset_slot_session_or_warn, which propagates a pre-pop raise —
-        # and THAT path does roll back (see the except below), because the
-        # probe has proven the opposite premise: the old session survives on
-        # this old binding.
-        slot.agent = _CommitToken(agent_name)
-        # Ownership token for the rollback paths below: the committed value is
-        # a str SUBCLASS instance whose identity only this request holds — it
-        # compares, hashes, serializes and persists exactly like the plain
-        # string, but `slot.agent is <token>` proves no other writer has
-        # touched the field since this commit. Any concurrent write — the
-        # unlocked openai_compat / members / in-turn directive writers
-        # included, and a SAME-VALUE write especially — replaces the object,
-        # so the rollback stands down. A value compare-and-set cannot tell
-        # "still my write" from "their equal write", and rolling back over a
-        # concurrent same-agent dispatch would restore the old agent under a
-        # turn already running the new one.
-        committed_agent = slot.agent
-
         # Resolve workspace from agent bindings. The response value is seeded
         # from the slot's CURRENT workspace, not a "default" literal: if
         # resolution below fails, the response still names this value, and
@@ -7098,6 +7097,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # which is exactly when the optimistic write is load-bearing).
         workspace = slot.workspace or "default"
         assignment_resolved = False
+        new_agent_kind = ""
+        committed_agent: str | None = None
+        committed_agent_kind: str | None = None
         try:
             cfg = KiroCrewConfig.load()
             # Resolve by the name being STORED, which is exactly the name dispatch
@@ -7136,12 +7138,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
                     # derived fields, reset or history write has committed yet.
-                    if slot.agent is committed_agent:
-                        slot.agent = prior_agent
                     denied = await require_owner_dashboard_request(request, "chat.slot_agent")
                     if denied is not None:
                         return denied
             assignment_resolved = bindings.requested_resolved
+            new_agent_kind = bindings.selection_kind if assignment_resolved else ""
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             new_workspace = ws_name
             workspace = ws_name
@@ -7244,16 +7245,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     # user chose and runs the next turn's tools elsewhere.
                     new_project = default_project_dir(workspace)
         except asyncio.CancelledError:
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             raise
         except Exception:
             logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
 
         if agent_kind and not assignment_resolved:
             # A stated namespace never falls back to whoever answers by default.
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             return web.json_response(
                 {
                     "error": "the selected agent choice is not available",
@@ -7265,14 +7262,27 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         if not assignment_resolved and prior_selection is not None:
             # A failed lookup cannot commit a name while retaining a different
             # protected selection. Leave the established conversation usable.
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
             from kiro_crew.memory_stores import UnknownMemoryStore
 
             return _store_unavailable_response(
                 slot.memory_store, UnknownMemoryStore("Conversation agent selection is unavailable")
             )
+
+        # Publish the selected name and its resolved namespace together in one
+        # no-await section. Resolution may yield while discovering project
+        # agents, so publishing the name before it finishes lets a sender see a
+        # new name beside the previous namespace. A sender during resolution
+        # instead keeps using the complete old selection; the busy re-probe and
+        # reset below either refuse that overlap or retire its old session.
+        #
+        # The two tokens also form one rollback ownership claim. Any concurrent
+        # writer replaces at least the field it owns, including a same-value
+        # write, so rollback never erases that later selection.
+        slot.agent = _CommitToken(agent_name)
+        slot.agent_kind = _CommitToken(new_agent_kind)
+        committed_agent = slot.agent
+        committed_agent_kind = slot.agent_kind
 
         # Derived fields commit BEFORE the reset too, compare-and-set against
         # the pre-await baseline: a send landing during the reset teardown
@@ -7324,8 +7334,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             this commit's; a field this request never committed (the
             write-side CAS lost) has a None token and is never touched.
             """
-            if slot.agent is committed_agent:
+            if slot.agent is committed_agent and slot.agent_kind is committed_agent_kind:
                 slot.agent = prior_agent
+                slot.agent_kind = prior_agent_kind
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
@@ -7486,7 +7497,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                     )
                 except Exception:
                     logger.warning(
@@ -7503,7 +7514,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 await drained_to_thread(
                     conversation_log.update_metadata,
                     _history_key_for(name),
-                    {"agent": agent_name},
+                    {"agent": agent_name, "agent_kind": new_agent_kind},
                 )
             except asyncio.CancelledError:
                 # Drain the writer before restoring history, and retain both
@@ -7539,7 +7550,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                     )
                 except Exception:
                     logger.warning(
@@ -7567,7 +7578,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                         await drained_to_thread(
                             state.conversation_log.update_metadata,
                             _history_key_for(name),
-                            {"agent": str(slot.agent)},
+                            {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                         )
 
             try:
@@ -7737,8 +7748,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
-    if slot.agent is committed_agent:
-        slot.agent_kind = bindings.selection_kind if assignment_resolved else ""
     schedule_eager_spawn(state, slot)
     state.push_slots_update()
     resp_body: dict = {
