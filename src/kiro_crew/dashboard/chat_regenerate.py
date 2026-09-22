@@ -223,6 +223,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 user_msg,
                 regenerate_hint=hint,
                 _directive_user_origin=not bool(request.get("app", "")),
+                # See ``api_chat``: an observed app must be NAMED, because the
+                # actor resolver's fallback is ``user``. ``""`` is the parameter's
+                # own default and reads as "not named".
+                _turn_actor="app" if request.get("app", "") else "",
             )
         )
         slot.task = task
@@ -612,6 +616,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     slot,
                     _bc,
                     _directive_user_origin=not bool(request_app),
+                    # See ``api_chat``: an observed app must be NAMED, because the
+                    # actor resolver's fallback is ``user``. ``""`` is the
+                    # parameter's own default and reads as "not named".
+                    _turn_actor="app" if request_app else "",
                 )
                 return
             # Edit rejected. A send diverted to the queue by this reservation

@@ -57,6 +57,17 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: that a later reader cannot distinguish from a hand-edited line would hand
 #: human authority to whoever can write the file, so provenance is not carried
 #: across a restart at all and restored entries fail closed to non-directive.
+#: Marks an entry this process RESTORED rather than accepted. Process-local by
+#: construction -- the writer emits only :data:`_DURABLE_QUEUE_KEYS`, so a
+#: hand-edited line cannot clear it and cannot forge it either.
+#:
+#: It exists because dropping provenance is only half a fail-closed rule. A
+#: restored entry carries no actor, and "no actor" resolves to ``user`` in the
+#: drain -- which is exactly the arm ``model.route`` admits. So the absence has to
+#: be readable as "unknown" rather than as "the person's", and this key is what a
+#: consumer asks instead of trying to tell the two apart from the actor alone.
+RESTORED_QUEUE_KEY = "_restored_from_disk"
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -261,8 +272,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     callback key, because each of those changes what the drain DOES with it.
 
     Provenance is dropped for the same reason and matters most:
-    ``_directive_user_origin`` and ``_directive_channel_origin`` are never
-    restored, so a restored entry is non-directive by construction. The drain
+    ``_directive_user_origin``, ``_directive_channel_origin`` and the entry's
+    ``meta`` turn actor are never restored, so a restored entry is non-directive
+    and actor-less by construction. The drain
     reduces the consumed entries' flags into the authenticated-human authority a
     directive is admitted under, and this line is an ordinary writable file — a
     carried flag would be authority granted to whoever edited it. The writer does
@@ -302,6 +314,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         return []
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
+    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
     from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY
 
     entries: list[dict[str, Any]] = []
@@ -333,6 +346,13 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # Restored entries are plain user prompts by construction; the
             # empty kind is what keeps them out of the system-injection paths.
             "kind": "",
+            # PROCESS-LOCAL, and never round-trips: the writer admits only
+            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta), so this key cannot be
+            # set by editing the line -- which is the whole point of having it.
+            # It records that this entry's provenance was established by a
+            # previous process and cannot be vouched for by this one, which is
+            # what :data:`RESTORED_QUEUE_KEY` is read for.
+            RESTORED_QUEUE_KEY: True,
         }
         meta = item.get("meta")
         if isinstance(meta, dict):
@@ -349,7 +369,21 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # constraints that hold NOW, which is the only set this process can
             # vouch for. The cost is narrow — an unlinked, unmirrored slot has no
             # boolean constraint held, so the ordinary restore is unchanged.
-            entry["meta"] = {k: v for k, v in meta.items() if k != QUEUED_CONTAINMENT_META_KEY}
+            # The TURN ACTOR goes with it, and for the plainer version of the
+            # same argument. It names WHO authored the entry -- an app, a cron, a
+            # sub-agent -- and the drain turns that into what the turn is allowed
+            # to do: `model.route` admits only an actor of `user`, so an entry
+            # whose stamp a file editor removed drains as the person's and gets an
+            # owner-scoped model decision spent on an app's prompt. Restored, the
+            # stamp is worth exactly what the file is worth, so it is dropped and
+            # the drain re-derives what it can from the entry's `kind`, which the
+            # writer never emits either. A restored app entry therefore carries no
+            # actor at all -- the same fail-closed baseline the flags above get.
+            entry["meta"] = {
+                k: v
+                for k, v in meta.items()
+                if k not in (QUEUED_CONTAINMENT_META_KEY, TURN_ACTOR_META_KEY)
+            }
         try:
             # Costed against the same key projection the WRITER admits
             # (:data:`_DURABLE_QUEUE_KEYS`, which has no ``kind``), not against

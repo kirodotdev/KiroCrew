@@ -97,6 +97,9 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
+)
+from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
+from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
 )
@@ -162,6 +165,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     QUESTION_CARD_SHOWN_PREFIX,
     apply_session_directive,
 )
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -6979,10 +6983,10 @@ def _queue_entry_is_orchestration(item: dict) -> bool:
     return is_synthetic_payload_item(item) or is_system_injection_item(item)
 
 
-#: Where a requeue stamps the actor of the turn it is retrying. Gateway-authored
-#: (``meta`` is built by ``containment_meta``, never by a user), so it is as
-#: structural as the ``kind`` tag beside it.
-TURN_ACTOR_META_KEY = "turnActor"
+#: Where a requeue stamps the actor of the turn it is retrying. Re-exported from
+#: ``chat_delivery``, which assembles queue-entry meta, so the producers that stamp
+#: it and the drain below that reads it cannot drift onto two spellings.
+TURN_ACTOR_META_KEY = _TURN_ACTOR_META_KEY
 
 #: Which turn actor an enqueue-time queue ``kind`` names. The tag is stamped by
 #: the producer at ``queue_append`` and is not derivable from the entry's text,
@@ -7756,6 +7760,13 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     _queue_actor = _actor_for_queue_items(consumed)
     if _queue_actor:
         _run_kwargs["_turn_actor"] = _queue_actor
+    # Provenance this process did not establish. A restored entry has no actor by
+    # construction (`sanitize_restored_queue` drops the stamp with the directive
+    # flags), and an absent actor reads as `user` below -- so without this the one
+    # arm that spends on an actor of `user` would take a turn whose author is
+    # whoever could write the session file.
+    if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
+        _run_kwargs["_turn_provenance_restored"] = True
     if _stage_delivery_entry is not None or _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -8135,6 +8146,12 @@ async def _run_chat(
     # crashing fallback replay re-arm and repeat indefinitely.
     _synthetic_recovery_turn: bool = False,
     _directive_user_origin: bool = False,
+    # This turn was drained from a queue entry a PREVIOUS process accepted
+    # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
+    # rests on an ordinary writable file rather than on anything this process
+    # observed, and a restored entry carries no actor at all -- which reads as
+    # `user`. Only the queue drain sets it, and it is never persisted.
+    _turn_provenance_restored: bool = False,
     # This turn is the delivered wake of a nudge/monitor loop bound to THIS slot
     # (set only by ``GatewayOrchestrator._fire_dashboard_nudge``). It is the
     # second producer the session-directive consumer admits as "the session's
@@ -10850,6 +10867,7 @@ async def _run_chat(
         if (
             _jev_route_armed(slot)
             and _crew_log_actor == "user"
+            and not _turn_provenance_restored
             and not _is_synthetic
             and not is_slash
             and message not in _SYNTHETIC_RECOVERY_MSGS

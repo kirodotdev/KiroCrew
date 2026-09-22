@@ -308,6 +308,8 @@ class TestApiCompletionsBlocking:
         # Simulate the assistant responding then done
         async def fake_run_chat(s, sl, prompt, **_kwargs):
             assert _kwargs["_directive_user_origin"] is True
+            # No app claim, so no actor is named and the turn reads as the person's.
+            assert _kwargs["_turn_actor"] == ""
             slot._pending.append({"role": "assistant", "content": "hey there"})
             slot._pending.append({"cls": "done"})
             slot.event.set()
@@ -855,6 +857,12 @@ class TestAppKitOwnership:
 
         async def fake_run_chat(s, sl, prompt, **_kwargs):
             assert _kwargs["_directive_user_origin"] is False
+            # And the actor SAYS so. Without this the turn reaches the runner as
+            # `_crew_log_actor == "user"` -- the resolver's fallback -- and every
+            # consumer that asks "is a human watching this turn" is told yes,
+            # including the model-routing gate, which then spends the owner's
+            # tier map on a turn nobody typed.
+            assert _kwargs["_turn_actor"] == "app"
             slot._pending.append({"role": "assistant", "content": "yo"})
             slot._pending.append({"cls": "done"})
             slot.event.set()

@@ -1,18 +1,17 @@
 """The auto default: an unpinned slot routes while the Jev preview is on.
 
-``model.route`` used to run only for a slot whose owner had picked the picker's
-``Auto (Jev)`` row, which survives as ``slot.jev_route``. That left the feature
-invisible: an owner who turned the preview on in Settings still had to arm each
-session by hand, and a freshly dispatched worker slot -- whose ``model`` is ``""``
--- could not be armed at all, because nobody is sitting at its picker.
+A slot NAMING NO MODEL is one of the two ways into ``model.route``, beside the
+owner's explicit ``Auto (Jev)`` pick (``slot.jev_route``), and the two are one
+answer to one question: ``auto`` and ``""`` both mean "the owner pinned nothing
+here", which is exactly what the point is for. It is what makes the preview a
+feature rather than a per-session chore -- an owner who consented in Settings
+routes every unpinned session without arming each one -- and it is the only way a
+freshly dispatched worker slot routes at all, since its ``model`` is ``""`` and
+nobody is sitting at its picker. A slot that DOES name a model is never routed: a
+pin is the owner answering this point by hand.
 
-So "the slot names no model" is now the second way in, and it is the same answer to
-the same question: ``auto`` and ``""`` both mean "the owner pinned nothing here",
-which is exactly what the point is for. A slot that DOES name a model is untouched,
-because a pin is the owner answering this point by hand.
-
-What the two ways in do NOT change is the envelope. Routing can only reach a model
-the owner listed in ``decisions.model_route``, and only while the keystone says
+What neither way in changes is the envelope. Routing can only reach a model the
+owner listed in ``decisions.model_route``, and only while the keystone says
 ``enabled: true`` -- neither of which any agent or app can write. That is why the
 preview being on is the whole authorization, and why this file asserts the four
 corners of it: preview on + unpinned routes, preview on + pinned does not, preview
@@ -310,3 +309,43 @@ class TestTheEnvelopeIsTheCeiling:
             )
 
         assert _switched_to(client) == []
+
+
+class TestRestoredProvenanceDoesNotRoute:
+    @pytest.mark.asyncio
+    async def test_a_turn_drained_from_a_restored_entry_routes_nothing(
+        self, tmp_path, keystone, answers
+    ):
+        """The one arm that spends on an actor of ``user`` must not take a turn whose
+        author is whoever could write the session file.
+
+        A queue entry restored from disk arrives with no provenance at all: the
+        repository drops the directive flags AND the actor stamp, because the line it
+        came off is an ordinary writable file in the crew home. But an ABSENT actor
+        resolves to ``user`` in the drain, which is exactly the arm this point admits
+        -- so dropping the stamp is only half a fail-closed rule. The drain therefore
+        also says that the provenance is a previous process's, and the gate refuses on
+        that rather than on the actor it cannot trust.
+
+        The cost is the same one ``slot.jev_route`` already documents for a restart:
+        the turn runs on the model the session is already on."""
+        keystone(True)
+        answers("complex")
+
+        client = await _run(tmp_path, _slot("chat-restored"), _turn_provenance_restored=True)
+
+        assert _switched_to(client) == []
+
+    @pytest.mark.asyncio
+    async def test_the_same_turn_routes_when_this_process_accepted_it(
+        self, tmp_path, keystone, answers
+    ):
+        """MUTATION of the case above: only the provenance flag moves. Without this,
+        a gate that refused every turn would pass the test above and take the feature
+        with it."""
+        keystone(True)
+        answers("complex")
+
+        client = await _run(tmp_path, _slot("chat-in-process"), _turn_provenance_restored=False)
+
+        assert _switched_to(client) == ["model-c"]

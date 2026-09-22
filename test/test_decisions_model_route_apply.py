@@ -672,15 +672,15 @@ class TestAManualPickDuringTheAwaitWins:
 
         Driven through the oracle, which is the only place inside the await window: it
         moves the slot the way a landed pick does. Both halves of the premise are
-        checked here -- the served model the baseline named, and the slot no longer
-        being armed -- because either alone would leave a live overwrite path. The pin
-        case moves `model` and NOT `served_model`, so it exercises the arm half only.
+        checked here -- the served model the baseline named, and the slot still being
+        armed -- because either alone would leave a live overwrite path. The pin case
+        moves `model` and NOT `served_model`, so it exercises the arm half only.
 
         A CLEARED `jev_route` is deliberately not one of the cases. With the preview
         on, a slot that still names no model is armed either way: picking plain `Auto`
         mid-await clears the flag and means "let Jev pick", so applying the answer is
-        the instruction rather than an overwrite of it. Only a named model is a
-        different instruction, and that is the case below."""
+        the instruction rather than an overwrite of it. Only a NAMED MODEL is a
+        different instruction, which is what the `pin` case moves."""
         import kiro_crew.decisions.impl_jev as impl_mod
 
         for moved in ("served_model", "pin"):

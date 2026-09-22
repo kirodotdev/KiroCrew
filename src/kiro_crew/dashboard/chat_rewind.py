@@ -349,6 +349,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot,
                     redacted_content,
                     _directive_user_origin=not bool(request_app),
+                    # See ``api_chat``: an observed app must be NAMED, because the
+                    # actor resolver's fallback is ``user``. ``""`` is the
+                    # parameter's own default and reads as "not named".
+                    _turn_actor="app" if request_app else "",
                 )
                 return
             # Rewind rejected. A send diverted to the queue by this

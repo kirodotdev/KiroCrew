@@ -1997,6 +1997,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
     # controller remains ``turn_running`` and queues this approval.
     if slot.turn_running:
         # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Provenance follows the CALLER — the same request-identity split as
@@ -2007,10 +2008,17 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         # kind is a structural origin tag, not bare content: _exit_cancelled_plan
         # drops revoked approvals by this tag, and queue_append's contract names
         # metadata (never content equality) as the classification mechanism.
+        _go_meta = containment_meta(state, slot)
+        if request.get("app", ""):
+            # The actor, not only the origin flag. `plan_approval` maps to nothing in
+            # `_QUEUE_KIND_ACTORS`, so without this stamp the drain falls through to
+            # `user` and an app's relayed approval runs as the person's turn -- which
+            # is the same fallback every consumer of that field then reads.
+            _go_meta[TURN_ACTOR_META_KEY] = "app"
         slot.queue_append(
             "Go",
             kind="plan_approval",
-            meta=containment_meta(state, slot),
+            meta=_go_meta,
             directive_user_origin=not bool(request.get("app", "")),
         )
         return web.json_response({"ok": True, "queued": True})

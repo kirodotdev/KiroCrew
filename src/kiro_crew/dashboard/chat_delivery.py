@@ -654,6 +654,17 @@ async def steer_into_running_turn(
     return STEER_STEERED
 
 
+#: Where a queue entry names the actor of the turn it will run as. Gateway-authored
+#: (``meta`` is built by ``containment_meta``, never by a user), so it is as
+#: structural as the ``kind`` tag beside it.
+#:
+#: It lives HERE rather than in ``chat_runner``, which re-exports it: this module is
+#: where an entry's meta is assembled and ``chat_runner`` already imports from it, so
+#: the stamp and the drain that reads it share one definition instead of a literal
+#: spelled in two places.
+TURN_ACTOR_META_KEY = "turnActor"
+
+
 def queue_for_next_turn(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -663,6 +674,7 @@ def queue_for_next_turn(
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
     decision_strip: dict | None = None,
+    turn_actor: str = "",
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -700,6 +712,13 @@ def queue_for_next_turn(
     from kiro_crew.dashboard.session_control import containment_meta
 
     meta: dict[str, Any] = containment_meta(state, slot)
+    if turn_actor:
+        # A queued turn reaches `_run_chat` through the DRAIN, not through the
+        # caller, so a keyword on the dispatch cannot carry the actor across --
+        # the entry's meta is the only thing that survives the wait, and
+        # `_actor_for_queue_items` reads exactly this key. Unstamped, the drain
+        # falls back to `user`, which files an app's send as a person's.
+        meta[TURN_ACTOR_META_KEY] = turn_actor
     if send_id:
         meta["sendId"] = send_id
     if attachments:

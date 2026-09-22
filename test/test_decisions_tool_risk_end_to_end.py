@@ -236,6 +236,12 @@ async def test_revoking_the_tool_argument_scope_silences_the_whole_chain(tmp_pat
     )
     state, client = _runner(tmp_path)
     slot = _slot("chat-risk-e2e-unscoped")
+    # PINNED, so `model.route` does not also run on this turn and the assertion
+    # below can stay an exact whole-log comparison. A filter would have let any
+    # other point's unexpected row through unnoticed, which is the opposite of what
+    # this assertion is for. The pin is inert for this test: the tool-risk path
+    # reads the call, never the slot's model.
+    slot.model = "model-pinned-so-nothing-routes"
     state.is_yolo_active = MagicMock(return_value=False)
     _scripts(client, [_tool_call()])
 
@@ -246,9 +252,4 @@ async def test_revoking_the_tool_argument_scope_silences_the_whole_chain(tmp_pat
     rows = _tool_rows(slot)
     assert rows, f"expected a tool card, got {slot.messages}"
     assert "decisions_tool_risk" not in (rows[0].get("meta") or {})
-    # Scoped to THIS point. The slot pins no model, so with the preview on the
-    # turn also asks `model.route` which model to run on, and that point's rows are
-    # not evidence about the tool-argument scope either way.
-    assert [
-        row for row in _rows() if row.get("point") == tr.POINT
-    ] == [], "no call row and no outcome row for a point that never ran"
+    assert _rows() == [], "no call row and no outcome row for a point that never ran"

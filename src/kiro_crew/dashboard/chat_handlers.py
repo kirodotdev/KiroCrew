@@ -45,6 +45,7 @@ from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
     STEER_STEERED,
+    TURN_ACTOR_META_KEY,
     attachment_meta,
     normalize_send_id,
     queue_for_next_turn,
@@ -940,6 +941,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             slot,
             message,
             directive_user_origin=not bool(request_app),
+            # A queued turn reaches the runner through the DRAIN, so the dispatch
+            # keyword this handler passes for an IMMEDIATE send cannot carry the
+            # actor here. It rides the entry's meta instead, which is what
+            # `_actor_for_queue_items` reads; unstamped, the drain falls back to
+            # `user` and files an app's send as a person's.
+            turn_actor="app" if request_app else "",
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
             # The receipt travels whichever way the send went, including the one
@@ -977,6 +984,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
         _hold_meta.update(attachment_meta(user_meta))
+        if request_app:
+            # Same reason as the busy-slot queue above: this entry is drained
+            # later, so only its meta can name the actor.
+            _hold_meta[TURN_ACTOR_META_KEY] = "app"
         qid = slot.queue_append(
             message,
             meta=_hold_meta,

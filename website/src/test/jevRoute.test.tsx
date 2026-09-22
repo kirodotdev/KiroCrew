@@ -2,10 +2,15 @@
  * When the picker offers `Auto (Jev)`, and when it reads as selected.
  *
  * Both gates are asserted as FAIL-CLOSED, which is the whole point of the module:
- * the fleet's `decisions_enabled` and the owner's keystone consent are different
- * answers, and offering the row on either alone puts a paid third-party call one
- * click away from someone who did not agree to one. Neither read is an enforcement
- * point — the gate re-checks both — so these tests pin presentation, not security.
+ * the fleet's `decisions_enabled` and the owner's `permits` are different answers,
+ * and offering the row on either alone puts a paid third-party call one click away
+ * from someone who did not agree to one. Neither read is an enforcement point — the
+ * gate re-checks both — so these tests pin presentation, not security.
+ *
+ * The owner's side is `permits`, never the keystone's bare `enabled`: `permits` is
+ * the answer the GATE will give, because it also holds the consented endpoint
+ * against the one config names now and folds in the governance denial. A surface
+ * reading `enabled` offers a control that routes nothing whenever those differ.
  *
  * The selected-state half matters just as much: a routed slot stores `model: 'auto'`,
  * so a picker highlighting on the model alone would tick the Auto row and name a
@@ -32,28 +37,42 @@ const LABEL = 'let Jev judge each turn'
 
 describe('jevRouteOffered', () => {
   it('needs the fleet answer AND the owner consent', () => {
-    expect(jevRouteOffered({ decisions_enabled: true }, { enabled: true }, true)).toBe(true)
+    expect(jevRouteOffered({ decisions_enabled: true }, { permits: true }, true)).toBe(true)
   })
 
   it('is refused when either one is missing, false, or not yet read', () => {
     // An absent field is an older gateway or a read that has not landed; neither
     // is permission.
     for (const cfg of [undefined, {}, { decisions_enabled: false }]) {
-      expect(jevRouteOffered(cfg, { enabled: true }, true)).toBe(false)
+      expect(jevRouteOffered(cfg, { permits: true }, true)).toBe(false)
     }
-    for (const consent of [undefined, {}, { enabled: false }]) {
+    for (const consent of [undefined, {}, { permits: false }]) {
       expect(jevRouteOffered({ decisions_enabled: true }, consent, true)).toBe(false)
     }
   })
 
+  it('is refused for a keystone consented to a DIFFERENT provider endpoint', () => {
+    // The redirected-config state: the owner did consent, so `enabled` is true, but
+    // the address recorded is not the one config names now and the gate refuses. A
+    // surface reading `enabled` would offer the row and let the chip claim a routed
+    // turn the backend declined -- which is exactly what `permits` folds in.
+    expect(
+      jevRouteOffered(
+        { decisions_enabled: true },
+        { enabled: true, permits: false } as { permits?: boolean },
+        true,
+      ),
+    ).toBe(false)
+  })
+
   it('reads only an exact `true` on either side', () => {
-    // The keystone writer emits a real boolean and the gate accepts nothing else,
-    // so a hand-edited "true" must not read as consent here either.
-    expect(jevRouteOffered({ decisions_enabled: 1 as never }, { enabled: true }, true)).toBe(
+    // The gateway emits a real boolean and the gate accepts nothing else, so a
+    // hand-edited "true" must not read as consent here either.
+    expect(jevRouteOffered({ decisions_enabled: 1 as never }, { permits: true }, true)).toBe(
       false,
     )
     expect(
-      jevRouteOffered({ decisions_enabled: true }, { enabled: 'true' as never }, true),
+      jevRouteOffered({ decisions_enabled: true }, { permits: 'true' as never }, true),
     ).toBe(false)
   })
 })
@@ -96,7 +115,7 @@ describe('a picker with no live slot', () => {
     // the one place `slot.model` must never reach. Both halves are pinned: the offer
     // needs a slot, and the holding branch resolves the sentinel even so.
     const cfg = { decisions_enabled: true }
-    const consent = { enabled: true }
+    const consent = { permits: true }
     expect(jevRouteOffered(cfg, consent, false)).toBe(false)
     expect(jevRouteOffered(cfg, consent, true)).toBe(true)
     for (const rel of ['../pages/ChatPage.tsx', '../components/ChatPane.tsx']) {

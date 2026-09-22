@@ -537,18 +537,24 @@ interface ChatInputProps {
    * True when THIS turn's model is Jev's to pick: the slot names no model
    * (`auto`, or the empty string a freshly dispatched slot carries) and the Jev
    * preview is on, so `model.route` puts the turn in a tier and runs it on that
-   * tier's model. The chip then carries an ` · Auto (Jev)` marker, because the
-   * bare id beside it is only where the session STARTS -- the next turn may run
-   * somewhere else, which a chip reading like a pin does not say.
+   * tier's model.
    *
-   * Hosts compute it from the SAME `jevRouteOffered()` the picker's own row is
-   * drawn from (`lib/jevRoute.ts`) against the slot's raw `model`, which is what
-   * the routing gate reads. One condition, so the chip cannot say Auto for a turn
-   * that routed, nor Auto (Jev) for one that did not.
+   * The chip then names the POLICY (`Auto (Jev)`) in place of `modelName`, rather
+   * than an id with a marker beside it. A routed session's model changes from turn
+   * to turn, so naming one makes a chip that reads like a pin and is stale by the
+   * next reply; the model a given turn actually ran on is on that turn's routing
+   * receipt, which is per-turn and cannot go stale. It is also the exact label the
+   * picker highlights for this slot (`jevRouteShownModel`), so the chip and the
+   * open menu say the same word for the same choice.
    *
-   * Wins over `modelIsInheritedDefault`: both describe a slot that pinned
-   * nothing, and this one names WHO picks instead, which is the more specific
-   * fact and the one that costs money. */
+   * Hosts compute it from the SAME `jevRouteOffered()` the picker's row is drawn
+   * from (`lib/jevRoute.ts`) against the slot's raw `model`, which is what the
+   * routing gate reads. One condition, so the chip cannot say Auto for a turn that
+   * routed, nor Auto (Jev) for one that did not.
+   *
+   * Wins over `modelIsInheritedDefault`: both describe a slot that pinned nothing,
+   * and this one names WHO picks instead, which is the more specific fact and the
+   * one that costs money. */
   modelIsJevRouted?: boolean
   /**
    * Picker openers (agent, model, project, and `onSessionControlClick` below).
@@ -5124,27 +5130,20 @@ function ChatInput({
                     : i18nT('components.chatInput.model_2', { name: modelName })}
             >
               <span className="truncate max-w-[180px]">
-                {modelName}
+                {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
               </span>
               {/* Outside the truncating span: a long provider-prefixed id must
-                  ellipsize its own tail, never the marker that says who picked it.
-                  Jev first -- an unpinned slot is BOTH inherited and routed, and
-                  only the routed reading tells the next turn's model apart from
-                  this one's. Same key the picker's own row is labelled with, so
-                  the chip and the menu name the choice identically. */}
-              {modelIsJevRouted ? (
-                <>
-                  <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-                  <span className="opacity-60 shrink-0" data-testid="composer-model-chip-jev">
-                    {i18nT('components.modelDropdownList.auto_jev')}
-                  </span>
-                </>
-              ) : modelIsInheritedDefault ? (
+                  ellipsize its own tail, never the marker beside it. A routed chip
+                  takes NO marker -- its label is already the policy, and a second
+                  word next to it would be a marker on a name that is not a model.
+                  So the two unpinned states differ by KIND (a policy vs an id with
+                  a marker), not by two adjectives a reader has to tell apart. */}
+              {!modelIsJevRouted && modelIsInheritedDefault && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
                   <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
                 </>
-              ) : null}
+              )}
               {onReasoningEffortClick && !shelfCompact && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>

@@ -611,6 +611,14 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     slot,
                     prompt,
                     _directive_user_origin=is_dashboard_caller,
+                    # Named for the same reason ``api_chat`` names it: the actor
+                    # resolver's fallback is ``user``, so a dispatch that OBSERVED
+                    # an app and stayed silent records a person who never typed
+                    # anything -- and every consumer that asks "is a human
+                    # watching this turn" then gets the wrong answer. ``""`` is the
+                    # parameter's own default and reads as "not named", so a
+                    # dashboard caller is unchanged.
+                    _turn_actor="app" if request_app else "",
                 ),
                 timeout=chat_turn_timeout_secs(),
             )
