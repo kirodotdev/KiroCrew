@@ -16,11 +16,14 @@ right stack without relying on a local cache that could drift.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew import __version__, release_channel
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.deploy import profiles as profiles_mod
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
@@ -92,6 +95,15 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}\Z")
 _REPO_SPEC = FieldSpec(name="repo", type=str, max_len=255, pattern=_REPO_RE)
 _REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}\Z")
 _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
+#: Where the template's public-repo fallback clones from when no ``repo`` is
+#: passed: the ``KirocrewRepo`` default of ``kirocrew-ec2.yaml``, spelled here
+#: too because the release-tag probe below must ask the SAME remote the
+#: instance will clone (``test_cloud_ec2.py`` pins the two spellings together).
+PUBLIC_REPO_URL = "https://github.com/kirodotdev/KiroCrew.git"
+#: Budget for one ``git ls-remote`` round trip to that remote. A launch already
+#: waits minutes on CloudFormation, so a slow answer costs little; a hung one
+#: must not hang the launch, and a miss is never worse than today's ``main``.
+_REF_PROBE_TIMEOUT_SECONDS = 15.0
 # EC2 subnet ids are `subnet-` + 8 (EC2-Classic era) or 17 hex chars.
 _SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}\Z")
 _SUBNET_ID_SPEC = FieldSpec(name="subnet_id", type=str, max_len=24, pattern=_SUBNET_ID_RE)
@@ -518,6 +530,78 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     return result
 
 
+def release_tag_exists(ref: str, repo: str = "") -> bool:
+    """Whether ``repo`` (default: the public repo) carries the tag ``ref``.
+
+    One ``git ls-remote --exit-code`` against the remote, with no credential
+    helper or terminal prompt (``GIT_TERMINAL_PROMPT=0``) and a short timeout.
+    Any way of not getting a definite "yes" — no ``git`` on this machine, no
+    network, a 128 from the remote, a timeout — answers ``False``: the caller
+    then keeps the template default rather than asking the instance to clone a
+    tag that may not be there, which would fail the boot inside the stack.
+    """
+    argv = [
+        "git",
+        "ls-remote",
+        "--exit-code",
+        "--tags",
+        "--",
+        repo or PUBLIC_REPO_URL,
+        f"refs/tags/{ref}",
+    ]
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_REF_PROBE_TIMEOUT_SECONDS,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("could not probe %s for tag %s: %s", repo or PUBLIC_REPO_URL, ref, exc)
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "tag %s not found on %s (git ls-remote exit %d)",
+            ref,
+            repo or PUBLIC_REPO_URL,
+            proc.returncode,
+        )
+        return False
+    return True
+
+
+def resolve_public_ref(repo: str = "") -> str:
+    """The git ref the public-repo clone should install for THIS build.
+
+    The template's ``KirocrewRef`` defaults to ``main``, which is right for a
+    checkout that ships its own source and wrong for a packaged install: the
+    instance then runs whatever ``main`` is while this machine runs a release,
+    and ``remote_relay.ensure_version_parity`` refuses every session between
+    them on ``major.minor``. So a packaged install pins the release tag its own
+    version names (:func:`release_channel.release_ref`), after confirming the
+    remote has it. Returns ``""`` — "let the template default stand" — when no
+    tag maps onto the version (a nightly) or the remote does not carry it (a
+    fork, a build stamped before its tag was pushed, no network from here); the
+    WARNING says which, and the launch proceeds exactly as it does today.
+    """
+    ref = release_channel.release_ref()
+    if ref is None:
+        logger.warning(
+            "no release tag maps onto Kiro Crew %s; the instance will run main", __version__
+        )
+        return ""
+    if not release_tag_exists(ref, repo):
+        logger.warning(
+            "no release tag %s for Kiro Crew %s; the instance will run main", ref, __version__
+        )
+        return ""
+    return ref
+
+
 def build_deploy_argv(
     *,
     tag: str,
@@ -622,6 +706,14 @@ def deploy(
         ship_source = source_mod.find_repo_root() is not None
         if not ship_source:
             logger.info("no checkout found; the instance will clone the public repo")
+    # A public-repo clone with no explicit ref would install the template's
+    # `main`; pin this build's release tag instead so the instance can talk to
+    # this machine. The dry run stays offline (the probe is a network round
+    # trip), so its argv shows the ref only when the caller passed one.
+    if not ship_source and not ref and not dry_run:
+        ref = resolve_public_ref(repo)
+        if ref:
+            logger.info("the instance will install release tag %s", ref)
 
     if dry_run:
         # For the dry run we can't hit AWS for the VPC or account id, so show

@@ -80,3 +80,60 @@ def test_channel_defaults_to_this_build(monkeypatch) -> None:
     monkeypatch.setattr("kiro_crew.release_channel.__version__", "9.9.9-insider.7")
     assert release_channel.channel() == "insider"
     assert release_channel.is_prerelease() is True
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        # ── Stable: the tag is the version, `release.yml` tags `vX.Y.Z` ──
+        ("0.7.0", "v0.7.0"),
+        ("1.2.3", "v1.2.3"),
+        # A distribution build stamp (BUILD_VERSION `0.7.0.5`) is a build OF
+        # 0.7.0 — the reported shape in the cloud-launch parity refusal — and
+        # folds onto the release's tag as changelog.release_of_build folds it
+        # onto the release's notes.
+        ("0.7.0.5", "v0.7.0"),
+        ("0.6.0.12", "v0.6.0"),
+        # ── Insider: wheel `rcN` and desktop `-insider.N` name one tag ──
+        ("0.7.0rc5", "v0.7.0-insider.5"),
+        ("0.7.0-insider.5", "v0.7.0-insider.5"),
+        # release.yml publishes `-rc.N` tags to the insider feed too; the
+        # desktop spelling still IS that tag.
+        ("0.7.0-rc.1", "v0.7.0-rc.1"),
+        # ── No tag exists for these; the launcher falls back to `main` ──
+        ("0.8.0.dev123", None),
+        ("0.7.0-nightly.20260807t061500", None),
+        ("0.7.0rc4.dev20260807061500", None),
+        # `a` / `b` segments belong to no release lane.
+        ("0.7.0b1", None),
+        ("0.7.0a2", None),
+        ("0.7.0rc4.post1", None),
+        # release.yml refuses a base that is not exactly x.y.z.
+        ("0.7", None),
+        ("0.7.0.5.1", None),
+        ("v0.7.0", None),
+        ("main", None),
+        ("", None),
+        ("0.7.0; rm -rf /", None),
+    ],
+)
+def test_release_ref_maps_each_stamping_onto_its_tag(version: str, expected: str | None) -> None:
+    assert release_channel.release_ref(version) == expected
+
+
+def test_release_ref_is_a_safe_clone_ref() -> None:
+    """Every answer must pass `cloud.ec2`'s ref charset: it is inlined into the
+    instance's `git clone --branch` and a stray byte there would run as root."""
+    from kiro_crew.cloud import ec2
+
+    for version in ("0.7.0", "0.7.0.5", "0.7.0rc5", "0.7.0-insider.5", "0.7.0-rc.1"):
+        ref = release_channel.release_ref(version)
+        assert ref is not None
+        assert ec2._REF_RE.match(ref), ref
+
+
+def test_release_ref_defaults_to_this_build(monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.release_channel.__version__", "9.9.9rc7")
+    assert release_channel.release_ref() == "v9.9.9-insider.7"
+    monkeypatch.setattr("kiro_crew.release_channel.__version__", "9.9.9.dev1")
+    assert release_channel.release_ref() is None
