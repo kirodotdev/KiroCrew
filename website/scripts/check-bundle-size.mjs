@@ -153,7 +153,17 @@ export const CHUNK_BUDGETS = {
   // ceiling left at 0.04% headroom fails on the next feature's ordinary strings
   // rather than on the new library it exists to catch. Back to the 5% convention
   // over the measured size.
-  t: 905 * KB, // measured 862.2 KB on this branch rebased onto 1c7f963706 (~5% headroom)
+  // Re-measured 2026-09-22 on the skills-audit branch rebased onto main
+  // @ 4e7f968c8: main's catalogs ALONE build the chunk at 926,128 B (904.4 KB)
+  // against the 905 KB ceiling -- 592 B left, or 0.06% headroom, because the
+  // features that landed since 1c7f963706 consumed the 5% granted above. With
+  // this branch's copy it builds at 926,930 B (905.2 KB), 210 B over. The delta
+  // this branch owns is 802 B: 8 keys of product copy (audit labels, the
+  // similarity percent, the restage notice and Undo) across 13 catalogs plus the
+  // generated `en-XA` pseudo-locale. No dependency added; no lazy boundary can
+  // move a catalog string out of this chunk. Same drift, fifth time: back to the
+  // 5% convention over the measured size.
+  t: 950 * KB, // measured 905.2 KB on this branch rebased onto 4e7f968c8 (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

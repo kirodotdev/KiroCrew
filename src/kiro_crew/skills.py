@@ -36,7 +36,7 @@ from kiro_crew.atomic_write import (
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
-from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.frontmatter import SKILL_LOADER, SKILL_UPDATE, frontmatter_value, parse_frontmatter
 from kiro_crew.hooks import (
     FileTooLargeError,
     safe_read_file,
@@ -306,6 +306,40 @@ class SkillContextCapacityError(ValueError):
     """Required instructions cannot fit; never silently cut a required skill."""
 
 
+def merge_skill_triggers(live: str, candidate: str, *, cap: int = 12) -> str:
+    """Union two comma-separated trigger lists, live first and case-insensitively."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in (live or "").split(",") + (candidate or "").split(","):
+        trigger = re.sub(r"\s+", " ", raw).strip()
+        if not trigger:
+            continue
+        key = trigger.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(trigger)
+        if len(merged) >= cap:
+            break
+    return ", ".join(merged)
+
+
+def merge_skill_update_metadata(
+    live_body: str | None,
+    candidate_description: str,
+    candidate_triggers: str,
+    *,
+    trigger_cap: int = 12,
+) -> tuple[str, str]:
+    """Keep the live description and union activation triggers for an update."""
+    live_description = frontmatter_value(live_body or "", "description", SKILL_UPDATE)
+    live_triggers = frontmatter_value(live_body or "", "triggers", SKILL_UPDATE)
+    return (
+        live_description or candidate_description,
+        merge_skill_triggers(live_triggers, candidate_triggers, cap=trigger_cap),
+    )
+
+
 # The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
 _MAPPED_BLOCK_OVERHEAD_BYTES = 64
 
@@ -420,6 +454,13 @@ _AUTO_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 
 # Bundled fallback — inside the kiro_crew package
 _BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin_skills"
+
+# ``SkillsLoader.audit()`` uses ``skills.auto_similarity_threshold`` for the
+# duplicate cutoff. OVERLAP is the lower symmetric relationship boundary;
+# COVERAGE is the share of a pending candidate's description words a live skill
+# must contain before the candidate counts as covered by it (``subsumed``).
+_AUDIT_OVERLAP_THRESHOLD = 0.5
+_AUDIT_COVERAGE_THRESHOLD = 0.85
 
 
 @dataclass(frozen=True)
@@ -4257,6 +4298,17 @@ class SkillsLoader:
             return False
         return name.startswith(f"{AUTO_SKILL_NAMESPACE}/")
 
+    @staticmethod
+    def _description_words(description: str) -> set[str]:
+        """Tokenize a skill description for every lexical similarity check."""
+        return set(re.findall(r"\w+", (description or "").lower()))
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        """Return word-set Jaccard similarity, or zero for two empty sets."""
+        union = left | right
+        return len(left & right) / len(union) if union else 0.0
+
     def find_similar(
         self,
         description: str,
@@ -4278,32 +4330,215 @@ class SkillsLoader:
 
         *exclude* lets callers suppress self-matches during refinement.
         """
-        if not description:
-            return None
-        query_words = set(re.findall(r"\w+", description.lower()))
+        query_words = self._description_words(description)
         if not query_words:
             return None
         best_name: str | None = None
-        best_score: float = 0.0
+        best_score = 0.0
         for name, skill_file, _within in self._iter():
             if exclude and name == exclude:
                 continue
             meta = self._cached_frontmatter(skill_file, within=_within)
-            existing = meta.get("description", "")
-            if not existing:
-                continue
-            existing_words = set(re.findall(r"\w+", existing.lower()))
+            existing_words = self._description_words(meta.get("description", ""))
             if not existing_words:
                 continue
-            intersection = query_words & existing_words
-            union = query_words | existing_words
-            score = len(intersection) / len(union) if union else 0.0
+            score = self._jaccard(query_words, existing_words)
             if score > best_score:
                 best_score = score
                 best_name = name
         if best_score >= threshold:
             return best_name
         return None
+
+    @staticmethod
+    def _audit_trigger_words(triggers: str) -> set[str]:
+        """Return positive trigger words for symmetric audit comparisons."""
+        words: set[str] = set()
+        for raw in (triggers or "").split(","):
+            phrase = raw.strip()
+            if phrase and not phrase.startswith("!"):
+                words.update(words_of(phrase))
+        return words
+
+    @staticmethod
+    def _audit_is_builtin(skill_file: Path) -> bool:
+        """True for a package-owned builtin skill (shipped tree or provenance-marked copy)."""
+        try:
+            skill_file.resolve().relative_to(_BUILTIN_SKILLS_DIR.resolve())
+            return True
+        except (OSError, ValueError):
+            pass
+        return os.path.lexists(skill_file.parent / _PROVENANCE_MARKER)
+
+    def audit(self) -> list[dict]:
+        """Audit pending and live skills pairwise and return overlap clusters.
+
+        The audit is deterministic and embedding-free. It compares description
+        word-set Jaccard similarity plus positive trigger-word Jaccard similarity,
+        using the stronger signal as the pair score. ``subsumed`` is asymmetric:
+        a pending candidate is covered by a live skill only when its trigger
+        words are a subset of the live skill's, or when the live description
+        contains at least ``_AUDIT_COVERAGE_THRESHOLD`` of the candidate's
+        description words. Two package-owned builtins are never paired with each
+        other -- a maintainer cannot merge them, so the pair would be a
+        permanent, unactionable cluster. Every remaining pair is considered, so
+        the implementation is intentionally O(n²); current skill libraries are
+        small enough that avoiding an index keeps the result easy to explain.
+        """
+        duplicate_threshold = KiroCrewConfig.load().skills.auto_similarity_threshold
+        overlap_threshold = _AUDIT_OVERLAP_THRESHOLD
+
+        entries: list[dict] = []
+        for pending in self.list_pending_skills():
+            description = str(pending.get("description", ""))
+            triggers = str(pending.get("triggers", ""))
+            entries.append(
+                {
+                    "id": f"pending:{pending['slug']}",
+                    "kind": "pending",
+                    "name": str(pending.get("name") or f"auto/{pending['slug']}"),
+                    "slug": pending["slug"],
+                    "description_words": self._description_words(description),
+                    "trigger_words": self._audit_trigger_words(triggers),
+                }
+            )
+        for name, skill_file, within in self._iter():
+            meta = self._cached_frontmatter(skill_file, within=within)
+            entries.append(
+                {
+                    "id": f"live:{name}",
+                    "kind": "live",
+                    "name": name,
+                    "builtin": self._audit_is_builtin(skill_file),
+                    "description_words": self._description_words(meta.get("description", "")),
+                    "trigger_words": self._audit_trigger_words(meta.get("triggers", "")),
+                }
+            )
+
+        by_id = {entry["id"]: entry for entry in entries}
+        relations: list[dict] = []
+        adjacency: dict[int, set[int]] = {index: set() for index in range(len(entries))}
+        for left_index in range(len(entries)):
+            for right_index in range(left_index + 1, len(entries)):
+                left = entries[left_index]
+                right = entries[right_index]
+                if left.get("builtin") and right.get("builtin"):
+                    continue
+                description_score = self._jaccard(
+                    left["description_words"], right["description_words"]
+                )
+                trigger_score_value = self._jaccard(left["trigger_words"], right["trigger_words"])
+                score = max(description_score, trigger_score_value)
+                pending_live = left["kind"] != right["kind"]
+                covered = False
+                if pending_live:
+                    pending = left if left["kind"] == "pending" else right
+                    live = left if left["kind"] == "live" else right
+                    trigger_subset = bool(pending["trigger_words"]) and (
+                        pending["trigger_words"] <= live["trigger_words"]
+                    )
+                    candidate_words = pending["description_words"]
+                    coverage = (
+                        len(candidate_words & live["description_words"]) / len(candidate_words)
+                        if candidate_words
+                        else 0.0
+                    )
+                    covered = trigger_subset or coverage >= _AUDIT_COVERAGE_THRESHOLD
+                if score >= duplicate_threshold:
+                    classification = "duplicate"
+                elif covered:
+                    classification = "subsumed"
+                elif score >= overlap_threshold:
+                    classification = "overlapping"
+                else:
+                    continue
+                adjacency[left_index].add(right_index)
+                adjacency[right_index].add(left_index)
+                relations.append(
+                    {
+                        "classification": classification,
+                        "score": round(score, 4),
+                        "members": [left["id"], right["id"]],
+                    }
+                )
+
+        rank = {"overlapping": 0, "subsumed": 1, "duplicate": 2}
+        clusters: list[dict] = []
+        visited: set[int] = set()
+        for start in range(len(entries)):
+            if start in visited or not adjacency[start]:
+                continue
+            stack = [start]
+            component: set[int] = set()
+            while stack:
+                current = stack.pop()
+                if current in component:
+                    continue
+                component.add(current)
+                stack.extend(adjacency[current] - component)
+            visited.update(component)
+            member_ids = {entries[index]["id"] for index in component}
+            component_relations = [
+                relation for relation in relations if set(relation["members"]) <= member_ids
+            ]
+            classification = max(
+                (relation["classification"] for relation in component_relations),
+                key=rank.__getitem__,
+            )
+            members = []
+            for index in sorted(component, key=lambda item: entries[item]["id"]):
+                entry = entries[index]
+                member = {
+                    "id": entry["id"],
+                    "kind": entry["kind"],
+                    "name": entry["name"],
+                }
+                if entry["kind"] == "pending":
+                    member["slug"] = entry["slug"]
+                members.append(member)
+            update_targets: list[tuple[float, dict[str, str]]] = []
+            for relation in component_relations:
+                pair = [by_id[member_id] for member_id in relation["members"]]
+                if {entry["kind"] for entry in pair} != {"pending", "live"}:
+                    continue
+                pending_entry = next(entry for entry in pair if entry["kind"] == "pending")
+                live_entry = next(entry for entry in pair if entry["kind"] == "live")
+                if relation["classification"] not in ("duplicate", "subsumed") or not live_entry[
+                    "name"
+                ].startswith(f"{AUTO_SKILL_NAMESPACE}/"):
+                    continue
+                update_targets.append(
+                    (
+                        relation["score"],
+                        {
+                            "pending_slug": pending_entry["slug"],
+                            "target": live_entry["name"],
+                        },
+                    )
+                )
+            clusters.append(
+                {
+                    "classification": classification,
+                    "score": max(relation["score"] for relation in component_relations),
+                    "members": members,
+                    "relations": component_relations,
+                    "update_targets": [
+                        target
+                        for _score, target in sorted(
+                            update_targets,
+                            key=lambda item: (-item[0], item[1]["target"]),
+                        )
+                    ],
+                }
+            )
+        clusters.sort(
+            key=lambda cluster: (
+                -rank[cluster["classification"]],
+                -cluster["score"],
+                tuple(member["id"] for member in cluster["members"]),
+            )
+        )
+        return clusters
 
     def create_auto_skill(
         self,
@@ -4834,8 +5069,8 @@ class SkillsLoader:
                 claimed = cand_dir
                 break
             if claimed is None:
-                logger.warning("Too many pending candidates for slug %s; deferring re-stage", slug)
-                return name
+                logger.warning("Too many pending candidates for slug %s; deferring stage", slug)
+                return None
             pdir = claimed
             slug = claimed.name
             name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
@@ -5418,6 +5653,157 @@ class SkillsLoader:
                 "report": self._redact_validation_report(v_report),
             }
         return detail
+
+    def _restage_backup_path(self, restaged_slug: str) -> Path:
+        return self._pending_root() / f".restage-undo-{restaged_slug}"
+
+    def _cleanup_restage_backup(self, restaged_slug: str) -> None:
+        backup = self._restage_backup_path(restaged_slug)
+        if backup.is_dir():
+            shutil.rmtree(backup, ignore_errors=True)
+
+    def _remove_failed_restage(self, restaged_slug: str) -> None:
+        replacement = self._pending_root() / restaged_slug
+        if replacement.is_dir():
+            shutil.rmtree(replacement, ignore_errors=True)
+        _emit_pending_consumed(
+            {
+                "slug": restaged_slug,
+                "outcome": "restage_failed",
+                "consumed_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+        )
+
+    def restage_as_update(self, pending_slug: str, target_live_name: str) -> str | None:
+        """Re-stage a pending candidate as an update while retaining one undo."""
+        if not self._is_pending_slug_safe(pending_slug):
+            return None
+        target_slug = self._auto_slug_from_name(target_live_name)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        if target_live_name not in (target_slug, target_name):
+            return None
+        # Capture the version BEFORE reading the body it identifies. If the live
+        # skill advances while the candidate is rebuilt, approval sees the old
+        # base and refuses the stale update instead of overwriting new work.
+        base_version = self.get_auto_skill_version(target_name)
+        live_body = self.read_auto_skill_body(target_name)
+        if live_body is None:
+            return None
+        detail = self.get_pending_skill(pending_slug)
+        if detail is None:
+            return None
+        raw_meta = detail.get("meta")
+        meta: dict = raw_meta if isinstance(raw_meta, dict) else {}
+        parsed = self._parse_frontmatter_text(str(detail.get("content", "")))
+        raw_scripts = detail.get("scripts")
+        scripts: list[dict] = raw_scripts if isinstance(raw_scripts, list) else []
+        if any(
+            not isinstance(script, dict)
+            or not isinstance(script.get("filename"), str)
+            or "/" in script["filename"]
+            or "\\" in script["filename"]
+            or ".." in script["filename"]
+            for script in scripts
+        ):
+            return None
+        raw_reuse_count = parsed.get("reuse_count", "0")
+        try:
+            reuse_count = max(0, int(raw_reuse_count))
+        except (TypeError, ValueError):
+            reuse_count = 0
+        provenance = AutoSkillProvenance(
+            session_key=parsed.get("session_key", ""),
+            created_at=parsed.get("created_at", "") or AutoSkillProvenance.now_iso(),
+            refined_at=parsed.get("refined_at", ""),
+            reuse_count=reuse_count,
+            pinned=parsed.get("pinned", "").strip().lower() in ("true", "1", "yes"),
+        )
+        description, triggers = merge_skill_update_metadata(
+            live_body,
+            str(meta.get("description", parsed.get("description", ""))),
+            str(meta.get("triggers", parsed.get("triggers", ""))),
+        )
+        suffix = "-update"
+        stem = pending_slug[: 63 - len(suffix)].rstrip("-")
+        replacement_name = self.stage_skill_candidate(
+            f"{stem}{suffix}",
+            description=description,
+            triggers=triggers,
+            procedure_md=self.strip_frontmatter(str(detail.get("content", ""))),
+            provenance=provenance,
+            scripts=scripts,
+            source=str(meta.get("source", "consolidation")),
+            kind="update",
+            target=target_name,
+            base_version=base_version,
+        )
+        if replacement_name is None:
+            return None
+        replacement_slug = replacement_name.split("/", 1)[1]
+        replacement_dir = self._pending_root() / replacement_slug
+        replacement_meta = replacement_dir / ".meta.json"
+        original_dir = self._pending_root() / pending_slug
+        backup_dir = self._restage_backup_path(replacement_slug)
+        if not (replacement_dir / "SKILL.md").is_file() or backup_dir.exists():
+            self._remove_failed_restage(replacement_slug)
+            return None
+        try:
+            replacement_data = json.loads(replacement_meta.read_text(encoding="utf-8"))
+            replacement_data["restage_original_slug"] = pending_slug
+            replacement_meta.write_text(json.dumps(replacement_data, indent=2), encoding="utf-8")
+            original_dir.rename(backup_dir)
+        except (OSError, ValueError, TypeError):
+            self._remove_failed_restage(replacement_slug)
+            return None
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        _emit_pending_consumed(
+            {"slug": pending_slug, "outcome": "restaged", "consumed_at": consumed_at}
+        )
+        return replacement_name
+
+    def undo_restage_as_update(self, restaged_slug: str) -> str | None:
+        """Restore the original candidate and remove its restaged update."""
+        if not self._is_pending_slug_safe(restaged_slug):
+            return None
+        replacement_dir = self._pending_root() / restaged_slug
+        meta = self._read_pending_meta(restaged_slug)
+        original_slug = meta.get("restage_original_slug")
+        if not isinstance(original_slug, str) or not self._is_pending_slug_safe(original_slug):
+            return None
+        backup_dir = self._restage_backup_path(restaged_slug)
+        original_dir = self._pending_root() / original_slug
+        if not replacement_dir.is_dir() or not backup_dir.is_dir() or original_dir.exists():
+            return None
+        try:
+            backup_dir.rename(original_dir)
+            shutil.rmtree(replacement_dir)
+        except OSError:
+            if original_dir.is_dir() and not backup_dir.exists():
+                try:
+                    original_dir.rename(backup_dir)
+                except OSError:
+                    pass
+            return None
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        _emit_pending_consumed(
+            {"slug": restaged_slug, "outcome": "undone", "consumed_at": consumed_at}
+        )
+        original_meta = self._read_pending_meta(original_slug)
+        _emit_pending_staged(
+            {
+                "name": original_meta.get("name", f"auto/{original_slug}"),
+                "slug": original_slug,
+                "kind": original_meta.get("kind", "new"),
+                "target": original_meta.get("target"),
+                "source": original_meta.get("source", ""),
+                "has_scripts": bool(original_meta.get("has_scripts")),
+                "description": original_meta.get("description", ""),
+                "triggers": original_meta.get("triggers", ""),
+            }
+        )
+        return f"{AUTO_SKILL_NAMESPACE}/{original_slug}"
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
@@ -6114,6 +6500,7 @@ class SkillsLoader:
         # directory is really gone — otherwise the queue still shows an
         # actionable review and its notification must stay unread.
         if not src.exists():
+            self._cleanup_restage_backup(slug)
             _emit_pending_consumed(
                 {
                     "slug": slug,
@@ -6295,6 +6682,7 @@ class SkillsLoader:
         # this instant keeps its notification (see approve_pending_skill).
         consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(pdir)
+        self._cleanup_restage_backup(slug)
         logger.info("Dismissed pending skill: %s", slug)
         _emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
         return True

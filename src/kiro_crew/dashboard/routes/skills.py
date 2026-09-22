@@ -43,8 +43,14 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/skills/-/discover/install", api_skills_discover_install)
     # Auto-skill pending-approval queue + pin (v2). Registered before the
     # catch-all {name:.+} so the ``-`` sentinel paths resolve first.
+    app.router.add_get("/api/skills/-/audit", handlers.api_skills_audit)
     app.router.add_get("/api/skills/-/pending", handlers.api_skills_pending)
     app.router.add_post("/api/skills/-/pending/-/dismiss-all", handlers.api_skills_pending_dismiss_all)
+    app.router.add_post("/api/skills/-/pending/{slug}/restage", handlers.api_skill_pending_restage)
+    app.router.add_post(
+        "/api/skills/-/pending/{slug}/restage-undo",
+        handlers.api_skill_pending_restage_undo,
+    )
     app.router.add_get("/api/skills/-/pending/{slug}", handlers.api_skill_pending_detail)
     app.router.add_post("/api/skills/-/pending/{slug}/approve", handlers.api_skill_pending_approve)
     app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)

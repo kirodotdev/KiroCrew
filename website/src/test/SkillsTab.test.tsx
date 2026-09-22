@@ -12,6 +12,7 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -92,6 +93,39 @@ describe('SkillsTab', () => {
     await waitFor(() => expect(screen.getByText('Foo')).toBeInTheDocument())
     expect(screen.getByText('foo')).toBeInTheDocument()
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
+  })
+
+  it('lists queue-wide audit clusters and links each member to its skill row', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'deploy-one', name: 'deploy-one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'deploy-two', name: 'deploy-two', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [
+          { id: 'live:deploy-one', kind: 'live', name: 'deploy-one' },
+          { id: 'live:deploy-two', kind: 'live', name: 'deploy-two' },
+        ],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+    renderWithQuery()
+    await screen.findByText('Deploy One')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
+
+    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/Overlapping/)).toBeInTheDocument()
+    expect(screen.getByTestId('skills-audit-similarity')).toHaveTextContent('50% similar')
+    expect(screen.getByRole('button', { name: 'deploy-one' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'deploy-two' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Select Deploy Two' }))
+        .toHaveAttribute('aria-current', 'true'),
+    )
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
@@ -1277,5 +1311,60 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // save's outcome along with the draft. (Pending label while in flight.)
     expect(screen.getByText('Saving…')).toBeInTheDocument()
     expect(screen.getByText('Cancel')).toBeInTheDocument()
+  })
+})
+
+
+describe('SkillsTab audit result bounds', () => {
+  it('caps member rows and reports omitted members and clusters', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      total_clusters: 20,
+      clusters: [{
+        classification: 'duplicate',
+        score: 0.91,
+        members: Array.from({ length: 10 }, (_, index) => ({
+          id: `live:member-${index}`,
+          kind: 'live',
+          name: `member-${index}`,
+        })),
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+
+    expect(await screen.findByTestId('skills-audit-similarity')).toHaveTextContent('91% similar')
+    expect(screen.getByRole('button', { name: 'member-7' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'member-8' })).not.toBeInTheDocument()
+    expect(screen.getByText('+2 more')).toBeInTheDocument()
+  })
+
+  it('keeps the modal open and explains when a live member vanished', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [{ id: 'live:missing', kind: 'live', name: 'missing' }],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'missing' }))
+
+    expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'That skill is no longer in this list. Refresh and try again.',
+    )
   })
 })

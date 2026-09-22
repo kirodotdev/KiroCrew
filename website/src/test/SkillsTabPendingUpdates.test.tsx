@@ -12,12 +12,25 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
   skillsPending: vi.fn(),
   skillPendingDetail: vi.fn(),
+  restagePendingSkill: vi.fn(),
+  undoRestagedPendingSkill: vi.fn(),
   approvePendingSkill: vi.fn(),
   dismissPendingSkill: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: mockApi }))
+const StubApiError = vi.hoisted(() => class ApiError extends Error {
+  status: number
+  body: string
+  constructor(status: number, message: string, body = '') {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body
+  }
+})
+vi.mock('../api/client', () => ({ api: mockApi, ApiError: StubApiError }))
 
 vi.mock('../providers', () => ({
   useProvider: () => ({ labels: { pluginRegistryName: 'Packages' } }),
@@ -77,6 +90,7 @@ beforeEach(() => {
   mockApi.skills.mockResolvedValue([])
   mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody' })
   mockApi.skillsPending.mockResolvedValue({ pending: [] })
+  mockApi.skillsAudit.mockResolvedValue({ clusters: [] })
 })
 
 describe('SkillsTab pending updates', () => {
@@ -87,6 +101,207 @@ describe('SkillsTab pending updates', () => {
     expect(
       screen.getByText(/Adds new requirements to auto\/deploy-helper/),
     ).toBeTruthy()
+  })
+
+  it('shows a related live skill and re-stages the candidate as an update', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'subsumed',
+        score: 0.75,
+        members: [
+          { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+          { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+        ],
+        relations: [{
+          classification: 'subsumed',
+          score: 0.75,
+          members: ['pending:fresh-skill', 'live:auto/deploy-helper'],
+        }],
+        update_targets: [{
+          pending_slug: 'fresh-skill',
+          target: 'auto/deploy-helper',
+        }],
+      }],
+    })
+    mockApi.restagePendingSkill.mockResolvedValue({
+      staged: 'auto/fresh-skill-update',
+      slug: 'fresh-skill-update',
+      target: 'auto/deploy-helper',
+    })
+
+    renderWithQuery()
+
+    expect(await screen.findByRole('button', {
+      name: 'auto/deploy-helper (Covered by a live skill)',
+    })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Propose update to auto/deploy-helper' }))
+    await waitFor(() =>
+      expect(mockApi.restagePendingSkill).toHaveBeenCalledWith(
+        'fresh-skill',
+        'auto/deploy-helper',
+      ),
+    )
+    expect(await screen.findByTestId('skill-restage-success')).toHaveTextContent(
+      'Created auto/fresh-skill-update as an update for auto/deploy-helper in Pending review.',
+    )
+  })
+
+  it('undoes a restage from the success notice', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'subsumed',
+        score: 0.75,
+        members: [
+          { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+          { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+        ],
+        relations: [{ classification: 'subsumed', score: 0.75, members: ['pending:fresh-skill', 'live:auto/deploy-helper'] }],
+        update_targets: [{ pending_slug: 'fresh-skill', target: 'auto/deploy-helper' }],
+      }],
+    })
+    mockApi.restagePendingSkill.mockResolvedValue({
+      staged: 'auto/fresh-skill-update-2',
+      slug: 'fresh-skill-update-2',
+      target: 'auto/deploy-helper',
+    })
+    mockApi.undoRestagedPendingSkill.mockResolvedValue({
+      restored: 'auto/fresh-skill',
+      slug: 'fresh-skill',
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Propose update to auto/deploy-helper' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    await waitFor(() => {
+      expect(mockApi.undoRestagedPendingSkill).toHaveBeenCalledWith('fresh-skill-update-2')
+    })
+    expect(screen.queryByTestId('skill-restage-success')).toBeNull()
+  })
+
+  it('offers the first restageable match when a hand-authored skill ranks above it', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'duplicate',
+        score: 0.9,
+        members: [
+          { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+          { id: 'live:hand/deploy', kind: 'live', name: 'hand/deploy' },
+          { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+        ],
+        relations: [
+          { classification: 'duplicate', score: 0.9, members: ['pending:fresh-skill', 'live:hand/deploy'] },
+          { classification: 'subsumed', score: 0.6, members: ['pending:fresh-skill', 'live:auto/deploy-helper'] },
+        ],
+        // Only the auto-skill is a legal re-stage target; the hand-authored
+        // duplicate outranks it and must not hide the button.
+        update_targets: [{
+          pending_slug: 'fresh-skill',
+          target: 'auto/deploy-helper',
+        }],
+      }],
+    })
+
+    renderWithQuery()
+
+    expect(await screen.findByRole('button', {
+      name: 'hand/deploy (Duplicate)',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'auto/deploy-helper (Covered by a live skill)',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Propose update to auto/deploy-helper' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Propose update to hand/deploy' })).toBeNull()
+  })
+
+  it('opens a related skill in a modal focused on its cluster', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [
+        {
+          classification: 'subsumed',
+          score: 0.75,
+          members: [
+            { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+            { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+          ],
+          relations: [{ classification: 'subsumed', score: 0.75, members: ['pending:fresh-skill', 'live:auto/deploy-helper'] }],
+          update_targets: [{ pending_slug: 'fresh-skill', target: 'auto/deploy-helper' }],
+        },
+        {
+          classification: 'duplicate',
+          score: 1,
+          members: [
+            { id: 'pending:other', kind: 'pending', name: 'auto/other', slug: 'other' },
+            { id: 'live:auto/unrelated', kind: 'live', name: 'auto/unrelated' },
+          ],
+          relations: [{ classification: 'duplicate', score: 1, members: ['pending:other', 'live:auto/unrelated'] }],
+          update_targets: [],
+        },
+      ],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'auto/deploy-helper (Covered by a live skill)',
+    }))
+
+    expect(await screen.findByTestId('skills-audit-modal')).toHaveTextContent('auto/deploy-helper')
+    expect(screen.getByTestId('skills-audit-modal')).not.toHaveTextContent('auto/unrelated')
+  })
+
+  it('surfaces a rejected re-stage instead of failing silently', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'subsumed',
+        score: 0.75,
+        members: [
+          { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+          { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+        ],
+        relations: [{ classification: 'subsumed', score: 0.75, members: ['pending:fresh-skill', 'live:auto/deploy-helper'] }],
+        update_targets: [{ pending_slug: 'fresh-skill', target: 'auto/deploy-helper' }],
+      }],
+    })
+    mockApi.restagePendingSkill.mockRejectedValue(
+      new StubApiError(
+        409,
+        'candidate or live auto-skill target was not found',
+        JSON.stringify({ code: 'restage_rejected' }),
+      ),
+    )
+
+    renderWithQuery()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Propose update to auto/deploy-helper' }))
+    expect(await screen.findByTestId('skill-restage-failure')).toHaveTextContent(
+      'Could not create the pending candidate. Refresh Pending review and try again; dismiss an older candidate first if needed.',
+    )
+  })
+
+  it('shows loading, then an empty state, in the related-skills modal', async () => {
+    let resolveAudit: (value: { clusters: never[] }) => void = () => {}
+    mockApi.skillsAudit.mockReturnValue(
+      new Promise(resolve => { resolveAudit = resolve }),
+    )
+    mockApi.skills.mockResolvedValue([{
+      key: 'auto/deploy-helper',
+      name: 'auto/deploy-helper',
+      description: 'd',
+      source: 'kirocrew',
+      loaded_by_agents: [],
+    }])
+
+    renderWithQuery()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Find overlapping skills/ }))
+    expect(await screen.findByTestId('skills-audit-loading')).toBeTruthy()
+    resolveAudit({ clusters: [] })
+    expect(await screen.findByTestId('skills-audit-empty')).toHaveTextContent('No overlapping skills.')
   })
 
   it('shows the server-computed diff with the version transition on Review', async () => {

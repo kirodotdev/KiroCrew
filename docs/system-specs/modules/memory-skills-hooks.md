@@ -4247,6 +4247,7 @@ Key v2 elements (all under `skills.*`):
 - **Scripts:** deterministic procedures may ship a validated **Python** helper (`generate_scripts`, default true); statically validated (regex denylist + AST policy: no dynamic exec/import, destructive fs, process exec, network egress, ≤4 KB) and re-validated at the approve choke point.
 - **Bounding:** archive-not-delete lifecycle `active→stale(`stale_after_days`,30)→archived(`archive_after_days`,90)`, `max_auto_skills` (100) backstop, pin + cron-referenced exemptions, never-used grace floor; pending TTL `pending_ttl_days` (30).
 - **Dedupe:** embedding-free metadata comparison over all generated skills (`judge_model`).
+- **Queue-wide audit:** `SkillsLoader.audit()` compares pending and live skills pairwise using description and positive-trigger word-set overlap. It returns connected clusters tagged `duplicate`, `subsumed`, or `overlapping`; the default thresholds are 0.85 and 0.5. The read-only dashboard endpoint is `GET /api/skills/-/audit`. Eligible pending-to-live-auto matches can be re-staged through `POST /api/skills/-/pending/{slug}/restage`, which delegates to `stage_skill_candidate(kind="update", target=...)` before consuming the original candidate.
 - **On-demand:** the `crystallize` builtin skill stages a candidate from the current session.
 
 ### Flow

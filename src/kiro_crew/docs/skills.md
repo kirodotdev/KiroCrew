@@ -65,6 +65,12 @@ Ask Kiro Crew: "Create a skill called X that does Y"
 
 Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
+## Audit Pending and Live Skills
+
+The Skills pending-review panel compares every pending candidate and live skill with every other one. It labels clusters as **duplicate** at 0.85 similarity, **subsumed** when a live description covers at least 85% of a candidate's description words or contains its trigger set, and **overlapping** at 0.5 similarity when human judgment is still needed.
+
+Each pending candidate shows related live skills. When the related skill is auto-generated, **Update** re-stages the candidate as an update proposal against that live skill instead of creating a parallel skill. The audit is deterministic and local; it uses description and trigger word overlap without an LLM call.
+
 ## Built-in Skills
 
 Kiro Crew ships with built-in skills that are synced from the packaged skills directory on startup. These cover common workflows like URL shortening, code search, and writing assistance.
