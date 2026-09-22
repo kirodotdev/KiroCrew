@@ -18,6 +18,7 @@ grows into a subsystem should become a spec under
 | [profiling.md](profiling.md) | The debug-only stack sampler and desktop app metrics. |
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |
 | [memory-benchmarks.md](memory-benchmarks.md) | Measuring the memory layer against LongMemEval and LoCoMo, and why the retrieval ruler is deterministic. |
+| [kas-nondestructive-session-teardown.md](kas-nondestructive-session-teardown.md) | The session verb KAS does not have — evict from memory, keep the record loadable — written as a request to the KAS team: current state, the semantics asked for, why `_kiro/session/delete` cannot serve, how to test that history survives, and the alternatives Crew can accept. |
 
 Connections is a subsystem, not a narrow decision record, so its status
 vocabulary, mint contract, warm table, disconnect authorization and launch-gate
