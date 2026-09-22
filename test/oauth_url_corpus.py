@@ -393,6 +393,27 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("Kp7mQ2xR" * 12),
     ),
+    # ClickUp MCP. Its dynamic client registration issues a compact-JWS
+    # ``client_id`` (RFC 7591 constrains the format of neither the identifier nor
+    # its issuance), so this entry is the regression guard for a provider whose
+    # identifier carries the JWT signature shape. The segments below are
+    # synthetic: the payload decodes to
+    # {"tokenType":"jwt_client_id","iss":"example-mcp-server"} and the signature
+    # is filler, so no real credential is embedded.
+    (
+        "clickup-mcp",
+        "https://mcp.clickup.com/oauth/authorize"
+        "?response_type=code"
+        "&client_id=mcp-client-eyJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ"
+        ".eyJ0b2tlblR5cGUiOiJqd3RfY2xpZW50X2lkIiwiaXNzIjoiZXhhbXBsZS1tY3Atc2VydmVyIn0"
+        ".AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A60527%2Foauth%2Fcallback"
+        "&state=ff0238a7-a768-425d-94a9-ad87e798fafb"
+        "&scope=read+write"
+        "&resource=https%3A%2F%2Fmcp.clickup.com%2Fmcp",
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate
