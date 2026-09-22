@@ -247,6 +247,9 @@ describe('the Decisions toggle has no configKey', () => {
  * for. The two rejections are the ones that would otherwise put a row on screen that
  * cannot be acted on: a row with no id has nothing to label and no panel to open, and
  * a status this build cannot read must not be allowed to claim a point is running.
+ *
+ * The lane rides along for the same reason: on the one point with two lanes, only the
+ * gateway knows which one would answer, so the reader carries the word it sent.
  */
 describe('readPoints', () => {
   it('reads the rows the gateway sent, in its order, id and all', () => {
@@ -259,15 +262,22 @@ describe('readPoints', () => {
         ],
       }),
     ).toEqual([
-      { id: 'skills.select', needsScope: null, status: 'active' },
-      { id: 'tool.risk', needsScope: 'tool_args', status: 'needs_scope' },
+      { id: 'skills.select', lane: null, needsScope: null, status: 'active' },
+      { id: 'tool.risk', lane: null, needsScope: 'tool_args', status: 'needs_scope' },
+    ])
+  })
+
+  it('carries the lane the gateway named, so the chip never re-derives it', () => {
+    const rows = readPoints({ points: [{ id: 'nudge.wake', status: 'active', lane: 'llm' }] })
+    expect(rows).toEqual([
+      { id: 'nudge.wake', lane: 'llm', needsScope: null, status: 'active' },
     ])
   })
 
   it('keeps a point this build has no label for, so a new one is never hidden', () => {
     const rows = readPoints({ points: [{ id: 'invented.point', status: 'active' }] })
     expect(rows).toEqual([
-      { id: 'invented.point', needsScope: null, status: 'active' },
+      { id: 'invented.point', lane: null, needsScope: null, status: 'active' },
     ])
   })
 
@@ -285,7 +295,7 @@ describe('readPoints', () => {
     // verbatim: the chip resolves it to OFF, and rewriting it here would lose the word
     // a reader greps the log for.
     expect(rows).toEqual([
-      { id: 'a.b', needsScope: null, status: 'invented' },
+      { id: 'a.b', lane: null, needsScope: null, status: 'invented' },
     ])
   })
 })

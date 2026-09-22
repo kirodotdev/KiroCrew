@@ -31,13 +31,15 @@ class TestDefaults:
     def test_no_field_here_is_a_switch(self):
         """The arm/impl/points vocabulary is retired, and ``enabled`` never lands
         here: config.json is agent-writable, so consent is the keystone's. Every
-        field is a bound or an address -- nothing here grants egress."""
+        field is a bound or an address -- nothing here opens a destination the
+        session does not already send to."""
         from dataclasses import fields
 
         assert {f.name for f in fields(DecisionsConfig)} == {
             "bucket",
             "history_budget_chars",
             "model_route",
+            "nudge_wake",
             "provider",
         }
 
@@ -107,7 +109,13 @@ class TestMigrationFromThePreviewSpelling:
         from dataclasses import asdict
 
         saved = asdict(DecisionsConfig.from_raw({"preview": True, "points": {"a": {"arm": "off"}}}))
-        assert set(saved) == {"bucket", "history_budget_chars", "model_route", "provider"}
+        assert set(saved) == {
+            "bucket",
+            "history_budget_chars",
+            "model_route",
+            "nudge_wake",
+            "provider",
+        }
         assert "arm" not in json.dumps(saved)
         assert "enabled" not in json.dumps(saved)
 

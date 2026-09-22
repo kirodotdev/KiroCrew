@@ -1464,6 +1464,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.model-for-the-small-model-judge",
+    "label": "Model for the small-model judge",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",
+    "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one.",
+    "tab": "developer",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "developer.remote-crew-sessions",
     "label": "Remote crew sessions",
     "labelKey": "pages.developer.featurePreviewsTab.remote_instance_sessions",
@@ -1488,6 +1497,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
     "tab": "developer",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.which-judge-answers",
+    "label": "Which judge answers",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_provider",
+    "tab": "developer",
+    "type": "select",
     "occurrence": 1
   },
   {

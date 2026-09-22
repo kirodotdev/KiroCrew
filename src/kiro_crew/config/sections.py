@@ -5816,6 +5816,86 @@ def coerce_model_route(raw: object) -> dict[str, str]:
     return {tier: normalize_agent_model(section.get(tier)) for tier in DECISION_MODEL_ROUTE_TIERS}
 
 
+# The providers ``decisions.nudge_wake.provider`` may name. ``auto`` resolves at
+# decision time -- Jev when the keystone consents to it, the LLM lane otherwise --
+# so a machine that later gains or loses a Jev key needs no config edit.
+JUDGE_PROVIDER_AUTO = "auto"
+JUDGE_PROVIDER_JEV = "jev"
+JUDGE_PROVIDER_LLM = "llm"
+JUDGE_PROVIDERS = (JUDGE_PROVIDER_AUTO, JUDGE_PROVIDER_JEV, JUDGE_PROVIDER_LLM)
+
+
+@dataclass
+class NudgeWakeConfig:
+    """Per-point settings for the wake judge (``decisions`` point ``nudge.wake``).
+
+    Deliberately carries NO ``enabled``. There is no feature toggle, because the two
+    lanes are authorized by different things and neither of them is a toggle:
+
+    * The Jev lane needs the Decisions keystone in full -- the main switch AND this
+      point's own ``nudge_evidence`` scope, because that scope names a category of
+      egress to the Jev endpoint. Config cannot grant it and this section cannot
+      widen it.
+    * The ``llm`` lane needs no consent row, so ``provider = llm`` plus a ``judge``
+      spec on the loop is what runs it. What makes that safe is not that config is
+      trusted: the lane adds no destination and no data class. It sends to the model
+      provider the owner's sessions already send to every turn, carrying a scrubbed,
+      bounded subset of the owner's own children's transcripts, which that provider
+      already received when those sessions ran. The judge only chooses QUIET against
+      firing and is fail-open, so the worst case is one delayed wake, bounded by the
+      quiet-streak floor.
+
+    Hot-applied: the gate reads the live snapshot per call.
+    """
+
+    provider: str = field(
+        default=JUDGE_PROVIDER_AUTO,
+        metadata=_meta(
+            "Judge provider",
+            "Which judge answers at nudge.wake: 'jev' (the System One model this "
+            "card's consent switch covers), 'llm' (a small text-only model on the "
+            "provider this machine already uses, no extra key needed), or 'auto' "
+            "-- Jev when consent stands for it, otherwise the small model. "
+            "Anything else reads as 'auto'. Choosing 'jev' without that consent "
+            "sends nothing and every tick fires as it does today.",
+        ),
+    )
+    llm_model: str = field(
+        default="",
+        metadata=_meta(
+            "Judge model (LLM lane)",
+            "The model id the 'llm' lane runs on, spelled as your provider "
+            "advertises it. EMPTY INHERITS: the judge keeps the model its "
+            "background agent already resolves, which is the default. A value that "
+            "is not a short model id is ignored rather than sent.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "NudgeWakeConfig":
+        """Normalize rather than reject, the posture the whole section takes.
+
+        Every unreadable value resolves to the shipped default. Neither key can reach
+        a destination the session does not already send to, so a hand-edit that fails
+        to parse costs a preference, not a permission.
+        """
+        if not isinstance(section, dict):
+            return cls()
+        raw_provider = section.get("provider")
+        provider = raw_provider.strip().lower() if isinstance(raw_provider, str) else ""
+        raw_model = section.get("llm_model")
+        return cls(
+            # An unknown name reads as ``auto`` rather than as an error: a typo must
+            # not become a third lane and must not stop the gateway booting.
+            provider=provider if provider in JUDGE_PROVIDERS else JUDGE_PROVIDER_AUTO,
+            # Kept verbatim (stripped) and validated where it is USED, against
+            # ``decisions.types.MODEL_ID_RE``: storing "" for an id this build
+            # cannot use would make the saved config disagree with what the operator
+            # wrote, and the bound that matters is at the call that names a model.
+            llm_model=raw_model.strip() if isinstance(raw_model, str) else "",
+        )
+
+
 @dataclass
 class DecisionProviderConfig:
     """Where the System One provider lives and what one call may cost."""
@@ -5936,6 +6016,17 @@ class DecisionsConfig:
         default_factory=DecisionProviderConfig,
         metadata=_meta("Provider", "Where decisions are sent and what they may cost."),
     )
+    nudge_wake: NudgeWakeConfig = field(
+        default_factory=NudgeWakeConfig,
+        metadata=_meta(
+            "Wake judge",
+            "Per-point settings for nudge.wake: which judge answers, and the model "
+            "id for the small-model lane. The Jev lane still needs this point's "
+            "consent scope on the Decisions card; the small-model lane needs no "
+            "consent row, because it sends to the model provider your sessions "
+            "already use, so picking it here is what runs it.",
+        ),
+    )
 
     @classmethod
     def from_raw(cls, section: object) -> "DecisionsConfig":
@@ -6017,6 +6108,7 @@ class DecisionsConfig:
             # against the provider's advertised list at routing time.
             model_route=coerce_model_route(section.get("model_route")),
             provider=provider,
+            nudge_wake=NudgeWakeConfig.from_raw(section.get("nudge_wake")),
         )
 
 

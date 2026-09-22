@@ -584,6 +584,7 @@ class TestPointName:
             "model.route",
             "compaction.keep",
             "memory.recall",
+            "nudge.wake",
         )
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])

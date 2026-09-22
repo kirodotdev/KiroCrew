@@ -54,6 +54,7 @@ const pointsOf = (
   toolArgs = false,
   compaction = false,
   memoryText = false,
+  judgeProvider = 'auto',
 ) => {
   const granted: Record<string, boolean> = {
     tool_args: toolArgs,
@@ -69,6 +70,17 @@ const pointsOf = (
     { id: 'model.route', needs_scope: null, status: status(null) },
     { id: 'compaction.keep', needs_scope: 'compaction', status: status('compaction') },
     { id: 'memory.recall', needs_scope: 'memory_text', status: status('memory_text') },
+    // The judge, whose row the gateway resolves from the LANE as well as the keystone:
+    // its small-model lane needs neither the endpoint consent nor a scope, so that lane
+    // reports active with the switch off. `auto` reaches it too while this build
+    // registers no scope for the point -- the gate resolves `auto` against Jev being
+    // ARMED, and an unregistered scope is not armed.
+    {
+      id: 'nudge.wake',
+      needs_scope: null,
+      lane: judgeProvider === 'jev' ? 'jev' : 'llm',
+      status: judgeProvider === 'jev' ? (enabled ? 'needs_scope' : 'off') : 'active',
+    },
   ]
 }
 
@@ -391,6 +403,7 @@ describe('Decisions (Jev) preview card', () => {
       expect.stringContaining("Model for the turn's difficulty"),
       expect.stringContaining('Which tool calls a compaction would keep'),
       expect.stringContaining('Which recalled memories reach the prompt'),
+      expect.stringContaining('Quiet check-ins: wake or skip'),
     ])
     expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
   })
@@ -425,7 +438,7 @@ describe('Decisions (Jev) preview card', () => {
     expect(pointRow('Risky tool-call notes').getAttribute('aria-current')).toBeNull()
   })
 
-  it('says every point is off while consent is off, and still lists them all', async () => {
+  it('says every point but the judge is off while consent is off, and lists them all', async () => {
     stubGateway({ enabled: false })
     renderSection()
     await waitFor(() => {
@@ -435,6 +448,16 @@ describe('Decisions (Jev) preview card', () => {
     // way to read about what consenting would turn on.
     expect(screen.getAllByRole('tab')).toHaveLength(pointsOf(false).length)
     for (const row of screen.getAllByRole('tab')) {
+      // The judge is the ONE exception, and it is the reason this lane exists: with no
+      // consent recorded the default provider resolves to the small model, which sends
+      // nothing to the endpoint this switch governs, so that point does run here. A
+      // row claiming otherwise would tell a keyless owner their judge is off while it
+      // is answering.
+      if (row.textContent?.includes('Quiet check-ins')) {
+        expect(row.getAttribute('aria-current')).toBe('true')
+        expect(row.textContent).toContain('Judged by the small model')
+        continue
+      }
       expect(row.getAttribute('aria-current')).toBeNull()
       expect(row.textContent).toContain('Off')
     }
@@ -483,8 +506,8 @@ describe('Decisions (Jev) preview card', () => {
 
     // End and Home are the ends of the PROJECTED list, whatever the gateway sent.
     fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'End' })
-    await waitFor(() => expect(panel()).toContain('memory.recall'))
-    fireEvent.keyDown(pointRow('Which recalled memories reach the prompt'), {
+    await waitFor(() => expect(panel()).toContain('nudge.wake'))
+    fireEvent.keyDown(pointRow('Quiet check-ins: wake or skip'), {
       key: 'Home',
     })
     await waitFor(() => expect(panel()).toContain('skills.select'))
@@ -555,6 +578,89 @@ describe('Decisions (Jev) preview card', () => {
     // INHERIT is what an unpinned tier reads as, and no model id is named for the
     // reader: an id their account is not offered would fail on the first prompt.
     expect(screen.getByRole('tabpanel').textContent).toContain("Keep the session's own model")
+  })
+
+  it('names the lane on the judge row rather than the generic active word', async () => {
+    // Under the list's "while this is on" heading, a row reading the generic active
+    // word with the switch OFF is a contradiction, and it implies the endpoint is
+    // being used right now. The small-model lane sends nothing there, so the chip has
+    // to say which judge answers.
+    stubGateway(
+      { enabled: false, points: pointsOf(false, false, false, false, 'llm') },
+      { decisions: { bucket: 100, nudge_wake: { provider: 'llm', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Quiet check-ins: wake or skip')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Judged by the small model')).toBeInTheDocument()
+  })
+
+  it('keeps the generic active word when Jev is the lane that would answer', async () => {
+    // The contradiction exists only for the small-model lane. With the switch on and
+    // the address in force, Jev is what decides and the heading is accurate, so the row
+    // must not claim a small-model judge.
+    stubGateway(
+      { enabled: true, permits: true, points: pointsOf(true, true, true, true, 'jev') },
+      { decisions: { bucket: 100, nudge_wake: { provider: 'jev', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Quiet check-ins: wake or skip')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Judged by the small model')).not.toBeInTheDocument()
+  })
+
+  it('offers nudge.wake its provider and model pickers, reachable with consent off', async () => {
+    // Consent OFF and the small model chosen: the state the lane exists for. Every
+    // other point's controls are withheld here, so this also pins that the judge's two
+    // are deliberately not gated on the switch.
+    stubGateway(
+      { enabled: false, points: pointsOf(false, false, false, false, 'llm') },
+      { decisions: { bucket: 100, nudge_wake: { provider: 'llm', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Quiet check-ins: wake or skip')).toBeInTheDocument()
+    })
+    openPoint('Quiet check-ins: wake or skip')
+    await waitFor(() => {
+      expect(screen.getByText('Which judge answers')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Model for the small-model judge')).toBeInTheDocument()
+    const panelText = screen.getByRole('tabpanel').textContent ?? ''
+    // The chosen provider reads as the small model, and the model reads as INHERIT --
+    // no model id is named for the reader, for the same reason a tier names none.
+    expect(panelText).toContain('The small model \u2014 stays with your current provider')
+    // The judge's INHERIT names the JUDGE agent's model, not the session's: an empty
+    // `llm_model` resolves the judge agent's own, a different model from the one an
+    // unpinned tier keeps.
+    expect(panelText).toContain("Keep the judge agent's own model")
+    // The card's own frame speaks for the Jev endpoint: its heading says "while this is
+    // on" and its intro says nothing is sent while it is off. Both are beside the point
+    // on this lane, so the panel states which lane answers and where the evidence goes.
+    expect(panelText).toContain('switch above does not govern it')
+  })
+
+  it('leaves the lane note out when Jev is the lane that would answer', async () => {
+    // The note answers a question only the small-model lane raises. On the Jev lane the
+    // card's frame IS the whole story, and a second line there would contradict nothing
+    // and explain nothing.
+    stubGateway(
+      { enabled: true, points: pointsOf(true, false, false, false, 'jev') },
+      { decisions: { bucket: 100, nudge_wake: { provider: 'jev', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Quiet check-ins: wake or skip')).toBeInTheDocument()
+    })
+    openPoint('Quiet check-ins: wake or skip')
+    await waitFor(() => {
+      expect(screen.getByText('Which judge answers')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('tabpanel').textContent ?? '').not.toContain(
+      'switch above does not govern it',
+    )
   })
 
   it('fades the egress note only when the gateway cannot run this at all', async () => {

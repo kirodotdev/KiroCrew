@@ -4080,6 +4080,10 @@
           "api_key": "secret://TYPESAFE_API_KEY",
           "model": "jev-latest",
           "timeout_ms": 1000
+        },
+        "nudge_wake": {
+          "provider": "auto",
+          "llm_model": ""
         }
       }
     },
@@ -4217,6 +4221,51 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1000
+    },
+    {
+      "path": "decisions.nudge_wake",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Wake judge",
+      "help": "Per-point settings for nudge.wake: which judge answers, and the model id for the small-model lane. The Jev lane still needs this point's consent scope on the Decisions card; the small-model lane needs no consent row, because it sends to the model provider your sessions already use, so picking it here is what runs it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "provider": "auto",
+        "llm_model": ""
+      }
+    },
+    {
+      "path": "decisions.nudge_wake.provider",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Judge provider",
+      "help": "Which judge answers at nudge.wake: 'jev' (the System One model this card's consent switch covers), 'llm' (a small text-only model on the provider this machine already uses, no extra key needed), or 'auto' -- Jev when consent stands for it, otherwise the small model. Anything else reads as 'auto'. Choosing 'jev' without that consent sends nothing and every tick fires as it does today.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "auto"
+    },
+    {
+      "path": "decisions.nudge_wake.llm_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Judge model (LLM lane)",
+      "help": "The model id the 'llm' lane runs on, spelled as your provider advertises it. EMPTY INHERITS: the judge keeps the model its background agent already resolves, which is the default. A value that is not a short model id is ignored rather than sent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "watchdog",

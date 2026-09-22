@@ -180,7 +180,51 @@ def _sampling_admits_anybody() -> bool:
         return False
 
 
-def _points(state: dict, *, permits: bool) -> list[dict]:
+def _judge_lane(jev_armed: bool) -> str:
+    """Which lane :data:`gate.JUDGE_POINT` would use, per the gate. Never raises.
+
+    Its own helper beside :func:`_sampling_admits_anybody` and for the same reason:
+    one synchronous ``config.json`` read, on the worker thread both routes already
+    reach ``_points`` through.
+
+    The RULE is not restated here. ``gate.judge_lane`` owns it -- including that
+    ``auto`` resolves against Jev being ARMED rather than merely consented, and that an
+    unknown provider name reads as ``auto`` -- so the lane this row names is the lane
+    the oracle is built from. *jev_armed* is that arming, already resolved by the
+    caller against the keystone and this point's own scope.
+
+    Anything unreadable resolves to the Jev lane, which the normal keystone rule then
+    judges: a config this handler could not parse must not be what reports a
+    key-free judge nobody configured.
+    """
+    from kiro_crew.decisions import gate as _gate
+
+    try:
+        return str(_gate.judge_lane(jev_consented=jev_armed) or _gate.LANE_JEV)
+    except Exception:
+        logger.debug("decisions: judge lane unreadable; judging the row on the keystone")
+        return _gate.LANE_JEV
+
+
+def _llm_lane_available() -> bool:
+    """Whether the judge's small-model lane could answer at all. Never raises.
+
+    ``auto`` resolves to that lane whenever Jev is not armed, so the row's answer for
+    ``auto`` depends on whether the lane has a model call to make. A build whose
+    runner was never registered has no judge on that lane -- every ask raises and the
+    tick fires -- and a row calling that ``active`` would be the same error this
+    function exists to prevent, in the other direction.
+    """
+    try:
+        from kiro_crew.decisions import impl_llm
+
+        return bool(impl_llm.has_runner())
+    except Exception:
+        logger.debug("decisions: LLM lane availability unreadable; reporting unavailable")
+        return False
+
+
+def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     """One row per decision point this build ships, for the card's overview list.
 
     Projected from the seam's own registry (``gate.DECISION_POINT_NAMES``,
@@ -206,6 +250,16 @@ def _points(state: dict, *, permits: bool) -> list[dict]:
     consent-shaped one. ``off`` is already every reason nothing is sent, and a share of
     zero is one of them; the share itself is on screen in the shared block, so a reader
     who sees every row off has the reason one glance away.
+
+    ONE point is not read off the keystone: the judge has two providers, and its row
+    has to name the lane that would actually run. ``llm`` reaches the model provider
+    the owner's sessions already use, so that row needs neither the endpoint consent
+    nor this point's scope -- only a lane that can answer, which means a registered
+    runner. ``auto`` resolves to that same lane whenever Jev is not armed, so it is
+    ``active`` on either lane being able to answer. An explicitly pinned ``jev`` is
+    judged on the keystone AND this point's own scope, fail-closed the way the gate
+    reads it: a point with no registered scope has no grant to run that lane on. The
+    sampled share binds all three.
     """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
@@ -227,7 +281,56 @@ def _points(state: dict, *, permits: bool) -> list[dict]:
         # From the gate's own scope map, so a point that gains a scope is listed with
         # it and needs no edit here or in the card.
         scope = _gate.POINT_SCOPE_KEYS.get(name)
-        if not permits or not sampled:
+        # The judge is the one point with TWO providers, so its row cannot be read off
+        # the keystone alone: it has to name the lane that would actually run. Its LLM
+        # lane sends to the model provider the owner's sessions already use, which is
+        # why it needs neither the endpoint consent nor this point's scope -- only a
+        # runner to call -- so a row reporting ``off`` while that lane is answering is
+        # a row describing a state that is not happening. ``auto`` is the case that
+        # makes this more than one branch: ``_judge_authority`` sends it to the small
+        # model whenever Jev is not armed, so it is active on EITHER lane being able to
+        # answer. The sampled share still binds all three, exactly as it binds every
+        # other row: at a share of zero no session is asked, whatever the provider says.
+        if name == _gate.JUDGE_POINT:
+            # NOT the generic rule one branch down, and the difference is the whole
+            # point: there, no registered scope means none is NEEDED, which is right
+            # for a point that sends nothing beyond what the keystone records. The
+            # judge's Jev lane sends this point's own evidence, so the absence of a
+            # registered scope means the opposite -- nothing authorized that egress,
+            # so there is no grant to run on. ``gate._point_scope_granted`` fail-closes
+            # exactly here and ``decide`` refuses, so a row reading the absence as
+            # armed would report a judge the gate will not run.
+            jev_armed = permits and scope is not None and granted.get(scope, False)
+            # Which lane the GATE would pick, from the gate's own resolver rather than a
+            # second reading of the same config here: ``auto`` is the default and it
+            # resolves against Jev being ARMED, so a row deriving the lane on its own
+            # could name one the gate does not use. The lane travels to the card on this
+            # row, so the word on screen and the oracle that answers come from one read.
+            lane = _judge_lane(jev_armed)
+            # The FLEET ceiling binds both lanes, which is why it is read here and not
+            # folded into ``permits``: a managed install that pinned
+            # ``capabilities.decisions`` off withdrew the seam rather than one
+            # provider's endpoint, so the gate refuses every lane of it -- and a row
+            # calling the judge active under that pin would describe a judge that
+            # cannot answer. ``permits`` already carries the denial, but only together
+            # with consent, and this lane needs the denial WITHOUT the consent.
+            if not sampled or denied:
+                status = _POINT_OFF
+            elif lane == _gate.LANE_LLM:
+                # Judged on its own terms like the Jev lane below: whether this lane can
+                # answer is whether it has a model call to make. A build with no
+                # registered runner raises on every ask, so ``active`` there would name
+                # a judge that cannot run.
+                status = _POINT_ACTIVE if _llm_lane_available() else _POINT_OFF
+            else:
+                # The Jev lane, either pinned or resolved to because it is armed. An
+                # unarmed pinned lane is the owner naming one that cannot run: the gate
+                # refuses rather than answering from the other, so the row says which
+                # grant is missing instead of calling it active.
+                status = (
+                    _POINT_ACTIVE if jev_armed else (_POINT_NEEDS_SCOPE if permits else _POINT_OFF)
+                )
+        elif not permits or not sampled:
             status = _POINT_OFF
         elif scope is not None and not granted.get(scope, False):
             status = _POINT_NEEDS_SCOPE
@@ -244,6 +347,15 @@ def _points(state: dict, *, permits: bool) -> list[dict]:
                 # Paths the card prints as a pointer rather than offering a control
             }
         )
+        # On the ONE row that has two of them, so the card's status word can name the
+        # lane that would answer instead of re-deriving it from the switch: the card
+        # holds no scope reader for a point whose scope this build does not register,
+        # so a frontend deriving this would report the Jev lane for an ``auto`` judge
+        # the gate sends to the small model. A field on the single row that has one,
+        # like the pointer sentence below it, rather than a registry a second case
+        # would earn.
+        if name == _gate.JUDGE_POINT:
+            rows[-1]["lane"] = lane
     return rows
 
 
@@ -304,7 +416,7 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # rather than on a route of its own because the card reads this payload
         # already and a point's status is a function of the same keystone: a second
         # endpoint would be a second read that could answer differently.
-        "points": _points(state, permits=permits),
+        "points": _points(state, permits=permits, denied=denied),
     }
 
 

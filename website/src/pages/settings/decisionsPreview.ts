@@ -68,9 +68,25 @@ export const DECISIONS_COMPACTION_POINT = 'compaction.keep'
 export const DECISIONS_MEMORY_POINT = 'memory.recall'
 
 /**
- * Config path of the sampling share. One of the four `decisions.*` values the
- * config PATCH accepts, beside the three `model_route` tiers; the address and the
- * credential are deliberately not among them.
+ * The point that screens an auto-nudge tick before it wakes the session that armed
+ * the loop.
+ *
+ * Named here beside the others because the cross-layer guard requires it: a point
+ * is an egress path, so some surface has to be able to say what was sent for it.
+ *
+ * The one point with TWO providers. Its own `decisions.nudge_wake.provider` chooses
+ * between Jev, which this card's consent switch covers, and a small text-only model
+ * on the provider the machine already uses, which needs no extra key and no second
+ * endpoint consent. Either way the judge only decides whether a turn is spent: every
+ * failure, timeout and refused answer fires the tick exactly as the plain timer
+ * would, so the setting can remove turns and never silence a loop.
+ */
+export const DECISIONS_NUDGE_WAKE_POINT = 'nudge.wake'
+
+/**
+ * Config path of the sampling share. One of the six `decisions.*` values the config
+ * PATCH accepts, beside the three `model_route` tiers and the two `nudge_wake` keys;
+ * the address and the credential are deliberately not among them.
  */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
 
@@ -107,6 +123,27 @@ export const DECISIONS_MODEL_ROUTE_PATH = 'decisions.model_route'
  */
 export const DECISIONS_MODEL_ROUTE_TIERS = ['simple', 'medium', 'complex'] as const
 
+/** Config path of the judge's provider choice: which oracle answers `nudge.wake`. */
+export const DECISIONS_NUDGE_WAKE_PROVIDER_PATH = 'decisions.nudge_wake.provider'
+
+/** Config path of the model the judge's small-model lane runs on. */
+export const DECISIONS_NUDGE_WAKE_MODEL_PATH = 'decisions.nudge_wake.llm_model'
+
+/**
+ * The judge's CLOSED provider domain, in the order the panel draws it
+ * (`JUDGE_PROVIDERS` in `config/sections.py`). `auto` first because it is the
+ * shipped default and the one choice that needs no knowledge of either provider:
+ * Jev when this card's consent stands for it, the small model otherwise.
+ */
+export const DECISIONS_NUDGE_WAKE_PROVIDERS = ['auto', 'jev', 'llm'] as const
+
+/**
+ * The lane value the judge row carries when the SMALL MODEL is the one that would
+ * answer (`gate.LANE_LLM`). A provider is what an owner picked; a lane is what the
+ * gate resolved that pick to, and `auto` makes those different strings.
+ */
+export const DECISIONS_LANE_LLM = 'llm'
+
 /**
  * The one vault entry the provider credential may come from. `provider.api_key`
  * honours exactly `secret://TYPESAFE_API_KEY` and nothing else, because
@@ -133,6 +170,17 @@ export interface DecisionPointRow {
   needsScope: string | null
   /** One of the three statuses above. An id this build does not know reads as `off`. */
   status: string
+  /**
+   * Which lane would answer, on the one point that has two. `null` on every other
+   * point and on a gateway that does not send it.
+   *
+   * Read rather than derived because this side cannot derive it: `auto` resolves
+   * against the Jev lane being ARMED for this point, which needs that point's own
+   * evidence scope, and the card holds no reader for a scope the build may not
+   * register. Deriving it from the switch names the Jev lane for a judge the gate
+   * sends to the small model.
+   */
+  lane: string | null
 }
 
 /**
@@ -162,6 +210,7 @@ export function readPoints(body: unknown): DecisionPointRow[] {
       id,
       needsScope: typeof row?.needs_scope === 'string' && row.needs_scope ? row.needs_scope : null,
       status: typeof row?.status === 'string' ? row.status : POINT_OFF,
+      lane: typeof row?.lane === 'string' && row.lane ? row.lane : null,
     })
   }
   return rows
@@ -375,4 +424,28 @@ export function readModelRoute(config: unknown): Record<string, string> {
     out[tier] = typeof raw === 'string' ? raw : ''
   }
   return out
+}
+
+/**
+ * The judge point's two settings out of a `GET /api/config/kirocrew` body.
+ *
+ * `provider` falls back to the shipped `auto`, and an unknown word reads as `auto`
+ * too, because that is what the backend's own normalizer does with it — a picker
+ * showing a fourth value the gate will never honour would be lying about the lane
+ * that answers. `llmModel` reads as `''` for INHERIT, on the same terms as a
+ * `model_route` tier: a concrete id in a default fails on the first prompt for every
+ * account not entitled to it.
+ */
+export function readNudgeWake(config: unknown): { provider: string; llmModel: string } {
+  const root = asRecord(config)
+  const decisions = root ? asRecord(root.decisions) : null
+  const nudgeWake = decisions ? asRecord(decisions.nudge_wake) : null
+  const rawProvider = nudgeWake?.provider
+  const provider =
+    typeof rawProvider === 'string' &&
+    (DECISIONS_NUDGE_WAKE_PROVIDERS as readonly string[]).includes(rawProvider)
+      ? rawProvider
+      : 'auto'
+  const rawModel = nudgeWake?.llm_model
+  return { provider, llmModel: typeof rawModel === 'string' ? rawModel : '' }
 }

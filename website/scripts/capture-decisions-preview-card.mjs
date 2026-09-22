@@ -19,6 +19,14 @@
  *   decisions-overview-light.png            the list: one row per point the gateway
  *                                           projects, each with its status chip.
  *   decisions-detail-model-route-light.png   the model-route panel's three tier pickers.
+ *   decisions-detail-nudge-wake-light.png    the judge panel's provider and model
+ *                                           pickers, reachable with consent OFF.
+ *   decisions-detail-nudge-wake-provider-open-light.png
+ *                                           the same menu OPEN, where each option's
+ *                                           destination is legible before it is picked.
+ *   decisions-detail-nudge-wake-jev-refused-light.png
+ *                                           the judge pinned to Jev with the switch
+ *                                           off: the refuse path, no lane named.
  *   decisions-detail-needs-ok-light.png      tool.risk's panel with its scope switch
  *                                           off, and the line naming where the OK goes.
  *   decisions-detail-compaction-needs-ok-light.png
@@ -108,22 +116,54 @@ const POINTS = [
   { id: 'model.route', needs_scope: null, config_keys: [] },
   { id: 'compaction.keep', needs_scope: 'compaction', config_keys: [] },
   { id: 'memory.recall', needs_scope: 'memory_text', config_keys: [] },
+  // The one point whose row does not follow from consent alone: its `llm` provider
+  // sends to the model provider this machine already uses, so the fixture below
+  // reports it active on that provider whatever the keystone says, exactly as
+  // `_points` does.
+  { id: 'nudge.wake', needs_scope: null, config_keys: [] },
 ]
 
 // Status is resolved PER SCOPE, as the gateway resolves it: a row says whether ITS
 // OWN consent is recorded, so one flag for every scope would draw the wrong answer on
 // the point that needs the other one.
-const pointRows = ({ enabled, permits, toolArgs, compaction, memoryText }) => {
+const JUDGE_POINT = 'nudge.wake'
+
+/**
+ * Which lane the gate would resolve for the judge, mirrored so a frame cannot pass
+ * against a lane the gateway would not report.
+ *
+ * `auto` goes to Jev only when Jev is ARMED for this point, which needs this point's
+ * own evidence scope -- and this build registers none, so `auto` reaches the small
+ * model even with the switch on and the address in force. An explicit pick is honoured
+ * as picked.
+ */
+const judgeLane = judgeProvider => (judgeProvider === 'jev' ? 'jev' : 'llm')
+
+const pointRows = ({ enabled, permits, toolArgs, compaction, memoryText, judgeProvider }) => {
   const granted = { tool_args: toolArgs, compaction, memory_text: memoryText }
-  return POINTS.map(p => ({
-    ...p,
-    status:
-      !enabled || !permits
-        ? 'off'
-        : p.needs_scope && !granted[p.needs_scope]
-          ? 'needs_scope'
-          : 'active',
-  }))
+  return POINTS.map(p => {
+    if (p.id !== JUDGE_POINT) {
+      return {
+        ...p,
+        status:
+          !enabled || !permits
+            ? 'off'
+            : p.needs_scope && !granted[p.needs_scope]
+              ? 'needs_scope'
+              : 'active',
+      }
+    }
+    const lane = judgeLane(judgeProvider)
+    return {
+      ...p,
+      lane,
+      // The small-model lane needs neither the switch nor a scope, only a runner, and a
+      // gateway has one. A pinned Jev lane has no grant to run on while this point
+      // registers no scope, so the row names the missing grant rather than claiming to
+      // run -- which is what the gateway's own projection reports.
+      status: lane === 'llm' ? 'active' : permits ? 'needs_scope' : 'off',
+    }
+  })
 }
 
 /**
@@ -139,14 +179,24 @@ const POINT_NAMES = {
   'model.route': "Model for the turn's difficulty",
   'compaction.keep': 'Which tool calls a compaction would keep',
   'memory.recall': 'Which recalled memories reach the prompt',
+  'nudge.wake': 'Quiet check-ins: wake or skip',
 }
 
 const STATUS_WORDS = { active: 'Switched on', needs_scope: 'Needs your OK', off: 'Off' }
 
+// The judge row is the one row whose ACTIVE has two meanings, so the card names the
+// lane that would answer instead of the generic word. The card reads that lane off the
+// row rather than deriving it, so this mirrors the same read -- a chip derived from the
+// switch would expect the generic word over a small-model judge.
+const judgeChip = row => (row.lane === 'llm' ? 'Judged by the small model' : STATUS_WORDS.active)
+
 const expectRows = state =>
   pointRows(state).map(row => ({
     name: POINT_NAMES[row.id],
-    status: STATUS_WORDS[row.status],
+    status:
+      row.id === JUDGE_POINT && row.status === 'active'
+        ? judgeChip(row)
+        : STATUS_WORDS[row.status],
   }))
 
 /** The consent GET/PUT payload the gateway returns, bound to the default endpoint. */
@@ -158,6 +208,7 @@ const consentPayload = ({
   compaction = false,
   history_budget_chars = 0,
   points,
+  judgeProvider = 'auto',
 } = {}) => {
   const allowed = permits ?? (enabled && configured_endpoint === JEV_ENDPOINT)
   return {
@@ -182,6 +233,7 @@ const consentPayload = ({
           permits: allowed,
           toolArgs: tool_args,
           compaction,
+          judgeProvider,
         }),
       }),
   }
@@ -197,12 +249,19 @@ const consentPayload = ({
  * Consent itself is NOT in this config: it is the keystone, answered by the
  * `consent` option of `openPage`.
  */
-const withDecisions = ({ bucket = 100, history = 4000, modelRoute = {} } = {}) => ({
+const withDecisions = ({
+  bucket = 100,
+  history = 4000,
+  modelRoute = {},
+  judgeProvider = 'auto',
+  judgeModel = '',
+} = {}) => ({
   ...KIROCREW_CONFIG_FIXTURE,
   decisions: {
     bucket,
     history_budget_chars: history,
     model_route: modelRoute,
+    nudge_wake: { provider: judgeProvider, llm_model: judgeModel },
     provider: { endpoint: JEV_ENDPOINT, api_key: 'secret://TYPESAFE_API_KEY' },
   },
 })
@@ -512,6 +571,138 @@ async function main() {
     await panel.getByText('model.route', { exact: true }).waitFor({ state: 'visible', timeout: 5000 })
     await requireFramed(page, panel, "model.route's panel")
     await save(page, 'decisions-detail-model-route-light')
+    await page.context().close()
+  }
+
+  /* ── DETAIL: nudge.wake, the only panel whose point has TWO providers ────── */
+  {
+    // Consent DELIBERATELY off, and the provider set to the small model: this is the
+    // state the lane exists for, an owner with no Jev key, and it is the one frame
+    // that shows a point's controls reachable while the card's switch is off.
+    const page = await openPage({
+      config: withDecisions({ judgeProvider: 'llm' }),
+      consent: {
+        enabled: false,
+        // The row's chip comes from the gateway, and for THIS point the gateway reads
+        // the provider as well as the keystone: on the small model it is active with
+        // consent off. Selected here so the frame cannot show a chip that disagrees
+        // with the pickers beneath it.
+        judgeProvider: 'llm',
+      },
+    })
+    await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
+    // `enabled` here is whether the card is LIVE, not whether consent is recorded:
+    // the switch stays interactive with consent off, which is what makes this frame
+    // possible at all.
+    await settled(page, { enabled: true })
+    const panel = await openPoint(page, 'Quiet check-ins: wake or skip')
+    // The provider picker reads the CHOSEN word, not the default: a frame showing
+    // `auto` here would not show that the small model was selectable with the switch
+    // off, which is the whole claim of the frame.
+    const provider = panel.getByRole('combobox', { name: 'Which judge answers' })
+    await provider.waitFor({ state: 'visible', timeout: 5000 })
+    const chosen = (await provider.textContent()) ?? ''
+    if (!/small model/i.test(chosen)) {
+      throw new Error(`the judge provider does not read as the small model: ${JSON.stringify(chosen)}`)
+    }
+    // Its model picker defaults to inherit, on the same terms as a tier's.
+    const model = panel.getByRole('combobox', { name: 'Model for the small-model judge' })
+    await model.waitFor({ state: 'visible', timeout: 5000 })
+    const modelChosen = (await model.textContent()) ?? ''
+    if (!/keep the judge agent/i.test(modelChosen)) {
+      throw new Error(`the judge model does not read as inherit: ${JSON.stringify(modelChosen)}`)
+    }
+    // The line that keeps the CARD's frame from contradicting this panel. The card's
+    // heading and intro speak for the Jev endpoint -- "while this is on", "nothing is
+    // sent while this is off" -- and on this lane both are beside the point, so the
+    // panel says which lane answers and where the evidence goes. A frame without it
+    // photographs a consent surface whose own words disagree with its chip.
+    await panel
+      .getByText(/switch above does not govern it/i)
+      .first()
+      .waitFor({ state: 'visible', timeout: 5000 })
+    await panel.getByText('nudge.wake', { exact: true }).waitFor({ state: 'visible', timeout: 5000 })
+    // The chip must NAME the lane here. With the switch off, the generic active word
+    // under the list's "while this is on" heading reads as a contradiction and, worse,
+    // implies live egress -- which is the one thing this card must never imply
+    // wrongly. A frame that cannot see the lane-specific words is a failed frame.
+    await page
+      .getByText('Judged by the small model', { exact: true })
+      .first()
+      .waitFor({ state: 'visible', timeout: 5000 })
+    await requireFramed(page, panel, "nudge.wake's panel")
+    await save(page, 'decisions-detail-nudge-wake-light')
+    await page.context().close()
+  }
+
+  /* ── DETAIL: the judge's provider menu, OPEN ─────────────────────────────── */
+  {
+    // The collapsed picker shows ONE option, so the choice a reader makes about where
+    // their evidence goes is made from copy no closed frame can show. This frame opens
+    // the menu, which is where all three options and their destinations are legible at
+    // once. Same keyless state as the frame above, for the same reason.
+    const page = await openPage({
+      config: withDecisions({ judgeProvider: 'llm' }),
+      consent: { enabled: false, judgeProvider: 'llm' },
+    })
+    await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
+    await settled(page, { enabled: true })
+    const panel = await openPoint(page, 'Quiet check-ins: wake or skip')
+    const provider = panel.getByRole('combobox', { name: 'Which judge answers' })
+    await provider.waitFor({ state: 'visible', timeout: 5000 })
+    await provider.click()
+    // Each option must name its DESTINATION, not just its name: that distinction is the
+    // only thing an owner can use to choose, and it has to survive in the open list.
+    // Asserted per option so a frame cannot pass with one of the three unlabelled.
+    const menu = page.getByRole('listbox')
+    await menu.waitFor({ state: 'visible', timeout: 5000 })
+    for (const wanted of [/otherwise the small model/i, /to the address above/i, /stays with your current provider/i]) {
+      await menu
+        .getByText(wanted)
+        .first()
+        .waitFor({ state: 'visible', timeout: 5000 })
+    }
+    // A PAGE frame, like the Settings-search one and for the same reason: the subject
+    // is the open listbox, which Radix renders in a portal outside the card and which
+    // takes the rest of the page out of the accessibility tree while it is open -- so
+    // the card locator cannot even be resolved here, let alone contain the menu.
+    await save(page, 'decisions-detail-nudge-wake-provider-open-light', { full: true })
+    await page.context().close()
+  }
+
+  /* ── DETAIL: the judge pinned to Jev with the card's switch OFF ───────────── */
+  {
+    // The REFUSE path, and the one state of this panel a reader can reach by choosing
+    // wrongly: Jev is named as the judge, but its switch is off, so the gate refuses
+    // the lane and every quiet check-in fires ungated. The frame exists to show that
+    // the surface says so -- the row reads the plain OFF word rather than naming a
+    // lane, and the small-model note is absent, because on this provider the switch
+    // above DOES govern the answer.
+    const page = await openPage({
+      config: withDecisions({ judgeProvider: 'jev' }),
+      consent: { enabled: false, judgeProvider: 'jev' },
+    })
+    await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
+    await settled(page, { enabled: true })
+    const panel = await openPoint(page, 'Quiet check-ins: wake or skip')
+    const provider = panel.getByRole('combobox', { name: 'Which judge answers' })
+    await provider.waitFor({ state: 'visible', timeout: 5000 })
+    const chosen = (await provider.textContent()) ?? ''
+    if (!/to the address above/i.test(chosen)) {
+      throw new Error(`the judge provider does not read as Jev: ${JSON.stringify(chosen)}`)
+    }
+    // The note belongs to the other lane only. Present here it would tell an owner the
+    // switch above is beside the point on the one provider that lives or dies by it.
+    if (await panel.getByText(/switch above does not govern it/i).count()) {
+      throw new Error('the small-model note is showing on the Jev lane, where the switch does govern')
+    }
+    // And the chip must NOT name a lane: naming one over a refused provider is the
+    // mirror of the defect the lane words exist to prevent.
+    if (await page.getByText('Judged by the small model', { exact: true }).count()) {
+      throw new Error('the row names the small-model lane while the provider is pinned to Jev')
+    }
+    await requireFramed(page, panel, "nudge.wake's panel on the Jev lane")
+    await save(page, 'decisions-detail-nudge-wake-jev-refused-light')
     await page.context().close()
   }
 

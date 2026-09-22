@@ -941,6 +941,13 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.model-for-the-small-model-judge",
+      "label": "Model for the small-model judge",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.model-for-the-small-model-judge",
+      "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
+    },
+    {
       "id": "developer.remote-crew-sessions",
       "label": "Remote crew sessions",
       "tab": "developer",
@@ -960,6 +967,12 @@
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.webhooks",
       "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
+    },
+    {
+      "id": "developer.which-judge-answers",
+      "label": "Which judge answers",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.which-judge-answers"
     },
     {
       "id": "display.command-completion",

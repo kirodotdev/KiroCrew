@@ -36,6 +36,26 @@ from kiro_crew.decisions import consent
 CUSTOM = "https://proxy.example/v1/systemone"
 
 
+@pytest.fixture(autouse=True)
+def _judge_lane_unavailable(monkeypatch):
+    """Pin the judge's SECOND lane unavailable, because this file is about the keystone.
+
+    One point reads its own provider as well as the keystone: on the small-model lane
+    the judge is active with no consent at all, correctly, because that lane never
+    reaches the configured endpoint. Every expectation here is about what the KEYSTONE
+    decides, so the lane is held out of them and its own behaviour is pinned in
+    ``test_decisions_judge_llm.py``.
+
+    Autouse rather than per test because the alternative is worse than verbose: the
+    lane's availability is process-global (a ``DashboardState`` registers its runner),
+    so without this the answer would depend on whether some earlier test in the shard
+    happened to build one -- which is an order dependence, not a behaviour.
+    """
+    from kiro_crew.dashboard.handlers import decisions as mod
+
+    monkeypatch.setattr(mod, "_llm_lane_available", lambda: False)
+
+
 @pytest.fixture
 def keystone(tmp_path, monkeypatch):
     path = tmp_path / "decisions_consent.json"
@@ -455,14 +475,21 @@ def _points_off():
     """
     from kiro_crew.decisions import gate
 
-    return [
-        {
+    rows = []
+    for name in gate.DECISION_POINT_NAMES:
+        row = {
             "id": name,
             "needs_scope": gate.POINT_SCOPE_KEYS.get(name),
             "status": "off",
         }
-        for name in gate.DECISION_POINT_NAMES
-    ]
+        # The judge carries the lane that would answer, on the one row that has two of
+        # them. With nothing consented its Jev side is not armed, so the gate resolves
+        # the default provider to the small model -- and this file pins that lane
+        # unavailable, which is why the row is ``off`` while still naming it.
+        if name == gate.JUDGE_POINT:
+            row["lane"] = gate.LANE_LLM
+        rows.append(row)
+    return rows
 
 
 @pytest.fixture
@@ -1248,6 +1275,19 @@ def _gate_module():
     return gate
 
 
+def _keystone_statuses(rows):
+    """The statuses of every point the KEYSTONE decides.
+
+    The judge is the one exclusion. Its row names the lane that would answer, and this
+    file pins that lane unavailable because the keystone does not govern it -- so a
+    build with no registered runner reports it ``off`` while consent is full. Folding
+    that into an assertion about consent would make the keystone's answer depend on
+    whether a model call is wired, which is a different question with a different test.
+    """
+    judge = _gate_module().JUDGE_POINT
+    return {r["status"] for r in rows if r["id"] != judge}
+
+
 class TestPointProjection:
     """The card's overview list comes from the SEAM's registry, not from either side's array.
 
@@ -1311,7 +1351,7 @@ class TestPointProjection:
         # Consent stands for every scope, so only the share decides.
         monkeypatch.setattr(mod, "_sampling_admits_anybody", lambda: True)
         rows = json.loads((await mod.api_decisions_consent_get(_request())).text)["points"]
-        assert {r["status"] for r in rows} == {"active"}
+        assert _keystone_statuses(rows) == {"active"}
 
         monkeypatch.setattr(mod, "_sampling_admits_anybody", lambda: False)
         rows = json.loads((await mod.api_decisions_consent_get(_request())).text)["points"]
@@ -1420,7 +1460,7 @@ class TestPointProjection:
             granted[key] = True
         keystone.write_text(json.dumps(granted), encoding="utf-8")
         rows = json.loads((await _get()).text)["points"]
-        assert {r["status"] for r in rows} == {"active"}
+        assert _keystone_statuses(rows) == {"active"}
 
         # The endpoint moved: nothing is sent, so every row is off -- including the
         # one whose scope is still recorded. ``status`` is the EFFECTIVE answer.

@@ -61,6 +61,7 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
+    JUDGE_PROVIDERS,
     STT_LANGUAGE_AUTO,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
@@ -2597,6 +2598,32 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
         "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
         "validate_fn": _validate_role_model,
     }
+
+
+# The wake judge's two per-point settings. In the editable set where
+# ``provider.*`` is not, and the difference is what each one decides: the endpoint
+# chooses WHERE collected state is sent and ``api_key`` is schema-sensitive, while
+# neither of these widens anything. Which judge answers is a choice between two
+# destinations the machine is already authorized for -- Jev behind the keystone,
+# or the model provider every turn already uses -- and the point itself is armed by
+# its own consent scope, not by either of these keys.
+#
+# ``provider`` is a closed enum, so a typo is a refusal rather than a silently
+# different judge. ``llm_model`` takes the same grammar and the same entitlement
+# validation as the ``agent.role_models.*`` pins and the ``decisions.model_route``
+# tiers, because the vocabulary is identically unknowable up front: the id must be
+# one the provider advertises to this account, and ``JUDGE_MODEL_DEFAULT`` INHERITS
+# (the judge keeps the model its agent already resolves).
+_EDITABLE_CONFIG["decisions.nudge_wake.provider"] = {
+    "type": "enum",
+    "values": list(JUDGE_PROVIDERS),
+}
+_EDITABLE_CONFIG["decisions.nudge_wake.llm_model"] = {
+    "type": "str",
+    "max_len": 64,
+    "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+    "validate_fn": _validate_role_model,
+}
 
 
 def _beacon_governance_pinned_off() -> bool:

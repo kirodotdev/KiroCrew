@@ -4495,6 +4495,23 @@ class DashboardState:
         owner_id: str = "",
     ):
         self.sessions = sessions
+        # The decisions seam's LLM lane needs ONE callable that runs a prompt on a
+        # tool-less background session, and ``decisions/`` deliberately imports
+        # nothing above itself -- so the wiring happens here, where the session
+        # manager first exists. Here rather than in ``server.py`` because both the
+        # gateway and the standalone dashboard construct this object, and a lane
+        # wired on only one of those paths is a lane that answers on one boot and
+        # refuses on the other. Guarded: a lane that cannot be wired must not stop
+        # the dashboard from booting, and an unwired lane already has a defined
+        # behaviour -- every judged tick fires exactly as the ungated timer does.
+        try:
+            from kiro_crew.decisions import impl_llm
+
+            impl_llm.set_runner_factory(
+                lambda model: impl_llm.build_session_runner(sessions, model=model)
+            )
+        except Exception:
+            logger.debug("decisions: LLM lane runner not registered", exc_info=True)
         self.crons = crons
         self.lessons = lessons
         self.start_time = start_time
