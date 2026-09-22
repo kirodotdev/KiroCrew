@@ -17,6 +17,16 @@ export interface Vault {
   knowledgeSourceId?: string | null
 }
 
+/**
+ * Obsidian's `attachmentFolderPath` from a vault's `.obsidian/app.json`:
+ * vault-relative, or `./`-prefixed for the note's own folder; null when there
+ * is no usable setting. Read per vault, on request, so the vault listing never
+ * touches a vault tree.
+ */
+export interface AttachmentSettings {
+  attachmentFolderPath: string | null
+}
+
 export interface Note {
   path: string
   /** Display name: the filename without its `.md` extension, never a frontmatter title. */

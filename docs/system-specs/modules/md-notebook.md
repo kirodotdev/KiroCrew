@@ -148,8 +148,9 @@ UI calls. All vault-scoped routes accept `?vault=<id>` and fall back to the firs
 | Route | Returns |
 | --- | --- |
 | `/health`, `/api/health` | `{ok, features[]}` — the capability probe |
-| `/api/vaults` | `{vaults[], hasPat, hasGhAuth}` |
+| `/api/vaults` | `{vaults[], hasPat, hasGhAuth}`. Reads no vault tree: the listing is the app's entry call, and one vault on a dead mount must not hold the others back |
 | `/api/notes` | `{notes[]}` with title, `modifiedAt`, `createdAt`, `syncStatus` |
+| `/api/attachments` | `{attachmentFolderPath}` — the vault's Obsidian `attachmentFolderPath` setting (null when none), for resolving Obsidian `![[file]]` embeds. Per vault, on request, read from `.obsidian/app.json` each time; no index of the vault's files is built |
 | `/api/note?path=` | `{path, content, mtime, meta, backlinks[]}` |
 | `/api/search?q=` | `{results[]}`; an empty query returns nothing, not everything |
 | `/api/changes?since=` | `{rev, changed[], watching}` — external-edit poll |
@@ -416,6 +417,50 @@ Knowledge-sync calls go to the HOST API (`/api/knowledge/*`) rather than the app
 because registration needs the user's dashboard session. `/api/knowledge` is therefore
 declared in the manifest's `permissions.api`.
 
+### Images and Obsidian embeds
+
+The preview renders two image syntaxes, each resolved its own way, because a vault
+migrated from Obsidian carries both — sometimes in one note — and keeps the old one
+long after its `.obsidian/` directory is gone:
+
+- `![alt](src)`: a remote source goes through `urlTransform()`; a local one resolves
+  against the note's own directory and is served by the dashboard's `/api/file-raw`.
+- `![[file|size]]`: recognised in EVERY vault, not only one that reads as Obsidian,
+  and rendered as an image only when the target has an image extension — Obsidian's
+  embed grammar also transcludes notes, PDFs and audio, which keep the wikilink
+  presentation rather than being asserted missing. The target resolves BY POSITION, in
+  a fixed order, to a vault-relative path when it carries a folder; else the vault's
+  `attachmentFolderPath` (Obsidian's `./` forms meaning the note's folder or a
+  subfolder of it); else the note's folder; else the vault root. Obsidian's vault-wide
+  lookup by bare name is deliberately not mirrored: it needs the backend to walk and
+  name every file in the vault, and a vault is untrusted content, so a file the author
+  moved out of the attachment folder shows as missing rather than being searched for. A
+  numeric suffix is a display width (capped at 2000px and by the column; a small
+  width is honoured as written, zero sets none); a non-numeric one is the alt
+  text, and a bare embed's alt is its file name so the image is not read as decorative.
+
+The setting is read from the vault ROOT (`localPath`), not the subfolder scope:
+`.obsidian/app.json` sits at the root and its setting is relative to it. The setting is vault content, so it
+is confined like a note path (absolute, `..`, drive letter → dropped), and a missing or
+corrupt `app.json` leaves the vault usable with no setting. Whatever survives is
+re-validated by `/api/file-raw`, which is the trust boundary; the frontend resolution
+only decides WHICH path to ask for. A resolved-to-nothing or 404'd image shows its alt
+text or file name with the broken-image glyph, and the block keeps click-to-edit.
+
+The settings file is reached without following a link at any step. On POSIX the vault
+root is entered through `pinned_fs.open_dir_pinned` (its parent resolved once, then one
+`openat` per component, each refusing a link in its own open, the root's name last), and
+`.obsidian` and `app.json` are opened RELATIVE to the descriptor above (`openat`), so no
+path string is re-resolved after that one resolution. `app.json` is opened non-blocking
+and `fstat`-checked, so a FIFO planted at the name is refused instead of parking a worker
+thread. Windows has no relative open; there the root's ancestors are probed root-first,
+then each level is opened by path under the parent's held handle, which denies the rename
+a swap would need. A link at the root, at `.obsidian` or at `app.json` makes the vault read
+as a non-Obsidian one; a link on the way to the root is followed by the one resolution on
+POSIX (`/tmp` on macOS is one) and refused on Windows. Nothing else in the vault is read
+for this feature: the image bytes come from `/api/file-raw`, which validates the path the
+page asks for.
+
 ### Notes panel affordances
 
 * **New note** lives in the panel header (top right, beside the vault selector) and creates
@@ -481,3 +526,8 @@ the save guard, path traversal, unique note naming, duplicate-note naming and co
 move-without-overwrite, external-change
 detection, self-write suppression, token file permissions, the knowledge flag round-trip,
 and a real sync against git fixtures including the conflict path.
+`test/test_md_notebook_attachments.py` covers the Obsidian setting (detection, the
+relative forms, corrupt and escaping values, read from the vault root rather than the
+subfolder scope, a linked root or a linked `.obsidian` never read) and the pinned read
+(descriptor-relative opens on POSIX, the by-path arm under the pin elsewhere, a FIFO
+at `app.json` refused without blocking).
