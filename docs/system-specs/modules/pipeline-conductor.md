@@ -138,11 +138,21 @@ because prose never closes an item.
 build can drop covered items instead of rediscovering them one dispatch at a
 time. Its evidence is the repository's open pull requests (title and body, fork
 and draft PRs included) rather than the item's timeline, and the rule that makes
-two evidence sources safe is that this one only ever SUBTRACTS: `COVERED` is a
-positive finding and removes an item, `UNCOVERED` certifies nothing, and an
-unreadable forge exits 3 printing no `uncovered` list at all, so an unanswered
-batch cannot render as a finding about the items. `claim_preflight.py` remains the
-authority before every claim.
+two evidence sources safe is that this one only ever SUBTRACTS. It answers in
+three parts rather than two. `COVERED` is a positive finding and removes an item,
+and it requires a CLOSING KEYWORD aimed at the item in a pull request's own title
+or body. `MENTIONED` is a reference carrying no closing keyword: the item STAYS in
+the queue and the reference is reported. `UNCOVERED` certifies nothing. A bare
+reference is deliberately not coverage, because `Refs #N` is this repository's own
+idiom for referenced-but-deliberately-not-closed and its PR template keeps
+`Related Issues` apart from a closing trailer; measured over one real candidate
+list, 3 of 21 (item, covering PR) pairs carried no closing keyword and all 3 of
+those PRs disclaimed the fix in their own words. `MENTIONED` stays a separate line
+from `UNCOVERED` because a declined subtraction printed as `UNCOVERED` would be
+exactly as silent as the subtraction it replaced. An unreadable forge exits 3
+printing no `uncovered` list at all, so an unanswered batch cannot render as a
+finding about the items. `claim_preflight.py` remains the authority before every
+claim.
 
 **`fleet_probe.py`** answers, in one call per cycle, whether anything in the
 fleet needs judgment: per-session tail classification, tail index, idle age,
@@ -331,4 +341,4 @@ derive `permissions` from the filtered list; only the conductor mounts
 | `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
 | `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, closure requests outranking claims, and absent-symbol risk handling |
-| `test/test_pipeline_conductor_coverage_filter.py` | The batch coverage exclusion: that a title or body reference to an item is coverage whether or not it carries a closing keyword, that fork and draft PRs count while a neighbouring number does not, that an unreadable forge exits 3 with no `uncovered` list, that the filter writes nothing, and that its reference vocabulary agrees with `claim_preflight.py`'s |
+| `test/test_pipeline_conductor_coverage_filter.py` | The batch coverage exclusion: that a closing keyword aimed at the item in a pull request's own title or body is coverage while a bare reference is `MENTIONED` and leaves the item in the queue, that fork and draft PRs count while a neighbouring number does not, that an unreadable forge exits 3 with no `uncovered` list, that the filter writes nothing, and that its reference vocabulary agrees with `claim_preflight.py`'s |
