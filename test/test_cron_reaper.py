@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -589,3 +590,84 @@ class TestReaperMonotonicDeadline:
                 await svc._reaper_loop()
 
         assert "legacy1" in svc._reaped_jobs
+
+
+class TestReaperReleasesFinishedTask:
+    """A finished task the sweep meets never ran its ``finally``: release it.
+
+    ``_run_job_isolated``'s ``finally`` pops ``_job_start_times`` before its task
+    ends, so a task that is ``done()`` while its start stamp is still in the map
+    exited without reaching that ``finally``, and every marker it claimed --
+    ``_executing`` above all -- is still standing. The due-scan (``_on_timer``),
+    ``_next_wake_secs`` and ``run_job`` all skip a job in ``_executing``, so
+    until something releases it the job silently misses every scheduled fire.
+    The manual-run route releases it only when a user clicks Run; the sweep is
+    the consumer that runs on its own, so it must do the same release -- and
+    on the sweep that meets the finished task, not at the run's deadline,
+    which is at least ``_JOB_TIMEOUT_SECS`` and up to a day away.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scheduled_fire_resumes_after_the_sweep_meets_a_finished_task(
+        self, tmp_path: Path
+    ) -> None:
+        ran: list[str] = []
+
+        async def callback(job: CronJob) -> None:
+            ran.append(job.id)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        svc._sessions = _mock_sessions()
+        await svc.start()
+        try:
+            svc.add_job("watch", "go", every_secs=60)
+            job = svc._jobs[0]
+            job.last_run_ts = time.time() - 120  # due now
+
+            async def _died_before_cleanup() -> None:
+                raise RuntimeError("run ended without reaching its finally")
+
+            # What a run leaves behind when its task ends ahead of the
+            # try/finally: a finished task still stored, the job still
+            # "executing", its stamps still claimed -- and well inside the
+            # deadline, so the sweep's timeout path is not what releases it.
+            stale = asyncio.get_running_loop().create_task(_died_before_cleanup())
+            await asyncio.gather(stale, return_exceptions=True)
+            assert stale.done()
+            svc._running_tasks[job.id] = stale
+            svc._executing.add(job.id)
+            svc._job_start_times[job.id] = time.time() - 60
+            svc._job_start_monotonic[job.id] = time.monotonic() - 60
+            svc._job_jitter[job.id] = 0.0
+            svc._job_run_meta[job.id] = (time.time() - 60, "scheduled")
+
+            # Control: while the leftovers stand, the due-scan skips the job.
+            await svc._on_timer()
+            assert svc._running_tasks[job.id] is stale
+            assert ran == []
+
+            with patch("kiro_crew.sel.sel"), _one_sweep():
+                with pytest.raises(asyncio.CancelledError):
+                    await svc._reaper_loop()
+
+            assert job.id not in svc._executing, (
+                "the sweep met a finished task and left the job in _executing, "
+                "so the due-scan keeps skipping every scheduled fire of it"
+            )
+            assert job.id not in svc._running_tasks
+            assert job.id not in svc._job_start_times
+            assert job.id not in svc._job_start_monotonic
+            assert job.id not in svc._job_jitter
+            assert job.id not in svc._job_run_meta
+            # Released, not reaped: the run was over, there was nothing to kill.
+            assert job.id not in svc._reaped_jobs
+            svc._sessions.reset.assert_not_awaited()
+
+            # The next tick fires the job again.
+            await svc._on_timer()
+            fresh = svc._running_tasks.get(job.id)
+            assert fresh is not None and fresh is not stale
+            await fresh
+            assert ran == [job.id]
+        finally:
+            await svc.stop()

@@ -2344,6 +2344,18 @@ class CronService:
             # irrelevant to force-killing a locally-running task.
             jobs_by_id = {j.id: j for j in self._jobs}
             for job_id, started in list(self._job_start_times.items()):
+                # A task that is done() while its start stamp is still here
+                # never reached _run_job_isolated's finally (a run that ends
+                # normally pops the stamp there, before its task finishes), so
+                # every marker it claimed is still standing -- _executing above
+                # all, which the due-scan, _next_wake_secs and run_job read as
+                # "still running". Release it on THIS sweep, not once the run's
+                # deadline passes: that is at least _JOB_TIMEOUT_SECS and up to
+                # a day away, and every scheduled fire until then is skipped.
+                # A live task or no tracked task falls through to the timeout
+                # backstop below unchanged.
+                if self.discard_finished_run(job_id):
+                    continue
                 elapsed = now - started
                 # DECIDE and REPORT on the monotonic clock. An entry with no
                 # monotonic stamp (a run already in flight across an upgrade, or
@@ -2365,12 +2377,6 @@ class CronService:
                 ) + (_pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job))
                 jitter_allowance = self._job_jitter.get(job_id, 0.0)
                 if elapsed_mono <= deadline + jitter_allowance:
-                    continue
-                task = self._running_tasks.get(job_id)
-                if task and task.done():
-                    # Normal timeout path already completed; just clean up tracking.
-                    self._job_start_times.pop(job_id, None)
-                    self._job_start_monotonic.pop(job_id, None)
                     continue
                 logger.warning(
                     "Reaper: cron job %s exceeded %ds (ran %.0fs), force-killing",
@@ -2585,6 +2591,14 @@ class CronService:
         ``cancelled`` history entry, and leaves ``consecutive_failures``
         untouched. Returns True when a running execution was found.
         """
+        # A finished task is not a running execution, whatever _executing says.
+        # Trusting the marker here would kill nothing, answer True, record a
+        # "Cancelled by user after Ns" row for a run that ended long ago, and
+        # add the job to _cancelled_jobs for a finally that never runs (the
+        # task is done) -- so the job's NEXT real run would be treated as
+        # cancelled and drop its result. Release the leftovers and answer
+        # "not running" instead; a live task is untouched and cancels below.
+        self.discard_finished_run(job_id)
         if job_id not in self._executing:
             return False
         logger.info("Cancel: user-initiated cancellation of cron job %s", job_id)
@@ -4529,6 +4543,36 @@ class CronService:
         """Return whether a job is currently executing."""
         return job_id in self._executing
 
+    def discard_finished_run(self, job_id: str) -> bool:
+        """Drop the in-memory markers of a run whose task has already finished.
+
+        ``_executing`` and ``_running_tasks`` are released by
+        ``_run_job_isolated``'s ``finally``. A task that ends without reaching
+        it leaves both populated with nothing left to clear them, so the job
+        reads as running for the life of the gateway: every manual run of it is
+        refused, and the due-scan, ``_next_wake_secs`` and ``run_job`` -- which
+        all skip a job in ``_executing`` -- pass over every scheduled fire. The
+        three consumers that gate on "is a run in flight?" ask here first: the
+        manual-run route before its 409, the reaper sweep before its deadline
+        math, and ``cancel()`` before its guard, so a finished task is never
+        mistaken for a live one. A task still running, or no tracked task at
+        all, is left untouched. Returns True when stale markers were dropped.
+        """
+        task = self._running_tasks.get(job_id)
+        if task is None or not task.done():
+            return False
+        self._running_tasks.pop(job_id, None)
+        self._executing.discard(job_id)
+        self._job_start_times.pop(job_id, None)
+        self._job_start_monotonic.pop(job_id, None)
+        self._job_jitter.pop(job_id, None)
+        self._job_run_meta.pop(job_id, None)
+        logger.warning(
+            "Cron: dropped stale running markers for job %s -- its task had already finished",
+            job_id,
+        )
+        return True
+
     def running_since(self, job_id: str) -> float | None:
         """Return the epoch start time of a running job, or None."""
         return self._job_start_times.get(job_id)
@@ -4989,44 +5033,57 @@ class CronService:
         meta = self._job_run_meta.get(job.id)
         started_at = meta[0] if meta else time.time()
         trigger = meta[1] if meta else "scheduled"
-        self._job_start_times[job.id] = started_at
-        # Stamped here rather than derived from started_at: the two clocks share
-        # no epoch, so the reaper's deadline is only meaningful against a stamp
-        # taken on its own clock.
-        self._job_start_monotonic[job.id] = time.monotonic()
-        # One increment per execution, before the jitter sleep so a run cancelled
-        # during jitter still counts as fired. ``kind`` is the dispatch shape --
-        # ``script`` and ``command`` bypass the model entirely, so this is the
-        # split between jobs that cost tokens and jobs that cost none.
-        if job.script:
-            kind = "script"
-        elif job.command:
-            kind = "command"
-        else:
-            kind = "agent"
-        emit_counter(CRON_FIRES, {"kind": kind, "trigger": trigger})
-        # Apply jitter to spread execution unless strict_schedule is set or manual
-        jitter = self._compute_jitter(job) if trigger != "manual" else 0
-        self._job_jitter[job.id] = jitter
         # Provisional; refined once the jitter sleep completes. Only read on
         # the history path, which a cancelled-during-jitter run never reaches.
         exec_started_at = started_at
-        # ``last_result`` is a cross-run context-carry field for AGENT jobs
-        # (see build_cron_session_context): result-less runs leave the
-        # previous value in place so the next run's prompt keeps its dedup
-        # context. Command and script jobs have theirs cleared once in the
-        # finally below, because the prompt built for them is never dispatched.
-        # The history recorder in the finally block must NOT attribute that
-        # carried-over value to THIS run, so clear the freshness marker here;
-        # executor callbacks set it via CronJob.set_run_result() when the run
-        # actually produces a result. (String identity/equality can't stand in
-        # for the marker: CPython interns equal literals and caches single-char
-        # strings, so a run re-producing the previous text looks identical to
-        # one that produced nothing.)
-        job.result_produced = False
         being_cancelled = False
         marker_write: "asyncio.Future[None] | None" = None
+        # Everything the finally below releases is claimed INSIDE the try. The
+        # caller (_on_timer, run_job) has already added the job to _executing
+        # and stored this task in _running_tasks, and the timer path never
+        # awaits the task, so that finally is the only cleanup those two
+        # markers ever get. Bookkeeping claimed ahead of the try -- the start
+        # stamps, the fire counter, the jitter -- is outside that protection:
+        # an exception there ends the task with both markers still set and
+        # nothing on this path left to clear them; the job then reads as
+        # running until the reaper sweep, the manual-run route or cancel()
+        # meets the finished task (discard_finished_run), and every scheduled
+        # fire and every manual run in between is skipped or refused with 409.
         try:
+            self._job_start_times[job.id] = started_at
+            # Stamped here rather than derived from started_at: the two clocks
+            # share no epoch, so the reaper's deadline is only meaningful
+            # against a stamp taken on its own clock.
+            self._job_start_monotonic[job.id] = time.monotonic()
+            # One increment per execution, before the jitter sleep so a run
+            # cancelled during jitter still counts as fired. ``kind`` is the
+            # dispatch shape -- ``script`` and ``command`` bypass the model
+            # entirely, so this is the split between jobs that cost tokens and
+            # jobs that cost none.
+            if job.script:
+                kind = "script"
+            elif job.command:
+                kind = "command"
+            else:
+                kind = "agent"
+            emit_counter(CRON_FIRES, {"kind": kind, "trigger": trigger})
+            # Apply jitter to spread execution unless strict_schedule is set or manual
+            jitter = self._compute_jitter(job) if trigger != "manual" else 0
+            self._job_jitter[job.id] = jitter
+            # ``last_result`` is a cross-run context-carry field for AGENT jobs
+            # (see build_cron_session_context): result-less runs leave the
+            # previous value in place so the next run's prompt keeps its dedup
+            # context. Command and script jobs have theirs cleared once in the
+            # finally below, because the prompt built for them is never
+            # dispatched. The history recorder in the finally block must NOT
+            # attribute that carried-over value to THIS run, so clear the
+            # freshness marker here; executor callbacks set it via
+            # CronJob.set_run_result() when the run actually produces a result.
+            # (String identity/equality can't stand in for the marker: CPython
+            # interns equal literals and caches single-char strings, so a run
+            # re-producing the previous text looks identical to one that
+            # produced nothing.)
+            job.result_produced = False
             # The jitter sleep MUST live inside this try: hourly/daily jobs
             # sleep up to 59 min here, and a user cancel() during that window
             # raises CancelledError at the sleep — if that happened BEFORE the
