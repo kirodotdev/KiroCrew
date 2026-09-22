@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
-import { setSettingsDeepLinkPending } from '../components/settings'
+import { setSettingsDeepLinkTarget } from '../components/settings'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -132,6 +132,21 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([KIRO_SIGN_IN_HIGHLIGHT_
  * then proceeds with the standard label-based DOM highlight.
  */
 /**
+ * Build a `[data-setting-*="…"]` attribute selector from a settings DOM anchor
+ * attribute and its value. `attr` is one of the three machine anchor names the
+ * rows carry (`data-setting-id` / `data-setting-key` / `data-setting-label`) and
+ * `value` is a resolved id/key/label; neither is user-visible copy — the result
+ * is fed to `querySelector`/`matches`, never rendered — so this is where the
+ * selector literals live, exempted by callee in `eslint.i18n.config.js`.
+ */
+function settingAnchorSelector(
+  attr: 'data-setting-id' | 'data-setting-key' | 'data-setting-label',
+  value: string,
+): string {
+  return `[${attr}="${CSS.escape(value)}"]`
+}
+
+/**
  * @param owns Whether the mounting page currently owns the URL's `highlight`.
  *   Default `true` (Settings, which is the only element under its route). A
  *   page that also REDIRECTS legacy links to another page passes a route check
@@ -170,11 +185,24 @@ export function useSettingHighlight(owns: boolean = true): void {
      * `highlightId` alone, so the withdrawal rides the re-run that the strip
      * already causes: resolved, unknown and not-ours all arrive here as "no
      * highlight", which is the one condition that means nothing is pending. */
-    if (!owns || !highlightId) { setSettingsDeepLinkPending(false); return }
-    setSettingsDeepLinkPending(true)
+    if (!owns || !highlightId) { setSettingsDeepLinkTarget(null); return }
 
     const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
     const settingId = entry?.settingId
+    /* The selector a collapsed group answers "is that row inside me?" with. Built
+     * from the SAME three identities the probe resolves by, in the same precedence,
+     * so a group can never reveal itself for something the probe would not accept.
+     * Deliberately coarser than `findTarget`: the `occurrence` tiebreak disambiguates
+     * a repeated label, which is a question only the probe can answer and which no
+     * group needs to in order to know whether it holds the row. */
+    const containmentSelector = settingId
+      ? settingAnchorSelector('data-setting-id', settingId)
+      : directConfigKey
+        ? settingAnchorSelector('data-setting-key', directConfigKey)
+        : entry
+          ? settingAnchorSelector('data-setting-label', entry.labelKey ? i18nT(entry.labelKey) : entry.label)
+          : null
+    setSettingsDeepLinkTarget(containmentSelector)
     // Explicit UI identities and schema keys both survive an async panel load.
     if (settingId || directConfigKey) {
       const findDirectTarget = (): HTMLElement | null => {
@@ -239,7 +267,7 @@ export function useSettingHighlight(owns: boolean = true): void {
           observer?.disconnect()
           // A page torn down mid-probe leaves nothing to resolve the link, so the
           // signal must not outlive it into the next tree.
-          setSettingsDeepLinkPending(false)
+          setSettingsDeepLinkTarget(null)
         }
       }
       // Unknown keys retain the legacy parameter-cleanup behavior below.
@@ -291,7 +319,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       }, { replace: true })
     }, 100)
 
-    return () => { clearTimeout(timer); setSettingsDeepLinkPending(false) }
+    return () => { clearTimeout(timer); setSettingsDeepLinkTarget(null) }
     // location.key: every navigation re-arms the probe. Without it, the
     // legacy-URL translation (SettingsPage replace-navigates ?tab=X onto the
     // path form, mounting the target panel one commit LATER) would race this

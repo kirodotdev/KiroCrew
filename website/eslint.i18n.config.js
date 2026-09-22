@@ -1049,6 +1049,13 @@ export default [
               // its argument is an attribute/type selector walked up the tree,
               // never rendered copy.
               'querySelector(All)?', 'closest', 'getElementById', 'createElement',
+              // App-local builder for `[data-setting-*="…"]` anchor selectors
+              // (`src/hooks/useSettingHighlight.ts`). Its first argument is one of
+              // three machine anchor names and its second a resolved id/key/label;
+              // the string it returns is handed to `querySelector`/`matches` and
+              // never rendered — same CSS-selector contract as `querySelector`
+              // directly above. Uniquely named so the exclusion masks no other callee.
+              '^settingAnchorSelector$',
               'addEventListener', 'removeEventListener', 'matchMedia',
               // WebGL/DOM capability lookups take registry identifiers
               // (`WEBGL_lose_context`), which are mixed-case and so escape the

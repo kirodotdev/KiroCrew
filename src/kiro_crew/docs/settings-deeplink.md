@@ -48,10 +48,11 @@ shipped prebuilt rather than described:
 - **`%3A` in a route is an encoded `:`** and belongs there. Leave it alone.
 
 A control that sits inside a collapsed group on its tab still works: the link
-opens the group on the way in, because the highlight is resolved by finding the
-control on the page and a collapsed group renders none of its rows at all. The
-group stays open afterwards, rather than closing again the moment the highlight
-lands.
+opens that group on the way in, because the highlight is resolved by finding the
+control on the page and a collapsed group renders none of its rows at all. Only
+the group holding the control opens — other collapsed groups on the same tab are
+left as they were, including one nested inside it — and it stays open afterwards
+rather than closing again the moment the highlight lands.
 
 A route is a dashboard path, so it is clickable only where a dashboard path
 resolves. On a chat channel (Slack, Telegram, Teams, …) prefix it with the
