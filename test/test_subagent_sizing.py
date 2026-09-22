@@ -9,8 +9,10 @@ patched ``_available_memory_gb``.
 
 from __future__ import annotations
 
+import time
 import types
 from io import StringIO
+from typing import Any
 
 import pytest
 
@@ -272,6 +274,31 @@ def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 
     return m
 
 
+class _PinnedClock:
+    """``time`` stand-in whose ``monotonic()`` is frozen; everything else forwards."""
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _pin_pump_clock(monkeypatch, now: float) -> None:
+    """Freeze the clock the spawn gate and the drain pump read at ``now``.
+
+    Both read ``time.monotonic()`` through ``kiro_crew.subagent``'s globals (the
+    admission ``*_impl`` functions are rebound onto that namespace), so swapping
+    that one ``time`` name pins them. The process-wide module stays untouched:
+    ``asyncio.run()`` keeps reading it for its own scheduling, and ``_mgr()`` may
+    take seconds of real I/O on a loaded runner without moving this clock.
+    """
+    monkeypatch.setattr(subagent, "time", _PinnedClock(now))
+
+
 class TestStaggerGate:
     """_should_stagger_queue: capacity + stagger gate (initial-fill burst guard)."""
 
@@ -311,13 +338,14 @@ class TestStaggerGate:
 class TestDrainPump:
     """_drain_queue: one start per interval, reschedules when too soon."""
 
-    def test_too_soon_does_not_pop(self) -> None:
+    def test_too_soon_does_not_pop(self, monkeypatch) -> None:
         import asyncio
-        import time as _t
         from unittest.mock import MagicMock
 
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+
         async def run() -> None:
-            now = _t.monotonic()
             m = _mgr(running=0, max_concurrent=16, last_ts=now, stagger=2.0)
             m._queue = [
                 {
@@ -557,14 +585,15 @@ class TestQueuedIdentityRoundTrip:
 
     def test_drained_spawn_reuses_the_announced_id(self, monkeypatch) -> None:
         import re
-        import time as _t
         from unittest.mock import MagicMock
 
         import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
 
-        m = _mgr(running=1, max_concurrent=16, last_ts=_t.monotonic(), stagger=2.0)
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+        m = _mgr(running=1, max_concurrent=16, last_ts=now, stagger=2.0)
         info = m.spawn(task="x", parent_session_key="dashboard:s1")
 
         assert info is not None and info.queued is True
@@ -572,7 +601,7 @@ class TestQueuedIdentityRoundTrip:
 
         # Drain: the gate is open now (stagger elapsed, slot free), so the
         # popped entry must be re-spawned under the SAME id.
-        m._last_spawn_ts = _t.monotonic() - 10.0
+        m._last_spawn_ts = now - 10.0
         m.spawn = MagicMock()  # type: ignore[method-assign]
         m._drain_queue()
 
