@@ -614,7 +614,7 @@ def _emit_agent_assignment(slot_key: str, agent: str, outcome: str = "applied") 
     )
 
 
-def _validate_tool_name(tool_name: str, *, is_shell: bool = False) -> str:
+def _validate_tool_name(tool_name: str, *, is_shell: bool = False, canonical_name: str = "") -> str:
     """Validate and sanitize tool display names for hook matching.
 
     ``is_shell`` is the provider-agnostic signal (set at the provider boundary)
@@ -623,11 +623,22 @@ def _validate_tool_name(tool_name: str, *, is_shell: bool = False) -> str:
     on this flag rather than a hardcoded set of provider tool_kind literals
     (e.g. "execute"/"Bash") stops the cap from silently re-breaking long shell
     commands on every engine migration or tool rename.
+
+    ``canonical_name`` is the adapter-authored tool identity that travelled
+    beside the title (``AcpEvent.tool_name``, read from the harness's own
+    ``_meta`` channel, never from the title or the model's ``description``).
+    The length cap protects the case where the title IS the only identity a
+    hook can match on; when a canonical identity is present the title is
+    content (a ``read`` title embeds the paths it reads, exactly as a shell
+    title embeds its command line), so the cap is skipped for it as it is for
+    ``is_shell``. Sanitisation and the empty check apply regardless: only the
+    length predicate is relaxed. A backend that publishes no identity leaves
+    ``canonical_name`` empty and keeps the loud refusal.
     """
     sanitized = sanitize_string(tool_name)
     if not sanitized:
         raise ValueError("Tool name cannot be empty")
-    if not is_shell and len(sanitized) > MAX_TOOL_NAME_LEN:
+    if not is_shell and not canonical_name and len(sanitized) > MAX_TOOL_NAME_LEN:
         raise ValueError(f"Tool name exceeds max length {MAX_TOOL_NAME_LEN}")
     return sanitized
 

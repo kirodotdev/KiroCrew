@@ -30,6 +30,7 @@ from kiro_crew.providers.base import (
     EVENT_THINKING_CHUNK,
     LLMEvent,
 )
+from kiro_crew.validation import MAX_TOOL_NAME_LEN
 
 # ── Helpers ──
 
@@ -2518,6 +2519,76 @@ class TestDenyRowTitleRedaction:
         # Each deny shape is rendered in exactly one place — its helper.
         assert source.count('f"🚫 {title} (invalid: {error})"') == 1
         assert source.count('f"🚫 {title} (hook error)"') == 1
+
+
+# ── Long read titles carrying a canonical identity ──
+
+
+class TestLongTitleWithCanonicalIdentity:
+    """A ``read`` whose title embeds long image paths must not be refused as a bad name.
+
+    kiro-cli titles a ``read`` with ``image_paths`` by its operation content, so the
+    title grows with the user's filenames while the tool's identity travels beside
+    it as ``AcpEvent.tool_name`` (``_meta.kiro.toolName``). The length cap in
+    ``_validate_tool_name`` protects the case where the title is the ONLY identity;
+    with the canonical name present the title is content, like a shell command
+    line, and the call must proceed.
+    """
+
+    _TITLE = "View image " + " ".join(
+        f"/mnt/Sign in with Apple - screenshot {i:02d} of the consent sheet.png" for i in range(6)
+    )
+
+    def _read_event(self, *, tool_name: str) -> LLMEvent:
+        assert len(self._TITLE) > MAX_TOOL_NAME_LEN
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=self._TITLE,
+            tool_kind="read",
+            request_id="req-1",
+            tool_input="",
+            tool_name=tool_name,
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_proceeds_with_canonical_name(self, tmp_path):
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        _set_stream(client, [self._read_event(tool_name="fs_read"), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.approve_tool.assert_called_once_with("req-1")
+        client.reject_tool.assert_not_called()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any("(invalid:" in row for row in rows), rows
+        # The scripted PreToolUse gate still ran, keyed on the sanitised title.
+        pre = [
+            c
+            for c in state._hook_store.fire.call_args_list
+            if c.args and c.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert pre, state._hook_store.fire.call_args_list
+        assert pre[0].kwargs["tool_name"] == self._TITLE
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_without_identity_keeps_the_loud_refusal(self, tmp_path):
+        """A backend publishing no ``_meta`` identity is refused exactly as before."""
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        _set_stream(client, [self._read_event(tool_name=""), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.approve_tool.assert_not_called()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert any("(invalid:" in row and "exceeds max length" in row for row in rows), rows
 
 
 class TestApprovalAnswerersDoNotRaceTheStream:
