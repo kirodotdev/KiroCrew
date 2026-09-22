@@ -158,6 +158,37 @@ do flow through, which keeps the data home aligned, but the code does not.
 Keep the registry `version` in step with your fleet's installed version. If your
 organisation pins Kiro Crew centrally, that pin now governs the MCP side too.
 
+## Known limitation: registry mode cannot work on the KAS backend
+
+Everything above is about Kiro CLI, which reads your agent spec off disk and so
+sees the `"type": "registry"` marker Kiro Crew writes into it. The KAS backend
+(`kiro-agent`) reads no spec: Kiro Crew projects the agent over the wire on
+`session/new`, and that wire schema has no slot for `type`. The marker is dropped
+in transit, the host therefore sees every server as unmarked, and in registry
+access mode it filters all of them out — Kiro Crew's own control plane included.
+
+What you see is a session that starts and chats normally with no MCP tools at
+all: no `spawn_run`, no `cron_add`, no `learn_add`, no artifacts, knowledge or
+monitoring, and no error from the host explaining it. Declaring registry mode
+does not fix it there, because the marker it writes cannot reach the filter.
+
+Kiro Crew makes the failure visible rather than silent. Projecting an agent onto
+that backend under registry mode logs a warning naming exactly this, and the
+servers your spec declares are withheld with a line each instead of being sent to
+be dropped downstream. Until the wire schema carries `type`:
+
+- run a registry-governed profile on Kiro CLI, where the marker is read from disk
+  and the servers survive;
+- or, on an install whose profile is not actually registry-governed, turn the
+  declaration off with `kirocrew config set agent.mcp_registry_mode false` — the
+  filter only runs when the administrator has set a registry URL, so a host
+  outside that profile loses nothing by not claiming to be governed.
+
+A muted server is dropped on the same wire for a similar reason: the schema
+accepts `"disabled": true` and then discards it, so Kiro Crew does not declare a
+muted server to that backend at all. The mute is honoured; it is simply honoured
+by omission.
+
 ## Version floor
 
 MCP registry governance requires Kiro CLI **1.23** or later (Kiro IDE 0.11.28).
