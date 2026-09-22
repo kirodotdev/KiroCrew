@@ -364,6 +364,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
+    _REFUSAL_FALLBACK_RESUME_MSG,
     _SYNTHETIC_RECOVERY_MSGS,
     AUTH_REQUIRED_KIND,
     CRON_NOTIFICATION_KIND,
@@ -11033,12 +11034,19 @@ async def _run_chat(
             land. A refusal is deterministic FOR ONE MODEL — the whole point
             of the retry is that a different model family routinely accepts
             what another's filter declined.
+
+            The replay takes one of two shapes. A turn refused before it
+            dispatched any tool replays the user's message verbatim. A turn
+            refused AFTER dispatching tools is instead continued: the fallback
+            model is handed the same continuation a person gets from Continue
+            (``_REFUSAL_FALLBACK_RESUME_MSG``) and carries on from the completed
+            work, because replaying the message would run those tool calls a
+            second time — a doubled read is waste, a doubled write is damage.
             """
             if (
                 _prompt_depth != 0
                 or _crew_log_actor != "user"
                 or slot._refusal_fallback_attempted
-                or _turn_tool_calls > 0
                 or _should_suppress_requeue(slot)
                 or _stop_pressed()
                 or _has_user_queued_followup(slot)
@@ -11053,12 +11061,6 @@ async def _run_chat(
                 # an unattended replay doubles whatever the wake was about.
                 # The replay turn itself carries the original turn's actor, so
                 # a user turn's replay is still recognized here.
-                # _turn_tool_calls: a refusal terminal can arrive AFTER the
-                # turn already dispatched tools; replaying the whole user
-                # message would run those side effects a second time. Streamed
-                # text alone stays retryable (a doubled partial answer is
-                # cosmetic; a doubled write is not), so this gates on tool
-                # dispatches rather than _turn_emitted.
                 # _has_user_queued_followup: a queued USER follow-up is the
                 # user's NEXT intent — often a correction of the very message
                 # that was refused. The
@@ -11085,26 +11087,49 @@ async def _run_chat(
                 await _restore_refusal_fallback(slot, client)
                 return False
             slot._refusal_fallback_attempted = True
-            slot._refusal_retry_text = message
-            # The replay is the SAME turn again, so the original's attachment
-            # lists ride the queue entry (the drain re-extracts them exactly as
-            # it did for the user's row) — a refused message with files retries
-            # with its files, not a text-only shadow of itself. The typed
-            # mapping is preferred: it keeps ``dirs`` entries under ``dirs``,
-            # so a folder attachment replays as a folder instead of being
-            # retyped as a file. The flat fallback covers callers that supplied
-            # only the untyped list, which by construction holds files.
-            if _attachment_meta:
-                _replay_extra = {key: list(paths) for key, paths in _attachment_meta.items()}
-            elif _attachments:
-                _replay_extra = {"files": list(_attachments)}
-            else:
+            if _turn_tool_calls > 0:
+                # The turn already dispatched tools before the filter declined
+                # it. Replaying the user's message would run those side
+                # effects a second time, so the retry is the continuation a
+                # person gets from Continue: the session — now on the fallback
+                # model — is asked to carry on from the completed work. The
+                # nudge goes to the SAME harness session the refused turn ran
+                # on (the retention every Continue relies on), and it tells the
+                # model to stop rather than start over when the completed work
+                # is not in view, so a session that did not keep the partial
+                # turn fails safe instead of re-running writes. What Kiro Crew
+                # itself guarantees is narrower: once a tool ran, the message
+                # is never re-sent.
+                # Runner text, so the payload says CONTINUATION regardless of
+                # what the refused message was — a linked thread must not
+                # mirror this nudge as user speech. No attachments ride along:
+                # the original turn already delivered them into the session.
+                _replay_body = _REFUSAL_FALLBACK_RESUME_MSG
                 _replay_extra = None
+                _replay_payload = payload_for_replay(True)
+            else:
+                _replay_body = message
+                _replay_payload = payload_for_replay(_is_synthetic)
+                # The replay is the SAME turn again, so the original's attachment
+                # lists ride the queue entry (the drain re-extracts them exactly as
+                # it did for the user's row) — a refused message with files retries
+                # with its files, not a text-only shadow of itself. The typed
+                # mapping is preferred: it keeps ``dirs`` entries under ``dirs``,
+                # so a folder attachment replays as a folder instead of being
+                # retyped as a file. The flat fallback covers callers that supplied
+                # only the untyped list, which by construction holds files.
+                if _attachment_meta:
+                    _replay_extra = {key: list(paths) for key, paths in _attachment_meta.items()}
+                elif _attachments:
+                    _replay_extra = {"files": list(_attachments)}
+                else:
+                    _replay_extra = None
+            slot._refusal_retry_text = _replay_body
             _replay_qid = _queue_recovery(
                 0,
-                message,
+                _replay_body,
                 kind=SYNTHETIC_RECOVERY_KIND,
-                payload=payload_for_replay(_is_synthetic),
+                payload=_replay_payload,
                 extra_meta=_replay_extra,
             )
             # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
@@ -11128,20 +11153,32 @@ async def _run_chat(
             _safe_cand, _ = redact_exfiltration_urls(str(_cand))
             _safe_cand, _ = redact_credentials(_safe_cand)
             _safe_cand = _safe_cand[:120]
+            if _turn_tool_calls > 0:
+                _n_tools = f"{_turn_tool_calls} tool call{'s' if _turn_tool_calls != 1 else ''}"
+                _retry_notice = (
+                    f"⟳ Response declined by the model's content filter on '{_safe_primary}' "
+                    f"after {_n_tools} — continuing on '{_safe_cand}' in the same session…"
+                )
+            else:
+                _retry_notice = (
+                    f"⟳ Response declined by the model's content filter on '{_safe_primary}' — "
+                    f"retrying once on '{_safe_cand}'…"
+                )
             slot.append(
                 "error",
-                f"⟳ Response declined by the model's content filter on '{_safe_primary}' — "
-                f"retrying once on '{_safe_cand}'…",
+                _retry_notice,
                 "msg msg-err",
                 meta={"kind": TRANSIENT_RETRY_KIND},
             )
             logger.warning(
-                "Model refusal for slot %s (category=%s) — retrying once on "
-                "refusal fallback %r (primary=%r)",
+                "Model refusal for slot %s (category=%s) — %s on "
+                "refusal fallback %r (primary=%r, tool_calls=%d)",
                 slot.key,
                 _cat or "-",
+                "continuing once" if _turn_tool_calls > 0 else "retrying once",
                 _safe_cand,
                 _safe_primary,
+                _turn_tool_calls,
             )
             return True
 

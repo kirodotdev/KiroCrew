@@ -1416,6 +1416,18 @@ COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # say "automatic recovery" like the five above: a person pressed the button, and
 # the card must not claim the system recovered by itself.
 MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
+# Prefix on the continuation injected when a content-filter refusal landed AFTER
+# the turn had already dispatched tool calls and agent.refusal_fallback_model
+# names a different model. The user's message is NOT replayed there -- the
+# completed tool calls would run a second time -- so the session is moved to the
+# fallback model and asked to carry on from the completed work, the same
+# continuation a person gets from Continue. Body: _REFUSAL_FALLBACK_RESUME_MSG
+# in chat_utils. Named into the *_RECOVERY_PREFIX family so
+# test_recovery_card_prefixes.py's drift guard sees it. The VALUE names the
+# cause (a model's filter) and the remedy (another model); it says neither
+# "requested by the user" (nobody pressed anything) nor "automatic recovery"
+# (nothing faulted -- the model declined).
+REFUSAL_FALLBACK_RECOVERY_PREFIX = "[Content filter — continuing on the fallback model]"
 # Prefix on the continuation injected when a Stop hook returns a block decision
 # (`{"decision": "block", "reason": ...}` on exit-0 stdout). The reason IS the
 # instruction, handed back as the next turn so a hook can steer the session

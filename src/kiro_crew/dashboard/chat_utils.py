@@ -36,6 +36,7 @@ from kiro_crew.dashboard.state import (
     MANUAL_RESUME_RECOVERY_PREFIX,
     POSTTOKEN_RECOVERY_PREFIX,
     PROMISE_ONLY_RECOVERY_PREFIX,
+    REFUSAL_FALLBACK_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIXES,
     DashboardState,
     _ChatSlot,
@@ -2979,6 +2980,33 @@ _MANUAL_CONTINUE_MSG = (
     "Do NOT re-run steps or tools that already completed successfully. If the "
     "request is genuinely complete, say so in one line instead of inventing "
     "further work."
+)
+# Injected INSTEAD of the user's message when a content-filter refusal landed
+# after the turn had already dispatched tool calls and agent.refusal_fallback_model
+# names a different model (chat_runner._refusal_fallback_retry). Replaying the
+# message would run those tool calls a second time, so the session -- moved to
+# the fallback model -- is asked to carry on from the completed work, which is
+# what a person gets by pressing Continue. The nudge goes to the SAME harness
+# session the refused turn ran on (the retention every Continue relies on), and
+# Kiro Crew itself never re-sends the message once a tool ran. Unlike
+# ``_MANUAL_RESUME_MSG`` it offers no restart clause: it is sent only when the
+# turn dispatched a tool, so "nothing was done yet" is never true of it, and a
+# model that cannot see the partial turn (a session that did not keep it) is
+# told to stop rather than start over -- failing safe instead of re-running the
+# writes.
+#
+# Deliberately silent about the content filter and the model swap: the FALLBACK
+# model reads this body, and telling it the request was just declined primes it
+# to decline too. The user learns both from the retry notice card beside it.
+# Not in ``_SYNTHETIC_RECOVERY_MSGS``: the retry turn is recognized by its queue
+# id, not by text, and the turn-start re-arm already skips recovery-kind entries.
+_REFUSAL_FALLBACK_RESUME_MSG = (
+    f"{REFUSAL_FALLBACK_RECOVERY_PREFIX}\n"
+    "The previous turn ended before it finished. Look at the conversation above, "
+    "work out what was already completed, and finish the user's most recent "
+    "request from there. Do NOT re-run steps or tools that already completed "
+    "successfully. If the completed work is not visible in the conversation "
+    "above, do NOT start the request over — say so and stop."
 )
 
 

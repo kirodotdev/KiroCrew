@@ -236,6 +236,31 @@ describe('parseRecoveryMessage', () => {
     // Hyphen instead of em dash — not the wire value.
     expect(parseRecoveryMessage('[Context compacted - automatic recovery]\nbody')).toBeNull()
   })
+
+  it('names the content filter and the fallback model, not a fault or the user', () => {
+    // Verbatim opener from chat_utils._REFUSAL_FALLBACK_RESUME_MSG: the active
+    // model's filter declined a turn that had already run tools, so the gateway
+    // moved the session to agent.refusal_fallback_model and asked it to carry
+    // on. Nothing errored and nobody pressed Continue, so neither sibling copy
+    // is true of it.
+    const fallback = parseRecoveryMessage(
+      '[Content filter — continuing on the fallback model]\nThe previous turn ended before it finished. Look at the conversation above.',
+    )
+    const manual = parseRecoveryMessage('[Continue — requested by the user]\nKeep going.')
+    expect(fallback?.kind).toBe('refusal_fallback')
+    expect(fallback?.title).toBe('Content filter declined the turn')
+    expect(fallback?.detail).toBe(
+      'switched to the fallback model · continuation sent automatically',
+    )
+    expect(fallback?.chip).toBe('')
+    expect(fallback?.body.startsWith('[')).toBe(false)
+    expect(fallback?.body).toContain('Look at the conversation above')
+    expect(fallback?.title).not.toBe(manual?.title)
+    for (const text of [fallback?.title, fallback?.detail]) {
+      expect(text?.toLowerCase()).not.toContain('error')
+      expect(text?.toLowerCase()).not.toContain('your request')
+    }
+  })
 })
 
 describe('RecoveryCard', () => {

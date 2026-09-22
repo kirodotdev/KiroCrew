@@ -33,6 +33,7 @@ export type RecoveryKind =
   | 'promise_only'
   | 'compaction'
   | 'manual'
+  | 'refusal_fallback'
   | 'hook'
   | 'hook_halted'
   | 'synthesis'
@@ -78,6 +79,12 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   // the same shape (an `inject` continuation the model reads), but its copy must
   // not claim an automatic recovery — a person pressed Continue.
   ['manual', '[Continue — requested by the user]'],
+  // A content-filter refusal landed after the turn had already run tools, and a
+  // fallback model is configured. The user's message is not replayed (the tools
+  // would run twice); the session is moved to the fallback model and handed the
+  // same continuation as Continue. Its copy names the filter as the cause and
+  // the other model as the remedy — nothing faulted and nobody pressed anything.
+  ['refusal_fallback', '[Content filter — continuing on the fallback model]'],
   // A Stop hook returned a block decision. Also not a recovery: the turn
   // finished and a hook asked for another, so its copy names the hook as the
   // cause rather than reporting an interruption that never happened.
@@ -236,6 +243,19 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       kind,
       title: i18nT('pages.chat.recoveryCard.continued_by_you'),
       detail: i18nT('pages.chat.recoveryCard.resuming_the_interrupted_turn'),
+      chip: '',
+      body,
+    }
+  }
+
+  if (kind === 'refusal_fallback') {
+    // Its own copy: the turn was not interrupted by a fault (the model's filter
+    // declined it) and the user did not press anything (the gateway switched
+    // models). The continuation the fallback model reads is the expandable body.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.content_filter_declined'),
+      detail: i18nT('pages.chat.recoveryCard.fallback_model_continuing'),
       chip: '',
       body,
     }
@@ -435,6 +455,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'promise_only' ||
     kind === 'compaction' ||
     kind === 'manual' ||
+    kind === 'refusal_fallback' ||
     kind === 'hook' ||
     kind === 'synthesis' ||
     kind === 'generic'

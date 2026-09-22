@@ -6,12 +6,13 @@
  * feature-specific routes (config with the refusal field, models, the fixture
  * transcript) live here, via the stub's `extra` seam.
  *
- * Six scenes: the Settings card disabled (dark) and pinned (light), the
- * picker open with the Auto option visible, and the feature's two chat
- * surfaces — the in-flight retry notice and the retry-exhausted refusal card —
- * rendered from fixture messages that mirror chat_runner's own `slot.append`
- * payloads byte-for-byte (the notice carries the `transient_retry` meta kind
- * the renderer keys on).
+ * Seven scenes: the Settings card disabled (dark) and pinned (light), the
+ * picker open with the Auto option visible, and the feature's chat
+ * surfaces — the in-flight retry notice, the retry-exhausted refusal card,
+ * the cancelled retry, and the tool-call path (the continuation card on the
+ * fallback model) — rendered from fixture messages that mirror chat_runner's
+ * own `slot.append` payloads byte-for-byte (the notice carries the
+ * `transient_retry` meta kind the renderer keys on).
  *
  * Usage: node scripts/capture-refusal-fallback.mjs [outDir]
  */
@@ -154,6 +155,19 @@ async function main() {
   // 4 + 5. The feature's chat surfaces, from a fixture transcript.
   const RETRY_NOTICE =
     "⟳ Response declined by the model's content filter on 'claude-fable-5' — retrying once on 'claude-opus-4.8'…"
+  // The tool-call path: the same refusal after the turn already ran a tool.
+  // Mirrors chat_runner's continue notice and chat_utils._REFUSAL_FALLBACK_RESUME_MSG
+  // byte-for-byte — the marker line is what RecoveryCard keys the card on.
+  const CONTINUE_NOTICE =
+    "⟳ Response declined by the model's content filter on 'claude-fable-5' after 1 tool call — "
+    + "continuing on 'claude-opus-4.8' in the same session…"
+  const CONTINUE_BODY =
+    '[Content filter — continuing on the fallback model]\n'
+    + 'The previous turn ended before it finished. Look at the conversation above, '
+    + "work out what was already completed, and finish the user's most recent "
+    + 'request from there. Do NOT re-run steps or tools that already completed '
+    + 'successfully. If the completed work is not visible in the conversation '
+    + 'above, do NOT start the request over — say so and stop.'
   const EXHAUSTED_CARD =
     'Response declined by the model. Content filter: cyber. '
     + 'Try rephrasing your request, or start a new conversation without the '
@@ -197,7 +211,57 @@ async function main() {
         },
       ],
     },
+    {
+      // The tool-call path: the filter declined AFTER the turn ran a tool, so
+      // the message is not replayed (the tool would run twice) — the session
+      // moves to the fallback model and CONTINUES from the completed work. The
+      // inject row is the continuation the fallback reads, folded by
+      // RecoveryCard into its own card; the fallback's answer follows it.
+      name: '07-refusal-fallback-continue-after-tool-call-dark',
+      anchor: 'Content filter declined the turn',
+      expandSteps: true,
+      messages: [
+        USER_MSG,
+        {
+          role: 'assistant', ts: now - 80,
+          content: 'Locating the exploit-chain section before summarizing it:',
+        },
+        {
+          role: 'tool', ts: now - 79,
+          content: '🔧 grep -n "exploit chain" incident-report.md | head -5',
+          meta: {
+            tool_call_id: 'toolu_demo_grep', tool_name: 'shell', kind: 'execute', done: true,
+            purpose: 'Locate the exploit-chain section of the report',
+            input: '{"command": "grep -n \\"exploit chain\\" incident-report.md | head -5"}',
+            output: '41:## Exploit chain\n43:Stage 1 — initial access via the exposed admin endpoint',
+          },
+        },
+        { role: 'error', ts: now - 60, content: CONTINUE_NOTICE, meta: { kind: 'transient_retry' } },
+        { role: 'inject', ts: now - 59, content: CONTINUE_BODY, meta: { injectKind: 'recovery' } },
+        {
+          role: 'assistant', ts: now - 30,
+          content: 'Resuming from the grep result — the exploit chain in the report has three stages: '
+            + 'initial access through the exposed admin endpoint, credential reuse against the '
+            + 'build host, and lateral movement to the artifact store.',
+        },
+      ],
+    },
   ]
+  // 8. The same tool-call path in the light theme — contrast coverage for the
+  //    new card kind, which is the only surface this change adds.
+  scenes.push({
+    ...scenes[scenes.length - 1],
+    name: '08-refusal-fallback-continue-after-tool-call-light',
+    theme: 'light',
+  })
+  // 9. The same scene with the continuation card EXPANDED: the folded body is
+  //    the prompt the fallback model actually reads (_REFUSAL_FALLBACK_RESUME_MSG),
+  //    so the review needs to see it, not just the collapsed summary row.
+  scenes.push({
+    ...scenes[scenes.length - 2],
+    name: '09-refusal-fallback-continue-after-tool-call-expanded-dark',
+    expandCard: true,
+  })
   for (const sc of scenes) {
     const SLOT = 'chat-refusal-demo'
     scene.slots = [{
@@ -211,9 +275,25 @@ async function main() {
       running: false, has_more: false, total: sc.messages.length,
       queue: [], project: PROJECT, messages: sc.messages,
     }
-    await load('/', 'dark', SLOT)
+    await load('/', sc.theme || 'dark', SLOT)
+    if (sc.expandSteps) {
+      // The pre-refusal text, the tool row and the continuation card fold into
+      // the "Worked through N steps" group; the card is the point of the scene.
+      const toggle = page.getByRole('button', { name: /Worked through \d+ steps?/ }).first()
+      await toggle.waitFor({ state: 'visible', timeout: 8000 })
+      await toggle.click()
+      await page.waitForTimeout(400)
+    }
     const anchor = page.getByText(sc.anchor, { exact: false }).first()
     await anchor.waitFor({ state: 'visible', timeout: 8000 })
+    if (sc.expandCard) {
+      // The card folds its body behind its own toggle (the row that names the
+      // title and detail); open it so the continuation prompt is in the frame.
+      const cardToggle = page.getByTestId('recovery-card-toggle').first()
+      await cardToggle.waitFor({ state: 'visible', timeout: 8000 })
+      await cardToggle.click()
+      await page.getByTestId('recovery-card-body').first().waitFor({ state: 'visible', timeout: 8000 })
+    }
     await page.waitForTimeout(300)
     await page.screenshot({ path: `${OUT}/${sc.name}.png` })
     console.log('wrote', `${OUT}/${sc.name}.png`)

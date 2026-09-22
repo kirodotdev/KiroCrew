@@ -10337,13 +10337,20 @@ class TestRunChatRefusalFallback:
         )
 
     @pytest.mark.asyncio
-    async def test_no_retry_after_tool_dispatch(self, tmp_path, monkeypatch):
-        """A refusal terminal arriving AFTER the turn dispatched a tool is
-        terminal: replaying the whole user message would run the side effect
-        a second time."""
+    async def test_retry_after_tool_dispatch_continues_instead_of_replaying(
+        self, tmp_path, monkeypatch
+    ):
+        """A refusal terminal arriving AFTER the turn dispatched a tool still
+        moves the session to the fallback model, but the replay is the
+        Continue-style continuation, never the user's message: replaying the
+        message would run the dispatched tool a second time."""
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
             lambda: "opus-test",
+        )
+        from kiro_crew.dashboard.chat_utils import (
+            _REFUSAL_FALLBACK_RESUME_MSG,
+            RecoveryPayload,
         )
         from kiro_crew.providers.base import EVENT_TOOL_CALL, LLMEvent
 
@@ -10356,18 +10363,118 @@ class TestRunChatRefusalFallback:
         client = self._make_refusing_client(events)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
 
+        # Capture what the swap queues: the entry is consumed by the drain as
+        # soon as the turn ends, so it cannot be inspected on ``slot._queue``.
+        # ``_ChatSlot`` declares ``__slots__``, so the spy goes on the class.
+        queued: list[tuple[tuple, dict]] = []
+        _orig_queue_insert = type(slot).queue_insert
+
+        def _spy(self, *args, **kwargs):
+            if self is slot:
+                queued.append((args, kwargs))
+            return _orig_queue_insert(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(slot), "queue_insert", _spy)
+
         from kiro_crew.dashboard.chat import _run_chat
 
-        await _run_chat(state, slot, "hello")
+        await _run_chat(state, slot, "hello", _attachments=[str(tmp_path / "a.txt")])
 
-        client.set_model.assert_not_awaited()
-        assert slot._refusal_fallback_attempted is False
-        assert not slot._queue
-        assert any(
+        client.set_model.assert_awaited_once_with("opus-test")
+        assert slot._refusal_fallback_attempted is True
+        assert slot._refusal_fallback_primary == "fable-5"
+        assert len(queued) == 1, f"expected exactly one queued continuation, got {queued}"
+        (_index, body), kwargs = queued[0]
+        assert _index == 0
+        assert body == _REFUSAL_FALLBACK_RESUME_MSG
+        assert "hello" not in body
+        # Runner text, so a linked thread must not mirror it as user speech...
+        assert kwargs["payload"] == RecoveryPayload.CONTINUATION
+        # ...and the original's attachments do not ride along — the refused
+        # turn already delivered them into the session.
+        assert not any(k in kwargs.get("meta", {}) for k in ("files", "dirs"))
+        notices = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "continuing on 'opus-test'" in m.get("content", "")
+        ]
+        assert len(notices) == 1, f"expected exactly one continue notice, got {slot.messages}"
+        assert "after 1 tool call —" in notices[0]["content"]
+        assert not any(
             "Response declined by the model." in m.get("content", "")
             for m in slot.messages
             if m.get("role") == "error"
-        ), "terminal card must render when the retry is refused for tool side effects"
+        ), "terminal card must not render on the continued turn"
+
+        # The continuation runs on the fallback; the mock stream refuses again
+        # (after a tool call again), and the allowance is spent — terminal.
+        assert slot.task is not None, "queued continuation was not dispatched"
+        await slot.task
+        cards = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error"
+            and "Response declined by the model." in m.get("content", "")
+        ]
+        assert len(cards) == 1
+        assert "The configured fallback model ('opus-test') also declined" in cards[0]["content"]
+        assert client.set_model.await_count == 1, "the continuation must not swap again"
+
+    def test_resume_msg_fails_safe_when_completed_work_is_not_in_view(self):
+        """The continuation is sent ONLY after the turn dispatched a tool, so
+        "nothing was done yet" is never true of it: a clause letting the
+        fallback model start the request over could only ever fire on a
+        session that did not keep the partial turn — re-running the writes.
+        The nudge must tell such a model to stop instead."""
+        from kiro_crew.dashboard.chat_utils import _REFUSAL_FALLBACK_RESUME_MSG
+
+        assert "start the request now" not in _REFUSAL_FALLBACK_RESUME_MSG
+        assert "do NOT start the request over" in _REFUSAL_FALLBACK_RESUME_MSG
+        assert "say so and stop" in _REFUSAL_FALLBACK_RESUME_MSG
+
+    @pytest.mark.asyncio
+    async def test_clean_refusal_still_replays_the_message_verbatim(self, tmp_path, monkeypatch):
+        """With no tool dispatched, the retry stays the verbatim replay of the
+        user's own words, carrying the original attachments."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
+            lambda: "opus-test",
+        )
+        from kiro_crew.dashboard.chat_utils import RecoveryPayload
+
+        events = self._refusal_events(category="CYBER")
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        queued: list[tuple[tuple, dict]] = []
+        _orig_queue_insert = type(slot).queue_insert
+
+        def _spy(self, *args, **kwargs):
+            if self is slot:
+                queued.append((args, kwargs))
+            return _orig_queue_insert(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(slot), "queue_insert", _spy)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        _file = str(tmp_path / "a.txt")
+        await _run_chat(state, slot, "hello", _attachments=[_file])
+
+        assert len(queued) == 1
+        (_index, body), kwargs = queued[0]
+        assert _index == 0
+        assert body == "hello"
+        assert kwargs["payload"] == RecoveryPayload.ORIGINAL
+        assert kwargs["meta"].get("files") == [_file]
+        assert any(
+            "retrying once on 'opus-test'" in m.get("content", "")
+            for m in slot.messages
+            if m.get("role") == "error"
+        )
+        if slot.task is not None:
+            await slot.task
 
     @pytest.mark.asyncio
     async def test_replay_turn_does_not_pin_unpinned_slot(self, tmp_path, monkeypatch):
