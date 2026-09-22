@@ -878,6 +878,18 @@ _DEFAULT_PORT = DASHBOARD_PORT
 _SSE_INTERVAL_SECS = 5
 _NOTIFICATIONS_FILE = "notifications.jsonl"
 _MAX_PERSISTED_NOTIFICATIONS = 200
+
+# Fraction of the recency cap reserved for UNSERVABLE notification lines -- a line
+# ``_servable_note`` rejects, so ``_load_notifications`` can never serve it. Such a
+# line is kept rather than destroyed, but in its own window: see
+# ``_maybe_trim_notifications`` for why a shared window turns an append into an
+# eviction.
+#
+# A fraction rather than a second full cap. Two full windows put the post-trim file
+# exactly AT the trim threshold, so every later append would re-read and re-write the
+# whole file; and this window is a sample of recent damage for a human to look at, not
+# history the product serves, so it does not need history's budget.
+_UNSERVABLE_NOTIFICATION_CAP_DIVISOR = 4
 _AUTO_COMPACT_NOTICE = "🔄 Auto-compacted at {pct:.0f}%."
 #: The notice for the arm that REPLACES the session instead of summarizing it. A
 #: separate template because ``_AUTO_COMPACT_NOTICE`` would announce a summary that
@@ -8449,6 +8461,69 @@ def sweep_expired_notifications(log: list[dict[str, Any]], *, now: float | None 
     return removed
 
 
+def _read_notification_lines(path: Path) -> list[str]:
+    """Every line of the notifications file, terminators intact.
+
+    ``newline=""`` disables the newline translation text mode applies by default. With
+    translation on, a read turns a CRLF or a bare CR into a bare LF, so a caller that
+    writes those lines back silently rewrites bytes it meant to preserve: the snapshot
+    dedupe key for a timestamp-less row is its RAW bytes, so a rewritten terminator
+    makes the row differ from its source record, and a later merge appends a duplicate
+    instead of collapsing it. A bare CR is worse than a terminator change, because it
+    is the byte that split a record into the fragments the merge deliberately keeps.
+
+    Line BOUNDARIES are identical either way: ``str.splitlines`` breaks on CR, LF and
+    CRLF whether or not the read translated them. Only the retained bytes differ, so
+    reading this way changes what is preserved and never what counts as a line.
+    """
+    with open(path, encoding="utf-8", newline="") as handle:
+        return handle.read().splitlines(keepends=True)
+
+
+def _servable_note(line: str) -> dict[str, Any] | None:
+    """The note a persisted JSONL line yields, or ``None`` when none can be served.
+
+    The single acceptance test for a notification row, shared by the loader and by the
+    append-time trim so the two cannot drift apart. A line the loader would skip must
+    not occupy a slot in the trim's live window: it would displace a servable row, and
+    the rewrite that follows deletes that row permanently.
+
+    Parsing to a JSON object is not sufficient on its own. ``normalize_note`` raises
+    for an object whose ``channel`` is unhashable, so such a row parses here and is
+    still unservable, and a trim that asked only ``isinstance(row, dict)`` would count
+    it as live history.
+
+    Redaction is part of acceptance rather than the caller's job, for two reasons. Rows
+    written before delivery-time redaction existed may carry unredacted LLM-derived
+    content and are served to SSE clients straight from the loader's list; and the
+    redactor is one of the two steps that can reject a row, so leaving it out of the
+    test would reopen the divergence this function closes.
+
+    The note is normalized and redacted in place. A caller that writes the file back
+    writes the ORIGINAL bytes, never this dict, so nothing here migrates what is on
+    disk.
+
+    Leading and trailing whitespace is stripped HERE rather than by a caller, because
+    ``str.strip()`` removes whitespace ``json`` does not accept -- a no-break space, for
+    one -- so a caller that strips and a caller that does not reach opposite verdicts on
+    the same row. This stripping decides only whether a row can be served; it never
+    reaches disk, so it is not the stripping hazard the snapshot dedupe key avoids,
+    where a stripped key makes two distinct byte sequences collide and deletes one.
+    """
+    try:
+        note = normalize_note(json.loads(line.strip()))
+        for key, value in note.items():
+            if key != "ts":
+                note[key] = _redact_note_value(value)
+        return note
+    except Exception:  # noqa: BLE001 -- skip the bad row, not the whole file
+        # normalize_note/_redact_note_value can raise on valid-JSON rows with
+        # unexpected shapes (e.g. a top-level array); keep the per-line skip
+        # semantics instead of losing all history to a caller's outer except.
+        logger.debug("Skipping malformed notification row", exc_info=True)
+        return None
+
+
 def _load_notifications() -> list[dict[str, Any]]:
     """Load persisted notifications from disk (newest last)."""
     path = _notifications_path()
@@ -8456,26 +8531,11 @@ def _load_notifications() -> list[dict[str, Any]]:
         return []
     try:
         entries: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
+        for line in _read_notification_lines(path):
+            parsed = _servable_note(line)
+            if parsed is None:
                 continue
-            try:
-                parsed = normalize_note(json.loads(line))
-                # Redact at load: rows written before delivery-time redaction
-                # existed may carry unredacted LLM-derived content; they are
-                # served to SSE clients straight from this list.
-                for key, value in parsed.items():
-                    if key != "ts":
-                        parsed[key] = _redact_note_value(value)
-                entries.append(parsed)
-            except Exception:  # noqa: BLE001 — skip the bad row, not the whole file
-                # normalize_note/_redact_note_value can raise on valid-JSON
-                # rows with unexpected shapes (e.g. a top-level array); keep
-                # the per-line skip semantics instead of losing all history
-                # to the outer except.
-                logger.debug("Skipping malformed notification row", exc_info=True)
-                continue
+            entries.append(parsed)
         # RFC Phase 5: drop expired passive rows BEFORE the recency cap.
         # Sweeping after truncation loses data: with more than N rows on
         # disk, newer expired-passive rows would displace older LIVE rows
@@ -8563,24 +8623,52 @@ def _maybe_trim_notifications(path: Path) -> None:
     displacement hazard as the load path: trimming the
     raw tail first would retain newer expired-passive rows while deleting
     older LIVE rows, permanently losing history after the next load-time
-    sweep. Unparseable lines are kept (never destroy on ambiguity).
+    sweep.
+
+    The recency cap counts only LIVE lines: a line ``_servable_note`` accepts and this
+    sweep does not find expired, which is exactly what ``_load_notifications`` goes on
+    to serve. Both paths ask that one predicate, so the trim cannot come to disagree
+    with the loader about what counts as history. An UNSERVABLE line, one the predicate
+    rejects, is still kept, because destroying a line on ambiguity is worse than
+    holding one nobody can read. It is kept in a separate, smaller window so that it
+    cannot displace a live notification.
+
+    Two windows rather than one, because one shared window turns an append into an
+    eviction. An unservable line has no dedupe key, so a merge appends it instead of
+    collapsing it, which puts it among the NEWEST lines; a single newest-N window over
+    the combined list then discards valid older notifications in its favour, and the
+    rule meant to avoid destroying data is what destroys it. Neither the framing that
+    produces unparseable fragments nor the withheld dedupe key is the thing to change:
+    both are deliberate, and both are what stop a fragment being skipped as a false
+    duplicate and its bytes lost.
+
+    Retained lines keep their original file order AND their exact bytes, terminator
+    included, so a fragment stays beside the neighbours that explain it, a final line
+    with no terminator stays final instead of gluing onto the row written after it, and
+    a CRLF or bare-CR row still matches the raw dedupe key its source record carries.
     """
     try:
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        lines = _read_notification_lines(path)
         if len(lines) <= _MAX_PERSISTED_NOTIFICATIONS * 2:
             return
-        keep: list[str] = []
-        for line in lines:
-            try:
-                row = json.loads(line)
-            except Exception:
-                keep.append(line)
+        live: list[int] = []
+        unservable: list[int] = []
+        for index, line in enumerate(lines):
+            row = _servable_note(line)
+            if row is None:
+                unservable.append(index)
                 continue
-            if isinstance(row, dict) and sweep_expired_notifications([row]) == 1:
+            if sweep_expired_notifications([row]) == 1:
                 continue  # expired passive row -- drop before the cap
-            keep.append(line)
-        kept = keep[-_MAX_PERSISTED_NOTIFICATIONS:]
-        path.write_text("".join(kept), encoding="utf-8")
+            live.append(index)
+        # Never zero. A zero cap does not empty the window, it removes the bound:
+        # ``unservable[-0:]`` is the WHOLE list, so a small cap would silently
+        # retain every unservable line instead of a recent sample of them.
+        unservable_cap = max(
+            1, _MAX_PERSISTED_NOTIFICATIONS // _UNSERVABLE_NOTIFICATION_CAP_DIVISOR
+        )
+        kept = sorted(set(live[-_MAX_PERSISTED_NOTIFICATIONS:]) | set(unservable[-unservable_cap:]))
+        path.write_text("".join(lines[index] for index in kept), encoding="utf-8", newline="")
     except Exception:
         pass
 
