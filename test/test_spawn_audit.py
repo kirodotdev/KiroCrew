@@ -317,6 +317,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
         "acp/client.py::_verify_pi_gate",
+        # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -S <leaf
+        # script>``, where the script is a module-relative constant (tests pass their
+        # own stub). No agent value reaches the command, the args or the cwd -- the
+        # path to resolve travels over stdin as a length-prefixed frame, never as an
+        # argument, and no shell is involved. It is listed rather than routed because
+        # this child exists to ``lstat``/``readlink`` the very paths the
+        # sensitive-path gate is checking, sensitive ones included: under the agent
+        # sandbox it would be denied exactly those reads, and a resolver answering
+        # "cannot resolve" where the true answer is a credential symlink's target
+        # would weaken the gate rather than harden it. The env is inherited
+        # deliberately, so a path resolves in the child to what it resolves to in
+        # the parent.
+        "subprocess_pool/executor.py::_spawn",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent
