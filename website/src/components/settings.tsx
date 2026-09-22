@@ -346,40 +346,83 @@ interface SettingsSectionProps {
  * from the document the deep link searches, and the link arrives on the tab
  * having revealed nothing and rung nothing.
  *
+ * What is published is the SELECTOR the probe is looking for, not merely the fact
+ * that it is looking. A bare "a link is pending" flag is not enough to decide
+ * which group should answer it: every collapsible group on the page would see the
+ * same flag and open, which trades "the target stays hidden" for "unrelated groups
+ * open and stay open". The Voice tab is where that shows, because it nests one
+ * collapsible group inside another -- "Start dictation with a key" is the last
+ * child of "Fine-tuning" -- so a link to a Fine-tuning row opened both.
+ *
  * Carried as a signal rather than read from the router HERE, because
  * `SettingsSection` is also rendered outside a router (Mochi's Electron renderer
  * under `apps/mochi`), where a `useSearchParams` in a shared primitive would
  * throw. `useSettingHighlight` owns the router and publishes.
  */
-let deepLinkPending = false
+let deepLinkTarget: string | null = null
 const deepLinkListeners = new Set<() => void>()
 
-/** Publish whether a settings deep link is still unresolved. */
-export function setSettingsDeepLinkPending(next: boolean): void {
-  if (deepLinkPending === next) return
-  deepLinkPending = next
+/**
+ * Publish the CSS selector a settings deep link is probing for, or null when none
+ * is outstanding. For containment only: the probe's own resolution is finer (it
+ * disambiguates a repeated label by `occurrence`), and a group answers the coarser
+ * question "is the row it wants inside me".
+ */
+export function setSettingsDeepLinkTarget(next: string | null): void {
+  if (deepLinkTarget === next) return
+  deepLinkTarget = next
   for (const cb of deepLinkListeners) cb()
 }
 
-function subscribeDeepLinkPending(cb: () => void): () => void {
+function subscribeDeepLinkTarget(cb: () => void): () => void {
   deepLinkListeners.add(cb)
   return () => { deepLinkListeners.delete(cb) }
 }
-const readDeepLinkPending = () => deepLinkPending
-const readDeepLinkOnServer = () => false
+const readDeepLinkTarget = () => deepLinkTarget
+const readDeepLinkOnServer = (): string | null => null
 
 export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
   const [open, setOpen] = React.useState(false)
   const bodyId = React.useId()
-  const deepLink = React.useSyncExternalStore(
-    subscribeDeepLinkPending, readDeepLinkPending, readDeepLinkOnServer,
+  const bodyRef = React.useRef<HTMLDivElement>(null)
+  const target = React.useSyncExternalStore(
+    subscribeDeepLinkTarget, readDeepLinkTarget, readDeepLinkOnServer,
   )
-  /* LATCHED rather than derived. The link strips its own parameter the moment it
-   * has rung the row, so a group whose openness merely mirrored the signal would
-   * close again on that same tick -- taking the ringed row off the screen exactly
-   * when the user was meant to see it. Opening is also the only direction: a user
-   * who closes the group afterwards keeps it closed. */
-  React.useEffect(() => { if (deepLink) setOpen(true) }, [deepLink])
+  /* Which target this group has already answered for, so the two passes below
+   * settle exactly once instead of oscillating. */
+  const answered = React.useRef<string | null>(null)
+  /* REVEAL, then KEEP only if it was ours. A closed group cannot be asked what it
+   * contains -- that is the whole defect -- so it opens far enough to be searched
+   * and closes again in the same commit when the row is not inside it. Both passes
+   * are layout effects, so the speculative open is never painted.
+   *
+   * Nesting resolves itself: a child group answers before its parent, and the
+   * parent's query spans its whole subtree, so a target inside the nested group
+   * keeps BOTH open while a target beside it keeps only the parent.
+   *
+   * A group the USER opened is left alone: `answered` is stamped without touching
+   * `open`, so nothing here ever closes something a reader chose to see. Latched
+   * for the owner, because the probe strips its parameter the moment it has rung
+   * the row and a group that merely mirrored the signal would close on that tick. */
+  React.useLayoutEffect(() => {
+    if (!collapsible || !target || answered.current === target) return
+    if (!open) { setOpen(true); return }
+    answered.current = target
+    /* Decided one microtask after the reveal, not inside it. A NESTED group opens
+     * in a later commit than its parent -- the parent has to render its body before
+     * the child exists to open at all -- so a parent that answered within this
+     * commit would search a subtree whose child group has not rendered yet, find
+     * nothing, and close over the very row it holds. React flushes the whole
+     * cascade of layout-effect state updates synchronously in one task, so a
+     * microtask queued here runs after every group has revealed and still before
+     * the browser paints: nothing speculative is ever on screen. */
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      if (!bodyRef.current?.querySelector(target)) setOpen(false)
+    })
+    return () => { cancelled = true }
+  }, [collapsible, target, open])
   return (
     <>
       {/* `mt-4` separates one section from the previous section's controls, so it
@@ -418,7 +461,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
       {/* Unmounted rather than hidden when closed. A collapsed group exists to
           stop costing the reader attention, and an `aria-hidden` subtree still
           costs a screen-reader user their place in the tab order. */}
-      {collapsible ? open && <div id={bodyId}>{children}</div> : children}
+      {collapsible ? open && <div id={bodyId} ref={bodyRef}>{children}</div> : children}
     </>
   )
 }
