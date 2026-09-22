@@ -7,6 +7,7 @@ system is built, see [../architecture/](../architecture/README.md).
 |---|---|
 | [install.md](install.md) | Installing and building Kiro Crew: source, wheel, and first run. |
 | [worktree-verification-recipes.md](worktree-verification-recipes.md) | Copy-pasteable backend, frontend, agent-driving, diagnosis, and reclamation traces against an isolated worktree pod. |
+| [acp-compaction-capture.md](acp-compaction-capture.md) | Driving an ACP harness through `/compact` and MEASURING whether its context really shrank: the credential or local model each harness needs, `scripts/capture_acp_compaction.py`, how to read its verdict, how to review the captured frames, and the file-by-file checklist for landing a capture as `ACP_BACKENDS_COMPACT` membership. |
 | [windows-install.md](windows-install.md) | Native Windows setup, and the per-feature status on Windows. |
 | [macos-troubleshooting.md](macos-troubleshooting.md) | macOS desktop app issues — a CLI that resolves in Terminal but is `command not found` inside the app, and the `launchctl setenv PATH` recipe that fixes it. |
 | [docker.md](docker.md) | Running Kiro Crew as a container. |
