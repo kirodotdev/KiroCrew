@@ -16,16 +16,16 @@ right stack without relying on a local cache that could drift.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from kiro_crew import __version__, release_channel
+from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.deploy import profiles as profiles_mod
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
 
 logger = logging.getLogger(__name__)
@@ -533,15 +533,37 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
 def release_tag_exists(ref: str, repo: str = "") -> bool:
     """Whether ``repo`` (default: the public repo) carries the tag ``ref``.
 
-    One ``git ls-remote --exit-code`` against the remote, with no credential
-    helper or terminal prompt (``GIT_TERMINAL_PROMPT=0``) and a short timeout.
-    Any way of not getting a definite "yes" — no ``git`` on this machine, no
-    network, a 128 from the remote, a timeout — answers ``False``: the caller
-    then keeps the template default rather than asking the instance to clone a
-    tag that may not be there, which would fail the boot inside the stack.
+    One ``git ls-remote --exit-code`` against the remote, with a short timeout,
+    run from the trusted git's own directory rather than the gateway's working
+    directory: the gateway may be sitting inside a repository the agent can
+    write to, and a ``.git/config`` there (``url.*.insteadOf`` onto an
+    ``ext::`` transport) would otherwise decide
+    what the probe runs. Repository-local config has no env switch — git finds
+    it by walking up from ``cwd`` — so ``GIT_CEILING_DIRECTORIES`` names that
+    same directory and the walk never climbs past it; the only ``.git/config``
+    git could then honour sits where the agent cannot write. Everything the
+    environment CAN switch off (inherited ``GIT_*``, global and system config,
+    the credential prompt) is :func:`code_fingerprint.hardened_git_env`, the
+    gateway's one hardened-git recipe. ``git`` itself comes from
+    :func:`platform_compat.trusted_git_bin`, never a bare ``PATH`` lookup: the
+    gateway's ``PATH`` can lead with an agent-writable directory, and a shim
+    there would run with the gateway's privileges on every packaged launch.
+    Any way of not getting a definite "yes" — no trusted ``git`` on this
+    machine, no network, a 128 from the remote, a timeout — answers ``False``:
+    the caller then keeps the template default rather than asking the instance
+    to clone a tag that may not be there, which would fail the boot inside the
+    stack.
     """
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        logger.warning(
+            "no trusted git on this machine; cannot probe %s for tag %s",
+            repo or PUBLIC_REPO_URL,
+            ref,
+        )
+        return False
     argv = [
-        "git",
+        git,
         "ls-remote",
         "--exit-code",
         "--tags",
@@ -549,16 +571,17 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
         repo or PUBLIC_REPO_URL,
         f"refs/tags/{ref}",
     ]
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    trusted_dir = Path(git).resolve().parent
     try:
         proc = subprocess.run(
             argv,
+            cwd=trusted_dir,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
             timeout=_REF_PROBE_TIMEOUT_SECONDS,
-            env=env,
+            env=code_fingerprint.hardened_git_env(GIT_CEILING_DIRECTORIES=str(trusted_dir)),
             check=False,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("could not probe %s for tag %s: %s", repo or PUBLIC_REPO_URL, ref, exc)
@@ -581,25 +604,29 @@ def resolve_public_ref(repo: str = "") -> str:
     checkout that ships its own source and wrong for a packaged install: the
     instance then runs whatever ``main`` is while this machine runs a release,
     and ``remote_relay.ensure_version_parity`` refuses every session between
-    them on ``major.minor``. So a packaged install pins the release tag its own
-    version names (:func:`release_channel.release_ref`), after confirming the
-    remote has it. Returns ``""`` — "let the template default stand" — when no
-    tag maps onto the version (a nightly) or the remote does not carry it (a
-    fork, a build stamped before its tag was pushed, no network from here); the
-    WARNING says which, and the launch proceeds exactly as it does today.
+    them on ``major.minor``. So a packaged install pins the first release tag
+    its own version names (:func:`release_channel.release_refs`, likeliest
+    first) that the remote confirms it has. Returns ``""`` — "let the template
+    default stand" — when no tag maps onto the version (a nightly) or the
+    remote carries none of them (a fork, a build stamped before its tag was
+    pushed, no network from here); the WARNING says which, and the launch
+    proceeds exactly as it does today.
     """
-    ref = release_channel.release_ref()
-    if ref is None:
+    refs = release_channel.release_refs()
+    if not refs:
         logger.warning(
             "no release tag maps onto Kiro Crew %s; the instance will run main", __version__
         )
         return ""
-    if not release_tag_exists(ref, repo):
-        logger.warning(
-            "no release tag %s for Kiro Crew %s; the instance will run main", ref, __version__
-        )
-        return ""
-    return ref
+    for ref in refs:
+        if release_tag_exists(ref, repo):
+            return ref
+    logger.warning(
+        "no release tag %s for Kiro Crew %s; the instance will run main",
+        " / ".join(refs),
+        __version__,
+    )
+    return ""
 
 
 def build_deploy_argv(

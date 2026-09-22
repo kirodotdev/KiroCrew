@@ -117,8 +117,30 @@ def test_channel_defaults_to_this_build(monkeypatch) -> None:
         ("0.7.0; rm -rf /", None),
     ],
 )
-def test_release_ref_maps_each_stamping_onto_its_tag(version: str, expected: str | None) -> None:
-    assert release_channel.release_ref(version) == expected
+def test_release_refs_maps_each_stamping_onto_its_tag(version: str, expected: str | None) -> None:
+    """The likeliest tag comes first; a version that names no tag names nothing."""
+    refs = release_channel.release_refs(version)
+    assert (refs[0] if refs else None) == expected
+    assert all(ref.startswith("v") for ref in refs)
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        # release.yml writes `rcN` for a `-insider.N` AND a `-rc.N` tag, so the
+        # wheel spelling names both — insider (the lane's own naming) first.
+        ("0.7.0rc5", ("v0.7.0-insider.5", "v0.7.0-rc.5")),
+        # Every other shape names at most one tag.
+        ("0.7.0", ("v0.7.0",)),
+        ("0.7.0.5", ("v0.7.0",)),
+        ("0.7.0-insider.5", ("v0.7.0-insider.5",)),
+        ("0.7.0-rc.1", ("v0.7.0-rc.1",)),
+        ("0.8.0.dev123", ()),
+        ("garbage", ()),
+    ],
+)
+def test_release_refs_lists_every_tag_a_version_may_name(version, expected) -> None:
+    assert release_channel.release_refs(version) == expected
 
 
 def test_release_ref_is_a_safe_clone_ref() -> None:
@@ -127,13 +149,14 @@ def test_release_ref_is_a_safe_clone_ref() -> None:
     from kiro_crew.cloud import ec2
 
     for version in ("0.7.0", "0.7.0.5", "0.7.0rc5", "0.7.0-insider.5", "0.7.0-rc.1"):
-        ref = release_channel.release_ref(version)
-        assert ref is not None
-        assert ec2._REF_RE.match(ref), ref
+        refs = release_channel.release_refs(version)
+        assert refs
+        for ref in refs:
+            assert ec2._REF_RE.match(ref), ref
 
 
-def test_release_ref_defaults_to_this_build(monkeypatch) -> None:
+def test_release_refs_default_to_this_build(monkeypatch) -> None:
     monkeypatch.setattr("kiro_crew.release_channel.__version__", "9.9.9rc7")
-    assert release_channel.release_ref() == "v9.9.9-insider.7"
+    assert release_channel.release_refs() == ("v9.9.9-insider.7", "v9.9.9-rc.7")
     monkeypatch.setattr("kiro_crew.release_channel.__version__", "9.9.9.dev1")
-    assert release_channel.release_ref() is None
+    assert release_channel.release_refs() == ()

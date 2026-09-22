@@ -38,9 +38,9 @@ The SemVer half mirrors ``website/electron/auto-update.js``
 prerelease suffix is insider, because ``release.yml`` publishes ``-insider.N``
 and ``-rc.N`` alike to the insider feed.
 
-The same table read backwards is :func:`release_ref`: the git tag
-``release.yml`` cut for the version a build reports, for a caller that must
-install THIS release somewhere else (the cloud launcher's public-repo clone).
+The same table read backwards is :func:`release_refs`: the git tags
+``release.yml`` may have cut for the version a build reports, for a caller that
+must install THIS release somewhere else (the cloud launcher's public-repo clone).
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ _PEP440_PRERELEASE = re.compile(r"(?:a|b|rc)\d+")
 _STABLE_BUILD = re.compile(r"(?P<base>\d+\.\d+\.\d+)(?:\.\d+)?")
 #: The wheel spelling of an insider build. ``release.yml`` derives ``rcN`` from
 #: the tag's trailing number for ``-insider.N`` and ``-rc.N`` tags alike, so the
-#: wheel form cannot say which one it came from; ``-insider.N`` is the lane's
-#: own naming and the one every recent tag uses.
+#: wheel form cannot say which one it came from; :func:`release_refs` names
+#: both, ``-insider.N`` (the lane's own naming) first.
 _INSIDER_WHEEL = re.compile(r"(?P<base>\d+\.\d+\.\d+)rc(?P<n>\d+)")
 #: The desktop spelling of an insider build IS the tag minus its ``v``.
 _INSIDER_DESKTOP = re.compile(r"\d+\.\d+\.\d+-(?:insider|rc)\.\d+")
@@ -119,27 +119,30 @@ def is_prerelease(version: str | None = None) -> bool:
     return channel(version) != "stable"
 
 
-def release_ref(version: str | None = None) -> str | None:
-    """The git tag ``release.yml`` cut for ``version`` (default: this build's).
+def release_refs(version: str | None = None) -> tuple[str, ...]:
+    """The git tags ``release.yml`` may have cut for ``version``, likeliest first.
 
     ``0.7.0`` and a stamped ``0.7.0.5`` both name ``v0.7.0``; an insider build
-    names ``v0.7.0-insider.5`` whether it is spelled the wheel way (``0.7.0rc5``)
-    or the desktop way (``0.7.0-insider.5``). ``None`` when no tag can exist for
-    the version: nightly builds come off ``main`` HEAD and cut none, the ``a`` /
-    ``b`` prerelease segments belong to no lane, and an unparseable string names
-    nothing. The answer is the tag's NAME, not a promise that it exists — a
-    caller that will clone it must still probe the remote, because a build can
-    be stamped before its tag is pushed and a fork may never push one.
+    spelled the desktop way (``0.7.0-insider.5``, ``0.7.0-rc.1``) IS its tag.
+    The wheel spelling ``0.7.0rc5`` is what ``release.yml`` writes for BOTH a
+    ``v0.7.0-insider.5`` and a ``v0.7.0-rc.5`` tag, so it names both, insider
+    first. Empty when no tag can exist for the version: nightly builds come off
+    ``main`` HEAD and cut none, the ``a`` / ``b`` prerelease segments belong to
+    no lane, and an unparseable string names nothing. The answers are tag
+    NAMES, not a promise that one exists — a caller that will clone one must
+    still probe the remote, because a build can be stamped before its tag is
+    pushed and a fork may never push one.
     """
     v = (version if version is not None else __version__).strip()
     if channel(v) == "nightly":
-        return None
+        return ()
     m = _STABLE_BUILD.fullmatch(v)
     if m:
-        return f"v{m.group('base')}"
+        return (f"v{m.group('base')}",)
     m = _INSIDER_WHEEL.fullmatch(v)
     if m:
-        return f"v{m.group('base')}-insider.{m.group('n')}"
+        base, n = m.group("base"), m.group("n")
+        return (f"v{base}-insider.{n}", f"v{base}-rc.{n}")
     if _INSIDER_DESKTOP.fullmatch(v):
-        return f"v{v}"
-    return None
+        return (f"v{v}",)
+    return ()

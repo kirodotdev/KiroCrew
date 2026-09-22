@@ -1251,6 +1251,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
+        # Release-tag probe before a packaged install's cloud launch: `<trusted
+        # git> ls-remote --exit-code --tags -- <repo> refs/tags/<ref>`, a fixed
+        # argv with no shell. The binary comes from
+        # `platform_compat.trusted_git_bin` (never PATH); `ref` is built by
+        # `release_channel.release_refs` from this build's own `__version__`
+        # through a `\d+\.\d+\.\d+` regex, and `repo` is the template's public
+        # URL or a caller argument `ec2.deploy` charset-validates -- neither is
+        # agent-reachable. Env drops every inherited `GIT_*` and pins global /
+        # system config off; stdin is DEVNULL; the exit code is the only thing
+        # read. Same classification as the `cloud/source.py` git probes above.
+        "cloud/ec2.py::release_tag_exists",
         # Windows tunnel teardown: `taskkill /T /F /PID <pid>`, a fixed argv whose
         # only variable is the pid of a child THIS process created (the Popen handed
         # to kill_port_forward) -- never agent-supplied, no shell, no PATH shim

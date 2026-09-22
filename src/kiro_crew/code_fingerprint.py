@@ -50,7 +50,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 _MAX_FILES_WALKED = 20_000
 
 
-def _git_env() -> dict[str, str]:
+def hardened_git_env(**pins: str) -> dict[str, str]:
     """An environment in which git reads no configuration anyone could plant.
 
     This runs in the GATEWAY process, outside the sandbox, on a tree an agent
@@ -60,11 +60,16 @@ def _git_env() -> dict[str, str]:
     privileges. Repo-level config cannot be disabled by environment, so the
     argv also pins the two settings a diff can execute (``--no-ext-diff``,
     ``--no-textconv``) and the pager.
+
+    Shared by every gateway-side git probe (the cloud launcher's release-tag
+    probe reuses it) so the recipe lives once; ``pins`` adds a caller's own
+    ``GIT_*`` variables on top (a ``GIT_CEILING_DIRECTORIES`` bound, say).
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env.update(pins)
     return env
 
 
@@ -77,7 +82,7 @@ def _git_fingerprint(root: Path) -> str | None:
     git = trusted_git_bin()
     if git is None:
         return None
-    env = _git_env()
+    env = hardened_git_env()
     try:
         head = subprocess.run(
             [git, "-C", str(root), "-c", "core.pager=cat", "rev-parse", "HEAD"],
