@@ -1642,6 +1642,20 @@ Three rules follow from the split, all read off evidence rather than judged:
   attached to the PR body, or committed); none is an evidence gap. The reviewer
   cannot play the recording -- it verifies the mechanism in the diff and that the
   recording exists, and a human watches it.
+- **Placement is an app-wide question (lens 0).** Every control, row, page, menu
+  entry or setting the diff adds or moves must sit where a user looking for it
+  would go first, next to the controls about the same thing -- judged across the
+  whole app (settings tabs, sidebar sections, menus, modals, the command palette),
+  not within the one panel the screenshot shows. The reviewer names the surface
+  that is already about that thing; if one exists and the control is elsewhere,
+  that is a finding. A placement defended only by where a reporter, an issue or the
+  author asked for it is not a design decision and is itself a finding: a request
+  fixes that the control must be reachable, not where it lives. The lens exists
+  because PR #12037 put a *billing* opt-in (spend credits to read the balance) on
+  Settings > Display, said in a code comment that this was "the reporter's
+  placement rather than" a design choice, and every lane passed it: the UX lane
+  checked the toggle's look, words and states inside Display and never asked
+  whether Display was the page.
 
 The fork lane (`fork-ux-review.yml`) carries the same rules but has **no blind-read
 pass**: it reviews in a single pass, after the diff. Its evidence step reads the PR

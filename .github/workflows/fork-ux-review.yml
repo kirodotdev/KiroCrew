@@ -591,6 +591,20 @@ jobs:
                  patterns: panel/sidebar toggles, close affordances, header
                  layout, list rows, iconography. A user who has learned the
                  rest of the product must not find this page strange.
+               - PLACEMENT — every new or moved control, row, page, menu
+                 entry or setting sits where a user LOOKING FOR IT would go
+                 first, next to the controls that do the same job. Judge
+                 this across the whole app, not one panel: settings tabs,
+                 sidebar sections, menus, modals, the command palette. Ask
+                 what the control is ABOUT (money, an account, appearance, a
+                 channel, a session) and check that its neighbours are about
+                 the same thing. Name the surface that is about that thing
+                 and already holds its siblings; if one exists, placing the
+                 control anywhere else is a finding. A placement the PR
+                 defends only by where a reporter, an issue or an author
+                 asked for it is NOT a design decision and is itself a
+                 finding: the request says the control must be reachable,
+                 not where it lives.
                - EARN EVERY ELEMENT — every button, label, and line of copy
                  has a job a user needs done. Anything present without one is
                  a finding.
