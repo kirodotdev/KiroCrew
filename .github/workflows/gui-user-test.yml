@@ -31,8 +31,9 @@ name: GUI User Test
 # under test can be the PR's while the code holding credentials is not.
 #
 # COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
-# the run-level USD budget is an input (default $5); a failed scenario is
-# retried once.
+# the run-level USD budget is an input (default $20, and the nightly schedule
+# runs under the same $20 cap -- the full nightly tier costs about $8, and the
+# earlier $5 / $8 caps tripped mid-run); a failed scenario is retried once.
 
 on:
   workflow_dispatch:
@@ -53,7 +54,7 @@ on:
       budget_usd:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
-        default: "5"
+        default: "20"
   schedule:
     - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
@@ -157,8 +158,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-5}" ;;
-            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="8" ;;
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-20}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="20" ;;
           esac
           scenario_args=""
           if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then

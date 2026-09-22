@@ -362,13 +362,15 @@ owning server is not a virtual one.
   10-step scenario on a Sonnet-class model is about $0.25-0.40 and two to four
   minutes. Budget the nightly tier (every shipped scenario, one retry each in the
   worst case) at about $0.50 per scenario and the smoke tier at about $0.35. The run
-  stops at `--budget-usd` (dispatch default $5 -- at about $0.35 per smoke scenario
-  with one retry apiece the default has to clear the whole smoke tier; nightly $8)
-  and marks the remaining
-  scenarios `SKIPPED`; the job's 90-minute timeout is the backstop for a hung target,
-  not the budget. Keep the nightly bill under $10: when a new batch would push past
-  it, move the lowest-value scenarios to a cheaper cadence (a `weekly` tier is a
-  schema + workflow change) rather than raising the budget.
+  stops at `--budget-usd` (default $20 everywhere: the `budget_usd` dispatch input,
+  the nightly schedule's fixed value, and the harness's own fallback when the flag
+  is omitted -- the full nightly tier costs about $8 a night, and the earlier $5
+  dispatch / $8 nightly caps tripped mid-run and skipped the tail of the tier) and
+  marks the remaining scenarios `SKIPPED`; the job's 90-minute timeout is the
+  backstop for a hung target, not the budget. Keep the nightly bill well under the
+  $20 cap: when a new batch would push a night toward it, move the lowest-value
+  scenarios to a cheaper cadence (a `weekly` tier is a schema + workflow change)
+  rather than raising the budget again.
 - Pixel tests are stochastic. One retry absorbs a mis-click; a scenario that flips
   night to night is a scenario problem (vague step, timing) before it is a product
   problem. Read `steps.jsonl` and the numbered screenshots: they show exactly where
