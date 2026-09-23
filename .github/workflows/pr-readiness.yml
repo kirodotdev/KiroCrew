@@ -725,7 +725,15 @@ jobs:
           # one that would otherwise drop the lane posted last.
           sha_check_runs=""
 
-          for spec in "${workflow_specs[@]}"; do
+          # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
+          # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
+          # 3.2) treats expanding an empty array under `set -u` as an unbound
+          # variable and aborts the script -- which turned the non-terminal
+          # "could not be evaluated" verdict into rc=1 wherever this script
+          # runs under the system bash (the macOS test lane extracts and runs
+          # it). The `+` form expands to nothing when the array is unset or
+          # empty and to every element otherwise, on every bash.
+          for spec in ${workflow_specs[@]+"${workflow_specs[@]}"}; do
             # Four fields: <workflow file or checkrun:NAME>|<label>|<external_id
             # prefix>|<triggering workflow file>. The last two are OPTIONAL and
             # only a checkrun: spec uses them -- see the binding note in that
