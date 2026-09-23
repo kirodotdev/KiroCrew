@@ -53,6 +53,26 @@ describe('useConfirm', () => {
     expect(onAnswer).not.toHaveBeenCalled()
   })
 
+  it('paints on the layer above a full-screen overlay when asked to', async () => {
+    // The artifact and file previews' full-screen shells are opaque body
+    // portals at z-[9999]; a discard prompt they raise on the ordinary modal
+    // layer (z-[101]) would be covered and the button that raised it look dead.
+    const onAnswer = vi.fn()
+    const { unmount } = render(<Probe onAnswer={onAnswer} opts={{ layer: 'top' }} />)
+    fireEvent.click(screen.getByText('ask'))
+    const dialog = await screen.findByRole('dialog')
+    const layer = dialog.closest('.fixed.inset-0.z-\\[10001\\]')
+    expect(layer).not.toBeNull()
+    expect(document.querySelector('.z-\\[10000\\]')).not.toBeNull()
+    unmount()
+
+    render(<Probe onAnswer={onAnswer} />)
+    fireEvent.click(screen.getByText('ask'))
+    const plain = await screen.findByRole('dialog')
+    expect(plain.closest('.fixed.inset-0.z-\\[101\\]')).not.toBeNull()
+    expect(document.querySelector('.z-\\[10001\\]')).toBeNull()
+  })
+
   it('resolves true only from the confirm button', async () => {
     const onAnswer = vi.fn()
     const user = userEvent.setup()

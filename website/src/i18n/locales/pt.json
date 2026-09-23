@@ -6334,7 +6334,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Adicionar um comentário",
       "add_comment": "Adicionar comentário",
       "add_instruction": "Adicionar instrução",
       "additional_prompt": "Prompt adicional",
@@ -7994,12 +7993,16 @@
     "selectionToolbar": {
       "ask": "Perguntar sobre isto",
       "ask_hint": "Abre o Chat lateral com a seleção citada: nada é enviado até você enviar, e o chat principal fica intacto",
+      "close_saving_continues": "Fechar – o salvamento continua",
       "comment_input": "Comentar o texto selecionado",
+      "comment_post_failed": "Não foi possível salvar o comentário. O texto continua aqui — tente de novo.",
+      "comment_post_failed_closed": "O comentário sobre “{{quote}}” não foi salvo. Selecione esse texto de novo para recuperá-lo e tentar novamente.",
       "copy": "Copiar",
       "copy_failed": "Falha ao copiar — o navegador bloqueou o acesso à área de transferência. Selecione o texto e copie manualmente.",
       "copy_selection_hint": "Copia o texto selecionado (não o seu comentário) para a área de transferência",
       "more_actions": "Mais ações para a seleção",
       "press_enter_to_comment": "Pressione Enter ou clique para comentar…",
+      "saving": "Salvando…",
       "tap_to_comment": "Toque para escrever um comentário…",
       "quote": "Citar",
       "quote_hint": "Cita a seleção no compositor desta conversa: sua resposta vai para o chat principal"

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Component, ExternalLink, MessageSquare, MessageSquarePlus, Send, Loader2, Copy, Maximize2, Minimize2 } from 'lucide-react'
+import { Component, Copy, ExternalLink, MessageSquare, MessageSquarePlus, Send, Loader2, Maximize2, Minimize2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
@@ -10,6 +10,7 @@ import { SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
+import { useConfirm } from './ConfirmDialog'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
 import { filterCommentsForForward } from '../lib/commentFilter'
 import { copyToClipboard } from '../utils/clipboard'
@@ -172,11 +173,31 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const effectiveContent = artifact?.content ?? content
   const name = artifact?.name ?? slug
   const usesIframe = effectiveKind === 'widget' || effectiveKind === 'html'
+  // Where a selection can become an anchored comment: an iframe body (through
+  // the bridge) and the two native kinds whose renderer attaches the preview
+  // ref the anchor resolver maps a selection against (the same two the
+  // artifact page allows). `ArtifactBodyNative` renders json / svg / image
+  // through rich viewers that attach no ref, so a toolbar over those could
+  // never open — it is not mounted at all rather than mounted dead.
+  const canAnchorComments = usesIframe || effectiveKind === 'markdown' || effectiveKind === 'text'
   // The panel opens synchronously without awaiting the fetch, so only show the
   // loading state when we genuinely have nothing yet (no seed and the shared
   // query is still in flight) — otherwise the seed renders and never flashes.
   const isHydrating = detailQuery.isLoading && !artifact && !content
   const loadFailed = detailQuery.isError && !artifact && !content
+
+  // Escape / ✕ on a typed comment draft, and the panel's own full-screen and
+  // close actions (each unmounts the toolbar the draft lives in), ask first —
+  // in the draft's own words, since "unsaved changes" would read as file edits.
+  const { confirm, confirmDialog } = useConfirm()
+  const confirmDiscardDraft = useCallback(() => confirm({
+    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+    // Raised from inside the full-screen shell too (Exit full screen over a
+    // draft): that shell is an opaque body portal at z-[9999], so the prompt
+    // must take the layer above it or the button looks dead.
+    layer: 'top',
+  }), [confirm])
 
   // Two instances (non-fullscreen body / fullscreen body) read the SAME durable
   // comments via the shared query cache; only local UI state (sidebar open,
@@ -186,24 +207,32 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     sidebarDefaultOpen: false,
     sidebarClassName: STACKED_SIDEBAR_CLASS,
     sidebarStyle: STACKED_SIDEBAR_STYLE,
+    confirmDiscardDraft,
   })
-  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe })
+  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft })
   // The active comment layer for the visible surface.
   const active = fullscreen ? faFull : fa
+  /** Run `proceed` unless the visible layer's comment draft would be lost, in
+   *  which case ask first (the layer's own guard: it knows the passage whose
+   *  persisted copy a confirmed discard must drop). */
+  const guardDraft = active.guardCommentDraft
+  const enterFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(true)) }, [guardDraft])
+  const exitFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(false)) }, [guardDraft])
+  const requestClose = useCallback(() => { void guardDraft(onClose) }, [guardDraft, onClose])
 
-  // Selection → anchored comment, reusing the active layer's create popover.
-  const handleCommentAction = useCallback(() => {
-    active.requestAnchoredComment()
-    window.getSelection()?.removeAllRanges()
-  }, [active])
-  // Returns the clipboard result so the toolbar's checkmark is truthful; a
-  // blank selection is ignored (nothing to copy, nothing to report).
-  const handleCopyAction = useCallback((text: string) => (text ? copyToClipboard(text) : undefined), [])
-  const selectionActions: SelectionAction[] = useMemo(() => [
-    { id: 'comment', icon: <MessageSquarePlus size={12} />, label: 'Comment', onClick: handleCommentAction },
-    // Icon only — a text "Copy" label would render as "Copy Copy" beside the label.
-    { id: 'copy', icon: <Copy size={12} />, label: 'Copy', onClick: handleCopyAction },
-  ], [handleCommentAction, handleCopyAction])
+  // Selecting text opens the layer's type-first comment composer (see
+  // `useFileArtifactComments().selectionComposer`). No row action beside it:
+  // the box already carries Add comment and Close, and a third control would
+  // break the two-per-row cap. Copying the selection is the composer's own
+  // Cmd/Ctrl+C while its input is empty.
+  const selectionActions: SelectionAction[] = useMemo(() => [], [])
+  // The kinds no anchor resolver can map (json, svg, …) get no composer — but
+  // they keep the Copy row the panel shipped before it: on touch there is no
+  // Cmd/Ctrl+C, so without a control a selection there has no reachable copy.
+  // One control, so the row is inside the two-per-row cap on its own.
+  const copyOnlyActions: SelectionAction[] = useMemo(() => [
+    { id: 'copy', icon: <Copy size={12} />, label: i18nT('components.selectionToolbar.copy'), onClick: (text: string) => copyToClipboard(text) },
+  ], [])
 
   // ── submitted-to-chat tracking ──
   // Durable artifact comments survive a chat submission (unlike the local-file
@@ -291,11 +320,16 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       // add-instruction textarea) — let the field handle it instead of
       // closing/exiting the panel out from under them.
       if (isEditableTarget(e)) return
-      if (fullscreen) setFullscreen(false); else onClose()
+      // An open annotation box owns Escape: the toolbar closes it (and hands the
+      // selection back) on its own, and the box need not hold focus (a touch or
+      // Shift+Arrow open leaves the caret elsewhere) — the panel must not ALSO
+      // close or exit full screen out from under it. Mirrors MarkdownPanel.
+      if (active.isComposerOpen()) return
+      if (fullscreen) exitFullscreen(); else requestClose()
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [visible, fullscreen, onClose])
+  }, [visible, fullscreen, exitFullscreen, requestClose, active])
   useEffect(() => {
     if (!fullscreen) return
     document.body.style.overflow = 'hidden'
@@ -402,7 +436,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       embedded={embedded}
       icon={<Component size={14} className="text-accent shrink-0" />}
       title={<span className="truncate">{name}</span>}
-      onClose={onClose}
+      onClose={requestClose}
       initialWidth={480}
       minWidth={420}
       storageKey="mc-panel-width"
@@ -411,7 +445,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           {commentsToggle(fa.sidebarOpen, fa.toggleSidebar)}
           <button
             className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-            onClick={() => setFullscreen(true)}
+            onClick={enterFullscreen}
             title={i18nT('components.artifactPanel.full_screen')}
             aria-label={i18nT('components.artifactPanel.full_screen')}
           ><Maximize2 size={14} /></button>
@@ -445,7 +479,17 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           <SubmitBar count={pendingComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} bleed />
         )}
       </div>
-      {!usesIframe && !fullscreen && <SelectionToolbar containerRef={scrollRef} actions={selectionActions} />}
+      {/* Listens on the preview itself, not the scroll box around it, so the
+          composer only opens over text the anchor resolver can map. For an
+          iframe body the preview ref is never attached — the frame's
+          selections arrive through the bridge as `iframeSelection` instead and
+          `externalOnly` keeps the toolbar's own selection check off — so the
+          scroll box stands in as the container: it is what the box's placement
+          clamps to, and an unattached ref would let a right-half bridge
+          selection open the box over the comments sidebar. Suspended with the
+          tab so a hidden panel's open box does not stay on screen. */}
+      {!fullscreen && canAnchorComments && <SelectionToolbar containerRef={usesIframe ? scrollRef : previewRef} actions={selectionActions} composer={fa.selectionComposer} externalSelection={fa.iframeSelection} externalOnly={usesIframe} suspended={!visible} />}
+      {!fullscreen && !canAnchorComments && <SelectionToolbar containerRef={scrollRef} actions={copyOnlyActions} suspended={!visible} />}
       {!fullscreen && fa.popovers}
     </DetailPanel>
     {fullscreen && createPortal(
@@ -488,7 +532,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
               title={i18nT('components.artifactPanel.open_full_artifact_page')}
               aria-label={i18nT('components.artifactPanel.open_full_artifact_page')}
             ><ExternalLink size={14} /></button>
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title={i18nT('components.artifactPanel.exit_full_screen_esc')} aria-label={i18nT('components.artifactPanel.exit_full_screen')}><Minimize2 size={14} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={exitFullscreen} title={i18nT('components.artifactPanel.exit_full_screen_esc')} aria-label={i18nT('components.artifactPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
         <div className="relative flex-1 overflow-hidden min-h-0 px-16 py-4">
@@ -499,7 +543,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
             {faFull.sidebarOpen && faFull.sidebar}
           </div>
         </div>
-        {!usesIframe && <SelectionToolbar containerRef={fsScrollRef} actions={selectionActions} />}
+        {canAnchorComments && <SelectionToolbar containerRef={usesIframe ? fsScrollRef : fsPreviewRef} actions={selectionActions} composer={faFull.selectionComposer} externalSelection={faFull.iframeSelection} externalOnly={usesIframe} suspended={!visible} />}
+        {!canAnchorComments && <SelectionToolbar containerRef={fsScrollRef} actions={copyOnlyActions} suspended={!visible} />}
         {faFull.popovers}
         {showSubmitBar && (
           <div className="shrink-0 px-16 pb-3">
@@ -510,6 +555,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       </div>,
       document.body
     )}
+    {confirmDialog}
     </>
   )
 })

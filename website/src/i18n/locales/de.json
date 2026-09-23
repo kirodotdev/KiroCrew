@@ -6237,7 +6237,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Kommentar hinzufügen",
       "add_comment": "Kommentar hinzufügen",
       "add_instruction": "Anweisung hinzufügen",
       "additional_prompt": "Zusätzlicher Prompt",
@@ -7877,12 +7876,16 @@
     "selectionToolbar": {
       "ask": "Hierzu fragen",
       "ask_hint": "Öffnet den Seitenchat mit der Auswahl als Zitat — nichts wird gesendet, bis du sendest, und der Hauptchat bleibt unberührt",
+      "close_saving_continues": "Schließen – das Speichern läuft weiter",
       "comment_input": "Markierten Text kommentieren",
+      "comment_post_failed": "Dein Kommentar konnte nicht gespeichert werden. Dein Text ist noch da – versuch es erneut.",
+      "comment_post_failed_closed": "Dein Kommentar zu „{{quote}}“ wurde nicht gespeichert. Markiere diesen Text noch einmal, um ihn wieder aufzunehmen und es erneut zu versuchen.",
       "copy": "Kopieren",
       "copy_failed": "Kopieren fehlgeschlagen – dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text und kopiere ihn selbst.",
       "copy_selection_hint": "Kopiert den markierten Text – nicht deinen Kommentar – in die Zwischenablage",
       "more_actions": "Weitere Aktionen für die Markierung",
       "press_enter_to_comment": "Enter drücken oder klicken, um zu kommentieren…",
+      "saving": "Wird gespeichert…",
       "tap_to_comment": "Tippen, um einen Kommentar zu schreiben…",
       "quote": "Zitieren",
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"

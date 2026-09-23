@@ -10,14 +10,30 @@ import { PageHeader, Card, Badge, Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { CommentsSidebar } from '../components/CommentsSidebar'
-import { CommentPopover } from '../components/CommentOverlay'
+import SelectionToolbar, { type SelectionAction } from '../components/SelectionToolbar'
+import { useConfirm } from '../components/ConfirmDialog'
 import { InlineCommentOverlay } from '../components/InlineCommentOverlay'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
+import { containedSelectionRange } from '../utils/selectionContainment'
+import { anchorFromRange } from '../utils/selectionAnchor'
+import { paintAnnotationHighlight } from '../utils/annotationHighlight'
+import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
 import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
+
+/** The selection an open comment composer annotates, resolved while it was
+ *  still live. The provider's anchor schema needs the offsets, so a body
+ *  selection always carries them and the bridge relays the frame's. */
+interface PendingAnchor {
+  quote: string
+  prefix?: string
+  suffix?: string
+  startOffset?: number
+  endOffset?: number
+}
 
 /** Shape of the `GET /api/remote-artifacts/{provider}/{external_id}` response.
  *  These are the provider `fetch_content` contract fields — flat **snake_case**
@@ -58,9 +74,10 @@ export default function RemoteArtifactDetailPage() {
   const sidebarUserToggledRef = useRef(false)
   const [forking, setForking] = useState(false)
   const [forkError, setForkError] = useState('')
+  const { confirm, confirmDialog } = useConfirm()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const mdPreviewRef = useRef<HTMLDivElement>(null)
-  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; copyText?: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
+  const iframeBodyRef = useRef<HTMLDivElement>(null)
   const [flashComment, setFlashComment] = useState<{ id: string; nonce: number } | null>(null)
   const [iframeScrollTarget, setIframeScrollTarget] = useState<{ id: string; nonce: number } | null>(null)
   const mdScrollerRef = useRef<HTMLDivElement>(null)
@@ -129,6 +146,14 @@ export default function RemoteArtifactDetailPage() {
       api.postRemoteArtifactComment(provider, externalId, vars),
     onSuccess: invalidateComments, onError: invalidateComments,
   })
+  // The composer's own post: its refusal is reported INSIDE the box (text kept,
+  // retry offered), so its error must not also feed the page banner that
+  // `postMut.error` drives — one failure, one notice.
+  const postAnchoredMut = useMutation({
+    mutationFn: (vars: { text: string; anchor?: object }) =>
+      api.postRemoteArtifactComment(provider, externalId, vars),
+    onSuccess: invalidateComments, onError: invalidateComments,
+  })
   const replyMut = useMutation({
     mutationFn: (vars: { parentId: string; text: string }) =>
       api.replyRemoteArtifactComment(provider, externalId, vars.parentId, { text: vars.text }),
@@ -145,54 +170,76 @@ export default function RemoteArtifactDetailPage() {
   // The most recent refused write. react-query clears a mutation's error on its
   // next `mutate`, and Dismiss resets all four, so a stale failure cannot linger
   // past the user's next attempt.
-  const commentWriteError = postMut.error?.message
+  // A composer post refused after its box was closed has no mutation error to
+  // surface (the composer's mutation stays out of the banner on purpose); it
+  // is reported here by the hook below, with the draft waiting in the store.
+  // It follows the same rule as the mutation errors: the user's next write
+  // attempt (any kind, the composer's included) clears it, so it never masks
+  // that attempt's own outcome — which is why it is the FIRST term: a
+  // react-query error clears only on its own mutation's next `mutate`/`reset`,
+  // so a sidebar add refused earlier would otherwise sit in front of a fresher
+  // orphan notice for good (the composer posts through its own mutation and
+  // never resets `postMut`).
+  const [orphanedPostError, setOrphanedPostError] = useState<string | null>(null)
+  // Per artifact: the route element is reused, and the notice names a passage
+  // of the artifact it was typed on (its draft waits under that artifact's key).
+  useEffect(() => { setOrphanedPostError(null) }, [provider, externalId])
+  const commentWriteError = orphanedPostError
+    ?? postMut.error?.message
     ?? replyMut.error?.message
     ?? markReviewMut.error?.message
     ?? deleteMut.error?.message
     ?? null
   const dismissCommentWriteError = useCallback(() => {
+    setOrphanedPostError(null)
     postMut.reset(); replyMut.reset(); markReviewMut.reset(); deleteMut.reset()
   }, [postMut, replyMut, markReviewMut, deleteMut])
-  const onAdd = useCallback((text: string) => { postMut.mutate({ text }) }, [postMut])
-  const onReply = useCallback((parentId: string, text: string) => { replyMut.mutate({ parentId, text }) }, [replyMut])
-  const onMarkReview = useCallback((id: string) => { markReviewMut.mutate(id) }, [markReviewMut])
-  const onDelete = useCallback((id: string) => { deleteMut.mutate(id) }, [deleteMut])
+  const onAdd = useCallback((text: string) => { setOrphanedPostError(null); postMut.mutate({ text }) }, [postMut])
+  const onReply = useCallback((parentId: string, text: string) => { setOrphanedPostError(null); replyMut.mutate({ parentId, text }) }, [replyMut])
+  const onMarkReview = useCallback((id: string) => { setOrphanedPostError(null); markReviewMut.mutate(id) }, [markReviewMut])
+  const onDelete = useCallback((id: string) => { setOrphanedPostError(null); deleteMut.mutate(id) }, [deleteMut])
   const noop = useCallback(() => {}, [])
-  // Anchored commenting inside the HTML render: selection -> popover (posts
-  // scope=shared with anchor), highlights + bidirectional scroll.
+  // Anchored commenting inside the HTML render: the bridge relays a selection
+  // (with the frame's offsets), the toolbar opens the composer from it, and the
+  // post goes out scope=shared with the anchor; highlights + bidirectional scroll.
   const { scrollToAnchor } = useCommentBridge({
     iframeRef,
     comments,
     activeId: activeCommentId,
-    onSelect: (sel: IframeSelection) => setPopover({ x: sel.x, y: sel.y, quote: sel.quote, prefix: sel.prefix, suffix: sel.suffix, startOffset: sel.startOffset, endOffset: sel.endOffset }),
+    onSelect: (sel: IframeSelection) => {
+      stageIframeSelection({ quote: sel.quote, prefix: sel.prefix, suffix: sel.suffix, startOffset: sel.startOffset, endOffset: sel.endOffset }, { text: sel.quote, x: sel.x, y: sel.y, start: sel.startOffset })
+    },
     onHighlightClick: (id: string) => { setActiveCommentId(id); setFlashComment({ id, nonce: Date.now() }) },
   })
   useEffect(() => { if (iframeScrollTarget?.id) scrollToAnchor(iframeScrollTarget.id) }, [iframeScrollTarget, scrollToAnchor])
-  const onAddAnchored = useCallback((text: string) => {
-    if (!popover) return
-    postMut.mutate({
+  const submitAnchored = useCallback((text: string, pending: PendingAnchor): Promise<boolean> => {
+    // Resolve, never throw: on `false` the toolbar keeps the typed text and its
+    // persisted draft for a retry; the panel reveal is a reaction to a STORED
+    // comment, so it waits for success.
+    setOrphanedPostError(null)
+    return postAnchoredMut.mutateAsync({
       text,
       // The provider's create_comment REQUIRES start/end offsets + versionNumber
       // on the anchor; the remote post has no local store to fall back to, so an
       // incomplete anchor is rejected and the comment silently disappears.
       anchor: {
-        quote: popover.quote,
-        prefix: popover.prefix,
-        suffix: popover.suffix,
-        start_offset: popover.startOffset ?? 0,
-        end_offset: popover.endOffset ?? (popover.startOffset ?? 0) + popover.quote.length,
+        quote: pending.quote,
+        prefix: pending.prefix,
+        suffix: pending.suffix,
+        start_offset: pending.startOffset ?? 0,
+        end_offset: pending.endOffset ?? (pending.startOffset ?? 0) + pending.quote.length,
         version_number: art?.current_version ?? 1,
       },
-    })
-    // Hand control back to the comment-driven default after a popover add:
-    // reveal now, and clear the manual override so a later delete-all collapses.
-    sidebarUserToggledRef.current = false
-    setSidebarOpen(true)
-    setPopover(null)
-    window.getSelection()?.removeAllRanges()
-  }, [popover, postMut, art])
+    }).then(() => {
+      // Hand control back to the comment-driven default after an anchored add:
+      // reveal now, and clear the manual override so a later delete-all collapses.
+      sidebarUserToggledRef.current = false
+      setSidebarOpen(true)
+      return true
+    }, () => false)
+  }, [postAnchoredMut, art])
 
-  const handleFork = useCallback(async () => {
+  const forkNow = useCallback(async () => {
     setForking(true)
     setForkError('')
     try {
@@ -237,38 +284,59 @@ export default function RemoteArtifactDetailPage() {
   }, [])
 
   // Anchored-comment create on the remote markdown body: a text selection opens
-  // the popover (posts scope=shared with the anchor). Mirrors the local page's
-  // markdown selection path; the quote+prefix/suffix re-anchor the highlight.
-  const handleMdMouseUp = useCallback(() => {
-    if (!isMarkdown) return
+  // the toolbar's composer, whose `onOpen` resolves the anchor here while the
+  // selection is still live (posts scope=shared with the anchor). Mirrors the
+  // local page's markdown selection path; the quote+prefix/suffix re-anchor the
+  // highlight.
+  const resolveMdSelectionAnchor = useCallback((highlightOwner: object): PendingAnchor | null => {
+    if (!isMarkdown) return null
     const sel = window.getSelection()
-    const raw = sel?.toString() ?? ''
-    if (!sel || sel.isCollapsed || !raw.trim()) return
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
     const root = mdPreviewRef.current
-    if (!root || !sel.anchorNode || !root.contains(sel.anchorNode)) return
-    const range = sel.getRangeAt(0)
-    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return
-    const quote = raw.trim()
-    // Derive the selection's real offset from the Range, NOT full.indexOf(quote):
-    // indexOf finds the FIRST occurrence, so selecting a later repeat would store
-    // prefix/suffix (and the start/end offsets sent to the provider) for the
-    // wrong spot and mis-anchor the highlight. Range.toString() for both the full
-    // text and the pre-selection slice keeps the offset space consistent and
-    // matches the textContent the highlighter searches.
-    const fullRange = document.createRange()
-    fullRange.selectNodeContents(root)
-    const full = fullRange.toString()
-    const preRange = document.createRange()
-    preRange.setStart(root, 0)
-    preRange.setEnd(range.startContainer, range.startOffset)
-    const idx = preRange.toString().length + (raw.length - raw.trimStart().length)
-    const prefix = full.slice(Math.max(0, idx - 32), idx)
-    const suffix = full.slice(idx + quote.length, idx + quote.length + 32)
-    const rect = range.getBoundingClientRect()
-    const startOffset = idx
-    const endOffset = idx + quote.length
-    setPopover({ x: rect.left, y: rect.bottom, quote, copyText: raw, prefix, suffix, startOffset, endOffset })
+    if (!root) return null
+    // The SAME containment predicate the toolbar opened the composer with, so
+    // a selection it accepted is never rejected here — a triple-click on the
+    // last paragraph ends at a boundary point OUTSIDE the preview, and a
+    // rejection would post a quote-only anchor pinned at offset 0 to the
+    // provider. The returned range is clamped to the preview.
+    const range = containedSelectionRange(sel.getRangeAt(0), root)
+    if (!range) return null
+    const anchor = anchorFromRange(root, range)
+    if (!anchor) return null
+    // The box is about to take focus and collapse the selection: paint the
+    // passage so the reader can still see what the open box is attached to.
+    paintAnnotationHighlight(highlightOwner, range)
+    return anchor
   }, [isMarkdown])
+
+  const confirmDiscardDraft = useCallback(() => confirm({
+    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+    // The composer it guards is a body portal at z-[9999]; the prompt must
+    // take the layer above it or the box swallows clicks on its buttons.
+    layer: 'top',
+  }), [confirm])
+  const quoteOf = useCallback((a: PendingAnchor) => a.quote, [])
+  const quoteOnly = useCallback((quote: string): PendingAnchor => ({ quote }), [])
+  const onRefusedAfterClose = useCallback((quote: string) => {
+    setOrphanedPostError(i18nT('components.selectionToolbar.comment_post_failed_closed', { quote }))
+  }, [])
+  // The shared composer wiring (pending/staged anchors, external selection,
+  // highlight, draft mirror + guard). The draft store is per remote artifact,
+  // per passage, so Back / Fork / a reload bring a typed comment back when its
+  // passage is selected again; Back and Fork ask before leaving a draft behind.
+  const {
+    selectionComposer, iframeSelection, stageIframeSelection, guardCommentDraft,
+  } = useSelectionComposerAnchor<PendingAnchor>({
+    resolveDomAnchor: resolveMdSelectionAnchor, quoteOf, quoteOnly, submit: submitAnchored,
+    draftKey: `mc-remote-artifact-composer-draft:${provider}/${externalId}`, confirmDiscard: confirmDiscardDraft, onRefusedAfterClose,
+  })
+  const handleFork = useCallback(() => { void guardCommentDraft(() => { void forkNow() }) }, [guardCommentDraft, forkNow])
+  const goBack = useCallback(() => { void guardCommentDraft(() => navigate('/artifacts')) }, [guardCommentDraft, navigate])
+  // No row action beside the composer: the box already carries Add comment and
+  // Close, and a third control would break the two-per-row cap. Copying the
+  // selection is the composer's own Cmd/Ctrl+C while its input is empty.
+  const selectionActions: SelectionAction[] = useMemo(() => [], [])
 
   if (detailQuery.isLoading) return <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.loading')}</div>
   if (detailQuery.isError || !art) {
@@ -322,7 +390,7 @@ export default function RemoteArtifactDetailPage() {
       <div className="sticky top-0 z-10 bg-bg border-b border-border">
         <PageHeader title={title} subtitle={i18nT('pages.remoteArtifactDetailPage.remote_artifact_2', { provider })} />
         <div className="px-4 md:px-6 py-2 flex flex-wrap items-center gap-2">
-          <Btn onClick={() => navigate('/artifacts')} className="flex items-center gap-1">
+          <Btn onClick={goBack} className="flex items-center gap-1">
             <ArrowLeft size={13} /> {i18nT('pages.remoteArtifactDetailPage.back')}
           </Btn>
           {art.visibility && <Badge variant="ok">{art.visibility}</Badge>}
@@ -377,7 +445,7 @@ export default function RemoteArtifactDetailPage() {
         )}
         {commentsQuery.isError && (
           /* No hand-off: the comments sidebar's comment draft (and an open
-             anchored-comment popover) share this page — navigating away would
+             anchored-comment composer) share this page — navigating away would
              discard an in-progress comment. */
           <ErrorNotice
             message={commentsQuery.error?.message}
@@ -399,7 +467,7 @@ export default function RemoteArtifactDetailPage() {
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
             {isHtml ? (
-              <div className="relative rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
+              <div ref={iframeBodyRef} className="relative rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
                 {blobUrl ? (
                   /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame-load lifecycle handler (it clears the silent-load watch), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */
                   <iframe
@@ -460,7 +528,7 @@ export default function RemoteArtifactDetailPage() {
                       // ErrorNotice per the errors-use-error-notice rule. The
                       // RotateCw + "Retry" Btn below is the recovery.
                       // No hand-off: the comments sidebar's draft (and an open
-                      // anchored-comment popover) share this page - the hand-off
+                      // anchored-comment composer) share this page - the hand-off
                       // navigates to the chat and unmounts the whole page, not
                       // just this frame, so it would discard an in-progress
                       // comment. The three sibling ErrorNotices on this page keep
@@ -495,8 +563,7 @@ export default function RemoteArtifactDetailPage() {
             ) : (
               <div ref={mdScrollerRef} className="relative rounded-xl border border-border bg-card overflow-auto p-5" style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}>
                 {isMarkdown
-                  // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a passive drag-select probe over the rendered prose, not a control: onMouseUp only reads back a text selection so the popover can offer to comment on that quote, and there is no action to activate. Giving the wrapper a role and tabIndex would announce a phantom button around the whole document and put a focus stop in front of the text.
-                  ? <div ref={mdPreviewRef} onMouseUp={handleMdMouseUp} className="msg-content text-sm leading-relaxed"><MarkdownRenderer content={art.content ?? ''} /></div>
+                  ? <div ref={mdPreviewRef} className="msg-content text-sm leading-relaxed"><MarkdownRenderer content={art.content ?? ''} /></div>
                   : <pre className="text-[13px] text-text whitespace-pre-wrap break-words font-mono">{art.content ?? ''}</pre>}
                 {isMarkdown && comments.length > 0 && (
                   <InlineCommentOverlay
@@ -510,15 +577,16 @@ export default function RemoteArtifactDetailPage() {
                 )}
               </div>
             )}
-            {popover && (
-              <CommentPopover
-                x={popover.x}
-                y={popover.y}
-                onSubmit={onAddAnchored}
-                onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
-                copyText={popover.copyText ?? popover.quote}
-              />
-            )}
+            {/* One composer for both bodies: a markdown selection opens it from
+                the DOM, an HTML selection through the bridge as `iframeSelection`
+                only (the frame's wrapper holds render-failure copy of its own).
+                A plain-source body has neither, so it gets no toolbar. */}
+            {/* Keyed per artifact: the route element is reused across a
+                param-only navigation (cached A → cached B), and a toolbar that
+                survived it would submit A's draft and anchor through B's
+                callbacks. */}
+            {isHtml && <SelectionToolbar key={`${provider}/${externalId}`} containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly />}
+            {isMarkdown && <SelectionToolbar key={`${provider}/${externalId}`} containerRef={mdPreviewRef} actions={selectionActions} composer={selectionComposer} />}
           </div>
 
           {sidebarOpen && (
@@ -542,6 +610,7 @@ export default function RemoteArtifactDetailPage() {
           )}
         </div>
       </div>
+      {confirmDialog}
     </>
   )
 }

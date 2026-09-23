@@ -26,6 +26,14 @@ interface ModalProps {
   headerActions?: React.ReactNode
   /** Max width of the modal (default: 640px) */
   maxWidth?: number
+  /**
+   * Stacking layer. `dialog` (default) is the ordinary modal layer. `top`
+   * paints above the full-screen overlays (`z-[9999]`: the artifact and file
+   * previews' full-screen shells), for a confirm those shells raise themselves —
+   * a discard prompt under an opaque full-screen shell is unreachable, and the
+   * control that raised it looks dead.
+   */
+  layer?: 'dialog' | 'top'
   /** Fixed height (e.g. '70vh'). If not set, modal sizes to content up to max-h-[90vh] */
   height?: string
   /** Framer Motion layoutId for card-to-modal expand animation. When set, the modal
@@ -189,7 +197,8 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   )
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, ...rest }: ModalProps) {
+export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
+  const top = layer === 'top'
   /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
    *  and while every dismissal is refused. */
   const softDismiss = useCallback(() => {
@@ -219,14 +228,14 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
       {open && (
         <>
           <motion.div
-            className="fixed inset-0 bg-bg/60 backdrop-blur-md z-[100]"
+            className={`fixed inset-0 bg-bg/60 backdrop-blur-md ${top ? 'z-[10000]' : 'z-[100]'}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             onClick={softDismiss}
           />
-          <div className="fixed inset-0 z-[101] flex items-center justify-center p-8 pointer-events-none">
+          <div className={`fixed inset-0 ${top ? 'z-[10001]' : 'z-[101]'} flex items-center justify-center p-8 pointer-events-none`}>
             <ModalDialog onClose={onClose} maxWidth={maxWidth} dismissDisabled={dismissDisabled} {...rest} />
           </div>
         </>

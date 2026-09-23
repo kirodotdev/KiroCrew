@@ -2808,11 +2808,15 @@
       "show": "Show"
     },
     "selectionToolbar": {
+      "close_saving_continues": "Close — saving continues",
       "comment_input": "Comment on the selected text",
+      "comment_post_failed": "Couldn’t save your comment. Your text is still here — try again.",
+      "comment_post_failed_closed": "Your comment on “{{quote}}” wasn’t saved. Select that text again to pick it up and try again.",
       "copy_failed": "Copy failed — your browser blocked clipboard access. Select the text and copy it yourself.",
       "copy_selection_hint": "Copies the selected text — not your comment — to the clipboard",
       "more_actions": "More actions for the selection",
       "press_enter_to_comment": "Press Enter or click to comment…",
+      "saving": "Saving…",
       "tap_to_comment": "Tap to write a comment…"
     },
     "sessionActionsMenu": {
