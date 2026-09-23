@@ -1933,7 +1933,6 @@ def _reply_style_rules(level: str) -> str:
             "in the picture's words. End: what it is, one line. Word check "
             "still runs. Cut check spares the picture and the reasons. This "
             "reply may run long.\n"
-            'Not asked? Offer it in three words: "say why".\n'
             'Asked for depth (a doc, a walkthrough, "in detail")? This '
             "mode is off for that reply.\n\n"
             "Reply in the user's language."

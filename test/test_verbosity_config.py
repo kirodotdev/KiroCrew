@@ -480,12 +480,15 @@ class TestAnswerOnlyBlock:
         assert "This reply may run long" in block
         assert "Same three checks, plus the reason as one line per point" not in block
 
-    def test_the_reason_stays_discoverable_by_a_three_word_offer(self):
-        """The delete-list drops offers to help, not the one offer that tells
-        the user the reasoning exists. Bounded to three words so it cannot
-        grow back into the explanation it points at.
+    def test_no_standing_offer_is_appended_to_every_reply(self):
+        """The mode must not carry a trailing invite. A literal three-word
+        offer ("say why") read as a tag to append, so every reply in this mode
+        ended with it -- and the cut check already deletes offers to help.
         """
-        assert 'Not asked? Offer it in three words: "say why".' in self._block()
+        block = self._block()
+        assert "say why" not in block
+        assert "Offer it in three words" not in block
+        assert "offers to help" in block
 
     def test_answer_only_turns_itself_off_when_depth_is_requested(self):
         block = self._block()
