@@ -462,7 +462,13 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
             log.mark_consolidated.assert_not_called()
         else:
             await writer._consolidate("chat:alice")
-            log.mark_consolidated.assert_called_once_with("chat:alice", 2, 0)
+            # The offset advance carries the write gate's ``admit`` hook (asked
+            # under the transcript lock ahead of the rewrite); by kind, rest exact.
+            log.mark_consolidated.assert_called_once()
+            assert log.mark_consolidated.call_args.args == ("chat:alice", 2, 0)
+            mark_kwargs = dict(log.mark_consolidated.call_args.kwargs)
+            assert callable(mark_kwargs.pop("admit"))
+            assert mark_kwargs == {}
         assert model.await_count == 1
         assert list(iter_sql_dump((reopened or member_db).db)) == before
     finally:

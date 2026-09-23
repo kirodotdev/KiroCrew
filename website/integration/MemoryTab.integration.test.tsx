@@ -14,7 +14,7 @@ describe('MemoryTab Integration Tests', () => {
 
     // Wait for settings to load - check for actual label text
     await waitFor(() => {
-      expect(screen.getByText(/consolidation idle/i)).toBeInTheDocument()
+      expect(screen.getByText(/summarize after idle/i)).toBeInTheDocument()
     })
 
     // Check settings are displayed (History retention only shows if not migrated)
@@ -54,7 +54,7 @@ describe('MemoryTab Integration Tests', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/consolidation idle/i)).toBeInTheDocument()
+      expect(screen.getByText(/summarize after idle/i)).toBeInTheDocument()
     })
 
     // Find the input by its value
@@ -91,7 +91,7 @@ describe('MemoryTab Integration Tests', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/consolidation idle/i)).toBeInTheDocument()
+      expect(screen.getByText(/summarize after idle/i)).toBeInTheDocument()
     })
 
     // Find the first Save button (in Memory Settings card)
@@ -111,7 +111,8 @@ describe('MemoryTab Integration Tests', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/summarize now/i)).toBeInTheDocument()
+      // By role: the helper line under the button starts with the same words.
+      expect(screen.getByRole('button', { name: /summarize now/i })).toBeInTheDocument()
     })
 
     // Click the Summarize now button (manual consolidation)

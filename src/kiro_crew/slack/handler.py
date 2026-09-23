@@ -857,8 +857,9 @@ async def _apply_privacy_mode(
     """Mark a session as *mode* and notify the user (idempotent).
 
     Everything platform-shaped is a callback into this module, which is what lets
-    the shared applier own the ordering (mark before any await, then the durable
-    flag, then the audit, then the notice).
+    the shared applier own the ordering (``privacy_mode._commit_mode``, whose
+    docstring is the one statement of it: the durable records first, awaited,
+    then the publication -- or a refusal that publishes nothing).
     """
 
     async def _notify(message: str) -> None:
@@ -955,8 +956,13 @@ async def maybe_apply_privacy_modifiers(
     - *cmd_text* — the mention-stripped command text with the token removed
       (the native path reuses it for its subsequent ``!compact``/``!bang``
       checks; the transport path ignores it).
-    - *only_modifier* — True when the message was nothing but the modifier(s);
-      the caller MUST then return without starting an LLM turn.
+    - *only_modifier* — True when there is nothing left to run: the message was
+      nothing but the modifier(s), OR the modifier was REFUSED (the gateway's
+      private-conversation limit, or an over-long key -- ``apply_mode`` has
+      already audited the denial and told the user the message was not
+      processed). The caller MUST then return without starting an LLM turn:
+      running the message with the mode silently dropped would be the leak the
+      modifier exists to prevent.
 
     Slack's TWO texts are why this drives ``privacy_mode``'s primitives rather
     than its single-text ``strip_and_apply``: only *cmd_text* decides whether the
@@ -971,9 +977,13 @@ async def maybe_apply_privacy_modifiers(
         cmd_stripped, had_mode = privacy_mode.strip_token(cmd_text, mode)
         if not had_mode:
             continue
-        await _apply_privacy_mode(
-            mode, session_key, user_id, channel, slack, sessions, reply_ts, link_thread
-        )
+        try:
+            await _apply_privacy_mode(
+                mode, session_key, user_id, channel, slack, sessions, reply_ts, link_thread
+            )
+        except privacy_mode.PrivacyModeRefused:
+            # Audited and announced by apply_mode; nothing is left to run.
+            return text, cmd_stripped, True
         cmd_text = cmd_stripped
         text = pattern.sub("", text)
         text = " ".join(text.split()) or text  # collapse whitespace

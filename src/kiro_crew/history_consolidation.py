@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -18,8 +19,9 @@ import re
 import time as _time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
+from kiro_crew import execution_context
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
@@ -31,6 +33,8 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     background_turn,
 )
+from kiro_crew.messaging import privacy_mode
+from kiro_crew.messaging.link import is_channel_session_key, is_legacy_slack_key
 from kiro_crew.project_scope import scope_is_admissible
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance
@@ -57,6 +61,8 @@ if TYPE_CHECKING:
 
 
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
+
+_T = TypeVar("_T")
 
 _CONSOLIDATION_THRESHOLD = 30
 _CONSOLIDATION_MAX_ATTEMPTS = 5
@@ -166,6 +172,446 @@ class _ConsolidationRefusedSentinel:
 
 
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+
+
+class _ModeTightened(Exception):
+    """The target's memory mode tightened since the pass began; raised by :class:`_WriteGate`.
+
+    Raised on whatever thread was about to write, so it unwinds the batch or
+    transaction in flight -- a member transaction's own ``except BaseException``
+    rolls it back, nothing partial commits -- up to ``_consolidate``, the ONE
+    place it is caught, which ends the pass as a refusal (``_refuse_restricted``:
+    the same SEL denial and memo entry as a verdict before the snapshot), not as
+    a failure that charges the retry budget.
+    """
+
+    def __init__(self, mode: str, source: str, site: str) -> None:
+        super().__init__(f"{site}: memory mode tightened to {mode} ({source})")
+        self.mode = mode
+        self.source = source
+        self.site = site
+
+
+# The three durable sources of a consolidation target's memory mode, named the
+# way ``_refuse_restricted`` and the dashboard route report them.
+TARGET_SOURCE_EXECUTION = "execution record"
+TARGET_SOURCE_HEADER = "transcript header"
+TARGET_SOURCE_SESSION_MAP = "session map"
+
+# Bound on ``HistoryConsolidator._restricted_refused``, the memo of keys the
+# consolidator refused as temporary or incognito so the automatic entry points
+# skip them. Insertion-ordered; past the bound the OLDEST key is evicted (one
+# debug line). Eviction is cheap and safe: the evicted key is simply eligible
+# for the idle sweep again, so its cost is one extra refused attempt and one
+# extra SEL denial row for that key, after which it is memoed again. A few
+# thousand keys covers every private thread a gateway refuses in one process
+# lifetime many times over; the memo is process-local and starts empty.
+#
+# The two sibling populations this memo is often read beside are bounded
+# differently, on purpose. The ``privacy_mode`` trackers are LRUs capped at
+# ``privacy_mode.PRIVACY_LRU_MAX`` and hydrate from the session-map rows, so
+# their population is the rows'. The privacy-flagged session-map rows share
+# that bound (``SessionMap.PRIVACY_ROW_CAP``) but hold it the other way round:
+# a row is the record the channel's inbound gate hydrates from, so evicting one
+# re-opens the leak this module's refusals close -- so past the cap the map
+# REFUSES the next new flag, fail-closed (the modifier tells the user the
+# message was not processed), and never evicts a row it holds. No startup step
+# removes one either: the startup path only copies a map-only mode into the
+# thread's existing transcript header (``SessionMap.stamp_privacy_headers``);
+# retiring the rows needs the channel gate to read the header, a separate
+# change.
+_RESTRICTED_REFUSAL_MEMO_MAX = 4_096
+
+
+class RestrictedTarget(NamedTuple):
+    """A consolidation target whose durable record says temporary or incognito."""
+
+    mode: str
+    """``temporary`` or ``incognito``."""
+    source: str
+    """Which record said so: one of the ``TARGET_SOURCE_*`` names."""
+
+
+class ConsolidationTarget(NamedTuple):
+    """What :func:`resolve_consolidation_target` read about a target, and its verdict."""
+
+    execution: Any
+    """The ``ExecutionContext`` bound to the key, or ``None``."""
+    metadata: dict
+    """The transcript header (``{}`` when there is none, or no log to read it from)."""
+    restricted: RestrictedTarget | None
+    """``None`` when no durable record calls the target temporary or incognito."""
+
+
+def _live_channel_key(key: str, sessions: Any) -> str | None:
+    """Channel thread *key* as the session map spells it, or ``None``.
+
+    ``None`` for a non-channel key, or when there is no session manager to ask.
+    A caller naming the thread by its transcript stem (``slack_<ts>``) is
+    unfolded to the live key (``slack:<ts>``) through the map, the only
+    authority for the ``:``-to-``_`` fold; a key the map does not know is kept
+    as given. ``channel_key_for_stem`` holds the map lock, so this is safe from
+    a worker thread as well as the loop.
+
+    The unfold is a walk over the whole map under its lock, so it runs only for
+    a key that CAN be a stem. A stem is ``history._safe_key``'s product, which
+    folds every ``:`` to ``_``: a key still carrying a ``:`` is the live form
+    already, and a legacy bare Slack ``thread_ts`` is neither form (the fold of
+    ``slack:<ts>`` is ``slack_<ts>``, never the bare number) -- for both the walk
+    could never match, and the write gate's per-mutation tier would otherwise
+    pay it for every row it admits.
+    """
+    if sessions is None:
+        return None
+    if not (is_channel_session_key(key) or is_legacy_slack_key(key)):
+        return None
+    if ":" in key or is_legacy_slack_key(key):
+        return key
+    live_key = key
+    unfold = getattr(sessions, "channel_key_for_stem", None)
+    if callable(unfold):
+        unfolded = unfold(key)
+        if isinstance(unfolded, str) and is_channel_session_key(unfolded):
+            live_key = unfolded
+    return live_key
+
+
+def channel_thread_mode(key: str, sessions: Any) -> str | None:
+    """The ``temporary`` / ``incognito`` mode channel thread *key* holds in the session map.
+
+    A channel thread marked ``!temporary`` or ``!incognito`` records that mode in
+    two places (``privacy_mode.apply_mode``): the transcript header's
+    ``memory_mode``, which :func:`resolve_restricted_target` reads ahead of this,
+    and the session map's per-conversation flag, keyed by the thread's LIVE key
+    (``slack:<ts>``). This read covers what the header cannot: a thread flagged
+    before the header carried the mode -- the entry is then the only record, and
+    the consolidator copies the mode into the header when this read refuses --
+    and a mark whose best-effort header write failed. Without it such a thread
+    reads as persistent and the idle sweep or the channel's session-end hook
+    consolidates its pre-flag transcript into durable memory.
+
+    *sessions* is the ``SessionManager`` whose map the modifier wrote through
+    (``None`` keeps the other two sources). The flag is read the way the
+    dashboard's ``live_session_memory_mode`` reads it: ``privacy_mode.hydrate``
+    restores the durable flag into the process-local trackers, and the trackers
+    answer -- which also honours a mark whose disk write failed, held for this
+    process only. A caller that names the thread by its transcript stem
+    (``slack_<ts>``: the dashboard trigger and the CLI) is unfolded to the live
+    key through the map first, the only authority for the ``:``-to-``_`` fold
+    (:func:`_live_channel_key`). Cheap and allocation-free for an unflagged
+    key: dict lookups plus one pass over the map for a stem, no disk read.
+    ``None`` for a non-channel key or an unflagged thread. Event-loop form:
+    ``hydrate`` MARKS the trackers; the any-thread form a worker may call is
+    :func:`restricted_in_memory`.
+    """
+    live_key = _live_channel_key(key, sessions)
+    if live_key is None:
+        return None
+    privacy_mode.hydrate(sessions, live_key)
+    # Strictest first, the ranking ``privacy_mode.strictest`` uses: a thread
+    # carrying both flags reads as temporary.
+    if privacy_mode.is_temporary(live_key):
+        return privacy_mode.MODE_TEMPORARY
+    if privacy_mode.is_incognito(live_key):
+        return privacy_mode.MODE_INCOGNITO
+    return None
+
+
+def restricted_in_memory(key: str, sessions: Any) -> RestrictedTarget | None:
+    """The mode the IN-MEMORY records call *key* restricted, or ``None``.
+
+    Synchronous and safe on any thread: the per-mutation tier of
+    :class:`_WriteGate`, asked immediately before every store mutation from
+    whatever thread performs it. Two records, both dict lookups and neither a
+    file read: the live execution registry -- a dashboard or API session's
+    mode, ``execution_context.read_live_session_execution`` -- and a channel
+    thread's process-local trackers beside its session-map flag
+    (``privacy_mode.recorded_mode``: the read-only form of
+    :func:`channel_thread_mode`, marking nothing, because the trackers are the
+    loop's to mutate). The channel modifier writes both of its records before
+    its awaited header write, so a ``!temporary`` / ``!incognito`` landing
+    between two mutations of one batch is visible to the next mutation's
+    admission. What this does NOT see is a mode recorded only in a transcript
+    header: that read is a file read and belongs to the boundary tier
+    (:func:`resolve_consolidation_target`), asked before each awaited batch and
+    transaction is dispatched.
+    """
+    live = execution_context.read_live_session_execution(key)
+    if live is not None and live.memory_mode != "persistent":
+        return RestrictedTarget(live.memory_mode, TARGET_SOURCE_EXECUTION)
+    live_key = _live_channel_key(key, sessions)
+    if live_key is None:
+        return None
+    mode = privacy_mode.recorded_mode(sessions, live_key)
+    if mode is None:
+        return None
+    return RestrictedTarget(mode, TARGET_SOURCE_SESSION_MAP)
+
+
+async def resolve_consolidation_target(
+    key: str, *, log: ConversationLog | None, sessions: Any
+) -> ConsolidationTarget:
+    """The ONE read of a consolidation target's durable memory-mode records.
+
+    Both the dashboard route (``api_memory_consolidate``) and
+    ``HistoryConsolidator._consolidate`` ask this, so a source known to one is
+    known to the other by construction -- a source added here refuses at the
+    route and in the background sweep alike, and a source added anywhere else
+    is the bug class this exists to close (a thread the route passed and the
+    consolidator refused, or the reverse). Three sources, and the ORDER is a
+    privacy contract: a mode already KNOWN without opening the transcript
+    refuses first -- the execution record (live registry or persisted carrier),
+    then a channel thread's session-map flag through the process-local trackers
+    (:func:`channel_thread_mode`) -- and only a target neither knows falls
+    through to the transcript header's ``memory_mode`` (which the channel
+    modifier stamps too, so a transcript read never depends on the session
+    map) -- and the flag is read ONCE MORE after that awaited header read,
+    before an unrestricted verdict: a modifier landing while the read is in
+    flight has marked the tracker and flagged the map before its header write
+    lands, so the second dict lookup is what catches it, and its restricted
+    answer wins. A restricted session whose mode is known is therefore refused without
+    this resolver, or the pass behind it, opening its transcript, not even for
+    the header (``test_restricted_consolidation_never_reads_transcript_or_opens_memory``
+    pins this); an entry point's own pre-checks ahead of the pass
+    (``consolidate_session``, ``consolidate_now``) are outside that scope.
+    ``restricted is None`` means no durable record calls the target
+    restricted; it says nothing about LIVE state (a dashboard slot's mode, an
+    inherited subagent mode), which the route reads separately and the
+    background paths cannot see. The header read on the fall-through rides
+    along, so the consolidator resolves its memory identity from the same
+    execution record and header without a second read. The file reads run off
+    the loop.
+    """
+    # Call-time import, and the one that has to be: ``kiro_crew.history`` imports
+    # THIS module at module scope (its facade re-exports the consolidator), so a
+    # module-scope import here is the cycle ``history -> history_consolidation
+    # -> history`` and fails on whichever side loads second.
+    from kiro_crew.history import transcript_privacy_mode
+
+    execution = await asyncio.to_thread(execution_context.read_session_execution, key)
+    if execution is not None and execution.memory_mode != "persistent":
+        return ConsolidationTarget(
+            execution, {}, RestrictedTarget(execution.memory_mode, TARGET_SOURCE_EXECUTION)
+        )
+    mode = channel_thread_mode(key, sessions)
+    if mode is not None:
+        return ConsolidationTarget(execution, {}, RestrictedTarget(mode, TARGET_SOURCE_SESSION_MAP))
+    metadata: dict = {}
+    if log is not None:
+        read = await asyncio.to_thread(log.get_metadata, key)
+        if isinstance(read, dict):
+            metadata = read
+    restricted: RestrictedTarget | None = None
+    # Normalized (``transcript_privacy_mode``: the shared predicate's rule), so
+    # a header spelled ``Temporary`` refuses AS temporary -- the mode the SEL
+    # record, the memo, the route's 403 body and the tab's tally then carry --
+    # rather than as the string it happens to hold.
+    if header_mode := transcript_privacy_mode(metadata.get("memory_mode")):
+        restricted = RestrictedTarget(header_mode, TARGET_SOURCE_HEADER)
+    elif (mode := channel_thread_mode(key, sessions)) is not None:
+        # The header read above is an await, and the channel modifier lands
+        # its records in an order that opens a window across it: the tracker
+        # mark and the map flag are synchronous, the header write is awaited
+        # after them. A modifier landing while the header read is in flight
+        # therefore leaves a header that predates the mode beside a flag that
+        # already records it -- so the flag is read AGAIN after the await, and
+        # a restricted answer here wins over the header just read. Dict
+        # lookups only (``channel_thread_mode``), no second file read. The
+        # execution record is not re-read: a slot's mode is fixed when the
+        # slot is created and no path tightens it live, so the first read is
+        # the last word, and it costs a file read.
+        restricted = RestrictedTarget(mode, TARGET_SOURCE_SESSION_MAP)
+    return ConsolidationTarget(execution, metadata, restricted)
+
+
+class _WriteGate:
+    """The one path every durable write of a consolidation pass takes.
+
+    A pass resolves its target's mode once, before the snapshot, then spends
+    minutes in model calls and offloaded writes. A ``!temporary`` /
+    ``!incognito`` landing anywhere in that time must stop every write that has
+    not happened yet -- wherever the next one sits: the next awaited batch, the
+    next mutation inside a batch, the commit of a member transaction. A check
+    placed at each site guards that site and no other; the four heads before
+    this one each moved the same window one call further. So the check lives
+    IN the write path instead: ``_consolidate`` and its helpers hold no store
+    they write through directly. Every durable write is a verb of this gate,
+    and every verb re-reads the mode at the moment of writing. Two tiers, by
+    what they cost:
+
+    * :meth:`admit` -- before EVERY mutation, on whatever thread performs it:
+      the in-memory records only (:func:`restricted_in_memory` -- the live
+      execution registry, a channel thread's trackers and map flag), dict
+      lookups, no file read. Every write verb below calls it first; a member
+      transaction calls it before each of its mutations and once more before
+      its commit.
+    * :meth:`boundary` -- before every awaited write batch or transaction is
+      DISPATCHED (:meth:`run`, :meth:`run_in_thread`): the full resolution the
+      pass started with, transcript header included
+      (:func:`resolve_consolidation_target`), its file reads off the loop. Also
+      asked once directly, ahead of the skill pass: that pass hands the FULL
+      transcript to a model, and a transcript that just turned private must not
+      be disclosed to it either, durable write or not.
+
+    Either tier raises :class:`_ModeTightened`, which unwinds the batch or
+    transaction in flight -- a member transaction rolls back, nothing partial
+    commits -- up to ``_consolidate``, the one place it is caught: the pass
+    ends with the same SEL denial and memo entry as a refusal before the
+    snapshot (``_refuse_restricted``). A write that completed before the
+    tightening stands; nothing purges, by the existing design line.
+
+    The verbs below ARE the inventory of durable-write entry points
+    consolidation uses, each named as the store names it, one admission in
+    front. ``test/test_consolidation_write_gate.py`` reads that inventory from
+    this class and asserts over the module's syntax tree that no verb is
+    called or handed to an executor anywhere else, that every verb admits
+    before it writes, that both dispatchers resolve before they dispatch, that
+    the write batches are dispatched only through them, and that outside this
+    class a store is only ever read. Stateless: a gate is (consolidator, key),
+    and ``_consolidate`` hands its one instance to every helper that writes.
+    """
+
+    def __init__(self, consolidator: "HistoryConsolidator", key: str) -> None:
+        self._consolidator = consolidator
+        self._key = key
+
+    @property
+    def key(self) -> str:
+        """The session key every write of this pass is for."""
+        return self._key
+
+    # -- the two tiers -----------------------------------------------------
+
+    def admit(self, site: str) -> None:
+        """Per-mutation tier: the in-memory records, any thread, no file read."""
+        restricted = restricted_in_memory(self._key, self._consolidator._sessions)
+        if restricted is not None:
+            raise _ModeTightened(restricted.mode, restricted.source, site)
+
+    async def boundary(self, site: str) -> None:
+        """Per-batch tier: the full resolution, header included, before a dispatch."""
+        target = await resolve_consolidation_target(
+            self._key, log=self._consolidator._log, sessions=self._consolidator._sessions
+        )
+        if target.restricted is not None:
+            raise _ModeTightened(target.restricted.mode, target.restricted.source, site)
+
+    async def run(self, site: str, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Resolve at the boundary, then run write batch *fn* on the embed pool.
+
+        For a batch that embeds (structured memory, lessons) or takes the
+        cross-process history lock: the bounded pool, not a bare thread.
+        """
+        await self.boundary(site)
+        return await run_in_embed_pool(fn, *args, **kwargs)
+
+    async def run_in_thread(
+        self, site: str, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
+    ) -> _T:
+        """Resolve at the boundary, then run write *fn* on a worker thread.
+
+        For a write that neither embeds nor contends on the history lock: the
+        offset advance (an fsync-backed transcript rewrite) and the skill pass.
+        """
+        await self.boundary(site)
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    # -- the write verbs: the store's own, the admission INSIDE the store -------
+    # Positional-only store, then the store method's own arguments untouched,
+    # so a verb cannot drift from the signature it fronts.
+    #
+    # A verb admits NOTHING itself. It hands ``admit`` into the store as the
+    # method's ``admit`` hook, and the store asks it as the LAST step inside its
+    # own lock -- after any embedding or read, immediately before the mutation,
+    # and again before the commit where it holds a transaction -- so there is
+    # exactly ONE admission site per mutation, and it sits where the mutation
+    # is decided. An admission taken here, ahead of the call, cannot hold: the
+    # store then waits on its own lock (the history file's ``.append.lock``, the
+    # database's ``_db_lock``) or embeds for seconds, and a mode that lands in
+    # that wait would let the write follow the restriction. A raise from the hook
+    # unwinds through the store's own rollback or leaves its file untouched --
+    # the store is byte-identical. ``test_consolidation_write_gate.py`` pins the
+    # shape on both sides: every verb passes the hook and admits nothing, every
+    # store method asks it under its lock ahead of its first mutation.
+
+    def set_semantic(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return store.set_semantic(
+            *args, **kwargs, admit=functools.partial(self.admit, "the semantic write")
+        )
+
+    def propose_semantic_delete(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return store.propose_semantic_delete(
+            *args, **kwargs, admit=functools.partial(self.admit, "the semantic delete proposal")
+        )
+
+    def delete_semantic(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return store.delete_semantic(
+            *args, **kwargs, admit=functools.partial(self.admit, "the semantic delete")
+        )
+
+    def write_episodic(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return store.write_episodic(
+            *args, **kwargs, admit=functools.partial(self.admit, "the episodic write")
+        )
+
+    def write_lesson(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return store.write_lesson(
+            *args, **kwargs, admit=functools.partial(self.admit, "the lesson write")
+        )
+
+    def save(self, lesson_store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return lesson_store.save(
+            *args, **kwargs, admit=functools.partial(self.admit, "the lesson file write")
+        )
+
+    def append_history(self, memory: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return memory.append_history(
+            *args, **kwargs, admit=functools.partial(self.admit, "the history write")
+        )
+
+    def write_preferences(self, memory: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return memory.write_preferences(
+            *args, **kwargs, admit=functools.partial(self.admit, "the preferences write")
+        )
+
+    def write_projects(self, memory: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return memory.write_projects(
+            *args, **kwargs, admit=functools.partial(self.admit, "the projects write")
+        )
+
+    def stage_skill_candidate(self, loader: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return loader.stage_skill_candidate(
+            *args, **kwargs, admit=functools.partial(self.admit, "the skill candidate write")
+        )
+
+    def create_auto_skill(self, loader: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return loader.create_auto_skill(
+            *args, **kwargs, admit=functools.partial(self.admit, "the skill write")
+        )
+
+    def update_auto_skill(self, loader: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return loader.update_auto_skill(
+            *args, **kwargs, admit=functools.partial(self.admit, "the skill refinement write")
+        )
+
+    def mark_consolidated(self, log: Any, /, *args: Any, **kwargs: Any) -> Any:
+        return log.mark_consolidated(
+            *args, **kwargs, admit=functools.partial(self.admit, "the offset advance")
+        )
+
+    def apply_consolidation(self, store: Any, /, *args: Any, **kwargs: Any) -> Any:
+        """The member transaction: admitted before each mutation and before its commit.
+
+        The store performs every mutation and the commit inside one
+        ``BEGIN IMMEDIATE`` it owns, so the per-mutation tier is handed IN as
+        the store's ``admit`` hook rather than wrapped around the call; a raise
+        from it reaches the store's own ``except BaseException`` and the
+        transaction rolls back whole. Like every verb, this one admits nothing
+        itself: the hook is the one admission site.
+        """
+        return store.apply_consolidation(
+            *args, admit=functools.partial(self.admit, "the member transaction"), **kwargs
+        )
 
 
 class AttemptedSpan(NamedTuple):
@@ -533,6 +979,19 @@ class HistoryConsolidator:
         self._last_lifecycle: float = 0.0
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # Keys _refuse_restricted refused as temporary or incognito, with the
+        # mode: the memo the two AUTOMATIC entry points (check_idle_sessions,
+        # maybe_consolidate) consult before scheduling, so neither re-attempts
+        # a session already known to be refused. The explicit triggers
+        # (consolidate_session, consolidate_now, the dashboard route) do not
+        # read it: an explicit attempt is attempted, refused and audited every
+        # time. Only a COMMITTED mode is memoed (see _refuse_restricted): a
+        # committed mode only ever tightens, so its memo cannot go stale; a
+        # provisional one -- a reservation a failed steer may release -- is
+        # refused without being remembered. Process-local, so a restart costs
+        # one refusal per thread. Bounded by _RESTRICTED_REFUSAL_MEMO_MAX,
+        # oldest evicted (see _refuse_restricted).
+        self._restricted_refused: dict[str, str] = {}
         # Track last activity per session for idle-based history consolidation
         self._last_activity: dict[str, float] = {}
         self._history_consolidated: dict[str, float] = {}  # key → last history consolidation time
@@ -722,6 +1181,11 @@ class HistoryConsolidator:
             return
         if key in self._running:
             return
+        # Same memo as the idle sweep: past the threshold a refused private
+        # thread would otherwise schedule (and audit) a refusal on EVERY turn,
+        # since a refusal advances no offset.
+        if key in self._restricted_refused:
+            return
         total = len(self._log._read_messages(key))
         prefs_off = self._prefs_offset.get(key, 0)
         if total - prefs_off < _CONSOLIDATION_THRESHOLD:
@@ -762,6 +1226,13 @@ class HistoryConsolidator:
         now = _time.time()
         for key, last in list(self._last_activity.items()):
             if now - last < self._history_idle_secs:
+                continue
+            # Already refused as temporary or incognito by a pass this process
+            # ran: a refusal sets no throttle (it is not a completed pass), so
+            # without this the sweep would re-schedule the key every tick and
+            # write one audit denial a minute for the life of the process.
+            # The memo is checked first, ahead of the metadata reads below.
+            if key in self._restricted_refused:
                 continue
             total, unconsolidated = self._log.consolidation_counts(key)
             if (
@@ -879,6 +1350,74 @@ class HistoryConsolidator:
         outcome = await self._consolidate(key, include_history=True)
         return outcome is not _CONSOLIDATION_REFUSED
 
+    def _refuse_restricted(self, key: str, mode: str, source: str) -> _ConsolidationRefusedSentinel:
+        """Refuse *key* as a *mode* session learned from *source*.
+
+        Two traces. The debug line names the source, so a skip is distinguishable
+        from a pass and a header that predates the modifier's stamp is visible
+        as such. The SEL record is the denial the dashboard route writes for the
+        same target (``memory.consolidate`` / ``denied`` /
+        ``restricted_target_session:<mode>``), with the target key appended and
+        ``source="background"`` because no request carried it here -- so an
+        audit reader sees a background sweep's refusal beside the route's.
+
+        EVERY refusal writes its own record; nothing is windowed, counted or
+        folded. An audit event that is sometimes not written is a gap the reader
+        cannot see, whatever a later record claims to account for. The volume
+        that a windowed record was meant to tame is solved where it arises
+        instead: the key goes into ``_restricted_refused``, and the two
+        automatic entry points skip a memoed key before scheduling anything --
+        a restricted session is attempted once per process by the idle sweep,
+        not once per 60 s tick. An explicit trigger ignores the memo, so a
+        Summarize-now aimed at the session is attempted and audited every time.
+        The memo is bounded by :data:`_RESTRICTED_REFUSAL_MEMO_MAX`: a refused
+        key is (re)inserted newest-last, and past the bound the oldest key is
+        evicted -- it becomes eligible for the sweep again, which costs that key
+        one more refused attempt and one more SEL row before it is memoed anew.
+
+        Only a COMMITTED restriction is memoed. A mode that stands provisionally
+        (``privacy_mode.is_provisional``: a Telegram reservation whose steer has
+        not landed, a commit whose write is in flight, a release in flight) is
+        refused and audited like any other, but not remembered: a memo taken
+        from a reservation the steer's failure then released would skip the
+        now-persistent session on every automatic sweep for the life of the
+        process. The next sweep re-asks, and memoes the mode once it is
+        committed. The live channel key is resolved for the check because the
+        registry is keyed by it, not by the stem a dashboard route posts.
+        """
+        self._logger.debug("consolidation skipped for %s: %s session (%s)", key, mode, source)
+        live_key = _live_channel_key(key, self._sessions) or key
+        if privacy_mode.is_provisional(mode, live_key):
+            self._logger.debug(
+                "consolidation refusal of %s not memoed: its %s mode is provisional", key, mode
+            )
+        else:
+            self._restricted_refused.pop(key, None)
+            self._restricted_refused[key] = mode
+            while len(self._restricted_refused) > _RESTRICTED_REFUSAL_MEMO_MAX:
+                evicted = next(iter(self._restricted_refused))
+                del self._restricted_refused[evicted]
+                self._logger.debug(
+                    "restricted-refusal memo full (%d): %s evicted; the sweep may attempt it once more",
+                    _RESTRICTED_REFUSAL_MEMO_MAX,
+                    evicted,
+                )
+        try:
+            _facade_sel().log_api_access(
+                caller="history_consolidator",
+                operation="memory.consolidate",
+                outcome="denied",
+                source="background",
+                resources=f"restricted_target_session:{mode}:{key}",
+            )
+        except Exception:  # noqa: BLE001 - the refusal must hold even if audit fails
+            self._logger.debug("SEL denial record failed for %s", key, exc_info=True)
+        return _CONSOLIDATION_REFUSED
+
+    def _write_gate(self, key: str) -> _WriteGate:
+        """The write gate for a pass over *key* (see :class:`_WriteGate`)."""
+        return _WriteGate(self, key)
+
     async def _consolidate(
         self, key: str, include_history: bool = True
     ) -> _ConsolidationRefusedSentinel | None:
@@ -922,16 +1461,38 @@ class HistoryConsolidator:
                 )
                 return _CONSOLIDATION_REFUSED
 
-            from kiro_crew.execution_context import read_session_execution
-            from kiro_crew.history import is_incognito_transcript
-
-            execution = await asyncio.to_thread(read_session_execution, key)
-            if execution is not None and execution.memory_mode != "persistent":
-                return _CONSOLIDATION_REFUSED
-
-            metadata = await asyncio.to_thread(self._log.get_metadata, key)
-            if isinstance(metadata, dict) and is_incognito_transcript(metadata.get("memory_mode")):
-                return _CONSOLIDATION_REFUSED
+            # Memory-mode choke point. Every entry point -- the idle sweep,
+            # maybe_consolidate, the expiry sweep, the dashboard trigger and
+            # the CLI -- funnels through here, so a temporary or incognito
+            # session is refused before THIS PASS reads its transcript (the
+            # snapshot below) even when a caller carries no target-side check
+            # of its own. The scope is the pass, not the entry point: the
+            # fire-and-forget consolidate_session and the CLI's consolidate_now
+            # read the transcript for their own pre-checks (the unconsolidated
+            # count, the sensitive-session scan) before scheduling this, so a
+            # restricted session's transcript IS read there -- and nothing of
+            # it is written anywhere. The durable records are read by
+            # resolve_consolidation_target, the ONE resolver the dashboard
+            # route asks as well, so the two cannot disagree on what refuses; a
+            # mode already known (execution record, session-map flag) refuses
+            # without the resolver opening the transcript, and only an unknown
+            # one reads the header. Each refusal goes through
+            # _refuse_restricted: a debug trace naming the source, and the same
+            # SEL denial the dashboard route records. A map-only mode is copied
+            # into the transcript header by the startup path, off the loop and
+            # without a consolidation ever opening the transcript
+            # (SessionMap.stamp_privacy_headers); the map row itself stays.
+            target = await resolve_consolidation_target(key, log=self._log, sessions=self._sessions)
+            execution, metadata, restricted = target
+            if restricted is not None:
+                return self._refuse_restricted(key, restricted.mode, restricted.source)
+            # From here on the mode is re-read by the write path itself: every
+            # durable write below is a verb of this gate, and every batch of
+            # them is dispatched through it (_WriteGate). A tightening landing
+            # anywhere in the minutes this pass takes raises _ModeTightened
+            # out of the write it stopped; the except clause below turns it
+            # into the same refusal as the verdict just above.
+            gate = self._write_gate(key)
             # Atomically snapshot the unconsolidated tail, the total message
             # count (the absolute offset handed to mark_consolidated below), and
             # the rotation generation under ONE lock hold. Reading them as
@@ -1066,8 +1627,12 @@ class HistoryConsolidator:
                             "Committed consolidation source changed before acknowledgement"
                         )
                     if include_history:
-                        await asyncio.to_thread(
-                            self._log.mark_consolidated,
+                        # An offset advance is a durable write: through the gate,
+                        # like the one at the end of a full pass.
+                        await gate.run_in_thread(
+                            "the offset advance",
+                            gate.mark_consolidated,
+                            self._log,
                             key,
                             committed["source_total"],
                             generation_at_snapshot,
@@ -1308,11 +1873,22 @@ class HistoryConsolidator:
                 )
                 return _CONSOLIDATION_REFUSED
 
+            # Every durable write from here is a _WriteGate verb, dispatched
+            # through the gate: the full resolution (header included) at each
+            # dispatch, the in-memory records before each mutation inside it.
+            # No await sits between a check and the write it guards, and no
+            # write batch is dispatched any other way (pinned over the module's
+            # syntax tree by test_consolidation_write_gate.py). A modifier
+            # landing while this pass runs -- during the model call, inside an
+            # earlier write of this pass, between two mutations of one batch,
+            # inside the member transaction -- stops the next write.
             if member_memory:
                 if vector_store is None:
                     raise RuntimeError("Member memory database is unavailable")
-                await run_in_embed_pool(
-                    vector_store.apply_consolidation,
+                await gate.run(
+                    "the member transaction",
+                    gate.apply_consolidation,
+                    vector_store,
                     source_id=source_id,
                     session_key=key,
                     source_total=total,
@@ -1328,7 +1904,7 @@ class HistoryConsolidator:
                 # IO, and _consolidate runs on the event loop thread (fired via
                 # asyncio.create_task). Running it inline would let cross-process
                 # lock contention stall the whole gateway loop.
-                await run_in_embed_pool(memory.append_history, entry)
+                await gate.run("the history write", gate.append_history, memory, entry)
                 self._logger.info("Consolidated %d messages for %s", len(unconsolidated), key)
 
             # Structured memory writes (Phase 2/3). Offloaded to a worker thread:
@@ -1337,7 +1913,8 @@ class HistoryConsolidator:
             # asyncio.create_task). Running it inline stalls the whole gateway loop
             # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
             if vector_store and not member_memory:
-                await run_in_embed_pool(
+                await gate.run(
+                    "the structured-memory write",
                     self._write_structured_memory,
                     result,
                     key,
@@ -1345,6 +1922,7 @@ class HistoryConsolidator:
                     facets=facets,
                     snapshot={row["key"]: row for row in current_semantic},
                     messages=unconsolidated,
+                    gate=gate,
                 )
 
             # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
@@ -1369,8 +1947,12 @@ class HistoryConsolidator:
                         # minutes-long LLM call — if a dashboard Save landed
                         # in that window, writing would silently revert it,
                         # so the store skips the stale write instead.
-                        wrote = await run_in_embed_pool(
-                            lambda: memory.write_preferences(prefs, expected_baseline=current_prefs)
+                        wrote = await gate.run(
+                            "the preferences write",
+                            gate.write_preferences,
+                            memory,
+                            prefs,
+                            expected_baseline=current_prefs,
                         )
                         if not wrote:
                             self._logger.info(
@@ -1388,10 +1970,12 @@ class HistoryConsolidator:
                             len(projects),
                         )
                     elif projects.strip() != current_projects.strip():
-                        wrote = await run_in_embed_pool(
-                            lambda: memory.write_projects(
-                                projects, expected_baseline=current_projects
-                            )
+                        wrote = await gate.run(
+                            "the projects write",
+                            gate.write_projects,
+                            memory,
+                            projects,
+                            expected_baseline=current_projects,
                         )
                         if not wrote:
                             self._logger.info(
@@ -1408,18 +1992,21 @@ class HistoryConsolidator:
                 and (lessons_store or vector_store)
                 and (raw_lessons := result.get("lessons"))
             ):
-                await run_in_embed_pool(
+                await gate.run(
+                    "the lesson writes",
                     self._save_lessons,
                     raw_lessons,
                     vector_store,
                     lessons_store,
                     facets=facets,
+                    gate=gate,
                 )
 
             # Auto skill detection — a SEPARATE LLM pass over the full-session
             # window (see _run_skill_detection), not the incremental tail. Runs
             # only on history consolidation, guarded by flag + loader; failures
-            # are logged, never fatal.
+            # are logged, never fatal -- a refusal at its write is not a
+            # failure and ends the pass like any other.
             # Auto-skills are shared install-wide. Private member experience
             # must not be published or contribute to another member's skills.
             if (
@@ -1428,8 +2015,17 @@ class HistoryConsolidator:
                 and self._auto_skills_enabled
                 and self._skills_loader is not None
             ):
+                # The pass reads the FULL transcript and hands it to the model
+                # for a generation turn. Not a durable write, but a transcript
+                # that just turned private must not be disclosed to the model
+                # either -- so the full resolution runs ahead of the read; the
+                # skill write is then dispatched through the gate inside
+                # _run_skill_detection, after the generation's await.
+                await gate.boundary("the skill pass")
                 try:
-                    await self._run_skill_detection(key)
+                    await self._run_skill_detection(key, gate)
+                except _ModeTightened:
+                    raise
                 except Exception:
                     self._logger.warning("Auto-skill detection failed for %s", key, exc_info=True)
 
@@ -1463,13 +2059,32 @@ class HistoryConsolidator:
             # thread — otherwise a slow filesystem freezes the loop (heartbeats,
             # Slack, dashboard). Same rationale as the offloads above.
             if include_history:
-                await asyncio.to_thread(
-                    self._log.mark_consolidated,
+                # The offset advance is a durable write too: the window it marks
+                # consolidated is gone from every later pass.
+                await gate.run_in_thread(
+                    "the offset advance",
+                    gate.mark_consolidated,
+                    self._log,
                     key,
                     total,
                     generation_at_snapshot,
                 )
 
+        except _ModeTightened as tightened:
+            # The write gate stopped a write: the pass ends as a REFUSAL --
+            # the SEL denial and memo entry a pre-snapshot verdict produces,
+            # no attempt charged (nothing about the span failed; its thread
+            # went private) -- and whatever the gate had already let through
+            # stands, by the existing design line. Ahead of the failure clause
+            # below, which would charge the retry budget and re-raise.
+            self._logger.info(
+                "consolidation for %s aborted before %s: mode tightened to %s (%s) during the pass",
+                key,
+                tightened.site,
+                tightened.mode,
+                tightened.source,
+            )
+            return self._refuse_restricted(key, tightened.mode, tightened.source)
         except Exception:
             self._logger.exception("Consolidation failed for %s", key)
             # Anything raised between the LLM call and mark_consolidated (memory
@@ -1488,8 +2103,14 @@ class HistoryConsolidator:
             self._running.discard(key)
         return None
 
-    async def _run_skill_detection(self, key: str) -> None:
+    async def _run_skill_detection(self, key: str, gate: _WriteGate) -> None:
         """Detect a reusable skill from the FULL session (bounded window).
+
+        The skill is written through *gate* (``_process_auto_skills``,
+        dispatched by ``gate.run_in_thread`` after the generation await): a
+        thread whose mode tightened during the generation raises
+        :class:`_ModeTightened` out of that dispatch and the caller's pass ends
+        on it.
 
         Unlike history/semantic/lesson extraction — which correctly runs on the
         incremental unconsolidated tail — skill detection judges the last
@@ -1520,10 +2141,10 @@ class HistoryConsolidator:
         because it spends the human's review attention on every later proposal.
         """
         if self._skills_loader is None:
-            return
+            return None
         all_messages = await asyncio.to_thread(self._log._read_messages, key)
         if not all_messages:
-            return
+            return None
         # Key the guard on (rotation generation, message count), NOT count
         # alone. The transcript rotates at _SESSION_MAX_BYTES / _SESSION_KEEP_LINES:
         # a rotation bumps rotation_generation and replaces the window with fresh
@@ -1536,12 +2157,12 @@ class HistoryConsolidator:
         )
         marker = (generation, len(all_messages))
         if self._last_skillgen_marker.get(key) == marker:
-            return
+            return None
         window = all_messages[-_SKILL_DETECTION_WINDOW:]
         if _count_tool_call_messages(window) < self._auto_min_tool_calls:
-            return
+            return None
         if _session_touched_sensitive(window):
-            return
+            return None
 
         scripts_field = ""
         if self._generate_scripts:
@@ -1622,25 +2243,40 @@ class HistoryConsolidator:
             # unreachable provider is simply no detection this pass. The marker
             # below is still recorded, matching the existing failed-turn path.
             result = None
-        # Record the (generation, count) marker regardless of outcome so an
-        # unchanged session isn't re-evaluated on every subsequent
-        # consolidation, but a rotation still forces a fresh pass.
+        if result:
+            # Log the verdict, not just the proposals. The prompt's default is
+            # null, so silence is the common outcome, and the staging log in
+            # ``_process_auto_skills`` only fires when a candidate is produced --
+            # which would leave the queue showing the false-POSITIVE rate while
+            # the false-negative rate had no signal at all.
+            self._logger.debug(
+                "Skill detection verdict for %s: %s",
+                key,
+                "candidate proposed" if result.get("new_skill") else "no recurring procedure",
+            )
+            # The generation above is an await of its own, minutes long: a
+            # modifier landing during it must not have the skill -- distilled
+            # from this thread's transcript -- written into the shared skill set.
+            # Dispatched through the gate: the full resolution here, and each
+            # skill write inside admits again on the worker. _event_loop was
+            # captured by our caller (_consolidate) so the thread-offloaded
+            # dedupe judge can marshal back onto the gateway loop.
+            await gate.run_in_thread(
+                "the skill write", self._process_auto_skills, result, key, gate
+            )
+        # Record the (generation, count) marker only NOW, once the window's
+        # verdict has been acted on -- nothing to write, or the write in -- so an
+        # unchanged session is not re-evaluated on every later consolidation
+        # while a rotation still forces a fresh pass. Not ahead of the write: a
+        # consume-once marker is consumed by the committed mutation, never by the
+        # attempt. A refusal at the write raises out of the dispatch above and
+        # past this line -- a refusal is not a commit -- because the mode that
+        # refused it may stand only provisionally (a reservation whose steer then
+        # fails is released), after which the next pass runs over an UNCHANGED
+        # transcript: a marker recorded ahead of the write would skip detection
+        # at the pair check above and lose the candidate for the process's life.
+        # ``TestAMarkerIsConsumedByTheCommittedPass`` pins the order.
         self._last_skillgen_marker[key] = marker
-        if not result:
-            return
-        # Log the verdict, not just the proposals. The prompt's default is null,
-        # so silence is the common outcome, and the staging log in
-        # ``_process_auto_skills`` only fires when a candidate is produced --
-        # which would leave the queue showing the false-POSITIVE rate while the
-        # false-negative rate had no signal at all.
-        self._logger.debug(
-            "Skill detection verdict for %s: %s",
-            key,
-            "candidate proposed" if result.get("new_skill") else "no recurring procedure",
-        )
-        # _event_loop was captured by our caller (_consolidate) so the
-        # thread-offloaded dedupe judge can marshal back onto the gateway loop.
-        await asyncio.to_thread(self._process_auto_skills, result, key)
 
     def _gated_lesson_scope(self, item: dict) -> tuple[str | None, bool]:
         """The lesson's ``repo_scope`` to forward, plus whether to DROP the lesson.
@@ -1693,13 +2329,15 @@ class HistoryConsolidator:
         lesson_store: "LessonStore | None | _InheritGlobal" = _INHERIT_GLOBAL,
         *,
         facets: "MemoryFacets | None" = None,
+        gate: _WriteGate,
     ) -> None:
         """Save extracted lessons from consolidation result.
 
         Both stores are passed in rather than read off ``self`` so a crew's
         corrections land in its own silo. Omitting them keeps the historical
         behaviour (the global handles), which is what the workspace and default
-        arms of the caller want.
+        arms of the caller want. Every lesson is written through *gate*, the
+        pass's :class:`_WriteGate`: the mode is re-read before each one.
 
         An explicitly passed ``None`` is NOT omission (:data:`_INHERIT_GLOBAL`):
         it means the silo has no store of that tier, so the tier is skipped. The
@@ -1737,7 +2375,8 @@ class HistoryConsolidator:
                     scope, drop = self._gated_lesson_scope(item)
                     if drop:
                         continue
-                    ok = vector_store.write_lesson(
+                    ok = gate.write_lesson(
+                        vector_store,
                         rule=item["rule"],
                         category=item.get("category", "knowledge"),
                         negative=item.get("negative"),
@@ -1768,7 +2407,8 @@ class HistoryConsolidator:
                 scope, drop = self._gated_lesson_scope(item)
                 if drop:
                     continue
-                outcome = lesson_store.save(
+                outcome = gate.save(
+                    lesson_store,
                     Lesson(
                         ts=datetime.now(tz=_tz.utc).isoformat(),
                         rule=item["rule"],
@@ -1780,7 +2420,7 @@ class HistoryConsolidator:
                         # None is dropped by _serializable, so an unstated row
                         # is byte-identical to one written before the field.
                         applies=self._lesson_tier(item),
-                    )
+                    ),
                 )
                 if outcome != "refused":
                     count += 1
@@ -1796,13 +2436,17 @@ class HistoryConsolidator:
         facets: "MemoryFacets | None" = None,
         snapshot: dict | None = None,
         messages: list[dict] | None = None,
+        gate: _WriteGate,
     ) -> None:
         """Write semantic + episodic entries from consolidation result.
 
         *vector_store* is the session's RESOLVED store. Omitting it keeps the
         global handle, which is what the workspace and default arms want; an
         explicit ``None`` means the silo has no vector store and the tier is
-        skipped, the same distinction :meth:`_save_lessons` draws.
+        skipped, the same distinction :meth:`_save_lessons` draws. Every row is
+        written through *gate*, the pass's :class:`_WriteGate`: the mode is
+        re-read before each one, so a modifier landing between two rows of the
+        batch stops the second.
         """
         if isinstance(vector_store, _InheritGlobal):
             vector_store = self._vector_store
@@ -1827,9 +2471,9 @@ class HistoryConsolidator:
                 # Handle deletion of stale keys
                 if item.get("delete"):
                     if private_policy:
-                        if vector_store.propose_semantic_delete(item["key"], source):
+                        if gate.propose_semantic_delete(vector_store, item["key"], source):
                             refused += 1
-                    elif vector_store.delete_semantic(item["key"], source):
+                    elif gate.delete_semantic(vector_store, item["key"], source):
                         deleted += 1
                     continue
                 if "value" not in item or item["value"] is None:
@@ -1871,7 +2515,8 @@ class HistoryConsolidator:
                         extra["correction"] = evidence
                         extra["expected_revision"] = evidence.revision
                 with budget.measured():
-                    err = vector_store.set_semantic(
+                    err = gate.set_semantic(
+                        vector_store,
                         key=item["key"],
                         value=item["value"],
                         confidence=conf,
@@ -1943,7 +2588,8 @@ class HistoryConsolidator:
                 # last one to pay for an embed rather than the first to skip one.
                 defer = budget.tripped
                 with budget.measured():
-                    ep_ok = vector_store.write_episodic(
+                    ep_ok = gate.write_episodic(
+                        vector_store,
                         text=item["text"],
                         conversation_id=key,
                         tags=tags,
@@ -2092,6 +2738,7 @@ class HistoryConsolidator:
         triggers: str,
         procedure_md: str,
         scripts: "list[dict] | None" = None,
+        gate: _WriteGate,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -2099,8 +2746,10 @@ class HistoryConsolidator:
         requirement (bridged from this worker thread onto the captured loop,
         90s, fail-open); (c) use the redacted merge as the proposed body, else
         fall back to the candidate's own procedure (also on oversize); (d) stage
-        under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
-        audit with outcome ``staged_update``."""
+        under ``<target-slug>-update`` with ``kind='update'`` metadata, through
+        *gate* (the pass's :class:`_WriteGate`: the mode is re-read at the
+        write, after the merge turn); (e) SEL audit with outcome
+        ``staged_update``."""
         loader = self._skills_loader
         if loader is None:
             return
@@ -2204,7 +2853,8 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
-        name = loader.stage_skill_candidate(
+        name = gate.stage_skill_candidate(
+            loader,
             _update_slug,
             description=_staged_description,
             triggers=_staged_triggers,
@@ -2244,13 +2894,16 @@ class HistoryConsolidator:
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
 
-    def _process_auto_skills(self, result: dict, key: str) -> None:
+    def _process_auto_skills(self, result: dict, key: str, gate: _WriteGate) -> None:
         """Extract + write auto-generated skills from the consolidation result.
 
         Handles both ``new_skill`` and ``refined_skill`` result keys.  Each
         is validated, redacted via ``security.redact_*``, then deduped
         against existing skills (for new creation) before being written
-        through ``SkillsLoader``.  Every successful write emits a SEL audit
+        through ``SkillsLoader`` -- every write through *gate*, the pass's
+        :class:`_WriteGate`, so the mode is re-read at each one (the dedupe
+        judge and the update merge are model turns of their own between the
+        generation and these writes).  Every successful write emits a SEL audit
         event via ``_facade_sel().log_tool_invocation``.
         """
         if self._skills_loader is None:
@@ -2366,6 +3019,7 @@ class HistoryConsolidator:
                         triggers=triggers,
                         procedure_md=procedure_md,
                         scripts=valid_scripts or None,
+                        gate=gate,
                     )
                 else:
                     provenance = AutoSkillProvenance(
@@ -2397,7 +3051,8 @@ class HistoryConsolidator:
                         # prose. (An all-invalid candidate with approval disabled
                         # is consumed by the reject branch above, so a bare
                         # scripts_supplied never decides this branch.)
-                        name = self._skills_loader.stage_skill_candidate(
+                        name = gate.stage_skill_candidate(
+                            self._skills_loader,
                             slug,
                             description=description,
                             triggers=triggers,
@@ -2426,7 +3081,8 @@ class HistoryConsolidator:
                                 metadata={"slug": slug, "reason": "creation_failed"},
                             )
                     else:
-                        name = self._skills_loader.create_auto_skill(
+                        name = gate.create_auto_skill(
+                            self._skills_loader,
                             slug,
                             description=description,
                             triggers=triggers,
@@ -2527,7 +3183,8 @@ class HistoryConsolidator:
                 created_at=AutoSkillProvenance.now_iso(),
                 refined_at=AutoSkillProvenance.now_iso(),
             )
-            ok = self._skills_loader.update_auto_skill(
+            ok = gate.update_auto_skill(
+                self._skills_loader,
                 name,
                 description=description,
                 triggers=triggers,

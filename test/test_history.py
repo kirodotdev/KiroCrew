@@ -2951,9 +2951,9 @@ class TestConsolidationDoesNotBlockLoop:
 
         original_save = c._save_lessons
 
-        def _instrumented_save(raw, vector_store=None, lesson_store=None, **_):
+        def _instrumented_save(raw, *args, **kwargs):
             save_thread_id["id"] = threading.get_ident()
-            original_save(raw)
+            original_save(raw, *args, **kwargs)
 
         with patch.object(c, "_call_llm", new_callable=AsyncMock) as llm, \
                 patch.object(c, "_write_structured_memory"), \
@@ -2987,7 +2987,7 @@ class TestConsolidationDoesNotBlockLoop:
             {"rule": f"lesson number {i}", "category": "tool"}
             for i in range(_MAX_LESSONS_PER_CONSOLIDATION * 3)
         ]
-        c._save_lessons(oversized)
+        c._save_lessons(oversized, gate=c._write_gate("dashboard:gate-test"))
 
         assert vector_store.write_lesson.call_count == _MAX_LESSONS_PER_CONSOLIDATION
 
@@ -4018,7 +4018,7 @@ class TestConsolidationPromptJsonShape:
 
         c._event_loop = _asyncio.get_running_loop()
         with patch.object(c, "_call_llm", side_effect=fake_llm):
-            await c._run_skill_detection(key)
+            await c._run_skill_detection(key, c._write_gate(key))
 
         prompt = " ".join(captured.get("prompt", "").split())
         assert prompt, "skill detection must have built and issued a prompt"
@@ -4103,13 +4103,13 @@ class TestSkillDetectionFullWindow:
 
         recorded: dict = {}
 
-        def fake_process(result, k):
+        def fake_process(result, k, gate):
             recorded["result"], recorded["key"] = result, k
 
         c._event_loop = _asyncio.get_running_loop()
         with patch.object(c, "_call_llm", return_value={"new_skill": {"slug": "x"}}):
             with patch.object(c, "_process_auto_skills", side_effect=fake_process):
-                await c._run_skill_detection(key)
+                await c._run_skill_detection(key, c._write_gate(key))
         assert recorded.get("key") == key, (
             "skill detection must fire from the full-session window even when the "
             "unconsolidated tail is trivial"
@@ -4142,9 +4142,9 @@ class TestSkillDetectionFullWindow:
         c._event_loop = _asyncio.get_running_loop()
         with patch.object(c, "_call_llm", return_value=None) as m1:
             with patch.object(c, "_process_auto_skills"):
-                await c._run_skill_detection(key)
+                await c._run_skill_detection(key, c._write_gate(key))
                 assert m1.call_count == 1  # first pass evaluates
-                await c._run_skill_detection(key)
+                await c._run_skill_detection(key, c._write_gate(key))
                 assert m1.call_count == 1, (
                     "an unchanged session must NOT be re-judged on the next "
                     "consolidation (length guard)"
@@ -4180,7 +4180,7 @@ class TestSkillDetectionFullWindow:
         c._event_loop = _asyncio.get_running_loop()
         with patch.object(c, "_call_llm", return_value=None) as m1:
             with patch.object(c, "_process_auto_skills"):
-                await c._run_skill_detection(key)
+                await c._run_skill_detection(key, c._write_gate(key))
                 assert m1.call_count == 1
                 # Simulate a 2MB/200-line rotation: same message count, but the
                 # rotation_generation counter bumps and the window is new content.
@@ -4191,7 +4191,7 @@ class TestSkillDetectionFullWindow:
                 lines[0] = _json.dumps(meta) + "\n"
                 path.write_text("".join(lines), encoding="utf-8")
                 conv_log._invalidate_cache(key)
-                await c._run_skill_detection(key)
+                await c._run_skill_detection(key, c._write_gate(key))
                 assert m1.call_count == 2, (
                     "a rotation (generation bump) must force a fresh detection "
                     "pass even when the message count is unchanged"
@@ -5468,7 +5468,9 @@ class TestConsolidationValueGuard:
         c = self._consolidator(store)
 
         c._write_structured_memory(
-            {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]}, "sess-1"
+            {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]},
+            "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         row = store.get_semantic("project.alpha.status")
@@ -5484,6 +5486,7 @@ class TestConsolidationValueGuard:
         c._write_structured_memory(
             {"semantic": [{"key": "project.alpha.status", "value": None, "confidence": 1.0}]},
             "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         row = store.get_semantic("project.alpha.status")
@@ -5496,7 +5499,9 @@ class TestConsolidationValueGuard:
 
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
             c._write_structured_memory(
-                {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]}, "sess-1"
+                {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]},
+                "sess-1",
+                gate=c._write_gate("sess-1"),
             )
 
         assert any(
@@ -5512,7 +5517,9 @@ class TestConsolidationValueGuard:
         c = self._consolidator(store)
 
         c._write_structured_memory(
-            {"semantic": [{"key": "project.beta.status", "confidence": 1.0}]}, "sess-1"
+            {"semantic": [{"key": "project.beta.status", "confidence": 1.0}]},
+            "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         assert store.get_semantic("project.beta.status") is None
@@ -5535,6 +5542,7 @@ class TestConsolidationValueGuard:
         c._write_structured_memory(
             {"semantic": [{"key": "project.alpha.status", "value": "replaced", "confidence": 1.0}]},
             "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         row = store.get_semantic("project.alpha.status")
@@ -5549,6 +5557,7 @@ class TestConsolidationValueGuard:
             c._write_structured_memory(
                 {"semantic": [{"key": "project.alpha.status", "value": "", "confidence": 1.0}]},
                 "sess-1",
+                gate=c._write_gate("sess-1"),
             )
 
         msgs = [r.getMessage() for r in caplog.records]
@@ -5568,6 +5577,7 @@ class TestConsolidationValueGuard:
             c._write_structured_memory(
                 {"semantic": [{"key": "project.alpha.status", "value": "v", "confidence": 0.1}]},
                 "sess-1",
+                gate=c._write_gate("sess-1"),
             )
 
         msgs = [r.getMessage() for r in caplog.records]
@@ -5612,6 +5622,7 @@ class TestConsolidationDoesNotImpersonateUser:
         c._write_structured_memory(
             {"semantic": [{"key": "project.alpha.status", "value": "shrunk", "confidence": 1.0}]},
             "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         row = store.get_semantic("project.alpha.status")
@@ -5628,6 +5639,7 @@ class TestConsolidationDoesNotImpersonateUser:
         c._write_structured_memory(
             {"semantic": [{"key": "project.beta.status", "value": "fresh", "confidence": 1.0}]},
             "sess-1",
+            gate=c._write_gate("sess-1"),
         )
 
         row = store.get_semantic("project.beta.status")
@@ -5645,7 +5657,9 @@ class TestConsolidationDoesNotImpersonateUser:
             before = store.get_lessons()
             events = store.get_events()
 
-            self._consolidator(store)._save_lessons([{"rule": inferred}])
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": inferred}], gate=_c._write_gate("dashboard:gate-test")
+            )
 
             assert store.get_lessons() == before
             assert store.get_events() == events
@@ -5718,8 +5732,10 @@ class TestConsolidationEmbedBreaker:
         monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
         try:
             with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-                self._consolidator(store)._write_structured_memory(
-                    {"episodic": self._episodes(5)}, "sess-1"
+                (_c := self._consolidator(store))._write_structured_memory(
+                    {"episodic": self._episodes(5)},
+                    "sess-1",
+                    gate=_c._write_gate("sess-1"),
                 )
 
             assert len(calls) == 1, (
@@ -5758,8 +5774,10 @@ class TestConsolidationEmbedBreaker:
 
         store.embed_fn = fast_embed
         try:
-            self._consolidator(store)._write_structured_memory(
-                {"episodic": self._episodes(5)}, "sess-1"
+            (_c := self._consolidator(store))._write_structured_memory(
+                {"episodic": self._episodes(5)},
+                "sess-1",
+                gate=_c._write_gate("sess-1"),
             )
 
             assert len(calls) == 5, "a healthy pass must still embed every row inline"
@@ -5787,7 +5805,7 @@ class TestConsolidationEmbedBreaker:
         monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
         keys = [f"project.p{i}.status" for i in range(4)]
         try:
-            self._consolidator(store)._write_structured_memory(
+            (_c := self._consolidator(store))._write_structured_memory(
                 {
                     "semantic": [
                         {"key": k, "value": f"green {i}", "confidence": 0.9}
@@ -5796,6 +5814,7 @@ class TestConsolidationEmbedBreaker:
                     "episodic": self._episodes(3),
                 },
                 "sess-1",
+                gate=_c._write_gate("sess-1"),
             )
 
             assert len(calls) == 1, (
@@ -5840,7 +5859,7 @@ class TestConsolidationEmbedBreaker:
         store.embed_fn = slow_embed
         monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
         try:
-            self._consolidator(store)._write_structured_memory(
+            (_c := self._consolidator(store))._write_structured_memory(
                 {
                     # One semantic write spends the budget, so every episode below
                     # is written deferred rather than only the ones after the first.
@@ -5850,6 +5869,7 @@ class TestConsolidationEmbedBreaker:
                     "episodic": self._episodes(3),
                 },
                 "sess-1",
+                gate=_c._write_gate("sess-1"),
             )
 
             surviving = {
@@ -5943,14 +5963,15 @@ class TestConsolidationLessonScope:
     def test_model_supplied_scope_is_written_with_repo_scope(self, tmp_path) -> None:
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
+            (_c := self._consolidator(store))._save_lessons(
                 [
                     {
                         "rule": "Run the scoped gate before pushing here",
                         "category": "tool",
                         "repo_scope": "src/kiro_crew",
                     }
-                ]
+                ],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -5963,8 +5984,9 @@ class TestConsolidationLessonScope:
     def test_absent_scope_still_writes_a_global_lesson(self, tmp_path) -> None:
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Prefer explicit timezones in timestamps"}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Prefer explicit timezones in timestamps"}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -5988,7 +6010,8 @@ class TestConsolidationLessonScope:
                 # Trailing slash: save() canonicalises before storing.
                 {"rule": "Pin the vitest worker count here", "repo_scope": "src/kiro_crew/"},
                 {"rule": "A rule with no scope stays global"},
-            ]
+            ],
+            gate=c._write_gate("dashboard:gate-test"),
         )
 
         by_rule = {le.rule: le for le in lesson_store.load_all()}
@@ -5999,8 +6022,9 @@ class TestConsolidationLessonScope:
         """A whitespace-only scope is NO scope -- the lesson still lands, globally."""
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Trailing spaces mean nothing here", "repo_scope": "   "}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Trailing spaces mean nothing here", "repo_scope": "   "}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -6014,8 +6038,9 @@ class TestConsolidationLessonScope:
         lesson must never take. The whole lesson is refused instead."""
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Scoped to a list, somehow", "repo_scope": ["src/kiro_crew"]}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Scoped to a list, somehow", "repo_scope": ["src/kiro_crew"]}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             assert store.get_lessons() == []
@@ -6032,7 +6057,8 @@ class TestConsolidationLessonScope:
         c = self._jsonl_consolidator(lesson_store)
 
         c._save_lessons(
-            [{"rule": "Scoped to an absolute path", "repo_scope": "/etc/passwd"}]
+            [{"rule": "Scoped to an absolute path", "repo_scope": "/etc/passwd"}],
+            gate=c._write_gate("dashboard:gate-test"),
         )
 
         assert lesson_store.load_all() == []
@@ -6046,7 +6072,8 @@ class TestConsolidationLessonScope:
         c = self._jsonl_consolidator(lesson_store)
 
         c._save_lessons(
-            [{"rule": "Scoped to a list, somehow", "repo_scope": ["src/kiro_crew"]}]
+            [{"rule": "Scoped to a list, somehow", "repo_scope": ["src/kiro_crew"]}],
+            gate=c._write_gate("dashboard:gate-test"),
         )
 
         assert lesson_store.load_all() == []
@@ -6054,8 +6081,9 @@ class TestConsolidationLessonScope:
     def test_inadmissible_scope_refuses_the_lesson_on_vector_path(self, tmp_path) -> None:
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Scoped to an absolute path", "repo_scope": "/etc/passwd"}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Scoped to an absolute path", "repo_scope": "/etc/passwd"}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             assert store.get_lessons() == []
@@ -6067,11 +6095,12 @@ class TestConsolidationLessonScope:
         must not take the rest of the batch with it."""
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
+            (_c := self._consolidator(store))._save_lessons(
                 [
                     {"rule": "Scoped to a list, somehow", "repo_scope": ["src/kiro_crew"]},
                     {"rule": "A clean global lesson survives the batch"},
-                ]
+                ],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -6116,8 +6145,9 @@ class TestConsolidationLessonApplies:
     def test_tier_round_trips_on_vector_path(self, tmp_path, tier) -> None:
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Read the job log before classifying a red", "applies": tier}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Read the job log before classifying a red", "applies": tier}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -6129,8 +6159,9 @@ class TestConsolidationLessonApplies:
     def test_omitted_tier_lands_unstated_on_vector_path(self, tmp_path) -> None:
         store = self._store(tmp_path)
         try:
-            self._consolidator(store)._save_lessons(
-                [{"rule": "Prefer explicit timezones in timestamps"}]
+            (_c := self._consolidator(store))._save_lessons(
+                [{"rule": "Prefer explicit timezones in timestamps"}],
+                gate=_c._write_gate("dashboard:gate-test"),
             )
 
             [lesson] = store.get_lessons()
@@ -6149,11 +6180,12 @@ class TestConsolidationLessonApplies:
         store.embed_fn = lambda text: [1.0, 0.0] if "Misspelled" in text else [0.0, 1.0]
         try:
             with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
-                self._consolidator(store)._save_lessons(
+                (_c := self._consolidator(store))._save_lessons(
                     [
                         {"rule": "Misspelled tier still lands", "applies": "Directive"},
                         {"rule": "Clean sibling keeps its tier", "applies": "on_topic"},
-                    ]
+                    ],
+                    gate=_c._write_gate("dashboard:gate-test"),
                 )
 
             by_rule = self._by_rule(store)
@@ -6176,7 +6208,8 @@ class TestConsolidationLessonApplies:
                 {"rule": "Never force-push a shared branch here", "applies": "always"},
                 {"rule": "The flaky shard was the arm64 runner", "applies": "on_topic"},
                 {"rule": "A rule with no tier stays unstated"},
-            ]
+            ],
+            gate=c._write_gate("dashboard:gate-test"),
         )
 
         by_rule = {le.rule: le for le in lesson_store.load_all()}
@@ -6202,7 +6235,10 @@ class TestConsolidationLessonApplies:
         c = self._jsonl_consolidator(lesson_store)
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
-            c._save_lessons([{"rule": "Misspelled on the fallback path", "applies": "ALWAYS "}])
+            c._save_lessons(
+                [{"rule": "Misspelled on the fallback path", "applies": "ALWAYS "}],
+                gate=c._write_gate("dashboard:gate-test"),
+            )
         # Case and surrounding whitespace are canonicalised, not refused.
         [lesson] = lesson_store.load_all()
         assert lesson.applies == "always"
@@ -6210,7 +6246,10 @@ class TestConsolidationLessonApplies:
 
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
-            c._save_lessons([{"rule": "Truly misspelled on the fallback path", "applies": 7}])
+            c._save_lessons(
+                [{"rule": "Truly misspelled on the fallback path", "applies": 7}],
+                gate=c._write_gate("dashboard:gate-test"),
+            )
         by_rule = {le.rule: le for le in lesson_store.load_all()}
         assert by_rule["Truly misspelled on the fallback path"].applies is None
         assert any("unrecognized applies tier" in r.getMessage() for r in caplog.records)

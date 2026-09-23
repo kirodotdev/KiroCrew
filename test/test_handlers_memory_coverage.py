@@ -1819,6 +1819,259 @@ class TestConsolidate:
             await task
         cons._consolidate.assert_awaited_once_with("s1", False)
 
+    # -- the target's memory mode, not only the caller's ---------------------------
+    #
+    # ``_memory_write_gate`` tests the CALLER (X-Session-Key). The body's ``key``
+    # names the TARGET, and a persistent caller consolidating a temporary or
+    # incognito session would persist memory for a conversation documented to
+    # leave no durable trace. These pin the target-side refusal in front of every
+    # piece of consolidation work: no running claim, no task, no dispatch.
+
+    @staticmethod
+    def _live_slot(memory_mode: str) -> Any:
+        """The three slot fields the live mode resolver reads."""
+        return SimpleNamespace(
+            memory_mode=memory_mode,
+            is_restricted=memory_mode != "persistent",
+            blocks_reads=memory_mode == "temporary",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["temporary", "incognito"])
+    async def test_private_live_target_is_refused_before_any_work(self, mode: str) -> None:
+        """A persistent caller naming a live temporary/incognito slot gets a coded 403.
+
+        A handler that tests only the caller answers ``200 {"ok": true}`` here and
+        dispatches ``_consolidate`` for the private key.
+        """
+        from kiro_crew.history import ConversationLog
+
+        cons = _consolidator()
+        state = _make_state(consolidator=cons, restricted_keys={f"dashboard:{mode[:3]}1"})
+        state.conversation_log = ConversationLog()
+        state._slots[f"{mode[:3]}1"] = self._live_slot(mode)
+        req = _make_request(
+            state,
+            method="POST",
+            json_body={"key": f"dashboard:{mode[:3]}1", "include_history": False},
+            session_key="dashboard:ui",
+        )
+        with patch("kiro_crew.dashboard.handlers.memory._sel") as sel:
+            resp = await mem_mod.api_memory_consolidate(req)
+        assert resp.status == 403
+        body = _body(resp)
+        assert body["code"] == "restricted_target_session"
+        assert mode in body["error"]
+        # The mode as a field: the Memory tab names it in its skipped tally
+        # ("1 skipped: incognito session") without parsing the sentence.
+        assert body["mode"] == mode
+        # Refused before the running claim: nothing to release, nothing scheduled.
+        cons._consolidate.assert_not_called()
+        assert not cons._running
+        assert not cons._tasks
+        sel().log_api_access.assert_called_once_with(
+            caller="dashboard:ui",
+            operation="memory.consolidate",
+            outcome="denied",
+            source="dashboard",
+            resources=f"restricted_target_session:{mode}",
+        )
+
+    @pytest.mark.asyncio
+    async def test_private_persisted_target_is_refused_by_its_header(self) -> None:
+        """A closed incognito transcript named by its file stem is refused too.
+
+        "Consolidate all" hands the endpoint ``list_sessions`` stems, which have no
+        live slot; the mode then comes from the transcript's own ``memory_mode``.
+        """
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.history import ConversationLog, allow_on_loop_persist
+
+        log = ConversationLog(base_dir=config_dir() / "sessions")
+        log.init()
+        with allow_on_loop_persist():
+            log.append("dashboard:ghost-13077", "user", "keep this off the record")
+            log.update_metadata("dashboard:ghost-13077", {"memory_mode": "incognito"})
+        cons = _consolidator()
+        state = _make_state(consolidator=cons)
+        state.conversation_log = log
+        req = _make_request(
+            state,
+            method="POST",
+            json_body={"key": "dashboard_ghost-13077", "include_history": True},
+            session_key="dashboard:ui",
+        )
+        resp = await mem_mod.api_memory_consolidate(req)
+        assert resp.status == 403
+        assert _body(resp)["code"] == "restricted_target_session"
+        cons._consolidate.assert_not_called()
+        assert not cons._running
+
+    @pytest.mark.asyncio
+    async def test_private_channel_thread_named_by_its_stem_is_refused(self) -> None:
+        """A Slack thread flagged ``!incognito`` is refused when named by its stem.
+
+        ``list_sessions`` hands out the filename stem (``slack_<ts>``) while the
+        thread's durable flag lives under the live key (``slack:<ts>``) in the
+        session map and its transcript header carries no ``memory_mode`` at all,
+        so a handler that resolves the raw stem reads the thread as persistent.
+        The flag is seeded in a real ``SessionMap`` and the process-local privacy
+        trackers start empty, so the stem has to be unfolded by the map and the
+        flag hydrated from disk -- the path a gateway restart leaves behind.
+        """
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.messaging import privacy_mode
+        from kiro_crew.session_map import SessionMap
+
+        live_key = "slack:1785861252.833429"
+        stem = "slack_1785861252.833429"
+        sm = SessionMap()
+        sm.set_flag(live_key, "incognito", True)
+        sm.flush()
+        privacy_mode.reset()
+        assert sm.channel_key_for_stem(stem) == live_key, "premise: the map unfolds the stem"
+        assert privacy_mode.is_incognito(live_key) is False, "premise: trackers start empty"
+        cons = _consolidator()
+        state = _make_state(consolidator=cons)
+        state.conversation_log = ConversationLog()
+        state.sessions = SimpleNamespace(
+            _session_map=sm, channel_key_for_stem=sm.channel_key_for_stem
+        )
+        try:
+            req = _make_request(
+                state,
+                method="POST",
+                json_body={"key": stem, "include_history": True},
+                session_key="dashboard:ui",
+            )
+            resp = await mem_mod.api_memory_consolidate(req)
+        finally:
+            privacy_mode.reset()
+        assert resp.status == 403
+        assert _body(resp)["code"] == "restricted_target_session"
+        assert "incognito" in _body(resp)["error"]
+        cons._consolidate.assert_not_called()
+        assert not cons._running
+
+    @pytest.mark.asyncio
+    async def test_persistent_live_target_still_dispatches(self) -> None:
+        """Pin: a target that positively resolves as persistent is untouched."""
+        from kiro_crew.history import ConversationLog
+
+        cons = _consolidator()
+        state = _make_state(consolidator=cons)
+        state.conversation_log = ConversationLog()
+        state._slots["p1"] = self._live_slot("persistent")
+        req = _make_request(
+            state,
+            method="POST",
+            json_body={"key": "dashboard:p1", "include_history": False},
+            session_key="dashboard:ui",
+        )
+        assert _body(await mem_mod.api_memory_consolidate(req)) == {
+            "ok": True,
+            "key": "dashboard:p1",
+        }
+        for task in list(cons._tasks):
+            await task
+        cons._consolidate.assert_awaited_once_with("dashboard:p1", False)
+
+    @pytest.mark.asyncio
+    async def test_private_channel_stem_the_map_cannot_unfold_is_refused_by_its_header(
+        self,
+    ) -> None:
+        """A channel stem with no session-map entry is refused from its header.
+
+        The live resolution answers ``persistent`` for every channel key the map
+        does not flag, without probing the transcript; a stem whose entry the map
+        does not hold would therefore dispatch and answer ``200 {"ok": true}``
+        for a pass ``_consolidate`` refuses on the header -- and the Memory tab
+        would count it as summarized. The header is the modifier's own record, so
+        the route probes it too.
+        """
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.history import ConversationLog, allow_on_loop_persist
+        from kiro_crew.messaging import privacy_mode
+        from kiro_crew.session_map import SessionMap
+
+        live_key = "slack:1785861252.833429"
+        stem = "slack_1785861252.833429"
+        log = ConversationLog(base_dir=config_dir() / "sessions")
+        log.init()
+        with allow_on_loop_persist():
+            log.append(live_key, "user", "keep this off the record")
+            log.update_metadata(live_key, {"memory_mode": "incognito"})
+        sm = SessionMap()  # holds nothing for this thread
+        assert sm.channel_key_for_stem(stem) == "", "premise: the map cannot unfold the stem"
+        privacy_mode.reset()
+        cons = _consolidator()
+        state = _make_state(consolidator=cons)
+        state.conversation_log = log
+        state.sessions = SimpleNamespace(
+            _session_map=sm, channel_key_for_stem=sm.channel_key_for_stem
+        )
+        try:
+            req = _make_request(
+                state,
+                method="POST",
+                json_body={"key": stem, "include_history": True},
+                session_key="dashboard:ui",
+            )
+            resp = await mem_mod.api_memory_consolidate(req)
+        finally:
+            privacy_mode.reset()
+        assert resp.status == 403
+        assert _body(resp)["code"] == "restricted_target_session"
+        assert "incognito" in _body(resp)["error"]
+        cons._consolidate.assert_not_called()
+        assert not cons._running
+
+    @pytest.mark.asyncio
+    async def test_every_consolidator_refusal_source_is_the_routes_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The route and ``_consolidate`` ask ONE resolver for the durable records.
+
+        Pinned by substitution rather than by enumerating today's three sources:
+        a verdict the resolver returns from a source the route has never heard of
+        refuses at the route, so a source added to the resolver tomorrow refuses
+        at the route and in the background sweep alike -- the bug class this PR
+        closes (a pass here, a refusal there) cannot come back through a source
+        added to one side only. Mutation: give the route its own read of the
+        header instead of the resolver -- red (``assert [] == ['dashboard_ghost-13077']``:
+        the route never asked).
+        """
+        import kiro_crew.history_consolidation as hc
+        from kiro_crew.history import ConversationLog
+
+        asked: list[str] = []
+
+        async def _resolver(key: str, *, log: object, sessions: object) -> hc.ConsolidationTarget:
+            asked.append(key)
+            return hc.ConsolidationTarget(
+                None, {}, hc.RestrictedTarget("temporary", "a source added tomorrow")
+            )
+
+        # The route binds the resolver at import (module-scope import), so the
+        # substitution goes on the handler module's name, not the definer's.
+        monkeypatch.setattr(mem_mod, "resolve_consolidation_target", _resolver)
+        cons = _consolidator()
+        state = _make_state(consolidator=cons)
+        state.conversation_log = ConversationLog()
+        req = _make_request(
+            state,
+            method="POST",
+            json_body={"key": "dashboard_ghost-13077", "include_history": True},
+            session_key="dashboard:ui",
+        )
+        resp = await mem_mod.api_memory_consolidate(req)
+        assert asked == ["dashboard_ghost-13077"]
+        assert resp.status == 403
+        assert _body(resp)["code"] == "restricted_target_session"
+        assert "temporary" in _body(resp)["error"]
+        cons._consolidate.assert_not_called()
+        assert not cons._running
+
 
 # ---------------------------------------------------------------------------
 # embedding-model apply endpoint (request boundary only)

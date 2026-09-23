@@ -111,12 +111,14 @@ def test_v2_automatic_reextraction_keeps_forgotten_fact_hidden(stores):
 
 def test_consolidation_protects_owner_facts_and_keeps_v1_deletes_and_lesson_origin(stores):
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     for store in stores:
         assert store.set_semantic("project.status", "old", 1, "user_explicit") is None
         writer._write_structured_memory(
             {"semantic": [{"key": "project.status", "value": "new", "confidence": 1}]},
             "session",
             store,
+            gate=writer._write_gate("session"),
         )
         assert json.loads(store.get_semantic("project.status")["value_json"]) == "old"
         assert store.get_semantic("project.status")["source"] == "user_explicit"
@@ -124,11 +126,13 @@ def test_consolidation_protects_owner_facts_and_keeps_v1_deletes_and_lesson_orig
             {"semantic": [{"key": "project.status", "delete": True}]},
             "session",
             store,
+            gate=writer._write_gate("session"),
         )
         writer._save_lessons(
             [{"rule": "Check release notes before shipping", "category": "tool"}],
             store,
             lesson_store=None,
+            gate=writer._write_gate("dashboard:gate-test"),
         )
     v1, v2 = stores
     assert v1.get_semantic("project.status") is None
@@ -321,7 +325,7 @@ def test_v2_capacity_never_discards_existing_memory_and_survives_restart(stores)
     )
     ids = {row["id"] for row in v2.get_episodic_list()}
     assert len(ids) == 5 and first in ids
-    v2._enforce_episodic_cap()
+    v2._evict_for_episodic_cap()
     v2.close()
     v2.init()
     assert {row["id"] for row in v2.get_episodic_list()} == ids

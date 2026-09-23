@@ -225,5 +225,12 @@
   "pages.contextBreakdown.scope_turns",
   "pages.contextBreakdown.earlier_hidden",
   "pages.contextBreakdown.scope_all_turns",
-  "components.fileChangeChips.omitted_files_notice"
+  "components.fileChangeChips.omitted_files_notice",
+  "pages.overview.memoryTab.skipped_incognito_session",
+  "pages.overview.memoryTab.skipped_temporary_session",
+  "pages.overview.memoryTab.skipped_sessions",
+  "pages.overview.memoryTab.consolidated_sessions_skipped",
+  "pages.overview.memoryTab.consolidate_failed_session",
+  "pages.overview.memoryTab.skipped_temporary_count",
+  "pages.overview.memoryTab.skipped_incognito_count"
 ]

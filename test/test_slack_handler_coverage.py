@@ -1376,6 +1376,43 @@ class TestPrivacyModifiers:
         assert fresh.get_flag("t1", "temporary") is True
         assert fresh.get_flag("t1", "incognito") is True
 
+    @pytest.mark.asyncio
+    async def test_a_refused_modifier_leaves_nothing_to_run(
+        self, slack, sessions, owner, tmp_path, monkeypatch
+    ):
+        """The map is at its private-conversation cap: ``!incognito summarize``
+        is refused fail-closed. The user is told the message was NOT processed,
+        one SEL denial is written, no flag or mark lands, and the shared applier
+        answers ``only_modifier=True`` -- the contract both Slack callers already
+        honour by returning without a turn -- so the message is never run with
+        the mode dropped. Mutation: drop the gate in ``SessionMap.set_flag`` --
+        the flag is written, ``only_modifier`` is False and the turn would run."""
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+        import kiro_crew.session_map as session_map_mod
+        from kiro_crew.messaging import privacy_mode
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr(session_map_mod, "PRIVACY_ROW_CAP", 1)
+        sessions._session_map = SessionMap()
+        sessions._session_map.set_flag("slack:other-thread", "incognito", True)
+        events: list[dict] = []
+        fake = MagicMock()
+        fake.log_api_access = lambda **kw: events.append(kw)
+        monkeypatch.setattr(privacy_mode, "sel", lambda: fake)
+
+        text, cmd, only = await h.maybe_apply_privacy_modifiers(
+            "!incognito summarize", "!incognito summarize", "t1", "U1", "C1", slack, sessions, "t1"
+        )
+        assert only is True, "a refused modifier must leave nothing to run"
+        assert h.is_thread_incognito("t1") is False
+        assert sessions._session_map.get_flag("t1", "incognito") is False
+        sessions.set_slack_link.assert_not_called()
+        posted = _texts(slack)
+        assert "NOT processed" in posted and "Incognito mode ON" not in posted, posted
+        assert [e["outcome"] for e in events] == ["denied"]
+        assert events[0]["resources"] == "private_session_refused:limit:C1:t1"
+
     def test_hydrate_conv_flags_without_session_map(self, sessions):
         h._hydrate_conv_flags(sessions, "t1")
         assert not h.is_thread_temporary("t1")

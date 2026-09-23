@@ -38,6 +38,8 @@ KillProvider = Callable[[LLMProvider], None]
 class _SessionMapPort(Protocol):
     def prune(self) -> int: ...
 
+    async def stamp_privacy_headers(self) -> int: ...
+
 
 class WarmPoolOwner(Protocol):
     """Cross-boundary operations retained by the ``SessionManager`` facade.
@@ -252,7 +254,17 @@ class WarmSessionPool:
         return self._deps.get_identity_predicate()(provider)
 
     async def start_pool(self, *, blocking: bool = True) -> None:
-        """Start the background session and configured warm-pool workers."""
+        """Start the background session and configured warm-pool workers.
+
+        Both paths run the same sequence -- ``prune``, the privacy-header sweep
+        (:meth:`_stamp_privacy_headers_for_startup`), the background session,
+        the pool -- and differ only in what the caller awaits: the blocking
+        path awaits all of it; the non-blocking path returns as soon as the
+        sequence is scheduled, so the sweep, whose cost scales with the
+        retained privacy-flagged rows (a cross-process lock and two header
+        reads each, off the loop), never sits between a live-config apply or a
+        background-session restart and its return.
+        """
         if self._pool_started or not self._owner._provider_factory:
             return
 
@@ -262,6 +274,7 @@ class WarmSessionPool:
         if not blocking:
 
             async def _start_bg_and_pool() -> None:
+                await self._stamp_privacy_headers_for_startup()
                 await self._owner._ensure_background()
                 await self._owner._fill_warm_pool()
                 if self._pool_size:
@@ -275,6 +288,7 @@ class WarmSessionPool:
             self._deps.logger.info("Background session starting (non-blocking)")
             return
 
+        await self._stamp_privacy_headers_for_startup()
         await self._owner._ensure_background()
         self._deps.logger.info("Background session ready")
 
@@ -285,6 +299,24 @@ class WarmSessionPool:
             self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
             self._owner._background_tasks.add(self._pool_health_task)
             self._pool_health_task.add_done_callback(self._owner._background_tasks.discard)
+
+    async def _stamp_privacy_headers_for_startup(self) -> None:
+        """Stamp the mode into the flagged rows' transcript headers, once per start.
+
+        The privacy-flagged rows ``prune`` kept (it removes none of them):
+        whether each one's transcript header already records the mode is a
+        disk read, taken on a worker thread rather than on this loop inside
+        prune, and the header is written where it does not. Housekeeping: a
+        failure leaves the headers for the next startup and must not stop the
+        pool from starting.
+        """
+        try:
+            await self._owner._session_map.stamp_privacy_headers()
+        except Exception:  # noqa: BLE001 - startup housekeeping never blocks the pool
+            self._deps.logger.warning(
+                "could not stamp privacy modes into the flagged threads' transcript headers",
+                exc_info=True,
+            )
 
     async def _fill_warm_pool(self) -> None:
         """Spawn providers up to the configured size and enqueue them."""

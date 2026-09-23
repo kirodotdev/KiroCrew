@@ -183,17 +183,27 @@ export function requestPath(url: string | undefined): string | undefined {
   }
 }
 
-/** Pull the backend's machine-readable `code` out of a JSON error body, if present. */
-export function parseErrorCode(body: string | undefined): string | undefined {
+/** Pull one non-empty string field out of a JSON error body, if present. The
+ *  one parse of a backend error envelope -- trimmed, object-shaped, well-formed
+ *  -- so a caller after `code`, or after another field the route names beside
+ *  it (`mode` on a refused consolidation target), reads it here rather than
+ *  parsing the body again on its own. */
+export function parseErrorField(body: string | undefined, field: string): string | undefined {
   if (!body) return undefined
   const trimmed = body.trim()
   if (!trimmed.startsWith('{')) return undefined
   try {
-    const parsed = JSON.parse(trimmed) as { code?: unknown }
-    return typeof parsed.code === 'string' && parsed.code ? parsed.code : undefined
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>
+    const value = parsed[field]
+    return typeof value === 'string' && value ? value : undefined
   } catch {
     return undefined
   }
+}
+
+/** Pull the backend's machine-readable `code` out of a JSON error body, if present. */
+export function parseErrorCode(body: string | undefined): string | undefined {
+  return parseErrorField(body, 'code')
 }
 
 // Newest first. Plain module state: the journal is per-tab, per-page-load

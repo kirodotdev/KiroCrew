@@ -909,7 +909,9 @@ class TestNoteEnvironmentFailure:
 
 class TestWriteStructuredMemory:
     def test_no_vector_store_is_noop(self) -> None:
-        _consolidator()._write_structured_memory({"semantic": [{"key": "a"}]}, "k")
+        (_c := _consolidator())._write_structured_memory(
+            {"semantic": [{"key": "a"}]}, "k", gate=_c._write_gate("k")
+        )
 
     def test_semantic_write_and_delete_keep_the_consolidation_source(self, caplog) -> None:
         vs = MagicMock()
@@ -926,10 +928,16 @@ class TestWriteStructuredMemory:
             ]
         }
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-            c._write_structured_memory(result, "sess")
+            c._write_structured_memory(result, "sess", gate=c._write_gate("sess"))
         sources = {kw["key"]: kw["source"] for _, kw in vs.set_semantic.call_args_list}
         assert sources == {"plain": "consolidation:sess", "explicit": "consolidation:sess"}
-        vs.delete_semantic.assert_called_once_with("stale", "consolidation:sess")
+        vs.delete_semantic.assert_called_once()
+        # ``admit`` is the write gate's in-store admission hook; the store asks it
+        # under its lock ahead of the tombstone. Checked by kind, the rest exact.
+        assert vs.delete_semantic.call_args.args == ("stale", "consolidation:sess")
+        delete_kwargs = dict(vs.delete_semantic.call_args.kwargs)
+        assert callable(delete_kwargs.pop("admit"))
+        assert delete_kwargs == {}
         assert "2 written, 1 deleted" in caplog.text
 
     def test_semantic_reject_is_refused_not_written(self, caplog) -> None:
@@ -937,7 +945,9 @@ class TestWriteStructuredMemory:
         vs.set_semantic.return_value = (SemanticRejectCode.ALLOWLIST, "not allowlisted")
         c = _consolidator(vector_store=vs)
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-            c._write_structured_memory({"semantic": [{"key": "a", "value": "b"}]}, "k")
+            c._write_structured_memory(
+                {"semantic": [{"key": "a", "value": "b"}]}, "k", gate=c._write_gate("k")
+            )
         assert "0 written" in caplog.text
         assert "1 refused" in caplog.text
 
@@ -957,7 +967,9 @@ class TestWriteStructuredMemory:
         )
         c = _consolidator(vector_store=vs)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
-            c._write_structured_memory({"semantic": [{"key": "head_sha", "value": "b"}]}, "k")
+            c._write_structured_memory(
+                {"semantic": [{"key": "head_sha", "value": "b"}]}, "k", gate=c._write_gate("k")
+            )
         assert "Existing entry has higher confidence (0.90 vs 0.60)" in caplog.text
         # The pointer is scoped to audited causes: VALUE_SIZE and VALUE_ENCODING are
         # outside ``_AUDITABLE_REJECT_CODES``, so a blanket promise of a row would send
@@ -969,7 +981,7 @@ class TestWriteStructuredMemory:
         vs.set_semantic.return_value = None
         c = _consolidator(vector_store=vs)
         items = [{"key": f"k{i}", "value": "v"} for i in range(200)]
-        c._write_structured_memory({"semantic": items}, "k")
+        c._write_structured_memory({"semantic": items}, "k", gate=c._write_gate("k"))
         assert vs.set_semantic.call_count == H._MAX_SEMANTIC_PER_CONSOLIDATION
 
     def test_episodic_write_and_skips(self, caplog) -> None:
@@ -984,24 +996,32 @@ class TestWriteStructuredMemory:
             ]
         }
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-            c._write_structured_memory(result, "sess")
+            c._write_structured_memory(result, "sess", gate=c._write_gate("sess"))
         # ``facets`` is part of the call now: the consolidator stamps the carve axes
         # it already holds. ``None`` here because this test drives
         # ``_write_structured_memory`` directly rather than through ``_consolidate``,
         # which is where ``_session_facets`` is built.
-        vs.write_episodic.assert_called_once_with(
-            text="a thing happened",
-            conversation_id="sess",
-            tags=["t"],
-            importance=0.9,
-            source="consolidation:sess",
-            facets=None,
+        vs.write_episodic.assert_called_once()
+        assert vs.write_episodic.call_args.args == ()
+        kwargs = dict(vs.write_episodic.call_args.kwargs)
+        # ``admit`` is the write gate's in-store re-admission hook: the store asks
+        # it again once its transaction is open and before its commit, so a mode
+        # that lands during the embedding still refuses the write. It is the
+        # gate's own closure, so it is checked by kind, not by value.
+        assert callable(kwargs.pop("admit"))
+        assert kwargs == {
+            "text": "a thing happened",
+            "conversation_id": "sess",
+            "tags": ["t"],
+            "importance": 0.9,
+            "source": "consolidation:sess",
+            "facets": None,
             # Both False while the pass is inside its embed budget; the latch
             # flips them together once a slow embedder has overrun it, because a
             # write with no vector must neither embed nor evict.
-            defer_embedding=False,
-            preserve_existing=False,
-        )
+            "defer_embedding": False,
+            "preserve_existing": False,
+        }
         assert "Wrote 1 episodic" in caplog.text
 
     def test_episodic_failure_is_not_counted(self, caplog) -> None:
@@ -1009,7 +1029,7 @@ class TestWriteStructuredMemory:
         vs.write_episodic.return_value = False
         c = _consolidator(vector_store=vs)
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-            c._write_structured_memory({"episodic": [{"text": "x"}]}, "k")
+            c._write_structured_memory({"episodic": [{"text": "x"}]}, "k", gate=c._write_gate("k"))
         assert "episodic entries from consolidation" not in caplog.text
 
     def test_episodic_is_capped(self) -> None:
@@ -1017,13 +1037,15 @@ class TestWriteStructuredMemory:
         vs.write_episodic.return_value = True
         c = _consolidator(vector_store=vs)
         items = [{"text": f"t{i}"} for i in range(200)]
-        c._write_structured_memory({"episodic": items}, "k")
+        c._write_structured_memory({"episodic": items}, "k", gate=c._write_gate("k"))
         assert vs.write_episodic.call_count == H._MAX_EPISODIC_PER_CONSOLIDATION
 
     def test_non_list_sections_are_ignored(self) -> None:
         vs = MagicMock()
         c = _consolidator(vector_store=vs)
-        c._write_structured_memory({"semantic": "nope", "episodic": {"a": 1}}, "k")
+        c._write_structured_memory(
+            {"semantic": "nope", "episodic": {"a": 1}}, "k", gate=c._write_gate("k")
+        )
         vs.set_semantic.assert_not_called()
         vs.write_episodic.assert_not_called()
 
@@ -1031,7 +1053,9 @@ class TestWriteStructuredMemory:
 class TestSaveLessons:
     def test_non_list_is_ignored(self) -> None:
         vs = MagicMock()
-        _consolidator(vector_store=vs)._save_lessons({"rule": "x"})
+        (_c := _consolidator(vector_store=vs))._save_lessons(
+            {"rule": "x"}, gate=_c._write_gate("dashboard:gate-test")
+        )
         vs.write_lesson.assert_not_called()
 
     def test_caps_and_warns(self, caplog) -> None:
@@ -1040,7 +1064,7 @@ class TestSaveLessons:
         c = _consolidator(vector_store=vs)
         raw = [{"rule": f"r{i}"} for i in range(H._MAX_LESSONS_PER_CONSOLIDATION + 5)]
         with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
-            c._save_lessons(raw)
+            c._save_lessons(raw, gate=c._write_gate("dashboard:gate-test"))
         assert "capping to" in caplog.text
         assert vs.write_lesson.call_count == H._MAX_LESSONS_PER_CONSOLIDATION
 
@@ -1055,7 +1079,8 @@ class TestSaveLessons:
                     {"rule": "one", "category": "style", "negative": "not that"},
                     {"rule": "two"},
                     {"no": "rule"},
-                ]
+                ],
+                gate=c._write_gate("dashboard:gate-test"),
             )
         assert vs.write_lesson.call_count == 2
         store.save.assert_not_called()
@@ -1065,11 +1090,15 @@ class TestSaveLessons:
         vs = MagicMock()
         vs.write_lesson.return_value = False
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
-            _consolidator(vector_store=vs)._save_lessons([{"rule": "r"}])
+            (_c := _consolidator(vector_store=vs))._save_lessons(
+                [{"rule": "r"}], gate=_c._write_gate("dashboard:gate-test")
+            )
         assert "vector store" not in caplog.text
 
     def test_no_stores_is_noop(self) -> None:
-        _consolidator()._save_lessons([{"rule": "r"}])
+        (_c := _consolidator())._save_lessons(
+            [{"rule": "r"}], gate=_c._write_gate("dashboard:gate-test")
+        )
 
     def test_lesson_store_fallback_saves_lessons(self, caplog) -> None:
         store = MagicMock()
@@ -1080,7 +1109,8 @@ class TestSaveLessons:
                     {"rule": "always X", "category": "workflow", "negative": "never Y"},
                     {"missing": "rule"},
                     "not a dict",
-                ]
+                ],
+                gate=c._write_gate("dashboard:gate-test"),
             )
         store.save.assert_called_once()
         lesson = store.save.call_args.args[0]
@@ -1092,7 +1122,9 @@ class TestSaveLessons:
 
     def test_lesson_store_defaults_category(self) -> None:
         store = MagicMock()
-        _consolidator(lesson_store=store)._save_lessons([{"rule": "r"}])
+        (_c := _consolidator(lesson_store=store))._save_lessons(
+            [{"rule": "r"}], gate=_c._write_gate("dashboard:gate-test")
+        )
         assert store.save.call_args.args[0].category == "knowledge"
 
 
@@ -1701,6 +1733,28 @@ class TestIsIncognitoTranscript:
         write gate normalizes via its own allowlist and denies on None, so
         stripping here would silently change which callers fail closed."""
         assert H.is_incognito_transcript("incognito ") is False
+
+
+class TestTranscriptPrivacyMode:
+    """The predicate's companion returns the MODE under the predicate's own rule."""
+
+    @pytest.mark.parametrize(
+        ("raw", "mode"),
+        [("temporary", "temporary"), ("Temporary", "temporary"), ("INCOGNITO", "incognito")],
+    )
+    def test_a_recognized_header_yields_its_normalized_mode(self, raw: str, mode: str) -> None:
+        assert H.transcript_privacy_mode(raw) == mode
+
+    @pytest.mark.parametrize("raw", [None, "", "persistent", "unknown", 42, "incognito ", False])
+    def test_anything_the_predicate_rejects_yields_no_mode(self, raw: object) -> None:
+        """Including the unstripped ``"incognito "``: the two answer alike by
+        construction, so no reader can see a mode the other does not."""
+        assert H.is_incognito_transcript(raw) is False
+        assert H.transcript_privacy_mode(raw) == ""
+
+    @pytest.mark.parametrize("raw", ["incognito", "Temporary", "x", None])
+    def test_the_two_agree_on_every_input(self, raw: object) -> None:
+        assert bool(H.transcript_privacy_mode(raw)) is H.is_incognito_transcript(raw)
 
 
 class TestSidecarSummariesSurviveMtimePreservingRewrites:
