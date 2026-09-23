@@ -48,7 +48,7 @@ _INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"
 def _pin_spec_permissions_cli(monkeypatch, which):
     """Pin what the writer's version gate believes the installed kiro-cli is.
 
-    The five spec writers share one gate (``_write_derived_permissions``), which
+    The generated spec writers share one gate (``_write_derived_permissions``), which
     reads ``installed_kiro_cli_version`` function-locally from
     ``kiro_crew.kiro_cli``, so the patch lands in the owning module. Without it
     the answer is whatever the test HOST has, which on CI is nothing and reads

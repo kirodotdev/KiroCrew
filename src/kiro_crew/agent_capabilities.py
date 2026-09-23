@@ -385,6 +385,20 @@ def _alternate_shortcuts(value: Any) -> bool:
 
 
 def _align_permissions(base: dict, spec: dict) -> None:
+    """Review the source block, then emit the target one the installed CLI accepts.
+
+    Two questions share this call site and only the second one is the binary's.
+    Whether the SOURCE block was hand-edited away from its derivation is a
+    governance question about the template, so that comparison is unconditional.
+    What the TARGET spec may carry is a compatibility question: kiro-cli
+    validates specs with serde ``deny_unknown_fields``, so a release below
+    ``SPEC_PERMISSIONS_MIN_VERSION`` -- or one whose version cannot be
+    established -- refuses the WHOLE file this funnel publishes and drops every
+    Crew MCP server with it. Routed through ``_write_derived_permissions`` so
+    fork and publish answer that question with the same gate the five generated
+    writers use, including its removal of an inherited value.
+    """
+    from kiro_crew.agent import _write_derived_permissions
     from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 
     if _alternate_shortcuts(base.get("toolsSettings", {})) or base.get("autoAllowReadonly"):
@@ -393,9 +407,7 @@ def _align_permissions(base: dict, spec: dict) -> None:
         prior = derived_agent_permissions(base.get("allowedTools"), str(base.get("name", "")))
         if base["permissions"] != prior:
             raise CapabilityError("alternate_permissions_require_review")
-        spec["permissions"] = derived_agent_permissions(
-            spec.get("allowedTools"), str(spec.get("name", ""))
-        )
+        _write_derived_permissions(spec, spec.get("allowedTools"), str(spec.get("name", "")))
 
 
 def _sanitize_projection(spec: dict, intent: dict, catalog: dict[str, str]) -> None:

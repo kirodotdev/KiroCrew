@@ -15,6 +15,35 @@ from kiro_crew.agent_capabilities import (
     validate_request,
 )
 from kiro_crew.config import loader
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+
+#: A release that accepts a spec ``permissions`` block, and one that refuses it,
+#: expressed against the floor so raising it cannot strand these tests.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the shared writer gate believes the installed kiro-cli is.
+
+    Same helper the five generated writers' suites use: the gate reads
+    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``,
+    so the patch lands there. ``which`` is ``"accepts"``, ``"refuses"`` or
+    ``"unknown"``. A developer box below the floor -- or with no resolvable
+    binary at all -- would otherwise decide these assertions.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
+
+
+@pytest.fixture(autouse=True)
+def _accepting_kiro_cli(monkeypatch):
+    """Every other test in this module predates the gate and assumes it passes.
+
+    The two tests that exercise the gate itself re-pin a refusing and an unknown
+    release over this default.
+    """
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
 
 
 @pytest.fixture
@@ -3356,3 +3385,62 @@ async def test_legacy_patch_checks_fresh_declared_identity_before_bookkeeping(
     assert changed_snapshot is not None
     assert await asyncio.to_thread(_capability_data_snapshot, home) == changed_snapshot
     assert refreshes == []
+
+
+@pytest.mark.parametrize("release", ["accepts", "refuses", "unknown"])
+def test_a_fork_writes_permissions_only_where_the_installed_cli_accepts_them(
+    editor, monkeypatch, release
+):
+    """The fork funnel is a generated-spec writer and shares the one version gate.
+
+    kiro-cli validates agent specs with serde ``deny_unknown_fields``, so a
+    release below ``SPEC_PERMISSIONS_MIN_VERSION`` -- or one whose version
+    cannot be established -- refuses the WHOLE file this path publishes and
+    drops every Crew MCP server with it, falling back to broader default
+    grants. The grant list itself is never withheld: it is the ceiling, not
+    the optional relay.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+
+    service, home, specs, parent = editor
+    parent["permissions"] = derived_agent_permissions(parent["allowedTools"], "parent")
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    _pin_spec_permissions_cli(monkeypatch, release)
+
+    save(
+        service,
+        [{"section": "allowedTools", "id": "@search", "action": "set", "value": True}],
+        enroll=True,
+    )
+
+    spec = spec_for(home, specs)
+    assert spec["allowedTools"] == ["@search"], "the grant list is never withheld"
+    if release == "accepts":
+        assert spec["permissions"] == derived_agent_permissions(["@search"], spec["name"])
+    else:
+        assert "permissions" not in spec, f"a {release} CLI must get no block"
+
+
+@pytest.mark.parametrize("release", ["refuses", "unknown"])
+def test_a_hand_edited_block_still_blocks_a_fork_on_a_refusing_cli(editor, monkeypatch, release):
+    """Two questions, one call site -- and only the second one is the CLI's.
+
+    Whether the source block was hand-edited away from its derivation is a
+    governance question about the template, answered the same way whatever
+    binary happens to be installed. Withholding the OUTPUT field must not
+    quietly withdraw that review.
+    """
+    service, home, specs, parent = editor
+    save(
+        service,
+        [{"section": "prompt", "id": "prompt", "action": "set", "value": "mine"}],
+        enroll=True,
+    )
+    target = json.loads((home / "config.json").read_text())["agents"]["A"]["kiro_agent"]
+    parent["permissions"] = {"rules": [{"capability": "fsWrite", "effect": "allow"}]}
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    _pin_spec_permissions_cli(monkeypatch, release)
+
+    with pytest.raises(CapabilityError, match="alternate_permissions_require_review"):
+        service.reset("A", target)
+    assert spec_for(home, specs)["prompt"] == "mine"
