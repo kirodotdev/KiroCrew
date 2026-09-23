@@ -400,6 +400,7 @@ async def test_the_pin_reaches_only_a_harness_that_reads_the_settings_channel(mo
             _work_dir=".",
             _extra_env={},
             _tool_search=None,
+            _session_recap=False,
         )
 
     reads = await launch._handshake_client_capabilities(runtime(True))

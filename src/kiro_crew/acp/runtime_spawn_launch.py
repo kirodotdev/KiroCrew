@@ -26,7 +26,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_mcp_secret_server`` and ``_mcp_prereg_sent``.
 
 Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
-``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_session_recap``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -48,6 +48,7 @@ from kiro_crew.acp import (
     kas_memory,
     kas_secret_storage,
     kas_shared_model_picker,
+    kas_wire,
     scope_admission,
 )
 from kiro_crew.acp._dispatch import agent_version_from_init
@@ -1347,8 +1348,9 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
 
     The harness declares the shape; this fills ``_meta.kiro.settings`` ONLY
     for a host that reads it (``client_meta_settings``) and only with values
-    the operator threaded in. Today that is MCP Tool Search, and the value
-    sent is gated on the spawn agent's spec granting the ``tool_search``
+    the operator threaded in. Today those are the session recap
+    (``agent.session_recap``, sent only when on) and MCP Tool Search, whose
+    value is gated on the spawn agent's spec granting the ``tool_search``
     loader. KAS's deferral path ignores ``enabled`` and defers every MCP tool
     not on ``toolSearch.neverDefer``, so for a spec without the grant the
     payload lists every MCP tool that spec can call there
@@ -1408,6 +1410,13 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             kas_cli_settings.kiro_cli_code_intelligence_enabled, self._work_dir
         )
         base = with_client_meta_settings(base, {"codeIntelligence": {"enabled": code_intel_on}})
+    recap = kas_wire.session_recap_settings(self._session_recap)
+    if recap:
+        base = with_client_meta_settings(base, recap)
+        logger.info(
+            "AcpRuntime handshake: session recap enabled for agent=%s",
+            self._agent or "<none>",
+        )
     if self._tool_search is None:
         return base
 

@@ -255,6 +255,7 @@ class TestAdoptOnChange:
             "agent.acp_backend",
             "agent.role_efforts.background",
             "agent.tool_search",
+            "agent.session_recap",
             "agent.sandbox",
             "agent.env.HTTPS_PROXY",
             "session.pool_size",

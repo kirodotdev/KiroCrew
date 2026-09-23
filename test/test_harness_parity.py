@@ -1516,6 +1516,9 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "kiro path an awaited step it does not need (H13). Its mode refusal also asks "
     "whether the harness is Kiro CLI's, as ``_finish_create_session`` does, for the "
     "wording alone.",
+    ("src/kiro_crew/acp/runtime_reader_loop.py", "_reader_loop"): "Only KAS sends the "
+    "load-window recap (``session_info_update``, ``kind: recap``). The positive test keeps "
+    "every other harness's ``session/update`` off this path (H5/H13).",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "command_is_native",
@@ -1580,6 +1583,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
+    ("src/kiro_crew/acp/session_handle_kas.py", "take_session_recap"): "Only KAS emits the "
+    "load-window recap. The positive test keeps every other harness's resume prefetch off "
+    "the adapter-owned claim path (H5/H13).",
+    ("src/kiro_crew/acp/session_handle_kas.py", "_is_kas_recap_frame"): "The pre-turn drain "
+    "drops a post-turn recap by the KAS-only discriminant of ``_reader_loop`` above. Only "
+    "KAS's wire defines a recap frame, so the positive test keeps every other harness's "
+    "``session/update`` on the drain's leftover path (H5).",
 }
 
 

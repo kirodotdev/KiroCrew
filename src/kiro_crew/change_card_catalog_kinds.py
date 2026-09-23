@@ -278,6 +278,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.role_models.optimizer",
         "agent.role_models.subagent",
         "agent.role_models.subagent_light",
+        "agent.session_recap",
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
         "auto_update",

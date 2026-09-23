@@ -205,6 +205,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.selectable-models': ['model picker list', 'hide models', 'which models show', 'model menu'],
   'chat.send-follow-ups-with-one-click': ['one click follow up', 'click a suggestion to send', 'follow up chips send'],
   'chat.send-shortcut': ['shift enter', 'cmd enter', 'ctrl enter', 'newline instead of send', 'enter sends message'],
+  'chat.session-recap': ['chat recap on reopen', 'where the chat left off', 'reopened chat summary'],
   'chat.session-summaries': ['chat summary', 'summarize session', 'summary panel', 'turn off summaries'],
   'chat.sessions-per-creator': ['session limit', 'max sessions per bot', 'too many sessions', 'open session cap'],
   'chat.show-all-bots-in-my-sessions': [
