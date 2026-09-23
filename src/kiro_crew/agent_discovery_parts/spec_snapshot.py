@@ -13,20 +13,29 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import itertools
 import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from kiro_crew.agent_discovery_parts.spec_fields import AgentInfo
-from kiro_crew.agent_discovery_parts.spec_reads import _kiro_agents_dir, _read_agent_spec
+from kiro_crew.agent_discovery_parts.spec_reads import (
+    _DIR_ID_DEV_ROW,
+    _DIR_ID_INO_ROW,
+    _DirIdentity,
+    _kiro_agents_dir,
+    _opened_dir_identity,
+    _read_agent_spec,
+)
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_native_skill_alias_name,
     iter_agent_spec_files,
 )
 from kiro_crew.executors import discovery_executor
+from kiro_crew.hooks import validate_file_path
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.agent_discovery")
@@ -268,17 +277,10 @@ def _dir_signature(d: Path) -> _ListAgentsSig:
     for a symlinked or freshly edited directory. :func:`agents_dir_revision`
     is the stricter fingerprint, for answers that must never be served stale.
     """
-    entries: list[tuple[str, int]] = []
     try:
-        for entry in _iter_spec_entries(d):
-            try:
-                m = entry.stat().st_mtime_ns
-            except OSError:
-                m = 0
-            entries.append((entry.name, m))
+        return _entries_signature(_iter_spec_entries(d))
     except OSError:
-        pass
-    return tuple(sorted(entries))
+        return ()
 
 
 def clear_list_agents_cache() -> None:
@@ -300,3 +302,143 @@ def clear_list_agents_cache() -> None:
     with _PARSED_SPECS_LOCK:
         _PARSED_SPECS_CACHE.clear()
         _PARSED_SPECS_GEN += 1
+
+
+# A signature row that marks a listing as a PREFIX, not the directory. Paired
+# with a counter rather than a constant on purpose: a partial signature must not
+# compare equal to a later partial one either, or two identical failures would
+# reuse a stale roster. See the ``except OSError`` arm of ``_entries_signature``.
+_DIR_TRUNCATED_ROW = "\0dir-truncated"
+
+
+_truncation_counter = itertools.count()
+
+
+def _entries_signature(
+    entries: Iterable[os.DirEntry[str]], *, dir_fd: int | None = None
+) -> _ListAgentsSig:
+    """Signature of an ALREADY-OPENED listing, so the caller can compute it
+    without re-resolving the directory by name.
+
+    Split out of :func:`_dir_signature` so a pinned scan can hand over the
+    entries it already validated (see :func:`_pinned_scan_dir_fd`): re-opening the
+    directory by path to stat it would reintroduce exactly the check-to-use
+    window the pin exists to close. When *dir_fd* is available, link targets are
+    read relative to that same validated directory; platforms without
+    descriptor-relative ``readlink`` retain the by-name behaviour.
+    """
+    out: list[tuple[str, int]] = []
+    identity = _opened_dir_identity(dir_fd)
+    if identity is not None:
+        out.extend(((_DIR_ID_DEV_ROW, identity[0]), (_DIR_ID_INO_ROW, identity[1])))
+    try:
+        for entry in entries:
+            # Both spec forms, case-insensitively: a case-insensitive filesystem
+            # serves ``Foo.JSON`` to ``*.json`` consumers, so a case-sensitive
+            # suffix here would omit from the signature a file the scans include
+            # — its edits would never invalidate. A markdown spec that went
+            # unfingerprinted would likewise serve a stale roster forever, so the
+            # predicate is the scans' own (:func:`is_agent_spec_name`), not a
+            # second copy of it.
+            if not is_agent_spec_name(entry.name):
+                continue
+            try:
+                # follow_symlinks=False, i.e. lstat semantics: ``DirEntry.stat()``
+                # follows by DEFAULT, and on Windows statting a name that is a
+                # symlink to ``\\host\share`` IS the outbound SMB/NTLM
+                # authentication -- so fingerprinting a planted link would
+                # authenticate to a caller-chosen host before the reader's
+                # resolved-target guard in ``_read_agent_spec`` ever runs. The
+                # directory-level hold protects the scan DIRECTORY from being
+                # swapped; it says nothing about a child entry inside it, and an
+                # attacker who can write the scanned path is this feature's own
+                # threat model. The LINK's own mtime detects a REPOINT of the
+                # link, which a followed stat would miss.
+                m = entry.stat(follow_symlinks=False).st_mtime_ns
+            except OSError:
+                m = 0
+            out.append((entry.name, m))
+            # The link mtime alone is NOT enough for a symlinked spec: it catches
+            # a repoint but not an edit to the file the link resolves to (the
+            # common ``~/.kiro/agents/mine.json`` -> a dotfiles copy). Without the
+            # target's mtime folded in, such an edit leaves this signature
+            # identical and both ``_LIST_AGENTS_CACHE`` and ``_PARSED_SPECS_CACHE``
+            # serve the pre-edit model/tools/prompt until a write path clears the
+            # cache or the gateway restarts -- the very staleness
+            # :func:`agents_dir_revision` returns ``None`` for on a symlinked spec.
+            # Recorded under a ``\0target`` key: a NUL cannot appear in a real
+            # filename, so this synthetic entry can never collide with another
+            # file's ``(name, mtime)`` pair, exactly as :func:`_sensitive_dir_sig`
+            # keeps its sentinel outside the filename space.
+            #
+            # The FOLLOWED stat carries the SMB/NTLM cost the non-following stat
+            # above exists to avoid, so the link's stored target (read locally by
+            # ``os.readlink``, which connects to no host) first passes
+            # :func:`kiro_crew.hooks.validate_file_path` -- the raw UNC gate plus
+            # the Windows link screen over every ancestor and hop of the chain. A
+            # link whose chain reaches an untrusted UNC share is therefore
+            # fingerprinted by its link mtime alone and never followed; a repoint
+            # to such a share still changes the link mtime and invalidates.
+            #
+            # Accepted cost of reusing the public validator: it also refuses a
+            # SENSITIVE resolved target, so such a link gets the link-mtime-only
+            # fingerprint too. The agent list is unchanged by that, because the
+            # spec reader refuses a sensitive target anyway. It also costs one
+            # extra ``realpath`` per symlinked entry on Linux/macOS, where the
+            # UNC half of the gate never refuses.
+            if entry.is_symlink():
+                try:
+                    if dir_fd is not None and os.readlink in os.supports_dir_fd:
+                        _target = os.readlink(entry.name, dir_fd=dir_fd)
+                    else:
+                        _target = os.readlink(entry.path)
+                except OSError:
+                    # A failed descriptor-relative read must not retry by name:
+                    # that would re-resolve a directory the caller pinned.
+                    _target = None
+                if _target is not None:
+                    _target_path = (
+                        _target
+                        if os.path.isabs(_target)
+                        else os.path.join(os.path.dirname(entry.path), _target)
+                    )
+                    target_safe_to_follow = validate_file_path(_target_path) is not None
+                else:
+                    target_safe_to_follow = False
+                if target_safe_to_follow:
+                    try:
+                        fm = entry.stat(follow_symlinks=True).st_mtime_ns
+                    except OSError:
+                        fm = 0
+                    out.append((entry.name + "\0target", fm))
+    except OSError:
+        # The listing aborted part-way, so ``out`` describes a PREFIX of the
+        # directory rather than the directory. Returning it bare would let a
+        # truncated scan be cached as a complete one, and a second identical
+        # failure would then hit that entry and hand back names the directory
+        # has stopped declaring -- including an agent a folder's saved default
+        # still points at. Appending a row that is unique per call is what the
+        # oversized-name path does with ``_oversized_name_sig``, one step
+        # further: a partial signature compares equal to NOTHING, not even to
+        # the next partial one, so it is never reused and the next read
+        # rescans. The type and arity are unchanged, so ``_dir_signature``'s
+        # own callers keep their contract and simply rescan on a truncated
+        # read instead of trusting a prefix.
+        #
+        # Only a listing that PRODUCED something is a prefix. A walk that fails
+        # before collecting any row describes no directory at all, and an empty
+        # ``out`` is the documented signature for an absent or unlistable one
+        # (:func:`agents_dir_revision` returns ``None`` beside it) -- marking
+        # that case would turn "there is nothing here" into a value that
+        # differs on every call.
+        if out:
+            out.append((_DIR_TRUNCATED_ROW, next(_truncation_counter)))
+    return tuple(sorted(out))
+
+
+def _signature_dir_identity(signature: _ListAgentsSig) -> _DirIdentity | None:
+    """Read the directory identity recorded in *signature*, when one exists."""
+    rows = dict(signature)
+    dev = rows.get(_DIR_ID_DEV_ROW)
+    ino = rows.get(_DIR_ID_INO_ROW)
+    return None if dev is None or ino is None else (dev, ino)

@@ -340,7 +340,9 @@ def list_agents(
     # second time on the same scope: the two answers can differ, and this frame
     # would then stat -- for the cache signature -- a tree that second verdict
     # had just recorded a denial for.
-    project_files = _scan_project_agent_files(scope) if scope else []
+    project_files = (
+        _scan_project_agent_files(scope, operation="list_agents", source="unknown") if scope else []
+    )
     cache_key = (str(d), str(scope or ""))
     signature: tuple[_ListAgentsSig, ...] = (
         _dir_signature(d),

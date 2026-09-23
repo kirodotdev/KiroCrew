@@ -33,6 +33,7 @@ from kiro_crew.agent_spec_format import (  # noqa: F401
     parse_agent_spec_bytes,
     shadowed_markdown_specs,
     spec_stem,
+    split_listed_spec_paths,
 )
 from kiro_crew.config.paths import (  # noqa: F401
     kiro_agents_dir,
@@ -41,8 +42,21 @@ from kiro_crew.config.paths import (  # noqa: F401
 )
 from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description  # noqa: F401
 from kiro_crew.executors import discovery_executor  # noqa: F401
-from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed  # noqa: F401
-from kiro_crew.pinned_fs import open_fenced_for_read  # noqa: F401
+from kiro_crew.hooks import (  # noqa: F401
+    FileTooLargeError,
+    _screen_windows_links,
+    is_unc_shape,
+    unc_probe_allowed,
+    validate_file_path,
+)
+from kiro_crew.pinned_fs import (  # noqa: F401
+    PinnedPathRefusal,
+    fd_real_path,
+    open_fenced_for_read,
+    open_fenced_for_read_at,
+    open_in_pinned_parent,
+    supports_pinned_walk,
+)
 from kiro_crew.platform import redact_log_via_context  # noqa: F401
 from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path  # noqa: F401
 from kiro_crew.sel import sel as _sel  # noqa: F401
@@ -78,11 +92,23 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agents_dir_revision,
     )
     from kiro_crew.agent_discovery_parts.project_agents import (  # noqa: F401
+        _AGENT_NAME_MAX_CHARS,
+        _PROJECT_NAMES_CACHE_MAX_KEY_CHARS,
+        _PROJECT_NAMES_CACHE_MAX_KEYS,
+        _PROJECT_NAMES_CACHE_MAX_NAMES,
+        _PROJECT_NAMES_CACHE_MAX_SIGNATURE_ROWS,
         _declared_project_agent_name,
+        _declared_project_agent_name_from_descriptor,
+        _oversized_name_sig,
         _project_agent_fallback_name,
         _project_scope_denied,
         _project_signature,
+        _ProjectSnapshotChanged,
+        _require_signature_dir_identity,
         _scan_project_agent_files,
+        _sensitive_dir_seq,
+        _sensitive_dir_sig,
+        _store_project_agent_names,
         cached_project_agent_names,
         clear_project_agent_cache,
         project_agent_files,
@@ -120,17 +146,31 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         spec_welcome_message,
     )
     from kiro_crew.agent_discovery_parts.spec_reads import (  # noqa: F401
+        _AGENT_DIRECTORY_MAX_ENTRIES,
         _APPLE_DOUBLE_MAGICS,
+        _DIR_ID_DEV_ROW,
+        _DIR_ID_INO_ROW,
         _FENCE_PROBE_BYTES,
         _KIRO_AGENTS_DIR,
         _WINDOWS,
         AmbiguousAgentSpecError,
+        PathPreflightOutcome,
+        ScanUnverifiable,
         SensitiveAgentSpecPathError,
         _audit_denied,
+        _bounded_scan_entries,
+        _DirIdentity,
         _fence_refuses,
         _kiro_agents_dir,
+        _link_chain_refused,
+        _opened_dir_identity,
+        _path_preflights,
+        _pinned_scan_dir,
+        _pinned_scan_dir_fd,
         _probe_spec_head,
+        _raise_scan_overflow,
         _read_agent_spec,
+        _read_agent_spec_from_descriptor,
         _read_head,
         _read_spec_bytes,
         _SpecReadRefused,
@@ -143,6 +183,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         spec_by_declared_name,
     )
     from kiro_crew.agent_discovery_parts.spec_snapshot import (  # noqa: F401
+        _DIR_TRUNCATED_ROW,
         _LIST_AGENTS_CACHE,
         _LIST_AGENTS_KEY,
         _PARSED_SPECS_CACHE,
@@ -151,8 +192,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PARSED_SPECS_REFRESHING,
         _PROJECT_NAMES_CACHE,
         _dir_signature,
+        _entries_signature,
         _iter_spec_entries,
         _ListAgentsSig,
+        _signature_dir_identity,
+        _truncation_counter,
         cached_agent_specs,
         clear_list_agents_cache,
         parsed_agent_specs,
@@ -162,17 +206,29 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import asyncio  # noqa: F401
+    import contextlib  # noqa: F401
     import errno  # noqa: F401
     import fnmatch  # noqa: F401
     import functools  # noqa: F401
     import hashlib  # noqa: F401
+    import itertools  # noqa: F401
     import os  # noqa: F401
     import stat  # noqa: F401
     import threading  # noqa: F401
     import time  # noqa: F401
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
-    from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar  # noqa: F401
+    from typing import (  # noqa: F401
+        Any,
+        Callable,
+        Generic,
+        Iterable,
+        Iterator,
+        Sequence,
+        TypeVar,
+    )
+
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
 # This module is the facade of the agent-discovery owners in
 # ``kiro_crew.agent_discovery_parts``, and every name is reached through it as
 # ``kiro_crew.agent_discovery.<name>``: a read is served by the owner that binds the name,
