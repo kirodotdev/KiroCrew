@@ -2850,10 +2850,13 @@ class _ChatSlot:
         # "user" so a possibly-manual name is never rewritten. "" = untitled.
         self._title_origin: str = ""
         # Monotonic counter bumped on every EXPLICIT title assignment (manual
-        # rename or the manual generate-title endpoint). Background title tasks
-        # snapshot it before generating and re-check it after each await, so an
-        # explicit title landing mid-generation is never overwritten (see
-        # chat_title._maybe_auto_title / maybe_refresh_title).
+        # rename or the manual generate-title endpoint). Title generators --
+        # the background tasks and the foreground generate-title endpoint
+        # alike -- snapshot it before generating and re-check it before
+        # applying what they generated, so an explicit title landing
+        # mid-generation is never overwritten (see
+        # chat_title._maybe_auto_title / maybe_refresh_title /
+        # api_chat_slot_generate_title).
         self._title_epoch: int = 0
         # User-message count at the last background title refresh ATTEMPT (0 =
         # never refreshed). Each milestone in chat_title._TITLE_REFRESH_MILESTONES

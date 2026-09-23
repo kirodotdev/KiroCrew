@@ -20,6 +20,7 @@ Locked-in invariants:
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -348,6 +349,130 @@ class TestManualRegenerateWindow:
         assert "topic-0 " not in prompt, "old head must be windowed out"
         assert "tool-row" not in prompt
         assert slot.title == "Tail topic title"
+
+
+class TestManualRegenerateRaceGuard:
+    """The manual regenerate endpoint stands down when a rename lands during
+    its own await -- the same ``_title_epoch`` contract ``maybe_refresh_title``
+    documents and enforces at its two re-check points. The name the user typed
+    outranks a generated one that was already in flight."""
+
+    @pytest.mark.asyncio
+    async def test_rename_during_generation_wins(self, monkeypatch):
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [{"role": "user", "content": "hello world task"}]
+        slot.title = "Old auto title"
+        slot._titled = True
+        slot._title_origin = _TITLE_ORIGIN_AUTO
+
+        async def _rename_mid_flight(_sessions, _prompt, **_kw):
+            # A manual rename landing mid-await, exactly as
+            # api_chat_slot_rename writes it.
+            slot.title = "User chosen name"
+            slot._title_origin = _TITLE_ORIGIN_USER
+            slot._title_epoch += 1
+            return "Model suggestion"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "run_bg_oneliner", _rename_mid_flight)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "_ui_language", lambda: "")
+
+        state = _fake_state()
+        state._slots = {slot.key: slot}
+        epoch_after_rename = slot._title_epoch + 1
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": slot.key}
+
+        response = await chat_title.api_chat_slot_generate_title(request)
+
+        assert response.status == 200
+        payload = json.loads(response.body.decode())
+        assert payload == {"ok": True, "title": ""}, (
+            "the stand-down must answer with the endpoint's existing "
+            "nothing-was-applied shape so the client keeps the user's name"
+        )
+        assert slot.title == "User chosen name"
+        assert slot._title_origin == _TITLE_ORIGIN_USER
+        assert slot._title_epoch == epoch_after_rename, "no epoch bump on stand-down"
+        state.push_slot_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rename_during_persist_is_not_broadcast_over(self, monkeypatch):
+        """Second re-check point: the rename lands while OUR persist awaits, so
+        it has already pushed its own name, so broadcasting our own stale title
+        would overwrite it in the sidebar."""
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [{"role": "user", "content": "hello world task"}]
+        slot.title = "Old auto title"
+        slot._titled = True
+        slot._title_origin = _TITLE_ORIGIN_AUTO
+
+        async def _generate(_sessions, _prompt, **_kw):
+            return "Model suggestion"
+
+        async def _rename_during_persist(_state, _slot):
+            slot.title = "User chosen name"
+            slot._title_origin = _TITLE_ORIGIN_USER
+            slot._title_epoch += 1
+            return True
+
+        monkeypatch.setattr(chat_title, "run_bg_oneliner", _generate)
+        monkeypatch.setattr(chat_title, "_persist_title", _rename_during_persist)
+        monkeypatch.setattr(chat_title, "_ui_language", lambda: "")
+
+        state = _fake_state()
+        state._slots = {slot.key: slot}
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": slot.key}
+
+        response = await chat_title.api_chat_slot_generate_title(request)
+
+        assert response.status == 200
+        assert json.loads(response.body.decode()) == {"ok": True, "title": ""}
+        assert slot.title == "User chosen name"
+        state.push_slot_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_quiet_window_still_applies_the_generated_title(self, monkeypatch):
+        """The guard must not break the ordinary path: with no rename in the
+        window the generated title is written, persisted and pushed."""
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [{"role": "user", "content": "hello world task"}]
+        slot.title = "Old auto title"
+        slot._titled = True
+        slot._title_origin = _TITLE_ORIGIN_AUTO
+
+        async def _generate(_sessions, _prompt, **_kw):
+            return "Model suggestion"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "run_bg_oneliner", _generate)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "_ui_language", lambda: "")
+
+        state = _fake_state()
+        state._slots = {slot.key: slot}
+        epoch_before = slot._title_epoch
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": slot.key}
+
+        response = await chat_title.api_chat_slot_generate_title(request)
+
+        assert json.loads(response.body.decode()) == {
+            "ok": True,
+            "title": "Model suggestion",
+        }
+        assert slot.title == "Model suggestion"
+        assert slot._title_epoch == epoch_before + 1
+        state.push_slot_title.assert_called_once_with(slot.key, "Model suggestion")
 
 
 # ── origin recording on the write paths ──────────────────────────────────────

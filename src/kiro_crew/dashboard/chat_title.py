@@ -1463,6 +1463,7 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
 
     logger.info("Manual title generation requested for slot %s", name)
     fallback_is_placeholder = False
+    epoch = slot._title_epoch
     try:
         # Window the RECENT conversational tail: the user reaches for
         # "Regenerate title" when the current name no longer fits, so the
@@ -1483,6 +1484,19 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         title = _fallback_title_from_messages(slot.messages)
         fallback_is_placeholder = title == NEW_SESSION_TITLE
 
+    # RACE GUARD: a manual rename landing during the generation await bumps the
+    # epoch, and its name outranks ours -- stand down instead of overwriting it,
+    # the same contract ``maybe_refresh_title`` states in its docstring. The
+    # empty title is this endpoint's existing "nothing was applied" answer, so
+    # the user keeps their own name with no client change.
+    if slot._title_epoch != epoch:
+        logger.info(
+            "Manual title generation: explicit title landed during generation "
+            "for slot %s; keeping it",
+            name,
+        )
+        return web.json_response({"ok": True, "title": ""})
+
     if title and not fallback_is_placeholder:
         slot.title = title
         slot._titled = True
@@ -1494,7 +1508,19 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         # first-message echo — the early low-signal refresh must not re-fire.
         slot._title_low_signal = False
         slot._title_epoch += 1
+        epoch = slot._title_epoch
         await _persist_title(state, slot)
+        # RE-CHECK after the persist await, mirroring the refresh path: a rename
+        # landing during the write has already pushed ITS name, so pushing our
+        # now-stale local ``title`` would overwrite it in the sidebar (the disk
+        # is already correct via the persist loop; this guards the broadcast).
+        if slot._title_epoch != epoch:
+            logger.info(
+                "Manual title generation: explicit title landed during persist "
+                "for slot %s; keeping it",
+                name,
+            )
+            return web.json_response({"ok": True, "title": ""})
         state.push_slot_title(slot.key, title)
 
     return web.json_response({"ok": True, "title": "" if fallback_is_placeholder else title})
