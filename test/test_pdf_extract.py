@@ -369,10 +369,26 @@ class TestChildCaps:
     def _main(
         monkeypatch, capsys, argv: list[str], data: bytes, pdfplumber_module: object
     ) -> tuple[int, list[dict]]:
-        """Run the child's ``main`` in-process: stdin and the parser both faked."""
+        """Run the child's ``main`` in-process: stdin and the parser both faked.
+
+        ``main`` arms ``start_rss_watchdog`` first thing, and that watchdog
+        ends the PROCESS with ``os._exit`` when the process's peak RSS is over
+        ``--max-rss``. In-process here, "the process" is the pytest-xdist
+        worker, which has run thousands of tests by the time it reaches this
+        file and can well sit above the 1 GB the argv sets -- so the first
+        watchdog tick killed the worker (``worker 'gwN' crashed``). The
+        watchdog has its own tests in ``TestBound``; these tests are about the
+        caps, so the harness stubs it out and records that ``main`` asked for
+        it with the argv's limit.
+        """
+        armed: list[int] = []
+        monkeypatch.setattr(
+            pdf_extract_child, "start_rss_watchdog", lambda limit: armed.append(limit) or True
+        )
         monkeypatch.setattr(sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(data)})())
         monkeypatch.setitem(sys.modules, "pdfplumber", pdfplumber_module)
         rc = pdf_extract_child.main(argv)
+        assert armed, "main() must arm the RSS watchdog before reading anything"
         out = capsys.readouterr().out
         return rc, [json.loads(line) for line in out.splitlines() if line]
 
