@@ -7559,6 +7559,7 @@
       "unknown_error": "알 수 없는 오류"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "정렬 순서 따르기(고정 전체)",
       "bring_back_to_main": "메인 창으로 되돌리기",
       "close_session": "세션 닫기",
       "copy_link": "링크 복사",

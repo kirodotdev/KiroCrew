@@ -7671,6 +7671,7 @@
       "unknown_error": "Unbekannter Fehler"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Sortierung folgen (alle angepinnten)",
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
       "close_session": "Sitzung schließen",
       "copy_link": "Link kopieren",

@@ -7559,6 +7559,7 @@
       "unknown_error": "不明なエラー"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "並び順に従う（固定中すべて）",
       "bring_back_to_main": "メインに戻す",
       "close_session": "セッションを閉じる",
       "copy_link": "リンクをコピー",

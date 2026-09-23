@@ -5047,6 +5047,7 @@
       "unknown_error": "Unknown error"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Follow sort order (all pinned)",
       "bring_back_to_main": "Bring back to main",
       "close_session": "Close session",
       "copy_link": "Copy link",
