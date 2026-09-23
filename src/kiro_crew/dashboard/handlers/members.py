@@ -207,6 +207,12 @@ async def api_members(request: web.Request) -> web.Response:
     state: DashboardState | None = request.app.get("state")
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
 
+    # The roster's redaction chokepoint, shared with ``GET /api/agents`` so the
+    # two endpoints cannot drift apart. Function-local for the same reason
+    # ``agent_panel`` is below: ``handlers.agents`` reaches back into this
+    # package at import time, so a module-level import would close the cycle.
+    from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
+
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
         if not _AGENT_NAME_RE.match(name):
@@ -229,18 +235,27 @@ async def api_members(request: web.Request) -> web.Response:
                 # would ship every future field (including a credential-shaped
                 # one) to the roster endpoint automatically. Each field below is
                 # here because a caller renders or routes on it.
+                # `name` and `slug` stay verbatim: they are the row's
+                # IDENTITY, which every per-member route is keyed on, and a
+                # credential-shaped name is refused at creation
+                # (`_name_would_be_masked`). Every other
+                # record value is agent-writable free text, so it goes through
+                # `_roster_mask` and is replaced WHOLESALE when the redactors
+                # would alter it.
                 "name": name,
                 "slug": slug,
-                "kiro_agent": agent_cfg.kiro_agent,
-                "workspace": agent_cfg.workspace,
-                "memory_store": agent_cfg.memory_store,
+                "kiro_agent": _roster_mask(agent_cfg.kiro_agent),
+                "workspace": _roster_mask(agent_cfg.workspace),
+                "memory_store": _roster_mask(agent_cfg.memory_store),
                 "memory_version": version,
-                "memory_owner": owner,
-                "model": agent_cfg.model,
-                # Presentation-only and validated by _safe_avatar at load, so
-                # it cannot carry a credential-shaped value. Without it every
-                # Members surface silently falls back to the name-derived face.
-                "avatar": agent_cfg.avatar,
+                "memory_owner": _roster_mask(owner),
+                "model": _roster_mask(agent_cfg.model),
+                # Presentation-only, but `_safe_avatar` pins only the SHAPE:
+                # its `traits` and `expressions` values are free text, so the
+                # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than
+                # shipped raw. Without it every Members surface silently falls
+                # back to the name-derived face.
+                "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
                 # Roster-filter inputs. `source` lets the page collapse the
                 # package-installed majority the agent sync writes; it is
                 # NORMALIZED, never the raw config string (see
@@ -255,8 +270,8 @@ async def api_members(request: web.Request) -> web.Response:
                 # of these should handle a ticket", by the reader or by a router.
                 # An empty `triggers` is meaningful rather than missing: it is the
                 # operator's opt-out from being routed to at all.
-                "description": agent_cfg.description,
-                "triggers": agent_cfg.triggers,
+                "description": _roster_mask(agent_cfg.description),
+                "triggers": _roster_mask(agent_cfg.triggers),
             }
         )
 

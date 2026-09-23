@@ -365,14 +365,20 @@ class TestDelegationCarriesTheCrewsStore:
 class TestTheMembersRosterCarriesIdentity:
     def test_description_and_triggers_are_exposed(self, crew_config):
         """A roster that shows a crew's store but not what it is for cannot
-        answer "which of these should handle a ticket"."""
+        answer "which of these should handle a ticket".
+
+        Both values reach the row through ``_roster_mask``, which passes benign
+        text byte-identical and replaces a credential-shaped value with a
+        sentinel. That is a redaction of the VALUE, not a withdrawal of the
+        field, so the roster still carries a crew's identity.
+        """
         import inspect
 
         from kiro_crew.dashboard.handlers import members as members_handler
 
         src = inspect.getsource(members_handler)
-        assert '"description": agent_cfg.description' in src
-        assert '"triggers": agent_cfg.triggers' in src
+        assert '"description": _roster_mask(agent_cfg.description)' in src
+        assert '"triggers": _roster_mask(agent_cfg.triggers)' in src
 
 
 class TestTheSpawnEndpointActuallyDelegates:
