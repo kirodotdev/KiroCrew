@@ -2381,7 +2381,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(api.memberThread).not.toHaveBeenCalled()
     await screen.findByText(/Pick a member/i)
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(currentUrl()).toBe('/members')
+    await waitFor(() => expect(currentUrl()).toBe('/members'))
     // Nothing was opened, so nothing is remembered.
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBeNull()
     // Opening a member retires the notice — and, being a choice, is remembered.
