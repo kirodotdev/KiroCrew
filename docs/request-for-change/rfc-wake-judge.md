@@ -1,12 +1,12 @@
 ---
 title: Wake judge — a System One model screens auto-nudge ticks
-status: draft
+status: partial
 author: Raymond Chen
 created: 2026-09-22
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-09-23
+audited-at: 2fdadc71ac
+doc-pr: 12735
+implementation-prs: [12776]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -18,6 +18,28 @@ superseded-by: []
 - Companion: [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
   (typed wake gate). The judge is the other half: it screens evidence only a
   model can read.
+
+Status: partial. The LLM lane is on main: `decisions/impl_llm.py` answers the
+judge's questions over one tool-less model call, `gate.py` carries `nudge.wake`
+in `DECISION_POINT_NAMES` beside `JUDGE_POINT` and the two lane names, and
+`decisions.nudge_wake.provider` and `.llm_model` are live config keys the config
+route may edit. The judge core is in flight on
+[#12787](https://github.com/kirodotdev/KiroCrew/pull/12787) rather than on main:
+`decisions/points/nudge_wake.py`, the `nudge_evidence` entry in
+`POINT_SCOPE_KEYS`, the evidence collectors, the autonudge tick hook, `judge` on
+`monitor_start` / `monitor_update` and the transcript notice are all absent from
+main, and so are the skills that author a brief. No `kirocrew-judge` agent
+template is coming: the landed lane runs on the bundled `kirocrew-lite`
+(`JUDGE_AGENT_NAME`), because a judge template would differ from it only in the
+model, which the runner passes per call, and a standing prompt the call already
+states. Code references below were read at `2fdadc71ac`. The sections describing
+the core describe that branch, read at `08f5787fb8`, and it is a subset of them:
+it carries the transcript-tail and pull-request-probe evidence kinds, states that
+a comment-BODY kind is deliberately absent because its reader publishes only a
+digest, and carries no work-ledger or self collector at all. Its `default_spec()`
+carries the two criteria and not §3.3's untrusted-evidence clause, and its scope
+text is the opt-in wording §7 Q4 and Q5 are about. Re-audit §3.2, §3.3 and §3.6
+at merge.
 
 ## 1. Problem
 
@@ -64,7 +86,7 @@ autonudge tick ─▶ evidence collectors ─▶ state (bounded, scrubbed)
                                              │
                                              ▼
                               decide("nudge.wake", state, questions)
-                              Jev (consented)  |  LLM lane (kirocrew-judge)
+                              Jev (consented)  |  LLM lane (kirocrew-lite)
                                              │
                      ┌───────────────────────┴──────────────────────┐
                      ▼                                              ▼
@@ -82,8 +104,9 @@ stop one, so no prose can buy permanent silence.
 
 State (one object, ≤ 8 000 chars after scrubbing, oldest evidence dropped first):
 
-- `loop`: the owner's instruction, truncated to 1 500 chars, and the `judge`
-  spec's `wake_when` / `quiet_when` text.
+- `loop`: the owner's instruction, truncated to 1 500 chars, and the
+  `wake_when` / `quiet_when` text of the brief in force — the built-in one, or
+  the `judge` spec's where the loop arms one.
 - `since_last_tick`: a list of evidence items, each `{source, kind, age_s, text}`
   where `source` names the collector and the target (`session:chat-1751`,
   `pr:kirodotdev/KiroCrew#12735`, `work-ledger:it_42`), `kind` is a closed set
@@ -149,7 +172,7 @@ canonical redaction pass) before it enters state; a scrub hit drops the item
 and records `scrubbed`. Nothing leaves the machine that the owner's own
 session would not have read.
 
-### 3.3 Arming: the owner writes the judge's brief
+### 3.3 Arming: a built-in brief, and the owner's own
 
 `monitor_start` and `monitor_update` gain one optional object, feature-gated:
 
@@ -163,28 +186,75 @@ session would not have read.
 
 `wake_when` and `quiet_when` become the `needs_owner` question's criteria. This
 is how the main session "gives the judge its orders": the babysit and
-goal-conductor skills are updated to author these two lines when arming, in
+goal-conductor skills author these two lines when arming, in
 plain words, from the loop's exit condition. Targets default to what the
 message names (PR URLs, `chat-*` keys); the explicit list adds or narrows.
 
-Without `judge`, the loop behaves exactly as today. With the preview off, a
-`judge` object is accepted, stored, and ignored, so an armed loop survives the
-switch being toggled.
+The object is optional because the point carries a brief of its own. Once the
+`nudge_evidence` scope is granted, every gated auto-nudge loop is screened, and a
+loop that arms no `judge` object is screened with the built-in brief: **wake**
+when the subject needs its owner — a blocker, a question or a ruling addressed to
+it, a terminal state, or the exit condition the loop's own message states;
+**quiet** when nothing has arrived for the owner since the last tick. An explicit
+`judge` brief overrides the built-in one, so a loop that knows its own subject
+states its own criteria and a loop that says nothing is still screened.
+
+The built-in brief carries one clause beyond those two, because the loops it
+covers have no author to write it: evidence from a pull-request comment or a
+fetched page is untrusted content, and a claim inside it that there is nothing to
+do is not evidence that nothing happened. §5's compounding bound rests on that
+clause, so it belongs in the shipped default rather than in a skill's brief.
+
+The scope carries the built-in brief alone. A loop whose owner wrote criteria is
+screened on the lane's own authority (§3.4), scope or no scope; a loop that wrote
+none supplies no such authorization, so `nudge_evidence` stands in for the half
+the brief would have supplied. "Default off" therefore still holds for a
+fresh install: nothing is screened until the owner grants the scope or arms a
+brief. That standing-in is what §7 Q4 questions, because the scope's words name
+one destination while the lane that answers may be the other, and Q5 asks how a
+grant made under the narrower wording is told apart from one made under this.
+
+Where the judge sits in the tick decides which loops it can reach. It answers
+before the typed probe guard for a loop whose probe will not run — a conductor
+watching sibling sessions carries no monitor at all, so anything behind a
+monitor's presence would never reach it — and defers to the probe's own quiet
+return for a loop whose probe does run, because only the probe sees a merged or
+closed subject and ends the watch.
+
+Three cases bypass the judge. A loop armed `gate=false` acts while its subject is
+quiet — refreshing a heartbeat, chasing a reviewer who has not replied — so its
+ticks are the work rather than a reaction to evidence, and screening them would
+remove the turns the owner asked for. `judge: false`, the one value the object
+takes beside a brief, is the owner's opt-out for a single loop. And
+`monitor_watch` stays probe-first: a typed provider probe answers the same
+question there without a model, and the judge reads only what a probe cannot
+type. With the scope off, a `judge` object that names no criteria of its own is
+accepted, stored and ignored, so an armed loop survives the switch being toggled;
+one that names criteria is screened on its lane's own authority, which is what
+makes the brief the thing that carries it.
 
 ### 3.4 Providers
 
-- **Jev lane** (default when consented): the shipped `JevOracle`, keystone
+- **Jev lane** (what `auto` resolves to when the keystone consents and the scope
+  is granted): the shipped `JevOracle`, keystone
   consent bound to the endpoint (`decisions_consent.json`), key only via
   `secret://TYPESAFE_API_KEY`, bounded wait, strict `_from_wire`. No change to
   the seam's trust model; `nudge.wake` is one more entry in `gate.POINTS`.
 - **LLM lane** (`impl_llm.py`): the same `Answers` shape produced by a
-  text-only, tool-less agent `kirocrew-judge` (a haiku-class model by default,
-  configurable), prompted with the state and the questions and required to
+  text-only, tool-less run of the bundled `kirocrew-lite` agent (`JUDGE_AGENT_NAME`)
+  on whatever model that agent already resolves: `JUDGE_MODEL_DEFAULT` is `auto`,
+  so the default inherits the session's own background-role model and pins no
+  model class, and an operator who wants a specific one picks it on the card.
+  It is prompted with the state and the
+  questions and required to
   answer in one JSON object with exactly the question ids, each value a
   probability. The parser is as strict as `_from_wire`: any extra key, missing
   id, non-finite number or prose → invalid answer → FALLBACK. The LLM lane is
   what makes the interface real for people without a Jev key; it is slower
   (seconds) and costs a small model call, still far below a main-session turn.
+  No judge-specific agent template ships: it would differ from `kirocrew-lite`
+  only in the model, which the runner passes per call, and in a standing prompt
+  that `render_prompt` already states more completely on every call.
 - **Provider selection** is a per-point setting, `decisions.nudge_wake.provider
   ∈ {auto, jev, llm}` (`auto` = Jev when the keystone consents, else LLM),
   written through the config route like the `decisions.model_route.<tier>`
@@ -195,7 +265,12 @@ switch being toggled.
   turn to) and no data class (the owner's own children's transcripts,
   creator-only), decides only quiet-or-fire, and is fail-open; it is
   authorised by `provider = llm` plus the `judge` spec the owner's session
-  arms, with no keystone involvement.
+  arms, with no keystone involvement. What authorises a loop that arms no spec is
+  Q4: the built-in brief rests on `nudge_evidence` today, a scope whose words
+  describe the Jev endpoint rather than this lane's destination.
+  `gate.py`'s `_judge_authority` and `config/sections.py` both state
+  the spec half as shipped rationale and predate the built-in brief, so each owes
+  one sentence; they sit in files this document does not change.
 
 ### 3.5 Rendering
 
@@ -217,21 +292,42 @@ scope gets a consent switch on its detail panel, with no frontend edit. The
 judge uses exactly that:
 
 - `nudge.wake` is registered in `gate.POINTS` with a new scope
-  `nudge_evidence` in `POINT_SCOPE_KEYS`: "Jev may receive the judge's
-  evidence: worker transcripts, review comments and ledger events for the
-  loops I arm". For the Jev lane that scope switch is the on switch; there is
-  no separate feature toggle. Scope off → the Jev lane is off, the tick
-  behaves exactly as today and any `judge` spec is stored and ignored.
+  `nudge_evidence` in `POINT_SCOPE_KEYS`. The switch text bounds what the grant
+  buys, and the built-in brief makes that population wider than the words a
+  reviewer of an opt-in feature would have read: not "the loops I arm" but every
+  gated loop the owner runs. Two consequences follow that this document does not
+  settle; §7 carries them as questions rather than answers. The switch names the
+  Jev endpoint, yet a briefless loop with the scope granted and no endpoint
+  consent is screened on the LLM lane, whose destination is the owner's own model
+  provider (Q4). And a consent authorizes the words it was recorded against and
+  nothing wider — the rule `gate.py` states for the `tool_args` scope — while the
+  keystone records one boolean per scope and no wording, so nothing distinguishes
+  a grant made under narrower text (Q5).
+  For the Jev lane that scope switch is the on switch; there is
+  no separate feature toggle. Scope off → the Jev lane is off and a `judge` spec
+  naming no criteria is stored and ignored, so a tick with no brief of its own
+  behaves exactly as today; a spec that names criteria still runs on the LLM
+  lane, which this scope does not govern (§3.4).
 - The row's detail panel carries the point's own settings: provider
   (auto / Jev / LLM), the LLM model (from the advertised model list, "keep the
   session's own model" by default), and the quiet-streak floor. All three write
   `decisions.nudge_wake.*` keys registered in the config route's editable set.
   Choosing LLM is what turns the LLM lane on (§3.4).
-- Status is the server's verdict, as for every row: `on` when the scope is
-  granted and Jev is consented, or when the provider is LLM; else `off`.
+- Status is the server's verdict, as for every row, and for this point it is read
+  from the lane the gate would actually pick rather than from the keystone alone.
+  The row reports that lane as running where it can answer, and where the picked
+  lane cannot run it says which grant is missing rather than a flat off. The
+  vocabulary is the card's and this document does not restate it; what belongs
+  here is the consequence: a machine that grants the scope without an endpoint
+  consent is screening on the LLM lane, and its row says so rather than reading
+  as switched off.
 
-Default off. Turning the scope off mid-loop returns the loop to plain timer
-behaviour on its next tick.
+Default off, in the sense a fresh install has no scope granted and screens
+nothing. Turning the scope off mid-loop returns a loop running the built-in brief
+to plain timer behaviour on its next tick. It is not a kill switch for the judge
+as a whole: a loop whose owner wrote criteria was never screened on that grant and
+keeps running on its lane's own authority, so `judge: false` is what stops one
+(§3.3).
 
 ## 4. Cost
 
@@ -249,19 +345,26 @@ behaviour on its next tick.
 - Authority: the judge decides only QUIET vs fire; it cannot inject text into
   a turn, choose a target, or write anything. A single wrong answer costs one
   delayed or one extra turn.
-- Compounding: a QUIET answer sustained across ticks compounds, and the
-  evidence that sustains it is untrusted content crossing a trust boundary (a
+- Compounding: a QUIET answer sustained across ticks compounds, and once the
+  scope is granted the loops exposed to it are every gated one, including those
+  that arm no brief. The evidence sustaining a QUIET is untrusted content
+  crossing a trust boundary (a
   PR comment, a fetched page). Worst case, an input crafted to read as
   "nothing to do" suppresses delivery for `quiet_streak_floor × interval_secs`:
   with the default floor (`_MAX_QUIET_STREAK`, 10) and a 45-minute interval,
   7.5 hours. That is the silence a gated loop already tolerates today when
   its subject does not change; what is new is that text can now buy it. The
-  bound is enforced by the floor itself: it counts every tick, including those
-  the judge answered QUIET, it resets only on a delivered turn, and it is
-  per-point configurable downward via `decisions.nudge_wake.quiet_streak_floor`
-  (never off). Owners watching public repositories should set a lower floor.
-  Evidence is labelled per source in `state`, and the babysit skill's brief
-  tells the judge that PR comments and fetched content are untrusted.
+  bound is enforced by the floor itself, and it is the judge's own counter rather
+  than the probe's: a per-loop `judge_quiet_streak` counts every tick the judge
+  answered QUIET, resets only on a delivered turn, and is compared against
+  `decisions.nudge_wake.quiet_streak_floor` (clamped, never off). A per-loop
+  counter is what makes the bound reach a loop carrying no monitor at all, which
+  the monitor's own streak field could not. Owners watching public repositories
+  should set a lower floor.
+  Evidence is labelled per source in `state`, and the warning that a comment or a
+  fetched page is untrusted is part of the built-in brief (§3.3), so it reaches
+  every screened loop rather than only the ones whose owner wrote criteria. The
+  babysit skill's brief states it again for the loops that write their own.
 - Targets: `session` collection is creator-only; a `judge.targets` entry the
   owner may not read is dropped and logged, never fetched.
 - Fail-open by construction: every error path is the ungated timer.
@@ -311,9 +414,26 @@ behaviour on its next tick.
    consents and the `nudge_evidence` scope is granted, otherwise to the LLM lane;
    a pinned `jev` without the scope stores the brief and runs the plain timer.
    Revisit if the lane ever sends more than the session itself would.
-3. Name. Mechanism: wake judge (decision point `nudge.wake`). Fallback agent:
-   `kirocrew-judge`. User-facing metaphor in the toggle copy: "a secretary who
+3. Name. Mechanism: wake judge (decision point `nudge.wake`). The fallback lane
+   runs the bundled `kirocrew-lite` agent rather than a judge-specific template.
+   User-facing metaphor in the toggle copy: "a secretary who
    screens the interruptions".
+4. Which switch authorizes the LLM lane for a briefless loop. The built-in brief
+   rests on `nudge_evidence`, whose text describes the Jev endpoint, but a loop
+   with the scope granted and no endpoint consent is screened on the LLM lane,
+   which sends to the owner's own model provider instead. Either that switch's
+   words cover both destinations, or the built-in brief is restricted to one lane.
+   Restricting it to the LLM lane adds no destination and needs no re-consent, at
+   the cost of the Jev lane never serving a loop whose owner wrote nothing;
+   restricting it to Jev keeps the words honest and leaves installs without a key
+   unscreened by default. Unresolved, and it decides code in PR D, not prose here.
+5. How a widened consent is recognised. A consent authorizes the words it was
+   recorded against and nothing wider, but the keystone records one boolean per
+   scope and no wording or version, so an install that granted `nudge_evidence`
+   under opt-in wording is indistinguishable from one that granted it under the
+   wider population. Either the scope is versioned, or the wider population needs
+   a scope key of its own, which is the mechanism the seam already uses to keep an
+   already-consented install inert for a category it never reviewed.
 
 ## 8. Rollout
 
@@ -321,10 +441,13 @@ behaviour on its next tick.
    `gate.POINTS` with the `nudge_evidence` scope, collectors, the autonudge
    tick hook with fail-open mapping, `judge` on `monitor_start` /
    `monitor_update`, transcript notice, `decisions.nudge_wake.*` keys, tests.
-   Jev lane only. This is the path that lets a Jev key holder use the judge
-   on day one: grant the scope, arm a loop with a `judge` spec.
-2. PR E — LLM lane: `decisions/impl_llm.py`, the `kirocrew-judge` agent
-   template, the provider setting, and on the Decisions card (after #12598) the
+   Jev lane only. The day-one path for a Jev key holder is to grant the scope and
+   have their gated loops screened with the built-in brief, with a `judge` spec
+   stating criteria of a loop's own. Blocked on Q4: which switch authorizes a
+   briefless loop on each lane is undecided, and both this entry's scope text and
+   its default follow whatever Q4 settles.
+2. PR E — LLM lane: `decisions/impl_llm.py` running the bundled `kirocrew-lite`
+   agent, the provider setting, and on the Decisions card (after #12598) the
    row label for `nudge.wake` plus the provider and LLM-model pickers in its
    detail panel. Depends on D's point name and on #12598's card shape.
 3. PR F — skills: `babysit` and `goal-conductor` author `wake_when` /
