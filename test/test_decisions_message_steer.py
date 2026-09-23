@@ -316,6 +316,148 @@ class TestTheTurnTextIsRedacted:
         ), "no cleaned text is the only safe answer for text about to leave the machine"
 
 
+class TestNoSingleRowDecidesHowMuchTextIsScanned:
+    """The crossing row keeps a TAIL of its own share plus :data:`ms.SCAN_MARGIN_CHARS`.
+
+    ``MAX_ACTIVITY_ROWS`` bounds how many rows are read and the consented budget
+    bounds what is sent. Neither bounds how much text the scanners run over: that
+    is the crossing row's job, and taking it whole lets one pathological row
+    decide. The margin is what makes bounding it safe rather than a fragment
+    source, so each test here pins the bound and the margin together.
+    """
+
+    #: A vendor token the canonical redactor does NOT carry and the gate DOES, so
+    #: it reaches ``scrub_reason`` intact and is the shape that proves a straddling
+    #: credential is still refused rather than quietly cleaned.
+    CRED = "sk-" + "a" * 32
+
+    def test_a_credential_straddling_the_budgets_cut_is_whole_and_refused(self):
+        """The cut the BUDGET makes falls inside the key; the margin keeps it whole.
+
+        The bound is asserted on the same row, because the budget's clip runs
+        AFTER the scanners: without it this 6.5 KB row reaches them entire.
+        """
+        from kiro_crew.decisions import gate as gate_mod
+
+        room = ms.MAX_ACTIVITY_CHARS
+        # The key ends 1481 characters from the row's end, so the budget's own cut
+        # at ``room`` lands eighteen characters into it.
+        row = "F" * 5000 + " " + self.CRED + " " + "T" * (room - 20)
+        _request, activity = ms.running_turn_excerpts(
+            _rows(("user", ""), ("chunk", row)), budget=200_000
+        )
+        assert len(activity) <= room + ms.SCAN_MARGIN_CHARS, (
+            "one row decided how much text was scanned: the crossing row keeps its"
+            " share of the budget plus the scan margin, not all of itself"
+        )
+        assert self.CRED in activity, (
+            "the margin exists so a key straddling the budget's cut is whole for"
+            " the scanners; a fragment would match no pattern"
+        )
+        assert (
+            gate_mod.scrub_reason({"running_turn": {"activity": activity}}, [], model="jev-latest")
+            == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+        ), "whole, so the gate still refuses the request instead of sending a fragment"
+
+    def test_the_cut_is_advanced_to_whitespace_so_it_halves_no_token(self):
+        """No pattern either scanner carries matches across whitespace."""
+        filler = "word " * 400 + "wo"
+        _request, activity = ms.running_turn_excerpts(
+            _rows(("user", ""), ("chunk", "F" * 3000 + " " + filler)), budget=200_000
+        )
+        assert len(activity) <= ms.MAX_ACTIVITY_CHARS + ms.SCAN_MARGIN_CHARS
+        assert activity.startswith("word"), (
+            "the raw cut landed inside a word; it is advanced past the first"
+            " whitespace in the margin so no token can be halved"
+        )
+
+    def test_a_pem_key_straddling_the_cut_leaves_no_body_line(self):
+        """A credential branch that SPANS whitespace: no cut inside one is safe.
+
+        ``redaction.py``'s PEM branch anchors on the ``-----BEGIN … PRIVATE
+        KEY-----`` header and runs across the newline-broken body, so a whitespace
+        cut inside that body strips the only anchor and the surviving base64 lines
+        match no branch at all. :func:`ms.uncuttable` cleans such a row instead.
+        """
+        # Assembled from pieces, not written out, for the reason `_AWS_KEY` above
+        # is: a contiguous key-shaped literal is refused by the repo's own secret
+        # scanners, correctly, since they cannot tell a test vector from a leak.
+        fence = "-" * 5
+        header = f"{fence}BEGIN RSA PRIVATE" + f" KEY{fence}"
+        footer = f"{fence}END RSA PRIVATE" + f" KEY{fence}"
+        body_line = "Zm9vYmFy" * 8
+        pem = header + "\n" + "\n".join([body_line] * 40) + "\n" + footer
+        room = ms.MAX_ACTIVITY_CHARS
+        # The body straddles the cut the budget makes, and the margin is full of
+        # the body's own newlines, so a whitespace cut is always available there.
+        _request, activity = ms.running_turn_excerpts(
+            _rows(("user", ""), ("chunk", "F" * 3000 + " " + pem + " " + "T" * (room - 20))),
+            budget=200_000,
+        )
+        assert body_line not in activity, (
+            "a base64 body line reached the excerpt with its BEGIN header cut away:"
+            " nothing downstream anchors it, so it goes to the provider verbatim"
+        )
+        assert header not in activity and footer not in activity
+        assert activity.endswith("T" * 20), "cleaned, not dropped: the row is still excerpted"
+
+    @pytest.mark.parametrize(
+        "row, secret",
+        [
+            ("Authorization: Bearer " + "8Fq2mKpRzXvN4tLwYbCdEeGhJk", "8Fq2mKpRzXvN4tLwYbCdEeGhJk"),
+            ("aws_secret_access_key = " + "b" * 40, "b" * 40),
+            ("SessionToken: " + "c" * 44, "c" * 44),
+        ],
+        ids=["bearer", "aws-secret", "session-token"],
+    )
+    def test_a_credentials_label_is_never_cut_away_from_its_value(self, row, secret):
+        """The other whitespace-spanning shape: a label and a value, not one token.
+
+        These branches match only BECAUSE they span the whitespace inside the
+        credential expression, so a cut between label and value leaves a value no
+        branch anchors -- and an opaque 26-character token is under the bare-secret
+        floor and outside the gate's table, so nothing downstream catches it. The
+        row is redacted before it is cut, which is what keeps the pair together.
+
+        Driven with a small ``room_left`` on purpose: the row is then SHORTER than
+        the margin, so the cut is its own first whitespace rather than one deep
+        inside it.
+        """
+        _request, activity = ms.running_turn_excerpts(
+            _rows(
+                ("user", ""),
+                ("chunk", row),
+                ("chunk", "x" * (ms.MAX_ACTIVITY_CHARS - 5)),
+            ),
+            budget=200_000,
+        )
+        assert secret not in activity
+
+    def test_a_crossing_row_with_no_whitespace_in_the_margin_is_dropped(self):
+        """Every cut inside one token can halve a secret, so the row is dropped.
+
+        A ``JWT_MULTI_SEGMENT`` has no maximum length, so no margin makes a cut
+        inside an unbroken token safe. Dropping costs one row; keeping it would put
+        a suffix no pattern matches on the wire.
+        """
+        unbroken = "J" * (ms.MAX_ACTIVITY_CHARS + ms.SCAN_MARGIN_CHARS + 500)
+        _request, activity = ms.running_turn_excerpts(
+            _rows(("user", ""), ("chunk", unbroken), ("chunk", "readable")), budget=200_000
+        )
+        assert activity == "readable", (
+            "the unbroken row is dropped, and the rows that can be bounded safely" " are still kept"
+        )
+
+    def test_a_row_inside_the_room_is_byte_identical(self):
+        """Nothing changes for a row that fits: the bound is the crossing row only."""
+        request, activity = ms.running_turn_excerpts(
+            _rows(("user", "go"), ("assistant", "A" * 200), ("chunk", "B" * 200)),
+            budget=2000,
+        )
+        assert request == "go"
+        assert activity == "A" * 200 + "\n" + "B" * 200
+
+
 class TestTheOutcomeRow:
     def test_the_row_carries_the_choice_and_the_arm_it_replaced(self, written_rows):
         row = ms.record_outcome(

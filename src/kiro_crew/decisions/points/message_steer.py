@@ -121,6 +121,15 @@ MAX_ACTIVITY_CHARS = 1500
 #: printed thousands of rows cannot turn one send into a whole-list scan.
 MAX_ACTIVITY_ROWS = 40
 
+#: Characters a crossing row keeps PAST its share of the activity budget, so a
+#: shape the GATE matches and the redactors do not -- its table carries a bare
+#: ``sk-`` form -- is whole for the gate when it straddles the cut the budget
+#: itself makes. Neither table expresses a maximum (``JWT_MULTI_SEGMENT`` is
+#: ``eyJ[A-Za-z0-9_-]+``; every vendor form is ``{16,}`` or wider), so the size is
+#: measured: the longest shape ``test_decisions_gate.py`` asserts on is 83
+#: characters, plus 8.
+SCAN_MARGIN_CHARS = 91
+
 #: Rows the activity excerpt is built from. ``chunk`` is the live, unflushed text
 #: of the reply in progress, which is exactly the part a sender is reacting to.
 #:
@@ -259,12 +268,30 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
             break
         if role not in ACTIVITY_ROLES or spent >= activity_room:
             continue
-        # The row is taken WHOLE. Clipping it here would cut before the redactors
-        # run, and a cut inside a secret leaves a fragment neither pattern matches
-        # -- the fragment, not the secret, is then what goes on the wire. What
-        # bounds the send is still the budget, applied by `redacted` AFTER it has
-        # scanned; what this loop bounds is how much text reaches the scanners,
-        # which is the budget plus the row that crosses it.
+        # A row that fits is taken WHOLE. Bounding a row that CROSSES the budget
+        # means CUTTING it, and a cut inside a secret leaves a fragment neither
+        # redactor matches -- the fragment, not the secret, is then what goes on the
+        # wire. So the row goes through :func:`redacted` FIRST, which cleans the
+        # whole row and takes the tail after: a placeholder cannot be halved, and
+        # the tail is the part the budget keeps anyway. Credential branches that
+        # span whitespace (a newline-broken PEM body) are covered by that ordering,
+        # not by where the cut lands.
+        #
+        # The cut is then advanced to the first whitespace in the margin, and the
+        # row dropped when the margin has none: the GATE's table is wider than the
+        # redactors' -- it carries a bare ``sk-`` form -- and no shape in it
+        # contains whitespace, so a whitespace cut cannot halve one.
+        room_left = activity_room - spent
+        if len(content) > room_left:
+            content = redacted(content, room_left + SCAN_MARGIN_CHARS)
+            if len(content) > room_left:
+                margin = content[:SCAN_MARGIN_CHARS]
+                cut = next((i + 1 for i, ch in enumerate(margin) if ch.isspace()), None)
+                if cut is None:
+                    continue
+                content = content[cut:]
+        if not content:
+            continue
         pieces.append(content)
         spent += len(content)
     pieces.reverse()
