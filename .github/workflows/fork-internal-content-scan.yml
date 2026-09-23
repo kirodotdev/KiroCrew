@@ -46,7 +46,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: fork-internal-content-scan-${{ github.event.workflow_run.head_sha }}
+  group: >-
+    fork-internal-content-scan-${{
+      github.event.workflow_run.head_repository.full_name
+    }}-${{ github.event.workflow_run.head_branch }}-${{
+      github.event.workflow_run.head_sha
+    }}
   cancel-in-progress: true
 
 jobs:

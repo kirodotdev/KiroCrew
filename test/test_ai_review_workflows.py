@@ -32,6 +32,12 @@ FORK_REVIEW_LANES = (
     "fork-first-principles-review.yml",
     "fork-security-scope-review.yml",
 )
+EXACT_IDENTITY_REVIEW_LANES = (
+    "fork-opus-review.yml",
+    "fork-gpt-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+)
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
@@ -308,6 +314,284 @@ def _step(workflow_name: str, step_name: str) -> dict:
 
 def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
     return {k: str(v) for k, v in (_step(workflow_name, step_name).get("env") or {}).items()}
+
+
+class TestForkStage2ExactHeadIdentity:
+    """Execute the privileged resolvers against authoritative identity cases."""
+
+    _SHA = "a" * 40
+    _BASE = "b" * 40
+    _REPO = "outside/example"
+    _REF = "feature/exact-head"
+    _SPECIAL_REF = 'feature/slash-"quote"-% space-유니코드'
+
+    @staticmethod
+    def _row(number: int, *, sha: str, repo: str, ref: str) -> dict:
+        return {
+            "number": number,
+            "state": "open",
+            "head": {"sha": sha, "repo": {"full_name": repo}, "ref": ref},
+        }
+
+    def _run_review_resolver(
+        self,
+        tmp_path: Path,
+        lane: str,
+        pages: list[list[dict]],
+        *,
+        repo: str | None = None,
+        ref: str | None = None,
+        list_rc: int = 0,
+    ) -> subprocess.CompletedProcess[str]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the resolver step is Bash; skip where Bash is absent")
+
+        pages_file = tmp_path / "pages.json"
+        pages_file.write_text(
+            "\n".join(json.dumps(page, ensure_ascii=False) for page in pages),
+            encoding="utf-8",
+        )
+        calls = tmp_path / "gh-calls"
+        calls.touch()
+        gh = tmp_path / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf \'%s\\n\' "$*" >> "$CALLS"\n'
+            'case "${2:-}" in\n'
+            '  *"pulls?state=open&per_page=100"*)\n'
+            '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
+            '    cat "$PAGES"; exit 0 ;;\n'
+            "  */pulls/*) printf '%s\\n' \"$BASE_SHA\"; exit 0 ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        sleep = tmp_path / "sleep"
+        sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        gh.chmod(0o755)
+        sleep.chmod(0o755)
+        output = tmp_path / "github-output"
+        output.touch()
+
+        return subprocess.run(
+            [
+                bash,
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                _step_script(
+                    _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(
+                {
+                    "PATH": _stub_path(tmp_path),
+                    "GH_TOKEN": "stub",
+                    "REPO": "kirodotdev/KiroCrew",
+                    "WR_HEAD_SHA": self._SHA,
+                    "WR_HEAD_REPO": self._REPO if repo is None else repo,
+                    "WR_HEAD_REF": self._REF if ref is None else ref,
+                    "PAGES": str(pages_file),
+                    "CALLS": str(calls),
+                    "LIST_RC": str(list_rc),
+                    "BASE_SHA": self._BASE,
+                    "GITHUB_OUTPUT": str(output),
+                }
+            ),
+            cwd=tmp_path,
+        )
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_same_sha_sibling_on_an_earlier_page_cannot_answer(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        pages = [
+            [self._row(11, sha=self._SHA, repo="another/fork", ref=self._REF)],
+            [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+        ]
+
+        result = self._run_review_resolver(tmp_path, lane, pages)
+
+        assert result.returncode == 0, _proc_log(result)
+        output = (tmp_path / "github-output").read_text(encoding="utf-8")
+        assert "pr=22\n" in output
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_special_ref_is_compared_as_data(self, lane: str, tmp_path: Path) -> None:
+        pages = [[self._row(22, sha=self._SHA, repo=self._REPO, ref=self._SPECIAL_REF)]]
+
+        result = self._run_review_resolver(tmp_path, lane, pages, ref=self._SPECIAL_REF)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert "pr=22\n" in (tmp_path / "github-output").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_matches_across_pages_have_authoritative_cardinality(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        pages = [
+            [self._row(21, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+            [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+        ]
+
+        result = self._run_review_resolver(tmp_path, lane, pages)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "more than one open PR" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_zero_match_keeps_the_review_lanes_fail_closed(self, lane: str, tmp_path: Path) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]])
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "superseded or closed" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_read_failure_is_not_reported_as_zero_match(self, lane: str, tmp_path: Path) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]], list_rc=7)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "query itself failed" in result.stdout + result.stderr
+        assert "superseded or closed" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    @pytest.mark.parametrize(("repo", "ref"), [("", _REF), (_REPO, "")])
+    def test_empty_trigger_identity_fails_before_the_api_read(
+        self, lane: str, repo: str, ref: str, tmp_path: Path
+    ) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]], repo=repo, ref=ref)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "empty workflow_run head identity" in result.stdout + result.stderr
+        assert (tmp_path / "gh-calls").read_text(encoding="utf-8") == ""
+
+    def test_every_review_resolver_aggregates_pages_before_exact_matching(self) -> None:
+        for lane in EXACT_IDENTITY_REVIEW_LANES:
+            step = _step_script(
+                _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+            )
+            assert '--arg sha "$head_sha"' in step, lane
+            assert '--arg repo "$WR_HEAD_REPO"' in step, lane
+            assert '--arg ref "$WR_HEAD_REF"' in step, lane
+            assert '.state == "open"' in step, lane
+            assert ".head.repo.full_name == $repo" in step, lane
+            assert ".head.ref == $ref" in step, lane
+            assert ".head.sha == $sha" in step, lane
+            assert '$repo == ""' not in step, lane
+            assert '$ref == ""' not in step, lane
+            assert "candidate_count" in step, lane
+            assert re.search(r"--paginate \\\n\s+\| jq -rs", step), lane
+
+    def test_workflow_guard_keeps_its_distinct_identity_dispositions(self, tmp_path: Path) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the resolver step is Bash; skip where Bash is absent")
+        workflow = _workflow("fork-workflow-guard.yml")
+        step = _step_script(workflow, "Evaluate workflow-change guard")
+        step = step.split("\n  strip-stale-override:", 1)[0]
+        gh = tmp_path / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "${2:-}" in\n'
+            '  *"pulls?state=open&per_page=100"*)\n'
+            '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
+            '    cat "$PAGES"; exit 0 ;;\n'
+            "  */pulls/*/files) printf 'src/example.py\\n'; exit 0 ;;\n"
+            "  */issues/*/labels) exit 0 ;;\n"
+            "  --method) exit 0 ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+
+        def run(
+            pages: list[list[dict]], *, list_rc: int = 0, pull_request_target: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            pages_file = tmp_path / "guard-pages.json"
+            pages_file.write_text("\n".join(json.dumps(page) for page in pages), encoding="utf-8")
+            wr = ("", "", "") if pull_request_target else (self._SHA, self._REPO, self._REF)
+            pr = (self._SHA, self._REPO, self._REF) if pull_request_target else ("", "", "")
+            return subprocess.run(
+                [bash, "-e", "-o", "pipefail", "-c", step],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=_child_env(
+                    {
+                        "PATH": _stub_path(tmp_path),
+                        "GH_TOKEN": "stub",
+                        "REPO": "kirodotdev/KiroCrew",
+                        "WR_HEAD_SHA": wr[0],
+                        "WR_HEAD_REPO": wr[1],
+                        "WR_HEAD_REF": wr[2],
+                        "PR_HEAD_SHA": pr[0],
+                        "PR_HEAD_REPO": pr[1],
+                        "PR_HEAD_REF": pr[2],
+                        "OVERRIDE_LABEL": "allow-fork-workflow-change",
+                        "PAGES": str(pages_file),
+                        "LIST_RC": str(list_rc),
+                    }
+                ),
+                cwd=tmp_path,
+            )
+
+        zero = run([[]])
+        assert zero.returncode == 0, _proc_log(zero)
+        assert "superseded or closed" in zero.stdout + zero.stderr
+
+        ambiguous = run(
+            [
+                [self._row(21, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+                [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+            ]
+        )
+        assert ambiguous.returncode != 0, _proc_log(ambiguous)
+        assert "more than one open PR" in ambiguous.stdout + ambiguous.stderr
+
+        unreadable = run([[]], list_rc=7)
+        assert unreadable.returncode != 0, _proc_log(unreadable)
+        assert "query itself failed" in unreadable.stdout + unreadable.stderr
+        assert "superseded or closed" not in unreadable.stdout + unreadable.stderr
+
+        pull_request_target = run(
+            [[self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)]],
+            pull_request_target=True,
+        )
+        assert pull_request_target.returncode == 0, _proc_log(pull_request_target)
+        assert "guard verdict: success" in pull_request_target.stdout
+
+    def test_workflow_guard_uses_exact_identity_for_both_event_shapes(self) -> None:
+        workflow = _workflow("fork-workflow-guard.yml")
+        step = _step_script(workflow, "Evaluate workflow-change guard")
+        env = _step_env("fork-workflow-guard.yml", "Evaluate workflow-change guard")
+
+        for name in (
+            "WR_HEAD_SHA",
+            "WR_HEAD_REPO",
+            "WR_HEAD_REF",
+            "PR_HEAD_SHA",
+            "PR_HEAD_REPO",
+            "PR_HEAD_REF",
+        ):
+            assert name in env
+        assert '--arg repo "$head_repo"' in step
+        assert '--arg ref "$head_ref"' in step
+        assert '--arg sha "$head_sha"' in step
+        assert ".head.repo.full_name == $repo" in step
+        assert ".head.ref == $ref" in step
+        assert ".head.sha == $sha" in step
+        assert "candidate_count" in step
+        assert 'gh api "repos/$REPO/pulls/$pr/files" --paginate' in step
 
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.

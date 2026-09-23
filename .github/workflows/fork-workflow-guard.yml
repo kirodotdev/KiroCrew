@@ -54,7 +54,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-workflow-guard-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  group: >-
+    fork-workflow-guard-${{
+      github.event.workflow_run.head_repository.full_name
+      || github.event.pull_request.head.repo.full_name
+    }}-${{
+      github.event.workflow_run.head_branch || github.event.pull_request.head.ref
+    }}-${{
+      github.event.workflow_run.head_sha || github.event.pull_request.head.sha
+    }}
   cancel-in-progress: true
 
 jobs:
@@ -85,12 +93,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           OVERRIDE_LABEL: allow-fork-workflow-change
         run: |
           set -uo pipefail
           head_sha="${WR_HEAD_SHA:-$PR_HEAD_SHA}"
-          if [ -z "$head_sha" ]; then echo "::error::no head sha available"; exit 1; fi
+          head_repo="${WR_HEAD_REPO:-$PR_HEAD_REPO}"
+          head_ref="${WR_HEAD_REF:-$PR_HEAD_REF}"
+          if [ -z "$head_sha" ] || [ -z "$head_repo" ] || [ -z "$head_ref" ]; then
+            echo "::error::empty event head identity (repository/ref/SHA); failing closed"
+            exit 1
+          fi
 
           # Resolve the PR by matching the open PR whose head SHA == head_sha
           # (workflow_run.pull_requests is empty for forks).
@@ -107,15 +124,27 @@ jobs:
           #     check-run POSTs, so nothing was published and no verdict is
           #     withheld. Report it and exit 0.
           # stderr is no longer discarded, so a failing query now says why.
-          if ! pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
+          if ! candidates="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            | jq -rs --arg sha "$head_sha" --arg repo "$head_repo" --arg ref "$head_ref" '
+                [.[][]
+                  | select(.state == "open"
+                           and .head.repo.full_name == $repo
+                           and .head.ref == $ref
+                           and .head.sha == $sha)]
+              ')"; then
             echo "::error::could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
             exit 1
           fi
-          if [ -z "$pr" ]; then
-            echo "::notice::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to evaluate"
+          candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
+          if [ "$candidate_count" -eq 0 ]; then
+            echo "::notice::no open PR has head $head_sha on $head_repo:$head_ref - superseded or closed while CI was queued; nothing to evaluate"
             exit 0
           fi
+          if [ "$candidate_count" -ne 1 ]; then
+            echo "::error::more than one open PR matches head $head_sha on $head_repo:$head_ref; refusing to select one"
+            exit 1
+          fi
+          pr="$(printf '%s' "$candidates" | jq -r '.[0].number')"
 
           # AUTHORITATIVE, COMPLETE changed-file list from the paginated PR-files
           # endpoint. NOT the compare API — its `.files` caps at 300, which would

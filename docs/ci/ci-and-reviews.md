@@ -2829,9 +2829,15 @@ Nothing the fork controls can influence these reviews:
 
 - `workflow_run` **always** runs the workflow definition from the **default branch**,
   so a fork editing these files in its PR has no effect on what runs.
-- `github.event.workflow_run.head_sha` is set by GitHub and is the only authoritative
-  input taken from the trigger. The PR is resolved by matching an open PR whose head
-  SHA equals it, because `workflow_run.pull_requests` is empty for forks.
+- `github.event.workflow_run.head_sha`, `head_repository.full_name`, and
+  `head_branch` are set by GitHub and form the authoritative trigger identity. The
+  resolver aggregates every open-PR page, matches all three values as jq data, and
+  proceeds only when exactly one candidate remains; empty or ambiguous identity
+  fails closed instead of degrading to a SHA-only first match.
+- Fork-lane concurrency uses that same `(head repository, head branch, head SHA)`
+  identity, so two pull requests sharing a commit cannot cancel one another. The
+  workflow guard preserves equivalent `pull_request_target` fallbacks for all three
+  coordinates.
 - The base SHA is re-fetched from the PR via the API and the diff is re-derived from
   GitHub's compare endpoint pinned to `(base_sha...head_sha)`. Stage 1's artifact is
   an untrusted **hint** only, so a fork faking it changes nothing.
