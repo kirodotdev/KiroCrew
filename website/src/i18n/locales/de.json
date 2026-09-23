@@ -10900,6 +10900,7 @@
       "mint_failure_timed_out": "Beim Einrichten der Autorisierung wurde das Zeitlimit erreicht, bevor die Freigabeadresse bereit war. Versuche erneut, eine Verbindung herzustellen.",
       "mint_failure_unknown": "Die Autorisierung konnte nicht eingerichtet werden, bevor die Freigabeadresse bereit war. Versuche erneut, eine Verbindung herzustellen.",
       "mint_failure_url_rejected": "Der Anbieter hat eine Freigabeadresse mit Daten zurückgegeben, die wie Zugangsdaten aussehen. Daher wurde sie nicht angezeigt.",
+      "mint_failure_url_rejected_endpoint": "Der Autorisierungsendpunkt {{endpoint}} sah aus, als enthielte er Zugangsdaten, und wurde daher abgelehnt. Wenn es sich um einen vertrauenswürdigen Identitätsanbieter handelt, den {{productName}} nicht kennt, trage {{endpoint}} in die Datei oauth_endpoints.json im {{productName}}-Datenverzeichnis ein (den Eintrag zeigt docs/guides/connecting-remote-oauth-mcp-server.md). Andernfalls bitte den Serverbetreiber, die URL zu korrigieren.",
       "needs_attention": "Aktion erforderlich",
       "no_matching_services": "Keine Dienste entsprechen dieser Suche.",
       "not_connected": "Nicht verbunden",

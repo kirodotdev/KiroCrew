@@ -448,6 +448,13 @@ async def api_connections_mint_state(request: web.Request) -> web.Response:
         payload["oauth_url"] = view["oauth_url"]
     if view.get("reason"):
         payload["reason"] = view["reason"]
+    if view.get("rejected_endpoint"):
+        # Rides only beside reason == "mint_url_rejected". Already reduced to a
+        # copy-ready host+path by security.sanitized_oauth_endpoint_display
+        # (query, fragment, port and userinfo never reach the view), so it is
+        # safe to cross the wire; the card renders it in place of the unnamed
+        # rejection message.
+        payload["rejected_endpoint"] = view["rejected_endpoint"]
     return web.json_response(payload)
 
 

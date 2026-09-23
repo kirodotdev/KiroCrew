@@ -1385,7 +1385,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // Decided BEFORE any setState: a state updater runs on a later render, so
     // collecting side-effect targets inside one leaves them empty at read time.
     const cleared: string[] = []
-    const mintFailures: Array<{ slug: string; reason?: string }> = []
+    const mintFailures: Array<{ slug: string; reason?: string; endpoint?: string }> = []
     const grantedMints: string[] = []
     for (const provider of CONNECTION_PROVIDERS) {
       const pending = locallyWaiting[provider.slug]
@@ -1406,7 +1406,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           && mint.reason
         )
       ) {
-        mintFailures.push({ slug: provider.slug, reason: mint.reason })
+        mintFailures.push({ slug: provider.slug, reason: mint.reason, endpoint: mint.rejected_endpoint })
       }
       if (outcome.probe) grantedMints.push(provider.slug)
     }
@@ -1433,7 +1433,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     if (mintFailures.length) {
       setFeedback(current => {
         const next = { ...current }
-        for (const { slug, reason } of mintFailures) {
+        for (const { slug, reason, endpoint } of mintFailures) {
           let error: string
           switch (reason) {
             case 'mint_timeouterror':
@@ -1446,7 +1446,12 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_server_absent')
               break
             case 'mint_url_rejected':
-              error = t('pages.connectionsPage.mint_failure_url_rejected')
+              // Name WHICH endpoint was refused when the backend could reduce
+              // it to a copy-ready host/path; otherwise keep the unnamed
+              // message rather than show a remedy that cannot work.
+              error = endpoint
+                ? t('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
+                : t('pages.connectionsPage.mint_failure_url_rejected')
               break
             default:
               error = t('pages.connectionsPage.mint_failure_unknown')

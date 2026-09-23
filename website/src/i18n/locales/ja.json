@@ -10741,6 +10741,7 @@
       "mint_failure_timed_out": "承認アドレスの準備ができる前に、認証の設定がタイムアウトしました。もう一度接続してください。",
       "mint_failure_unknown": "承認アドレスの準備ができる前に、認証の設定に失敗しました。もう一度接続してください。",
       "mint_failure_url_rejected": "プロバイダーから認証情報のようなデータを含む承認アドレスが返されたため、表示しませんでした。",
+      "mint_failure_url_rejected_endpoint": "認可エンドポイント「{{endpoint}}」に認証情報が含まれているように見えたため、拒否しました。{{productName}} が認識していない信頼できる ID プロバイダーであれば、{{productName}} のデータホームにある oauth_endpoints.json に「{{endpoint}}」を追加してください（書き方は docs/guides/connecting-remote-oauth-mcp-server.md を参照）。そうでなければ、サーバーの所有者に URL の修正を依頼してください。",
       "needs_attention": "注意が必要",
       "no_matching_services": "この検索に一致するサービスはありません。",
       "not_connected": "接続されていません",

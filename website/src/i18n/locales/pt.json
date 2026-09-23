@@ -11059,6 +11059,7 @@
       "mint_failure_timed_out": "A configuração da autorização atingiu o tempo limite antes que o endereço de aprovação estivesse pronto. Tente conectar novamente.",
       "mint_failure_unknown": "A configuração da autorização falhou antes que o endereço de aprovação estivesse pronto. Tente conectar novamente.",
       "mint_failure_url_rejected": "O provedor retornou um endereço de aprovação com dados semelhantes a credenciais, por isso ele não foi exibido.",
+      "mint_failure_url_rejected_endpoint": "O endpoint de autorização {{endpoint}} parecia conter uma credencial, por isso foi rejeitado. Se for um provedor de identidade confiável que o {{productName}} não reconhece, adicione {{endpoint}} ao oauth_endpoints.json na pasta de dados do {{productName}} (docs/guides/connecting-remote-oauth-mcp-server.md mostra a entrada a escrever). Caso contrário, peça ao dono do servidor para corrigir a URL.",
       "needs_attention": "Requer atenção",
       "no_matching_services": "Nenhum serviço corresponde a esta busca.",
       "not_connected": "Não conectado",

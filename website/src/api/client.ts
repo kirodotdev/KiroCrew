@@ -248,6 +248,11 @@ export interface ConnectionMintState {
   state: 'idle' | 'minting' | 'waiting' | 'granted' | 'failed' | 'expired'
   oauth_url?: string
   reason?: string
+  /** Copy-ready "host/path" of the authorization URL the credential gate
+   *  refused. Present only beside reason === 'mint_url_rejected', and only when
+   *  the backend could reduce the URL to a string the oauth_endpoints.json
+   *  loader would accept (query, fragment, port and userinfo are never sent). */
+  rejected_endpoint?: string
   /** Opaque id of the backend row, unique across gateway restarts as well as
    *  within one process. Reported so a row can be told apart from its
    *  successor for the same provider. */

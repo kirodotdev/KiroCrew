@@ -20,7 +20,7 @@ from test_connections_mint import _FS_ATTRS, _FS_NAMES, _called_names
 from conftest import requires_symlinks
 from kiro_crew import security
 from kiro_crew.agent_files import AGENT_FILENAME
-from kiro_crew.connections import tool_aliases, warm
+from kiro_crew.connections import mint, tool_aliases, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
 
@@ -1565,6 +1565,46 @@ async def test_a_url_carrying_a_credential_is_refused_rather_than_stored(_stub_a
     )
     assert await warm._absorb_warm_requests(bearing, claims) == []
     assert "linear" not in _mints, "the claim is released so the card asks for a fresh mint"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_premint_stays_slug_only_and_hands_naming_to_the_cold_mint(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, _stub_activation
+):
+    """The warm gate is one half of a two-step surface. It must NOT name the endpoint
+    itself -- the warning and the audit line are logger sinks, and URL-derived text there
+    is what the credential-disclosure scanners flag -- but the URL it refuses must be one
+    the cold mint CAN name, or releasing the claim would send the card to a fresh mint that
+    ends just as opaquely. Both halves are pinned here: the release leaves no row (so the
+    card's poll reads ``idle`` and asks for a cold mint), the warm-side text carries the
+    slug and nothing from the URL, and the display contract the cold mint applies to the
+    same URL yields the copy-ready endpoint."""
+    url = "https://linear.example/authorize?state=AKIA" + "IOSFODNN7EXAMPLE1"
+    audited: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        warm, "_log_warm_event", lambda op, res, outcome="ok": audited.append((op, res, outcome))
+    )
+    provider = _provider("linear")
+    claims = await _claim("linear")
+
+    with caplog.at_level(logging.WARNING, logger=warm.logger.name):
+        absorbed = await warm._absorb_warm_requests(
+            _result([provider], [{"serverName": "linear", "oauthUrl": url}]), claims
+        )
+
+    assert absorbed == []
+    assert "linear" not in _mints
+    assert mint.pending_mint_for("linear") is None
+    # Slug-only on every warm-side channel.
+    assert audited == [("connections_warm_mint_url", "provider:linear", "refused")]
+    assert "linear" in caplog.text
+    for never in ("linear.example", "/authorize", "AKIA", url):
+        assert never not in caplog.text
+        assert never not in json.dumps(audited)
+    # The hand-off is coherent: the cold mint the card now starts re-hits this URL,
+    # and its card view names exactly this endpoint (host+path, nothing from the query).
+    assert security.oauth_url_contains_credential(url)
+    assert security.sanitized_oauth_endpoint_display(url) == "linear.example/authorize"
 
 
 @pytest.mark.asyncio

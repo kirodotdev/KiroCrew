@@ -553,6 +553,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "resource_limit_spec",
     "sandbox_credential_targets",
     "sanitized_oauth_endpoint",
+    "sanitized_oauth_endpoint_display",
     "scan_exfiltration_urls",
     "scan_history",
     "scan_memory",

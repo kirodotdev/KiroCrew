@@ -701,7 +701,8 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
       and a credential-bearing HOSTNAME makes the whole helper return ``None``
       — a host is an identity, so a redacted host would name nothing;
     * both components are length-capped, so a pathological URL cannot bloat a
-      banner or a log line.
+      banner or a log line; a capped component ends in ``…`` so a reader can
+      tell a chopped name from a whole one.
 
     Returns ``None`` when the URL does not parse to a hostname, so callers fall
     back to their existing unnamed message. Deliberately independent of WHY the
@@ -752,13 +753,62 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
         # transformed form and refuse to name it.
         if _oauth_component_is_unsafe(host):
             return None
-    host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN]
+    if len(host) > _SANITIZED_OAUTH_HOST_MAX_LEN:
+        # Marked like the path below: a silently chopped host reads as a whole
+        # hostname that nothing on disk will ever match.
+        host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN] + "…"
     path = parsed.path or "/"
     if _oauth_component_is_unsafe(path):
         path = _REDACTED_CREDENTIAL_TAG
     elif len(path) > _SANITIZED_OAUTH_PATH_MAX_LEN:
         path = path[:_SANITIZED_OAUTH_PATH_MAX_LEN] + "…"
     return host, path
+
+
+def sanitized_oauth_endpoint_display(url: str) -> str | None:
+    """A rejected endpoint as one copy-ready ``host/path`` string, or ``None``.
+
+    :func:`sanitized_oauth_endpoint` answers a diagnostic ``(host, path)`` pair
+    and, by contract, may hand back a component that is NOT pasteable: the
+    shared redaction tag for a credential-bearing path, or a ``…``-capped host
+    or path. A surface whose whole point is "write THIS into
+    ``oauth_endpoints.json``" must not join those into text that reads as
+    actionable and is not.
+
+    So this helper returns a string only when the pair would also be accepted
+    by the extension file's own loader and honoured by the gate that reads it:
+
+    * the host matches ``_OAUTH_EXTENSION_HOST_RE`` (lowercase DNS name with a
+      letter TLD — so ``localhost``, IP literals and a capped host are refused);
+    * the path passes ``_valid_oauth_extension_path`` (leading ``/``, no
+      ``; ? # % \\ ..`` or whitespace) and is neither redacted nor capped;
+    * the URL is ``https`` with no explicit port, because the gate grants the
+      endpoint carve-out only under those two conditions and an entry for an
+      ``http`` or ``:8443`` endpoint would be refused again after the user
+      added it.
+
+    Callers fall back to their unnamed message on ``None``. The function is a
+    pure parse-and-match: it never re-runs the credential verdict and never
+    touches the operator file, so it is safe to call inline.
+    """
+    endpoint = sanitized_oauth_endpoint(url)
+    if endpoint is None:
+        return None
+    host, path = endpoint
+    # A capped host needs no check of its own: the host rule below ends in a
+    # letter TLD, which a trailing "…" can never satisfy.
+    if path == _REDACTED_CREDENTIAL_TAG or path.endswith("…"):
+        return None
+    if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host) or not _valid_oauth_extension_path(path):
+        return None
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or port is not None:
+        return None
+    return f"{host}{path}"
 
 
 # ── Binary File MIME Allowlist ──
