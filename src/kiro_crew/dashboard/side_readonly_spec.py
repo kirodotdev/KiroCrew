@@ -221,7 +221,19 @@ def derive_readonly_spec(
     if "autoAllowReadonly" in spec:
         spec["autoAllowReadonly"] = False
     if "permissions" in spec:
-        spec["permissions"] = {"rules": []}
+        # An empty policy is still a policy, and the KEY's presence is what a
+        # kiro-cli below ``SPEC_PERMISSIONS_MIN_VERSION`` -- or one whose
+        # version cannot be established -- refuses the whole file for
+        # (``deny_unknown_fields``). This file is published into the registry
+        # kiro-cli loads agents from, so a refusal here costs the side turn the
+        # very isolation this module exists to give it. Same gate, and same
+        # removal of an inherited value, as the generated writers in
+        # ``agent.py``; on an accepting release it derives ``{"rules": []}``
+        # from the emptied grants above, which is what this line wrote. The
+        # guard stays: a base carrying no block never gains one.
+        from kiro_crew.agent import _write_derived_permissions
+
+        _write_derived_permissions(spec, spec["allowedTools"], derived_name)
     spec.pop("hooks", None)
     return spec
 

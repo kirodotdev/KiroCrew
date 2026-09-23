@@ -14,6 +14,37 @@ import pytest
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.dashboard import side_readonly_spec as srs
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+
+#: A release that accepts a spec ``permissions`` block, and one that refuses it,
+#: expressed against the floor so raising it cannot strand these tests.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the shared writer gate believes the installed kiro-cli is.
+
+    Same helper the generated writers' suites use: the gate reads
+    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``,
+    so the patch lands there. ``which`` is ``"accepts"``, ``"refuses"`` or
+    ``"unknown"``.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
+
+
+@pytest.fixture(autouse=True)
+def _accepting_kiro_cli(monkeypatch):
+    """Every other test here predates the gate and assumes it passes.
+
+    Without the pin the answer is whatever the test HOST has -- on CI nothing,
+    which reads as "unknown" -- so an assertion about the derived KAS block
+    would be decided by the host rather than by the code. The two tests that
+    exercise the gate itself re-pin over this default.
+    """
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
+
 
 _SHIPPED_DEFAULTS = Path(__file__).resolve().parents[1] / "src/kiro_crew/config/defaults.json"
 
@@ -290,3 +321,52 @@ def test_publish_never_overwrites_a_foreign_file_at_the_derived_path(agents_dir)
         srs.publish_readonly_spec("kirocrew")
     assert exc.value.code == "derived_path_foreign"
     assert foreign.is_symlink() and elsewhere.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("release", ["accepts", "refuses", "unknown"])
+def test_the_derived_spec_carries_a_kas_block_only_where_the_cli_accepts_it(
+    agents_dir, monkeypatch, release
+):
+    """This module is a generated-spec writer and shares the one version gate.
+
+    The derived file is published into ``~/.kiro/agents`` -- the directory
+    kiro-cli loads its selectable agents from -- and kiro-cli validates specs
+    with serde ``deny_unknown_fields``. A release below
+    ``SPEC_PERMISSIONS_MIN_VERSION``, or one whose version cannot be
+    established, therefore refuses the WHOLE derived file for the mere presence
+    of the key, whatever its value: an EMPTY policy is still a policy. What is
+    lost when it is refused is this module's entire reason to exist -- the side
+    turn's read-only isolation -- so the field is withheld there, exactly as the
+    generated writers in ``agent.py`` withhold it.
+    """
+    (agents_dir / "kirocrew.json").write_text(json.dumps(_BASE), encoding="utf-8")
+    _pin_spec_permissions_cli(monkeypatch, release)
+
+    published = srs.publish_readonly_spec("kirocrew")
+
+    on_disk = json.loads((agents_dir / f"{published.name}.json").read_text(encoding="utf-8"))
+    assert on_disk["allowedTools"] == [], "the emptied grant list is never withheld"
+    assert on_disk["includeMcpJson"] is False
+    if release == "accepts":
+        assert on_disk["permissions"] == {"rules": []}
+    else:
+        assert "permissions" not in on_disk, f"a {release} CLI must get no block"
+
+
+def test_a_base_without_a_kas_block_never_gains_one(agents_dir, monkeypatch):
+    """The gate decides whether the field may be carried, not whether to add it.
+
+    Its mere presence is what makes KAS load a spec at all, so deriving a block
+    for a base that had none would change what the backend does with the agent
+    -- a widening this module has no reason to make. Pinned on the accepting
+    release, where a gate that forgot the guard would write one.
+    """
+    base = {k: v for k, v in _BASE.items() if k != "permissions"}
+    (agents_dir / "kirocrew.json").write_text(json.dumps(base), encoding="utf-8")
+    _pin_spec_permissions_cli(monkeypatch, "accepts")
+
+    published = srs.publish_readonly_spec("kirocrew")
+
+    on_disk = json.loads((agents_dir / f"{published.name}.json").read_text(encoding="utf-8"))
+    assert "permissions" not in on_disk
+    assert on_disk["allowedTools"] == []
