@@ -727,6 +727,188 @@ class TestForeignMaskShadowGuard:
         ):
             assert not sandbox.carveout_shadowed_by_foreign_mask(target), target
 
+    def test_the_staging_roots_own_mask_entry_is_not_a_foreign_ancestor(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """An ANCESTOR-LIFT producer asks about the mask entry it lifts.
+
+        Its per-call directory is a proper DESCENDANT of that entry, so asking
+        about the directory refuses on every layout, the default one included --
+        which is exactly why the aws-control staging site asks about the root.
+        Both are asserted, so the reason the site is shaped that way is pinned
+        rather than only its verdict.
+        """
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "relocated-crew"))
+        staging_root = str(tmp_path / "relocated-crew" / "aws-control-staging")
+
+        assert staging_root in sandbox._relocated_crew_targets(("aws-control-staging",))
+        assert not sandbox.carveout_shadowed_by_foreign_mask(staging_root)
+        assert sandbox.carveout_shadowed_by_foreign_mask(
+            os.path.join(staging_root, "drive-preview-abc")
+        )
+
+    def test_a_staging_root_beneath_a_masked_tree_is_shadowed(self, monkeypatch, tmp_path) -> None:
+        """A data home relocated beneath ``~/.gnupg`` keeps that mask.
+
+        The producer's own entry is exempt by the equality rule; the credential
+        tree above it is not, and that is the layout the staging site must
+        refuse rather than lift.
+        """
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".gnupg" / "relocated-crew"))
+        staging_root = str(tmp_path / ".gnupg" / "relocated-crew" / "aws-control-staging")
+
+        assert sandbox.carveout_shadowed_by_foreign_mask(staging_root)
+
+    @pytest.mark.skipif(os.name != "posix", reason="the mask is a POSIX mechanism")
+    def test_the_staging_site_refuses_to_spawn_under_a_foreign_mask(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The aws-control preview transfer fails closed instead of spawning.
+
+        The third carve-out producer: on a data home relocated beneath
+        ``~/.gnupg`` the staging carve-out would cancel that credential tree's
+        mask for the CLI child, so the transfer must raise before ``_checked``
+        runs -- and the per-call directory must still be cleaned up.
+        """
+        from kiro_crew.apps.builtins.aws_control.backend import storage
+
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".gnupg" / "relocated-crew"))
+        staging_root = tmp_path / ".gnupg" / "relocated-crew" / "aws-control-staging"
+        staging_root.mkdir(parents=True)
+        monkeypatch.setattr(storage, "_preview_staging_parent", lambda: staging_root)
+        # Pinned, not inherited: an ``off`` tier skips the check by design, and a
+        # governed host can clamp the tier either way.
+        monkeypatch.setattr(storage, "effective_sandbox_mode", lambda _m: "standard")
+
+        def _never_spawn(*args: object, **kwargs: object) -> str:
+            raise AssertionError("the CLI must not be spawned under a foreign mask")
+
+        monkeypatch.setattr(storage, "_checked", _never_spawn)
+
+        with pytest.raises(ValueError, match="independently masked"):
+            storage.get_object_head_bytes(
+                "p",
+                "us-east-1",
+                "bucket",
+                "drive",
+                "key",
+                account="111122223333",
+                max_bytes=64,
+            )
+
+        assert not list(staging_root.iterdir()), "the per-call directory must be removed"
+
+    @pytest.mark.skipif(os.name != "posix", reason="the mask is a POSIX mechanism")
+    def test_a_host_with_no_mask_still_serves_the_preview(self, monkeypatch, tmp_path) -> None:
+        """No mask can exist, nothing to unmask -- so no refusal either.
+
+        An ``off`` tier makes ``wrap_argv`` ignore ``extra_visible_dirs``
+        outright, and a non-POSIX host has no backend to apply one, so the grant
+        lifts nothing and refusing on the same shadowed layout would cost a
+        preview for no security gain. Driven through the tier arm because the
+        platform arm would send the rest of the call down its other OS's
+        branches. The shadowed layout is asserted through the guard first, so
+        this cannot pass by the layout being safe.
+        """
+        from kiro_crew.apps.builtins.aws_control.backend import storage
+
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".gnupg" / "relocated-crew"))
+        staging_root = tmp_path / ".gnupg" / "relocated-crew" / "aws-control-staging"
+        staging_root.mkdir(parents=True)
+        assert sandbox.carveout_shadowed_by_foreign_mask(str(staging_root))
+
+        monkeypatch.setattr(storage, "_preview_staging_parent", lambda: staging_root)
+        monkeypatch.setattr(storage, "effective_sandbox_mode", lambda _m: "off")
+
+        def _fake_checked(argv, profile, **kwargs):
+            with open(argv[-1], "wb") as fh:
+                fh.write(b"head")
+            return json.dumps({"ContentRange": "bytes 0-3/4"})
+
+        monkeypatch.setattr(storage, "_checked", _fake_checked)
+
+        data, size = storage.get_object_head_bytes(
+            "p",
+            "us-east-1",
+            "bucket",
+            "drive",
+            "key",
+            account="111122223333",
+            max_bytes=64,
+        )
+
+        assert (data, size) == (b"head", 4)
+
+    @pytest.mark.skipif(os.name != "posix", reason="the mask is a POSIX mechanism")
+    def test_a_transient_backend_probe_still_refuses(self, monkeypatch, tmp_path) -> None:
+        """An uncached ``"none"`` must not be read as "no mask applies".
+
+        ``detect_backend`` deliberately does NOT cache a transient probe failure,
+        so a momentary fork or fd failure answers ``"none"`` once and the spawn's
+        own re-probe answers with a backend. A check keyed on that answer would
+        skip the refusal for a spawn that then applies the lift, which is the one
+        direction this path must never fail in.
+        """
+        from kiro_crew.apps.builtins.aws_control.backend import storage
+
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".gnupg" / "relocated-crew"))
+        staging_root = tmp_path / ".gnupg" / "relocated-crew" / "aws-control-staging"
+        staging_root.mkdir(parents=True)
+        monkeypatch.setattr(storage, "_preview_staging_parent", lambda: staging_root)
+        monkeypatch.setattr(storage, "effective_sandbox_mode", lambda _m: "standard")
+        # The probe every backend question goes through, answering as it does on a
+        # transient failure: uncached "none".
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_kw: "none")
+        monkeypatch.setattr(sandbox, "_backend", None)
+
+        def _never_spawn(*args: object, **kwargs: object) -> str:
+            raise AssertionError("a transient probe must not unmask the tree")
+
+        monkeypatch.setattr(storage, "_checked", _never_spawn)
+
+        with pytest.raises(ValueError, match="independently masked"):
+            storage.get_object_head_bytes(
+                "p",
+                "us-east-1",
+                "bucket",
+                "drive",
+                "key",
+                account="111122223333",
+                max_bytes=64,
+            )
+
+    def test_every_crew_home_carveout_producer_asks_the_guard(self) -> None:
+        """The guard's worth is the SET of producers that call it.
+
+        Three crew-home carve-out producers exist, and each asks the guard before
+        handing a spelling to a spawn. A fourth that forgets is the defect this
+        test catches. Structural, like the two sibling tests in this class, so
+        deleting a call reds here instead of silently unmasking a tree.
+
+        NOT a closed set over every ``extra_visible_dirs`` producer: three of the
+        six in ``src/`` name a workspace or clone root, and
+        ``monitoring/provider_cli.py`` hands over ``AZURE_CONFIG_DIR`` while
+        ``.azure`` is itself a ``_STANDARD_DIRS`` entry. Whether that one is a
+        crew-home producer is a separate question carrying its own tracked issue,
+        so this test neither guards it nor lists it as exempt.
+        """
+        import inspect
+
+        from kiro_crew.apps import backend as backend_mod
+        from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
+
+        for name, obj in (
+            ("app_backend_visible_targets", sandbox.app_backend_visible_targets),
+            ("policy-cache spawn", backend_mod._start_app_backend_body),
+            ("aws-control preview staging", storage_mod.get_object_head_bytes),
+        ):
+            assert "carveout_shadowed_by_foreign_mask(" in inspect.getsource(obj), name
+
     def test_an_unmasked_location_is_not_shadowed(self) -> None:
         assert not sandbox.carveout_shadowed_by_foreign_mask(
             os.path.join(_home(), "projects", "notes")

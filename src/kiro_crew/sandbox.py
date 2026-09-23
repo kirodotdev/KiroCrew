@@ -1135,10 +1135,14 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
     crew-home carve-out the entire credential tree. Both EQUALITY-shaped
     crew-home carve-out producers call this before adding a spelling —
     :func:`app_backend_visible_targets` and the policy-cache site in
-    ``apps/backend.py``. (The aws-control per-call staging carve-out is the
-    ANCESTOR-LIFT shape — its temp dir is a proper descendant of its own mask
-    by design — so this guard as written would refuse it on every layout, and
-    it has no own-ancestor-exempt variant.) On refusal the mask stays
+    ``apps/backend.py``. The aws-control per-call staging carve-out is the
+    ANCESTOR-LIFT shape instead: its temp dir is a proper descendant of the mask
+    entry the lift cancels, so asking about that dir refuses on every layout,
+    the default one included. It asks about the staging ROOT instead — the mask
+    entry itself, which the equality rule below exempts while every OTHER masked
+    ancestor still refuses. Same verdict, no parameter: no mask entry can sit
+    between a root and the per-call dir minted directly inside it, and that dir
+    is a fresh random name no list carries. On refusal the mask stays
     and the carve-out's consumer fails closed (EPERM for an app backend's own
     state, an unreadable cache for a cache-only backend), which is strictly
     safer than unmasking a foreign tree. The refusal is logged with the
@@ -1171,7 +1175,8 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 
     Equality is not shadowing — carve-out spellings ARE masked entries, and
     unhiding exactly themselves is the carve-out's whole job; only a PROPER
-    ancestor is foreign.
+    ancestor is foreign. An ancestor-lift producer therefore asks about the mask
+    entry it lifts, never about the descendant it hands to the spawn.
 
     Fails toward refusal, never raises: when home (or the path itself) cannot
     be resolved the mask universe cannot be checked, so the spelling is

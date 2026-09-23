@@ -11,6 +11,7 @@ explain WHY a case matters, not what the code does.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -19,9 +20,30 @@ from unittest import mock
 
 import pytest
 
+from kiro_crew import sandbox
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError
+
+
+@contextlib.contextmanager
+def _crew_home_pinned_to(parent_dir: Path):
+    """Build the sandbox mask universe from *parent_dir*, not the real home.
+
+    Every preview test points the staging seam at a temp directory, and this
+    suite's temp root can itself sit INSIDE the real crew home (conftest puts
+    it under KIROCREW_SCRATCH). A masked crew leaf is then a genuine foreign
+    ancestor of that fake staging root, so the site's shadow guard refuses a
+    transfer for a layout production never has. Pinning the home the mask
+    universe is built from to the temp tree makes the verdict independent of
+    TMPDIR, and leaves the guard itself running for real in every test.
+    """
+    with (
+        mock.patch.object(sandbox.Path, "home", staticmethod(lambda: parent_dir)),
+        mock.patch.dict(os.environ, {"KIROCREW_HOME": str(parent_dir / "crew")}),
+    ):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # Section prefixing — a raw prefix must never cross the HTTP boundary, so the
@@ -1168,6 +1190,7 @@ class TestGetObjectHeadBytes:
             with (
                 mock.patch.object(storage, "_checked", side_effect=fake_checked),
                 mock.patch.object(storage, "_preview_staging_parent", return_value=parent_dir),
+                _crew_home_pinned_to(parent_dir),
             ):
                 data, size = storage.get_object_head_bytes(
                     "p",
@@ -1385,6 +1408,7 @@ class TestGetObjectHeadBytes:
         with (
             mock.patch.object(storage, "_checked", side_effect=fake_checked),
             mock.patch.object(storage, "_preview_staging_parent", return_value=tmp_path),
+            _crew_home_pinned_to(tmp_path),
         ):
             with pytest.raises(OSError):
                 storage.get_object_head_bytes(

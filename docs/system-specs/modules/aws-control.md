@@ -189,7 +189,14 @@ directories that a rename could swap out from under a transfer; at the top level
 the only ancestors are the data home and `$HOME`, the residual every other
 fenced leaf already stands on. That same mask would hide the directory from the
 sandboxed CLI, so the per-call directory is granted to that one fixed-argv spawn
-through `engine.run_aws(extra_visible_dirs=...)`. The mask is a Linux/macOS
+through `engine.run_aws(extra_visible_dirs=...)`. That grant cancels any mask
+CONTAINING the path it names, so the transfer first asks
+`sandbox.carveout_shadowed_by_foreign_mask` about the staging ROOT: on a data
+home relocated beneath another masked tree (`KIROCREW_HOME` under `~/.gnupg`)
+the grant would hand that whole tree to the CLI child, and the transfer raises
+before the spawn instead — a refused preview, never an unmasked credential
+directory. The root is the entry the grant cancels and is exempt from its own
+check; a default layout is unaffected. The mask is a Linux/macOS
 mechanism; on Windows, which has no sandbox, the destination is pinned by
 identity instead — the whole path, not just the file. The staging root and then
 the per-call directory are each opened and held through
