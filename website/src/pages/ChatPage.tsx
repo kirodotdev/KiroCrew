@@ -106,6 +106,7 @@ import TranscriptScrollShell from './chat/TranscriptScrollShell'
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
+import { useSidePanelScrollAnchor } from '../hooks/useSidePanelScrollAnchor'
 import { addPendingFile, prepareSendPayload, buildRelMap, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste } from '../utils/pasteTokens'
@@ -6151,6 +6152,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    *  and the render below so the two cannot disagree. */
   const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
     && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
+  // Hold the reader's place across the side panel's open/close width reflow.
+  // Toggling the panel changes the transcript scroller's width, which flips the
+  // height-cache bucket and reprices the virtualizer from estimates; a reader
+  // scrolled up into history (follow released) is otherwise stranded (see
+  // useSidePanelScrollAnchor). Captures the top visible row before the reflow
+  // and restores it after the reprice settles.
+  useSidePanelScrollAnchor({
+    wantsMount: sidePanelWantsMount,
+    scrollerRef: vScrollerElRef,
+    isFollowing: () => vGetFollowRef.current(),
+    sessionKey: activeSlot,
+  })
   // Mobile right-panel overlay: slide in when the panel wants the screen,
   // slide out (keeping it mounted for the travel) when it stops wanting it.
   useEffect(() => {
