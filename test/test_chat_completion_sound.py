@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from chat_test_helpers import _make_state
@@ -78,7 +78,12 @@ async def test_continuation_uses_linked_session_identity(completion_state):
     )
     frame = await finish_frame(state, slot)
     assert frame.get("continuing", False) is True
-    state.subagents.running_agents_for.assert_called_with(slot.linked_session_key)
+    # The continuation check must have consulted the LINKED session's workers.
+    # ``assert_called_with`` would check only the most recent call, and the
+    # background drain in ``finish_frame`` can consult the mock again after
+    # the continuation check (on a slow runner it does), so assert membership
+    # in the call list instead of ordering against unrelated later calls.
+    assert call(slot.linked_session_key) in state.subagents.running_agents_for.call_args_list
 
 
 @pytest.mark.asyncio
