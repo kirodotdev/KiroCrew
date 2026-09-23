@@ -1205,12 +1205,43 @@ class TestStdioLoopCallerIdentity:
             harness.send(_tools_call_with_caller(53, "echo", "dashboard:chat-13"))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             assert ran == []
-            assert "tool policy could not be read" in json.dumps(harness.responses[0][1])
+            _body = json.dumps(harness.responses[0][1])
+            assert "is unavailable" in _body
+            assert "resolution_failed" in _body
             ops = [
                 c.kwargs.get("operation")
                 for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unenforced_call" not in ops
+        finally:
+            harness.close()
+
+    def test_the_unreachable_gateway_refusal_names_a_retry_not_a_spec_edit(
+        self, monkeypatch
+    ):
+        """The refusal has to diagnose the condition it actually hit.
+
+        ``policy_unreadable`` means the gateway read a spec and could not use it,
+        so its text sends the caller to the agents directory. ``resolution_failed``
+        means the gateway was never reached: no spec is implicated, and that same
+        text would have the caller edit healthy files to fix an outage, leaving the
+        edit as the real defect. The condition clears on its own, so the remedy is
+        a retry.
+        """
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "resolution_failed"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(56, "echo", "dashboard:chat-16"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            body = json.dumps(harness.responses[0][1])
+            assert "could not reach the gateway" in body
+            assert "retry" in body
+            assert "agents directory" not in body
+            assert "could not parse" not in body
         finally:
             harness.close()
 

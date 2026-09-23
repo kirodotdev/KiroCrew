@@ -1678,6 +1678,24 @@ def _run_stdio_dispatch_loop(
                         f"that session. Refusing the call rather than ignoring an "
                         f"operator's exclusion list."
                     )
+                elif _policy.unresolved == "resolution_failed":
+                    # A DIFFERENT diagnosis and a different remedy from the branch
+                    # below, which is why it cannot share that text: the gateway was
+                    # never reached, so no agent spec is implicated and there is
+                    # nothing for the caller to edit. Sending them to the agents
+                    # directory would have them change healthy files to fix an
+                    # outage, and the edit they made would then be the real defect.
+                    _refusal = (
+                        f"Error: tool '{tool_name}' is unavailable because this "
+                        f"server could not reach the gateway to read session "
+                        f"{_policy_session}'s tool policy (resolution_failed): the "
+                        f"read got no answer, or the gateway answered that it is "
+                        f"broken. No agent spec is implicated and nothing needs "
+                        f"editing. Refusing the call rather than ignoring an "
+                        f"operator's exclusion list; the call succeeds on retry "
+                        f"within {_NEGATIVE_CACHE_TTL:.0f}s of the gateway "
+                        f"answering again."
+                    )
                 else:
                     _refusal = (
                         f"Error: tool '{tool_name}' is unavailable because this "
