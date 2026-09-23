@@ -156,7 +156,7 @@ function fmtRelativeTime(ts: string | number | undefined): string | undefined {
 }
 
 /** Recency epoch (ms) for sorting live slots — last activity, else last msg, else created. */
-function recencyEpoch(slot: ChatSlot): number {
+export function recencyEpoch(slot: ChatSlot): number {
   const t = slot.last_activity_ts ?? slot.last_ts ?? slot.created
   if (!t) return 0
   const ms = typeof t === 'number' ? (t as number) * 1000 : new Date(t).getTime()
