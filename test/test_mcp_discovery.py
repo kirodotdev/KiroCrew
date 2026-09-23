@@ -1117,6 +1117,108 @@ class TestDiscoverNew:
         assert [s.name for s in result] == ["srv"]
 
 
+class TestSyncTriggerMatchesTheMerge:
+    """The trigger must fire exactly on the keys ``_merge_source_owned`` reconciles.
+
+    A rebuild reconciles ``agent._SOURCE_OWNED_MCP_KEYS`` onto an existing entry.
+    A key in that set and absent from the trigger is a change the dashboard never
+    offers; a key outside it and present in the trigger is a sync offer that
+    converges on nothing.
+    """
+
+    @staticmethod
+    def _write(tmp_path, monkeypatch, agent_spec: dict, source_spec: dict) -> Path:
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir(exist_ok=True)
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {"srv": agent_spec}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(json.dumps({"mcpServers": {"srv": source_spec}}))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        return mcp_json
+
+    def test_local_timeout_change_fires(self, tmp_path, monkeypatch) -> None:
+        self._write(
+            tmp_path, monkeypatch, {"command": "a", "timeout": 60}, {"command": "a", "timeout": 120}
+        )
+        assert [s.name for s in discover_servers_to_sync()] == ["srv"]
+
+    def test_remote_timeout_change_fires(self, tmp_path, monkeypatch) -> None:
+        url = "https://mcp.example.com/v1"
+        self._write(
+            tmp_path, monkeypatch, {"url": url, "timeout": 60}, {"url": url, "timeout": 120}
+        )
+        assert [s.name for s in discover_servers_to_sync()] == ["srv"]
+
+    def test_retired_key_does_not_fire(self, tmp_path, monkeypatch) -> None:
+        """A key the source stopped declaring is not a convergent sync.
+
+        Only ``_merge_source_owned`` pops such a key, and the kirocrew scope is
+        merged with ``dict.update`` instead, so a server declared there alone
+        would be offered the same sync on every poll forever.
+        """
+        self._write(tmp_path, monkeypatch, {"command": "a", "timeout": 60}, {"command": "a"})
+        assert discover_servers_to_sync() == []
+
+    def test_declared_disabled_false_against_a_disabled_entry_fires(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A source that declares the server back on must reach the entry."""
+        self._write(
+            tmp_path,
+            monkeypatch,
+            {"command": "a", "disabled": True},
+            {"command": "a", "disabled": False},
+        )
+        assert [s.name for s in discover_servers_to_sync()] == ["srv"]
+
+    def test_args_change_does_not_fire(self, tmp_path, monkeypatch) -> None:
+        """``args`` is not reconciled, so offering a sync for it converges on nothing."""
+        self._write(
+            tmp_path,
+            monkeypatch,
+            {"command": "a", "args": ["--old"]},
+            {"command": "a", "args": ["--new"]},
+        )
+        assert discover_servers_to_sync() == []
+
+    def test_agreeing_source_owned_keys_do_not_fire(self, tmp_path, monkeypatch) -> None:
+        self._write(
+            tmp_path, monkeypatch, {"command": "a", "timeout": 60}, {"command": "a", "timeout": 60}
+        )
+        assert discover_servers_to_sync() == []
+
+    def test_another_scopes_disabled_does_not_fire(self, tmp_path, monkeypatch) -> None:
+        """``McpServerInfo.disabled`` is an aggregate across scopes; the trigger is not.
+
+        A lower-priority scope switching the server off never reaches the winning
+        spec, so comparing the aggregate would fire a sync that cannot converge.
+        """
+        self._write(tmp_path, monkeypatch, {"command": "a"}, {"command": "a"})
+        other = tmp_path / "other-mcp.json"
+        other.write_text(json.dumps({"mcpServers": {"srv": {"command": "a", "disabled": True}}}))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._extra_scope_sources", lambda: [(other, "ccGlobal")]
+        )
+        assert discover_servers_to_sync() == []
+
+    def test_key_set_is_read_from_agent_not_restated(self, tmp_path, monkeypatch) -> None:
+        """Mutation guard: a hardcoded local key list would survive the drift.
+
+        Narrowing ``agent._SOURCE_OWNED_MCP_KEYS`` must silence the trigger for the
+        dropped key in the same commit, which is only true if the trigger imports it.
+        """
+        import kiro_crew.agent as agent_mod
+
+        self._write(
+            tmp_path, monkeypatch, {"command": "a", "timeout": 60}, {"command": "a", "timeout": 120}
+        )
+        assert [s.name for s in discover_servers_to_sync()] == ["srv"]
+
+        monkeypatch.setattr(agent_mod, "_SOURCE_OWNED_MCP_KEYS", ("disabled",))
+        assert discover_servers_to_sync() == []
+
+
 class TestCommandsDiverged:
     def test_identical_commands(self) -> None:
         from kiro_crew.mcp_discovery import _commands_diverged

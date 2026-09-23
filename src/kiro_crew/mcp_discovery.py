@@ -684,6 +684,13 @@ class McpServerInfo:
     # ``probe_server`` itself, so setting this flag is sufficient no matter which
     # entry point does the probing.
     disabled: bool = False
+    # THIS source's own ``timeout``/``disabled``, verbatim as the scope spec
+    # declares them; an absent key is absent here too. Deliberately separate
+    # from ``disabled`` above, which is an aggregate across every scope: a sync
+    # trigger comparing an aggregate against one generated entry would fire a
+    # sync that can never converge. Keyed by ``agent._SOURCE_OWNED_MCP_KEYS``,
+    # the set ``_merge_source_owned`` can actually reconcile.
+    source_owned: dict[str, Any] = field(default_factory=dict)
     # -- handshake metadata (probe-only; empty on unprobed rows) -----------
     # The server's advertised ``capabilities`` object, verbatim. ``None`` means
     # no handshake happened, which is NOT the same as an empty declaration.
@@ -2907,6 +2914,31 @@ def _basename_any(cmd: str) -> str:
     return posixpath.basename(cmd)
 
 
+def _declared_source_owned(spec: dict) -> dict[str, Any]:
+    """The source-owned keys *spec* actually declares, verbatim.
+
+    The key set is imported from ``agent`` rather than restated, so the sync
+    trigger cannot drift from the merge again: a key ``_merge_source_owned``
+    stops reconciling stops firing a sync in the same commit.
+    """
+    from kiro_crew.agent import _SOURCE_OWNED_MCP_KEYS  # circular import
+
+    return {k: spec[k] for k in _SOURCE_OWNED_MCP_KEYS if k in spec}
+
+
+def _source_owned_diverged(existing: dict, info: McpServerInfo) -> bool:
+    """True when a key the source DECLARES disagrees with the generated entry.
+
+    Only a declared key is compared, because only a declared key is guaranteed
+    to converge: every scope's merge copies a declared value onto the entry,
+    while a key the source RETIRED is popped by ``_merge_source_owned`` for the
+    kiro-global and provider scopes but left in place by the ``dict.update``
+    merge the kirocrew scope uses. Firing on a retired key would therefore offer
+    a sync that repeats on every poll for a server declared in that scope alone.
+    """
+    return any(existing.get(key) != value for key, value in info.source_owned.items())
+
+
 def discover_servers_to_sync() -> list[McpServerInfo]:
     """Find MCP servers in mcp.json that need syncing to the agent config.
 
@@ -2934,14 +2966,16 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             scopes=_spec_scopes(spec),
             client_id=_spec_client_id(spec),
             source="discovered",
+            source_owned=_declared_source_owned(spec),
         )
         if name not in agent_names:
             out.append(info)
         else:
-            # Args divergence is intentionally excluded: user-customized
-            # args (e.g. --include-tools additions) are preserved by
-            # install_agent()'s setdefault merge, so triggering a full
-            # rebuild on args-only differences is wasted work.
+            # Args divergence is intentionally excluded because
+            # ``_SOURCE_OWNED_MCP_KEYS`` omits ``args``: it depends on
+            # ``command``, which the merge will not reconcile without a scope
+            # that declares one. Firing on an args-only difference would offer
+            # the operator a sync that reconciles nothing.
             existing = agent_mcp[name]
             if not isinstance(existing, dict):
                 continue
@@ -2960,14 +2994,17 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
                     or existing_headers != info.headers
                     or _spec_scopes(existing) != info.scopes
                     or _spec_client_id(existing) != info.client_id
+                    or _source_owned_diverged(existing, info)
                 ):
                     out.append(info)
                 continue
             existing_env = existing.get("env", {})
             if not isinstance(existing_env, dict):
                 existing_env = {}
-            if not _envs_agree(existing_env, info.env) or _commands_diverged(
-                info.command, existing.get("command", "")
+            if (
+                not _envs_agree(existing_env, info.env)
+                or _commands_diverged(info.command, existing.get("command", ""))
+                or _source_owned_diverged(existing, info)
             ):
                 out.append(info)
     return out
