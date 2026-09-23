@@ -31,6 +31,22 @@ _CORE = {"command": "/opt/kirocrew", "args": ["mcp-core"]}
 _CRON = {"command": "/opt/kirocrew", "args": ["mcp-cron"]}
 
 
+@pytest.fixture(autouse=True)
+def isolated_seed_provenance(monkeypatch):
+    """Per-test provenance state, mirroring test_acp_seed_provenance.py.
+
+    ``_RECORDS``, ``_LIVE`` and ``_SHARERS`` are process-wide runtime state;
+    without this, a client authored in one test leaves a live claim that a
+    LATER test's client (pytest truncates long test names to one shared
+    tmp-dir prefix, so paths can even collide) is correctly refused against.
+    """
+    from kiro_crew.acp import seed_provenance
+
+    monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+    monkeypatch.setattr(seed_provenance, "_LIVE", {})
+    monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+
+
 @pytest.fixture
 def agents_dir(tmp_path, monkeypatch):
     """Point the agent-spec resolver at a temp agents directory."""
@@ -1104,9 +1120,13 @@ class TestLocalSettingsSeed:
         path = tmp_path / ".claude" / "settings.local.json"
         assert "model" not in json.loads(path.read_text())
         # A second client only writes when the path is free, so clear the first
-        # session's file the way its own reset would.
+        # session's file the way its own reset would -- including handing back
+        # its live claim, which the create path now refuses to author under.
         auto._claude_settings_authored = False
         path.unlink()
+        from kiro_crew.acp import seed_provenance
+
+        seed_provenance.release(path, auto._seed_owner)
         pinned = self._client(tmp_path, model="claude-sonnet-4-5")
         pinned._write_claude_local_settings()
         assert json.loads(path.read_text())["model"] == "claude-sonnet-4-5"

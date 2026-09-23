@@ -26,17 +26,36 @@ Four properties the callers depend on:
   repository gains no extra file to notice, ignore or commit.
 * **Lookups never touch the disk, and no mutation runs on the event loop.**
   Ownership is consulted synchronously from teardown, so the sidecar is read once
-  at import and served from memory afterwards. Both MUTATIONS (:func:`record` and
-  :func:`forget`) write and are therefore blocking; each has an off-loop caller,
-  and :func:`forget` is awaited through a thread rather than called from the loop.
-  :func:`release` is the in-memory-only counterpart that teardown may call
-  directly.
+  at import and served from memory afterwards. Durable mutations write and are
+  therefore blocking; each runs off-loop. :func:`release_local` and
+  :func:`unshare_local` are the memory-only counterparts teardown may call
+  directly after the off-loop discard handles durable holder withdrawal.
 * **Every failure answers "not ours".** An unreadable or corrupt sidecar, a
   missing entry, a malformed entry — all degrade to the pre-existing behaviour of
   leaving the file alone, which is the safe direction.
 * **A record is adoptable only once nobody here still holds it.** Ownership is
   scoped to an owner token, so an orphan is adopted by the next session while a
   path a LIVE client in this process is seeding stays that client's own.
+
+The sharer registry (:func:`share` / :func:`unshare` / :func:`has_sharers`)
+interleaves with the owner lifecycle in ``acp/client.py``; these are the
+invariants both modules hold together, each backed by a review ruling on the
+PR that introduced it:
+
+* **Byte-equality is the share boundary.** A session becomes a sharer only
+  when the payload it would write is byte-identical to the file on disk.
+* **Only the owner writes.** A sharer never writes, claims, or deletes the
+  settings file; authorship under a live sharer additionally requires the new
+  payload to be byte-identical to the durable digest (:func:`recorded_durable`).
+* **A lease is withdrawn only by its own sharer's reset** — or by promotion
+  to ownership, the single authorship point.
+* **A record a live sharer validated survives every prune** until that
+  sharer's reset (:func:`_persist` exempts keys with live sharers).
+* **Records are invisible until durable.** :func:`record` publishes in memory
+  only after its persist lands, so a rider never trusts bytes whose grant
+  could vanish in a crash.
+* **Owner teardown keeps the file under live sharers** and hands back only
+  its own slot; the next session adopts and repairs the recorded orphan.
 """
 
 from __future__ import annotations
@@ -72,10 +91,26 @@ _RECORDS: dict[str, dict[str, Any]] = {}
 # keyless sessions share the default work_dir (``config_dir() / "workspace"``),
 # so without this a second session would recognize the FIRST session's live seed
 # as an orphan, re-seed it with its own ``permissions.defaultMode``, and unlink it
-# on its own reset -- out from under a session still running against it. Records
-# loaded from the sidecar at import have no live holder by construction, which is
-# exactly right: whoever wrote them is a previous process.
+# on its own reset -- out from under a session still running against it. This dict
+# is the in-process cache; the cross-process authority is the ``holders`` entry
+# each registration persists into the sidecar record (see ``_local_holders``),
+# whose PID-reuse-safe identities let any process tell a live holder from a
+# stale one left by a dead process.
 _LIVE: dict[str, str] = {}
+
+# Which owner tokens are CURRENTLY running as SHARED READERS of each path in
+# this process. A sharer validated that the file on disk is byte-identical to
+# both the durable record and its own rendered payload, delivered its MCP array
+# on that basis, and holds no other stake: it may never rewrite or remove the
+# file. This registry is what keeps the file's future honest for them -- while
+# it is non-empty, the owner's teardown leaves the file in place (see the
+# client's settle transaction) and :func:`claim` refuses a new adoption, so no
+# Crew session can put DIFFERENT permission bytes at a path a sharer already
+# delivered tools against. Like ``_LIVE`` it is the in-process cache: each
+# lease is also persisted as a ``holders`` entry on the sidecar record, so a
+# DIFFERENT process's :func:`claim` or re-seed sees the live stake and refuses
+# too, and a holder whose process is gone reads as stale and reclaimable.
+_SHARERS: dict[str, set[str]] = {}
 
 # Serializes the record transaction: mutate ``_RECORDS``, prune, snapshot, publish.
 # Without it two seeds running concurrently under ``asyncio.to_thread`` can each
@@ -84,10 +119,11 @@ _LIVE: dict[str, str] = {}
 # a stranger's on the next run, which is the whole failure this module removes.
 #
 # Held across the ``atomic_write``, because the snapshot and its publish are one
-# step: releasing between them is exactly the reordering above. Both holders --
-# :func:`record` and :func:`forget` -- run OFF the event loop, so no wait on this
-# lock is ever a wait the loop takes. The read-only and claim-only entry points
-# deliberately do NOT take it -- see :func:`recorded` and :func:`release`.
+# step: releasing between them is exactly the reordering above. Every entry point
+# that can reach :func:`_persist` runs OFF the event loop, so no wait on this lock
+# is ever a wait the loop takes. Read-only entry points and the explicit local
+# teardown halves deliberately do NOT take it -- see :func:`recorded`,
+# :func:`release_local`, and :func:`unshare_local`.
 #
 # This serializes THREADS in one process only. Two Crew PROCESSES (the gateway and
 # a concurrent CLI chat) each hold their own ``_LOCK`` and their own process-local
@@ -95,11 +131,25 @@ _LIVE: dict[str, str] = {}
 # cross-process serialization is :func:`_cross_process_lock`, held by :func:`_persist`.
 _LOCK = threading.Lock()
 
+# Serializes a sharer's validate-then-take-lease sequence against an owner
+# teardown's move/restore transaction on the SAME path. Sibling sessions share
+# one process (the premise of the shared-reader state), so a process-local lock
+# is the whole arbitration: with it, either the sharer validates before the
+# move (its registration then pins the teardown's post-move barrier) or after
+# the transaction settles (its disk check then sees the transaction's outcome,
+# never the vacancy in the middle). Reentrant is unnecessary -- neither side
+# nests. Keyed process-wide rather than per-path: settle transactions are rare
+# (session teardown) and short, and one lock cannot deadlock.
+SETTLE_LOCK = threading.Lock()
+
 # Cross-process lock filename, BESIDE the sidecar rather than on it: ``atomic_write``
 # publishes by renaming a fresh inode over the sidecar, so a lock held on the
 # sidecar's own inode would guard nothing across that rename. Same placement and
 # reasoning as ``aws_consent._ConsentLock`` and the ops-mission-control policy store.
 _LOCK_FILENAME = ".settings_seeds.lock"
+_HOLDER_OWNERS = "owners"
+_HOLDER_SHARERS = "sharers"
+_HOLDER_KINDS = (_HOLDER_OWNERS, _HOLDER_SHARERS)
 
 
 def _sidecar_path() -> Path:
@@ -133,14 +183,98 @@ def digest(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _empty_holders() -> dict[str, dict[str, dict[str, Any]]]:
+    return {_HOLDER_OWNERS: {}, _HOLDER_SHARERS: {}}
+
+
+def _holder_identity() -> dict[str, Any] | None:
+    """This process's PID-reuse-safe identity, or ``None`` when unprovable."""
+    pid = os.getpid()
+    start_id = platform_compat.get_process_start_id(pid)
+    if not isinstance(start_id, str) or not start_id:
+        return None
+    return {"pid": pid, "start_id": start_id}
+
+
+def _validated_holders(value: object) -> dict[str, dict[str, dict[str, Any]]] | None:
+    """Validate persisted holder groups; digest-only legacy records get empty groups."""
+    if value is None:
+        return _empty_holders()
+    if not isinstance(value, dict):
+        return None
+    out = _empty_holders()
+    for kind in _HOLDER_KINDS:
+        group = value.get(kind, {})
+        if not isinstance(group, dict):
+            return None
+        for owner, identity in group.items():
+            if not isinstance(owner, str) or not owner or not isinstance(identity, dict):
+                return None
+            pid, start_id = identity.get("pid"), identity.get("start_id")
+            if (
+                isinstance(pid, bool)
+                or not isinstance(pid, int)
+                or pid <= 0
+                or not isinstance(start_id, str)
+                or not start_id
+            ):
+                return None
+            out[kind][owner] = {"pid": pid, "start_id": start_id}
+    return out
+
+
+def _copy_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    holders = _validated_holders(entry.get("holders")) or _empty_holders()
+    return {
+        "size": entry["size"],
+        "sha256": entry["sha256"],
+        "holders": {kind: dict(holders[kind]) for kind in _HOLDER_KINDS},
+    }
+
+
+def _holder_is_live(identity: dict[str, Any]) -> bool:
+    """Whether *identity* still names the same process; unknown stays live."""
+    pid = identity["pid"]
+    if not platform_compat.pid_exists(pid):
+        return False
+    current = platform_compat.get_process_start_id(pid)
+    return current is None or current == identity["start_id"]
+
+
+def _live_holders(
+    entry: dict[str, Any], kind: str | None = None
+) -> list[tuple[str, str, dict[str, Any]]]:
+    holders = _validated_holders(entry.get("holders")) or _empty_holders()
+    kinds = _HOLDER_KINDS if kind is None else (kind,)
+    return [
+        (holder_kind, owner, identity)
+        for holder_kind in kinds
+        for owner, identity in holders[holder_kind].items()
+        if _holder_is_live(identity)
+    ]
+
+
+def _local_holders(key: str) -> dict[str, dict[str, dict[str, Any]]]:
+    """Render local holder caches, degrading to digest-only when identity is unprovable.
+
+    The in-process ``_LIVE`` / ``_SHARERS`` registries still arbitrate sibling
+    sessions. Only cross-process holder distinction is unavailable, matching the
+    digest-only records that predate persisted holder identities.
+    """
+    identity = _holder_identity()
+    if identity is None:
+        return _empty_holders()
+    owners = {_LIVE[key]: dict(identity)} if key in _LIVE else {}
+    sharers = {owner: dict(identity) for owner in _SHARERS.get(key, set())}
+    return {_HOLDER_OWNERS: owners, _HOLDER_SHARERS: sharers}
+
+
 def _read_disk_seeds() -> dict[str, dict[str, Any]]:
     """The seeds currently ON DISK, validated. ``{}`` when absent or unreadable.
 
-    Read once at import by :func:`_load`, and again under the cross-process lock by
-    :func:`_persist` so a concurrent process's records are merged onto rather than
-    dropped from what this process is about to publish. Every failure degrades to
-    ``{}`` — the same "nothing recorded" answer an absent sidecar gives, which is the
-    safe direction (a path that reads as unowned is left alone, never adopted wrongly).
+    Old digest-only records remain readable. New records also carry owner and
+    shared-reader identities as PID + process start ID, so a second Crew process
+    can distinguish a live lease from a crashed process or a recycled PID.
     """
     out: dict[str, dict[str, Any]] = {}
     try:
@@ -161,8 +295,16 @@ def _read_disk_seeds() -> dict[str, dict[str, Any]]:
         if not isinstance(key, str) or not isinstance(entry, dict):
             continue
         size, sha = entry.get("size"), entry.get("sha256")
-        if isinstance(size, int) and size >= 0 and isinstance(sha, str) and sha:
-            out[key] = {"size": size, "sha256": sha}
+        holders = _validated_holders(entry.get("holders"))
+        if (
+            isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 0
+            and isinstance(sha, str)
+            and sha
+            and holders is not None
+        ):
+            out[key] = {"size": size, "sha256": sha, "holders": holders}
     return out
 
 
@@ -207,67 +349,124 @@ def _cross_process_lock() -> Iterator[None]:
             os.close(fd)
 
 
-def _persist(keep: str | None = None, drop: str | None = None) -> bool:
-    """Publish this process's records to the SHARED sidecar. ``True`` when the disk agrees.
+def _persist(
+    keep: str | None = None,
+    drop: str | None = None,
+    pending: tuple[str, dict[str, Any]] | None = None,
+    drop_holder: tuple[str, str, str] | None = None,
+    require_digest: tuple[str, int, str] | None = None,
+    require_unheld: tuple[str, str] | None = None,
+) -> bool:
+    """Merge this process's state into the sidecar under the cross-process lock.
 
-    Blocking. The return value is what :func:`record` and :func:`forget` need in
-    order to be honest about whether a grant is really durable, so this reports
-    failure instead of only logging it.
-
-    **Reload-merge-publish under the cross-process lock.** The sidecar is shared by
-    every Crew process on the host, and ``atomic_write`` renaming a new inode over it
-    makes the LAST writer win outright. So this reloads the on-disk seeds INSIDE
-    :func:`_cross_process_lock`, overlays this process's own ``_RECORDS``, and
-    publishes the union — a concurrent process's records are preserved rather than
-    dropped. This process's entries win for any key it holds; keys present only on
-    disk belong to another live process and are kept untouched. Reloading a sibling's
-    key into what is published does NOT make this process treat it as adoptable: only
-    ``_RECORDS`` (never refreshed from disk here) feeds :func:`recorded`, so a live
-    sibling's seed still reads as absent — "not ours" — to this process.
-
-    *drop* removes the key a :func:`forget` just revoked. Without it the merge would
-    resurrect that key from the copy still on disk, and the revoke would never stick.
-
-    There is exactly ONE prune, and it runs unconditionally: entries whose file is
-    gone. Nothing is left at those paths to overwrite, adopt or clean up, so they are
-    pure growth. *keep* exempts the key the current transaction just wrote, so the
-    entry a :func:`record` has this moment created is authoritative even if the caller
-    has not put a file there. Without it a record would depend on a stat of a path the
-    module does not own the writing of, and "record then look it up" -- the one
-    invariant every caller leans on -- would answer differently depending on how the
-    caller sequenced its own write.
-
-    There is deliberately no entry CAP on top of that. A cap can only evict entries
-    whose file still exists, and those are precisely the adoptable orphans this module
-    exists to keep: evicting one makes its path unrecorded, so its own owner can no
-    longer recognize it and no later session is permitted to repair it either —
-    whatever the file holds (a stale ``availableModels``, a stale
-    ``permissions.defaultMode``, up to an inherited ``bypassPermissions``) becomes
-    permanent project state. That is the exact failure this module removes, so a cap
-    would re-manufacture it for the oldest work dir. Growth is already bounded by the
-    prune above: the sidecar cannot outgrow the set of seeds actually on disk.
-
-    Callers hold :data:`_LOCK`, which serializes this process's threads; the
-    cross-process lock serializes other processes; the reload, merge, prune, snapshot
-    and publish are one transaction across both.
+    Caller holds :data:`_LOCK`. Holder identities are merged per kind rather
+    than allowing one process's snapshot to erase another's lease. A durable
+    ownership write refuses a different live owner before merging local state;
+    stale identities are discarded only when PID absence or start-ID mismatch
+    proves that process incarnation is gone.
     """
     try:
-        # Prune this process's OWN dead-file entries from memory first, so a later
-        # lock-free read stops reporting a path whose file is gone.
-        for key in [k for k in list(_RECORDS) if k != keep and not os.path.isfile(k)]:
-            _RECORDS.pop(key, None)
-            _LIVE.pop(key, None)
         with _cross_process_lock():
-            merged = _read_disk_seeds()
-            merged.update(_RECORDS)
+            disk = _read_disk_seeds()
+            merged: dict[str, dict[str, Any]] = {}
+            for key in set(disk) | set(_RECORDS):
+                local = _RECORDS.get(key)
+                on_disk = disk.get(key)
+                source = on_disk or local
+                if source is None:
+                    continue
+                entry = {
+                    "size": source["size"],
+                    "sha256": source["sha256"],
+                    "holders": _empty_holders(),
+                }
+                if on_disk is not None:
+                    disk_holders = _validated_holders(on_disk.get("holders")) or _empty_holders()
+                    for kind in _HOLDER_KINDS:
+                        entry["holders"][kind].update(disk_holders[kind])
+                local_holders = _local_holders(key)
+                if local_holders is None:
+                    return False
+                for kind in _HOLDER_KINDS:
+                    entry["holders"][kind].update(local_holders[kind])
+                merged[key] = entry
+
+            if pending is not None:
+                key, value = pending
+                own_identity = _holder_identity()
+                prior = disk.get(key)
+                if prior is not None:
+                    for _kind, _owner, identity in _live_holders(prior, _HOLDER_OWNERS):
+                        if own_identity is None or identity != own_identity:
+                            return False
+                entry = merged.get(key, _copy_entry(value))
+                entry["size"] = value["size"]
+                entry["sha256"] = value["sha256"]
+                local_holders = _local_holders(key)
+                if local_holders is None:
+                    return False
+                for kind in _HOLDER_KINDS:
+                    entry["holders"][kind].update(local_holders[kind])
+                merged[key] = entry
+
+            for entry in merged.values():
+                holders = _validated_holders(entry.get("holders")) or _empty_holders()
+                entry["holders"] = {
+                    kind: {
+                        owner: identity
+                        for owner, identity in holders[kind].items()
+                        if _holder_is_live(identity)
+                    }
+                    for kind in _HOLDER_KINDS
+                }
+
+            if require_digest is not None:
+                key, size, sha = require_digest
+                # The DISK side, not the merge: merged entries fall back to this
+                # process's own _RECORDS when the sidecar has no entry, so a
+                # record another process revoked would be resurrected from local
+                # memory and vouch for bytes nothing durable stands behind. The
+                # digest requirement is a claim about the DURABLE record.
+                required_entry = disk.get(key)
+                if (
+                    required_entry is None
+                    or required_entry["size"] != size
+                    or required_entry["sha256"] != sha
+                ):
+                    return False
+
+            if require_unheld is not None:
+                key, owner = require_unheld
+                own_identity = _holder_identity()
+                held_entry = merged.get(key)
+                if held_entry is not None:
+                    for kind, held_owner, identity in _live_holders(held_entry):
+                        if not (
+                            kind == _HOLDER_OWNERS
+                            and held_owner == owner
+                            and own_identity is not None
+                            and identity == own_identity
+                        ):
+                            return False
+
+            if drop_holder is not None:
+                key, kind, owner = drop_holder
+                drop_entry = merged.get(key)
+                if drop_entry is not None:
+                    drop_entry["holders"][kind].pop(owner, None)
             if drop is not None:
                 merged.pop(drop, None)
-            # Prune dead-file entries carried in from another process's disk copy too;
-            # ``keep`` exempts this transaction's own just-written key.
-            for key in [k for k in list(merged) if k != keep and not os.path.isfile(k)]:
+
+            for key in [
+                candidate
+                for candidate, entry in merged.items()
+                if candidate != keep and not _live_holders(entry) and not os.path.isfile(candidate)
+            ]:
                 merged.pop(key, None)
-            snapshot = {"seeds": {k: dict(v) for k, v in merged.items()}}
-            # 0o600: the sidecar names the work dirs this install has seeded.
+                _RECORDS.pop(key, None)
+                _LIVE.pop(key, None)
+
+            snapshot = {"seeds": {key: _copy_entry(value) for key, value in merged.items()}}
             atomic_write(_sidecar_path(), json.dumps(snapshot), mode=0o600)
         return True
     except (OSError, ValueError, TypeError):  # pragma: no cover - disk full / perms
@@ -275,45 +474,170 @@ def _persist(keep: str | None = None, drop: str | None = None) -> bool:
         return False
 
 
-def claim(path: Path | str, owner: str) -> bool:
-    """Take *path*'s live slot for *owner*; ``False`` if somebody else has it.
+def claim(path: Path | str, owner: str, *, expect_digest: tuple[int, str] | None) -> bool:
+    """Persistently reserve *path* for *owner* unless another live holder exists.
 
-    Called by an adopter BEFORE it rewrites an orphan, and it is the decision
-    itself rather than bookkeeping after one: :func:`recorded` only reports the
-    live holder at the moment it is asked, so two clients starting together can
-    both read the same orphan as adoptable, and both would then take the
-    ``O_TRUNC`` re-seed — one session left running under the other's
-    ``permissions.defaultMode``. ``setdefault`` is a single atomic dict
-    operation, so exactly one of them can win it no matter how they interleave.
-
-    Idempotent for a holder that already owns the slot, so re-seeding the same
-    path in the same client is not a self-refusal.
-
-    A winner that then FAILS to write must hand the slot back with
-    :func:`release`, or the orphan it was about to repair stays wedged behind a
-    claim nobody is using for the rest of the process.
+    ``expect_digest`` is the ``(size, sha256)`` the caller VALIDATED the file
+    against -- required, because a claim is an authorization to rewrite and
+    later delete the bytes at *path*, and the caller's belief about those bytes
+    can go stale: another process may have recorded new bytes since this one
+    cached the digest, after which the durable record describes different bytes
+    than the ones the caller checked. The claim then lands only if the durable entry,
+    re-read under the cross-process lock, still records exactly that digest --
+    otherwise the caller would be adopting (and eventually deleting) a file the
+    record stopped vouching for, such as a user's restoration of older bytes.
+    ``None`` is for reserving a pathname with no digest belief (a fresh
+    reservation before any record exists), never for adoption.
     """
-    return _LIVE.setdefault(_key(path), owner) == owner
+    key = _key(path)
+    require_digest = None
+    if expect_digest is not None:
+        size, sha = expect_digest
+        require_digest = (key, size, sha)
+    with _LOCK:
+        if _SHARERS.get(key) and _LIVE.get(key) != owner:
+            return False
+        previous = _LIVE.get(key)
+        if previous is not None and previous != owner:
+            return False
+        _LIVE[key] = owner
+        if _persist(keep=key, require_digest=require_digest, require_unheld=(key, owner)):
+            return True
+        if previous is None:
+            _LIVE.pop(key, None)
+        else:
+            _LIVE[key] = previous
+        return False
 
 
-def release(path: Path | str, owner: str) -> None:
-    """Give up *owner*'s live claim on *path* without disowning the record.
+def release(path: Path | str, owner: str) -> bool:
+    """Give up *owner*'s claim. ``True`` only when memory and disk agree."""
+    key = _key(path)
+    with _LOCK:
+        owned = _LIVE.get(key) == owner
+        if owned:
+            _LIVE.pop(key, None)
+        if _persist(keep=key, drop_holder=(key, _HOLDER_OWNERS, owner)):
+            return True
+        if owned:
+            _LIVE[key] = owner
+        return False
 
-    The counterpart to a :func:`claim` whose write did not land. Only ``_LIVE``
-    is dropped, deliberately NOT ``_RECORDS``: the record is what makes the path
-    adoptable at all, so clearing it would leave an orphan seed -- possibly one
-    carrying ``bypassPermissions`` -- that no later session is permitted to
-    rewrite or delete. That is the harm this exists to avoid, not a smaller
-    version of it. Compare :func:`forget`, which is for a path Crew genuinely no
-    longer owns because the file is gone.
 
-    A no-op when a different owner holds the slot, so a loser cannot evict the
-    winner. In-memory only and lock-free (one atomic dict operation), so it is
-    safe from a failure path on the event loop.
+def release_local(path: Path | str, owner: str) -> None:
+    """Give up *owner*'s in-memory claim on loop-safe teardown paths.
+
+    Durable holder withdrawal belongs to the off-loop discard transaction; this
+    half takes no lock and performs no persistence.
     """
     key = _key(path)
     if _LIVE.get(key) == owner:
         _LIVE.pop(key, None)
+
+
+def held_by_another(path: Path | str, owner: str) -> bool:
+    """``True`` when a different live process or session owns *path*."""
+    key = _key(path)
+    local = _LIVE.get(key)
+    if local is not None and local != owner:
+        return True
+    own_identity = _holder_identity()
+    with _cross_process_lock():
+        entry = _read_disk_seeds().get(key)
+        if entry is None:
+            return False
+        return any(
+            held_owner != owner or own_identity is None or identity != own_identity
+            for _kind, held_owner, identity in _live_holders(entry, _HOLDER_OWNERS)
+        )
+
+
+def share(path: Path | str, payload: str, owner: str) -> bool:
+    """Persist *owner* as a shared reader iff the durable digest matches *payload*."""
+    key = _key(path)
+    size = len(payload.encode("utf-8"))
+    sha = digest(payload)
+    with _LOCK:
+        holders = _SHARERS.setdefault(key, set())
+        newly_registered = owner not in holders
+        holders.add(owner)
+        if _persist(keep=key, require_digest=(key, size, sha)):
+            _RECORDS[key] = {"size": size, "sha256": sha}
+            return True
+        if newly_registered:
+            holders.discard(owner)
+        return False
+
+
+def unshare(path: Path | str, owner: str) -> bool:
+    """Withdraw *owner*'s reader lease. ``True`` only when memory and disk agree."""
+    key = _key(path)
+    with _LOCK:
+        holders = _SHARERS.get(key)
+        registered = holders is not None and owner in holders
+        if registered and holders is not None:
+            holders.discard(owner)
+        if _persist(keep=key, drop_holder=(key, _HOLDER_SHARERS, owner)):
+            return True
+        if registered:
+            _SHARERS.setdefault(key, set()).add(owner)
+        return False
+
+
+def unshare_local(path: Path | str, owner: str) -> None:
+    """Withdraw *owner*'s in-memory lease on loop-safe teardown paths.
+
+    Durable holder withdrawal belongs to the off-loop discard transaction; this
+    half takes no lock and performs no persistence.
+    """
+    key = _key(path)
+    holders = _SHARERS.get(key)
+    if holders is not None:
+        holders.discard(owner)
+
+
+def has_durable_record(path: Path | str) -> bool:
+    """Whether the durable sidecar names *path*, whichever process wrote it.
+
+    This cross-process existence probe serves callers whose answer must include
+    only a record persisted to the shared sidecar: the create-race loser's poll
+    ends when the winner's durable record exists, while a process-local cache can
+    outlive a record another process removed. Grants nothing. Takes the
+    cross-process lock for a bounded sidecar read, so it belongs on off-loop
+    paths, same reasoning as :func:`has_sharers`.
+    """
+    key = _key(path)
+    with _cross_process_lock():
+        return _read_disk_seeds().get(key) is not None
+
+
+def recorded_durable(path: Path | str) -> tuple[int, str] | None:
+    """The durable ``(size, sha256)`` recorded for *path*, whoever wrote it.
+
+    The cross-process sibling of :func:`recorded`, for callers whose
+    authorization must include a record another process persisted. Grants
+    nothing. Takes the cross-process lock for a bounded sidecar read, so it
+    belongs on off-loop paths, same reasoning as :func:`has_sharers`.
+    """
+    key = _key(path)
+    with _cross_process_lock():
+        entry = _read_disk_seeds().get(key)
+    if entry is None:
+        return None
+    size, sha = entry.get("size"), entry.get("sha256")
+    if not isinstance(size, int) or not isinstance(sha, str) or not sha:
+        return None
+    return size, sha
+
+
+def has_sharers(path: Path | str) -> bool:
+    """Whether any live shared reader is registered in this or another process."""
+    key = _key(path)
+    if _SHARERS.get(key):
+        return True
+    with _cross_process_lock():
+        entry = _read_disk_seeds().get(key)
+        return entry is not None and bool(_live_holders(entry, _HOLDER_SHARERS))
 
 
 def record(path: Path | str, payload: str, owner: str) -> bool:
@@ -327,53 +651,50 @@ def record(path: Path | str, payload: str, owner: str) -> bool:
 
     The return value is the same contract :func:`forget` carries, and for the same
     reason: a grant is only real once it is on disk. ``False`` means the sidecar
-    write did not land, the in-memory record has been rolled back to exactly what a
-    restart would read, and **the caller must not leave a seed behind** — a settings
-    file with no durable grant is a ``permissions.defaultMode`` the user never
-    approved that no later session is permitted to re-seed or remove, so it outlives
-    every session on the host. Withdrawing the seed is the only outcome that stays
-    inside this module's invariant, which is why this is not best-effort.
+    write did not land, this process's records are exactly what a restart would
+    read, and **the caller must not leave a seed behind** — a settings file with no
+    durable grant is a ``permissions.defaultMode`` the user never approved that no
+    later session is permitted to re-seed or remove, so it outlives every session on
+    the host. Withdrawing the seed is the only outcome that stays inside this
+    module's invariant, which is why this is not best-effort.
 
-    The rollback restores the displaced entry rather than dropping the key: on a
-    RE-SEED the sidecar on disk still names the previous digest, and the bytes that
-    digest describes may still be the ones on disk (``atomic_write`` publishes by
-    rename, so a failed write leaves the old file intact). Dropping the key instead
-    would make this process disagree with the sidecar it just failed to replace.
+    **The entry reaches ``_RECORDS`` only once the sidecar write has landed.** The
+    lock-free readers -- :func:`share` above all -- see ``_RECORDS`` at any instant,
+    and an entry published before the persist would let a sibling validate a share
+    against a grant that then fails: a governed reader left on a file no later
+    session can recognize. Publishing after means a failing persist is invisible --
+    on a re-seed the previous durable entry simply stays in place, still naming the
+    bytes the caller's pre-write copy holds, so restoring that copy returns the path
+    to exactly the recognized state a restart would read.
     """
     key = _key(path)
     with _LOCK:
-        # Captured under the lock, before either dict is touched, because the
-        # rollback below has to reproduce this exact pair. ``_LIVE`` is included:
-        # an adopter arrives here already holding the slot from :func:`claim`, and
-        # a rollback that popped it would hand a live path to a sibling.
-        previous_entry = _RECORDS.get(key)
+        # Captured under the lock, before either live registry is touched,
+        # because a refused persist must reproduce both prior roles exactly.
         previous_live = _LIVE.get(key)
-        # ``_LIVE`` BEFORE ``_RECORDS``, and the order is the point rather than a
-        # style choice: :func:`recorded` is deliberately lock-free, so a sibling
-        # client reads these two dicts from another thread BETWEEN the statements
-        # below. Publishing the record first opens a window in which the seed this
-        # client has just written reads as an ORPHAN -- a record with no live
-        # holder, whose digest matches the file now on disk -- so the sibling would
-        # claim it, rewrite it under its own ``permissions.defaultMode``, and unlink
-        # it on its own reset, out from under a session still running against it.
-        # Reversed, a sibling sees either no record at all or the record with its
-        # owner already attached, and both of those answer "not mine".
-        #
-        # It carries extra weight on the CREATE path, which has no :func:`claim` of
-        # its own (``O_EXCL`` arbitrates that one), so this assignment is the only
-        # thing that ever makes a freshly created seed look live.
+        sharers = _SHARERS.get(key)
+        was_sharer = sharers is not None and owner in sharers
+        # ``_LIVE`` is taken up front so the window where the seed exists on disk
+        # but its record is still persisting never reads as an ORPHAN to a
+        # sibling. Promotion drops this owner's reader role before the same
+        # persist, so owner and own-sharer can never coexist durably.
         _LIVE[key] = owner
-        _RECORDS[key] = {"size": len(payload.encode("utf-8")), "sha256": digest(payload)}
-        if _persist(keep=key):
+        if sharers is not None:
+            sharers.discard(owner)
+        entry = {"size": len(payload.encode("utf-8")), "sha256": digest(payload)}
+        if _persist(
+            keep=key,
+            pending=(key, entry),
+            drop_holder=(key, _HOLDER_SHARERS, owner),
+        ):
+            _RECORDS[key] = entry
             return True
-        if previous_entry is None:
-            _RECORDS.pop(key, None)
-        else:
-            _RECORDS[key] = previous_entry
         if previous_live is None:
             _LIVE.pop(key, None)
         else:
             _LIVE[key] = previous_live
+        if was_sharer:
+            _SHARERS.setdefault(key, set()).add(owner)
         return False
 
 
@@ -408,46 +729,18 @@ def recorded(path: Path | str, owner: str) -> tuple[int, str] | None:
 
 
 def forget(path: Path | str, owner: str) -> bool:
-    """Durably drop *owner*'s claim on *path*. ``True`` when the DISK agrees.
-
-    **BLOCKING — callers must run this off the event loop** (``asyncio.to_thread``
-    or an executor). It takes :data:`_LOCK` and writes the sidecar.
-
-    The return value is the contract, and it is what makes the revoke safe to
-    delete a file behind: ``True`` means the sidecar on disk no longer names
-    *path*, so the caller may unlink. Dropping the entry from memory alone would
-    leave the sidecar naming a path Crew has just deleted, and the digest check
-    does not make that inert -- the next process reloads the entry, and any file
-    that hashes to it (most plainly the very seed a user committed to the
-    repository and then restored) is adopted, overwritten with this install's
-    ``permissions.defaultMode``, and unlinked on reset. So the grant has to die
-    with the file it described, and it has to die FIRST.
-
-    ``False`` is returned in the two cases where the caller must keep the file:
-
-    * a DIFFERENT owner holds the path live, so a client that could not adopt a
-      sibling's seed cannot revoke the sibling's claim either; and
-    * the sidecar write failed, in which case the entry is put BACK in memory so
-      this process agrees with what a restart would read, and the grant is simply
-      not revoked yet. The file stays, the record stays, and a later session
-      recognizes the orphan and repairs it -- which is strictly better than a
-      deletion whose revocation never reached the disk.
-    """
+    """Durably revoke *owner* only when no other live holder protects *path*."""
     key = _key(path)
     with _LOCK:
-        live = _LIVE.get(key)
-        if live is not None and live != owner:
+        previous_live = _LIVE.get(key)
+        if previous_live is not None and previous_live != owner:
             return False
         entry = _RECORDS.pop(key, None)
         _LIVE.pop(key, None)
-        if entry is None:
-            # Nothing was recorded, so there is no grant to revoke and nothing to
-            # write. Already "not ours", which is what the caller is asking for.
+        if _persist(drop=key, require_unheld=(key, owner)):
             return True
-        # ``drop=key`` so the reload-merge in :func:`_persist` does not resurrect the
-        # revoked key from the copy still on disk -- popping it from ``_RECORDS`` alone
-        # is invisible to a merge that reloads the shared sidecar.
-        if _persist(drop=key):
-            return True
-        _RECORDS[key] = entry
+        if entry is not None:
+            _RECORDS[key] = entry
+        if previous_live is not None:
+            _LIVE[key] = previous_live
         return False

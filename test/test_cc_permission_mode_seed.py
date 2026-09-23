@@ -19,6 +19,18 @@ from pathlib import Path
 
 import pytest
 
+# ``isolated_records`` is the provenance module's autouse reset, imported rather than
+# re-spelled: ``_LIVE`` / ``_SHARERS`` / ``_RECORDS`` are process-wide, so a leaked
+# owner slot from one test is read by whichever test shares its worker.
+from test_acp_seed_provenance import (  # noqa: F401 -- autouse fixture
+    _OWNER,
+    _fp,
+    _pin_holder_identities,
+    isolated_records,
+)
+
+from kiro_crew.acp import seed_provenance as sp
+from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import CC_PERMISSION_MODE_AUTO, CC_PERMISSION_MODE_BYPASS
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -183,3 +195,88 @@ class TestSeedOnDisk:
         """THE mutation, on disk: a default that widens permissions fails here."""
         data = self._seed(ACP_BACKEND_CLAUDE, tmp_path)
         assert "defaultMode" not in data.get("permissions", {})
+
+
+_FOREIGN_SETTINGS = '{"permissions": {"defaultMode": "acceptEdits"}}\n'
+
+
+class TestForeignReplaceUnderLiveSharer:
+    """A user replaces Crew's seed while a sibling session still shares it.
+
+    Two sessions of one agent in one ``work_dir`` render byte-identical settings;
+    the first CREATES the file (the owner), the second validates the same bytes
+    and takes a shared-reader lease on them. When the user then replaces the file
+    atomically, the owner's re-seed must hand back its claim so the replacement
+    is theirs -- but the whole-record revoke (``forget``) fails closed while the
+    sharer's lease is live. Discarding that refusal leaked the OWNER slot for the
+    process lifetime: every later session on this ``work_dir`` was refused the
+    pathname and, once it was vacant, ran with the whole ``mcpServers`` array
+    withheld. The owner has to fall back to ``release``, which drops only its
+    own holder and keeps the record and the sharer's lease intact.
+    """
+
+    @staticmethod
+    def _client(work_dir: Path, owner: str) -> AcpClient:
+        client = AcpClient(
+            work_dir=work_dir, acp_backend=ACP_BACKEND_CLAUDE, permission_mode="default"
+        )
+        client._seed_owner = owner
+        return client
+
+    @classmethod
+    def _owner_under_live_sharer_after_foreign_replace(
+        cls, work_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Path, str, AcpClient]:
+        """The owner has just run its re-seed against a user-replaced, shared file."""
+        _pin_holder_identities(monkeypatch, foreign_live=False)
+        owner = cls._client(work_dir, _OWNER)
+        path = owner._claude_local_settings_path()
+        payload = owner._render_claude_settings_payload()
+        # The durable state the create left behind, then a sibling's lease on it.
+        assert sp.record(path, payload, _OWNER) is True
+        assert sp.share(path, payload, "sib") is True
+        # The user replaces Crew's file with their own bytes.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_FOREIGN_SETTINGS, encoding="utf-8")
+        owner._claude_settings_authored = True
+        owner._claude_settings_written = payload
+
+        owner._write_claude_local_settings()
+        return path, payload, owner
+
+    def test_owner_release_on_foreign_replace_under_live_sharer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner slot is handed back even though ``forget`` was refused."""
+        path, payload, owner = self._owner_under_live_sharer_after_foreign_replace(
+            tmp_path, monkeypatch
+        )
+
+        # THE leak: a later session must not read this work_dir as still owned.
+        assert sp.held_by_another(path, "later") is False
+        # ...and it was ``release`` that ran, not ``forget``: the sibling's lease and
+        # the record it validated against are both intact.
+        assert sp.has_sharers(path) is True
+        assert sp.recorded_durable(path) == _fp(payload)
+        assert owner._claude_settings_authored is False
+        assert owner._claude_settings_written is None
+        # The replacement is the user's and stays exactly as written.
+        assert path.read_text(encoding="utf-8") == _FOREIGN_SETTINGS
+
+    def test_vacated_pathname_not_wedged_after_foreign_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The user-visible symptom: once the pathname is vacant, a new session seeds it."""
+        path, _payload, _owner = self._owner_under_live_sharer_after_foreign_replace(
+            tmp_path, monkeypatch
+        )
+        # The sharer tears down and the user removes their file.
+        assert sp.unshare(path, "sib") is True
+        path.unlink()
+
+        later = self._client(tmp_path, "later")
+        later._write_claude_local_settings()
+
+        assert path.exists(), "a fresh session declined the vacant pathname: owner slot leaked"
+        assert later._claude_settings_authored is True
+        assert sp.recorded(path, "later") == _fp(path.read_text(encoding="utf-8"))

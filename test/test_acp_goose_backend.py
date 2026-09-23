@@ -324,9 +324,9 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
     import inspect
     import textwrap
 
-    # The two arrays sit in DIFFERENT methods -- session/new is composed by
-    # ``_new_session_following_substitution`` and session/load by
-    # ``_initialize_session`` -- so both are read rather than assuming one owner.
+    # Three arrays are composed across two methods: the initial session/new and
+    # its substitution retry live in ``_new_session_following_substitution``;
+    # session/load lives in ``_initialize_session``.
     splices = 0
     for method in (
         AcpClient._new_session_following_substitution,
@@ -340,9 +340,10 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "_goose_session_mcp_servers"
         )
-    assert splices == 2, (
-        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced at "
-        f"BOTH the session/new and session/load call sites; found {splices}"
+    assert splices == 3, (
+        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced into "
+        "the initial session/new, the substitution retry, and session/load; "
+        f"found {splices}"
     )
 
 

@@ -569,6 +569,112 @@ class TestTheApprovalReadsOneFile:
 class TestPutBackNoClobber:
     """The undo half of "move it aside, remove the tree, put it back"."""
 
+    def test_the_by_name_fallback_never_stages_at_the_canonical_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        aside = tmp_path / "debris"
+        aside.write_bytes(b"complete source bytes")
+        destination = tmp_path / "index"
+        moved_ino = aside.stat().st_ino
+        real_write = os.write
+
+        def _write_then_fail(fd: int, data: bytes) -> int:
+            real_write(fd, data[: len(data) // 2])
+            raise OSError(errno.EIO, "copy failed")
+
+        monkeypatch.setattr(os, "write", _write_then_fail)
+        assert (
+            pinned_fs.put_back_no_clobber(
+                tmp_path,
+                tmp_path,
+                aside.name,
+                destination.name,
+                expect_ino=moved_ino,
+                max_bytes=1 << 20,
+            )
+            == pinned_fs.PUT_BACK_FAILED
+        )
+        assert not destination.exists()
+        assert aside.read_bytes() == b"complete source bytes"
+
+    def test_the_by_name_fallback_publishes_whole_bytes(self, tmp_path: Path) -> None:
+        aside = tmp_path / "debris"
+        aside.write_bytes(b"complete source bytes")
+        destination = tmp_path / "index"
+
+        assert (
+            pinned_fs.put_back_no_clobber(
+                tmp_path,
+                tmp_path,
+                aside.name,
+                destination.name,
+                expect_ino=aside.stat().st_ino,
+                max_bytes=1 << 20,
+            )
+            is None
+        )
+        assert destination.read_bytes() == b"complete source bytes"
+        assert aside.read_bytes() == b"complete source bytes"
+
+    def test_the_by_name_fallback_never_publishes_through_a_swapped_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A destination-parent rename cannot redirect the staged publish."""
+        source_parent = tmp_path / "aside"
+        source_parent.mkdir()
+        source = source_parent / "debris"
+        source.write_bytes(b"complete source bytes")
+        destination_parent = tmp_path / "tree"
+        destination_parent.mkdir()
+        pinned_parent = tmp_path / "tree-pinned"
+        real_fstat = os.fstat
+        swapped: list[bool] = []
+
+        def swap_after_source_open(fd: int):
+            info = real_fstat(fd)
+            if not swapped:
+                destination_parent.rename(pinned_parent)
+                destination_parent.mkdir()
+                swapped.append(True)
+            return info
+
+        monkeypatch.setattr(os, "fstat", swap_after_source_open)
+        result = pinned_fs.put_back_no_clobber(
+            source_parent,
+            destination_parent,
+            source.name,
+            "index",
+            expect_ino=source.stat().st_ino,
+            max_bytes=1 << 20,
+        )
+
+        assert swapped == [True]
+        assert not (destination_parent / "index").exists()
+        assert result in (None, pinned_fs.PUT_BACK_FAILED)
+        if result is None:
+            assert (pinned_parent / "index").read_bytes() == b"complete source bytes"
+        else:
+            assert not (pinned_parent / "index").exists()
+
+    def test_the_by_name_fallback_refuses_input_past_max_bytes(self, tmp_path: Path) -> None:
+        aside = tmp_path / "debris"
+        aside.write_bytes(b"12345")
+        destination = tmp_path / "index"
+
+        assert (
+            pinned_fs.put_back_no_clobber(
+                tmp_path,
+                tmp_path,
+                aside.name,
+                destination.name,
+                expect_ino=aside.stat().st_ino,
+                max_bytes=4,
+            )
+            == pinned_fs.PUT_BACK_FAILED
+        )
+        assert not destination.exists()
+        assert aside.read_bytes() == b"12345"
+
     def test_it_falls_back_to_a_copy_where_the_filesystem_has_no_links(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

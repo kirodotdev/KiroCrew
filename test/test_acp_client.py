@@ -10556,6 +10556,97 @@ class TestSubstitutionFollow:
         # Exactly two session/new issues: the original + one retry (bounded).
         assert sent.count("session/new") == 2
 
+    async def _run_substitution_retry_case(self, tmp_path, monkeypatch, *, lose_surface):
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance as sp
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(sp, "_RECORDS", {})
+        monkeypatch.setattr(sp, "_LIVE", {})
+        monkeypatch.setattr(sp, "_SHARERS", {})
+        monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+
+        owner = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        owner._model = "global.anthropic.claude-opus-4-8[1m]"
+        owner._write_claude_local_settings()
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._model = owner._model
+        client._write_claude_local_settings()
+        assert client._claude_settings_shared is True
+        assert client._permission_surface_governed is True
+
+        server = {
+            "name": "governed",
+            "command": "/bin/governed",
+            "args": [],
+            "env": [],
+            "type": "stdio",
+        }
+        client._session_mcp_cache = [server]
+        client._session_mcp_snapshot = acp_client.DerivedSpecSnapshot("old", "old")
+        resolve_calls = []
+
+        def _resolve():
+            resolve_calls.append(client._permission_surface_governed)
+            client._session_mcp_snapshot = acp_client.DerivedSpecSnapshot("new", "new")
+            return [server] if client._permission_surface_governed else []
+
+        client._resolve_session_mcp_servers = _resolve  # type: ignore[assignment]
+        report_calls = []
+        guard_calls = []
+        client._begin_session_report = (  # type: ignore[assignment]
+            lambda servers: report_calls.append(list(servers or []))
+        )
+        client._guard_unresolved_mcp_refs = (  # type: ignore[assignment]
+            lambda wire_servers: guard_calls.append(list(wire_servers or []))
+        )
+        sent = []
+        settings = tmp_path / ".claude" / "settings.local.json"
+
+        async def _send(method, params):
+            sent.append(list(params.get("mcpServers") or []))
+            if len(sent) == 1 and lose_surface:
+                settings.write_text("{}", encoding="utf-8")
+            return len(sent)
+
+        waits = 0
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            nonlocal waits
+            waits += 1
+            if waits == 1:
+                client._last_substitution_model = "global.anthropic.claude-sonnet-4-6[1m]"
+                return {}
+            return {"sessionId": "retry-session"}
+
+        client._send_request = _send  # type: ignore[assignment]
+        client._wait_for_response = _wait  # type: ignore[assignment]
+
+        response = await client._new_session_following_substitution()
+        assert response == {"sessionId": "retry-session"}
+        assert sent[0] == [server]
+        return sent[1], server, resolve_calls, report_calls, guard_calls
+
+    @pytest.mark.asyncio
+    async def test_substitution_retry_withholds_mcp_when_surface_lost(self, tmp_path, monkeypatch):
+        retried, _server, resolves, reports, guards = await self._run_substitution_retry_case(
+            tmp_path, monkeypatch, lose_surface=True
+        )
+        assert retried == []
+        assert resolves == [False]
+        assert reports == [[_server], []]
+        assert guards == [[_server], []]
+
+    @pytest.mark.asyncio
+    async def test_substitution_retry_keeps_mcp_when_surface_intact(self, tmp_path, monkeypatch):
+        retried, server, resolves, reports, guards = await self._run_substitution_retry_case(
+            tmp_path, monkeypatch, lose_surface=False
+        )
+        assert retried == [server]
+        assert resolves == [True]
+        assert reports == [[server], [server]]
+        assert guards == [[server], [server]]
+
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
