@@ -882,21 +882,33 @@ same rule `routes._reauthorize_in_lock` already states for `routes._library_lock
 -- a lock that makes a caller wait must re-run the authorization inside it, because
 the wait sits between the checks that authorized the call and the call itself.
 
-A WITHHELD run takes no lock, which is the withholding default and so the common
-path. The lock orders this block against the setter, and that is worth an exclusive
-hold only where a second permission read exists for a revocation to interleave
-with. A withheld run has none: its re-read is `layer_b and not
-sessions_layer_b_enabled(account)`, which short-circuits on its first operand, so
-the refusal it guards cannot fire and the lock would guard nothing. Taking none
-serves the `_authorize_upload` rule above directly rather than by holding
-something -- with no blocking acquisition in the block, the authorization and the
-PUT are adjacent. Taking one would cost what an exclusive hold costs: the lock file
-is `_state_path()`'s sidecar, `backup.json` in the app data directory, one path for
+ONE shape takes no lock: an owner-initiated WITHHELD run. Which shape may skip it
+is decided by what is RE-READ inside the block, not by the Layer B decision alone.
+The Layer B re-read is `layer_b and not sessions_layer_b_enabled(account)`, which
+short-circuits on its first operand when the half is withheld, so it contributes
+no read there. But the crew display half rides on EVERY run, withheld or not, and
+for a scheduled caller that half is authorized by the unattended grant, which
+`_authorize_upload` re-reads inside this block and `set_nightly_sessions` writes
+under this same sidecar lock. So a scheduled withheld run still holds it: unlocked,
+a revocation committing between that read and the PUT is not ordered against the
+PUT, and the transcript ships after the grant was withdrawn, which no later action
+recovers.
+
+An owner-initiated withheld run has neither read. Both scheduled-only re-reads are
+skipped -- an owner who clicked the button is present and authorized the run by
+clicking -- the Layer B re-read short-circuits, and what remains
+(`is_app_enabled`, `aws_consent`, STS) is not stored in this module's state file,
+so an exclusive hold would order nothing. Taking none serves the
+`_authorize_upload` rule above directly rather than by holding something -- with no
+blocking acquisition in the block, the authorization and the PUT are adjacent.
+Taking one would cost what an exclusive hold costs: the lock file is
+`_state_path()`'s sidecar, `backup.json` in the app data directory, one path for
 every account rather than one per account, so every state writer of every account
--- `_record_run`, the nightly toggle `set_sessions_layer_b`, `set_retention_keep`,
-and the nightly loop -- waits out one account's upload up to
-`_STATE_LOCK_TIMEOUT_SECS`. That is the cross-account stall this module already
-removed from the status read, one layer down.
+-- `_record_run`, `set_sessions_layer_b`, `set_retention_keep`, and the nightly
+loop -- waits out one account's upload up to `_STATE_LOCK_TIMEOUT_SECS`. That is
+the cross-account stall this module already removed from the status read, one layer
+down. The predicate is written so that only this one proven shape skips the lock
+and any other caller holds it, because the exposure it prevents has no recovery.
 
 `_upload_lock` takes ONLY the sidecar file lock, deliberately not `_run_lock` --
 the same shape `_delete_under_the_retention_gate` composes, and for the same
@@ -940,7 +952,8 @@ refuses; a grant arriving mid-build leaves an archive without Layer B, which the
 next run picks up.
 
 `test_aws_control_backup.py::TestSessionsArchiveLayerBGate` pins both directions,
-that a permitted upload holds the setter's lock and a withheld one does not, that
+that a permitted upload holds the setter's lock, that a scheduled withheld one holds
+it too, and that an owner-initiated withheld one does not, that
 no `config.json` key can grant it, that a grant does not cross accounts, and that
 the store stays inside the fenced directory.
 

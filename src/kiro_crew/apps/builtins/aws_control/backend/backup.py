@@ -365,11 +365,16 @@ def _state_lock():
 def _upload_lock():
     """Hold ONLY the state file's sidecar lock across the Layer B upload gate.
 
-    Taken by that gate on the PERMITTED path alone. The ordering below is ordering
-    against the SETTER, so it is worth an exclusive hold only where a second
-    permission read exists for a revocation to interleave with. A withheld run has
-    none -- its recheck short-circuits -- and takes no lock at all, which leaves
-    its authorization adjacent to its upload. See the gate in
+    Taken by that gate on every path but one: the attended owner's WITHHELD run.
+    The ordering below is ordering against the SETTERS, so it is worth an exclusive
+    hold wherever a permission read inside the gate can be overtaken by one. The
+    permitted path has its Layer B recheck. A SCHEDULED run has the unattended
+    grant, which `_authorize_upload` re-reads for scheduled callers alone and
+    `set_nightly_sessions` writes under this very lock -- and it has that read
+    whether or not Layer B is permitted, because the crew display half rides on
+    every run. Only an owner-initiated withheld run has neither: its recheck
+    short-circuits, both scheduled-only re-reads are skipped, and it takes no lock
+    at all, which leaves its authorization adjacent to its upload. See the gate in
     :func:`run_sessions_backup`.
 
     Same sidecar file lock as :func:`_state_lock`, and deliberately NOT
@@ -383,8 +388,9 @@ def _upload_lock():
     between its recheck and the PUT, and that is a cross-process AND cross-thread
     ordering against the SETTER, not against the reader.
 
-    The setter (:func:`set_sessions_layer_b` -> :func:`_locked_state_update` ->
-    :func:`_state_lock`) takes this same sidecar file lock EXCLUSIVELY. The file
+    The setters (:func:`set_sessions_layer_b` and :func:`set_nightly_sessions`,
+    each -> :func:`_locked_state_update` -> :func:`_state_lock`) take this same
+    sidecar file lock EXCLUSIVELY. The file
     lock is per-descriptor, so an exclusive hold here blocks the setter's
     exclusive hold and vice versa, in this process and in a second install
     writing the same state. That is what makes a revocation land wholly before
@@ -3901,33 +3907,45 @@ def run_sessions_backup(
         # without Layer B instead would be the torn state the read-once rule
         # exists to prevent.
         #
-        # Held only on the PERMITTED path, and when held, taken BEFORE
-        # `_authorize_upload` so the whole decision-to-upload span is one critical
-        # section. `_authorize_upload` states the invariant both halves of that
+        # Skipped on ONE path -- the attended owner's withheld run -- and when held,
+        # taken BEFORE `_authorize_upload` so the whole decision-to-upload span is one
+        # critical section. `_authorize_upload` states the invariant both halves of that
         # serve -- no check is separated from the upload by another blocking call.
         # Acquiring the lock after the authorization would put a blocking wait
         # between the consent check and `put_file`, because a concurrent account's
         # backup can hold this lock across its own upload and the recheck below
         # covers Layer B rather than consent.
         #
-        # `layer_b` False is the withholding DEFAULT, and on that path the recheck
-        # below short-circuits on its first operand, so there is no second read for
-        # a revocation to interleave with and the lock orders nothing. Taking none
-        # satisfies the same invariant directly: `_authorize_upload` and `put_file`
-        # sit adjacent with no blocking call between them. Taking one instead costs
-        # what an exclusive hold costs -- the lock file is `_state_path()`'s
-        # sidecar, one path for every account, so every state writer of every
-        # account (`_record_run`, `set_sessions_layer_b`, `set_retention_keep`, the
-        # nightly loop) waits out this upload up to `_STATE_LOCK_TIMEOUT_SECS` for a
-        # guarantee this path does not need. `contextlib.nullcontext` keeps that as
-        # one expression, so the body below reads the same either way.
+        # Which path may skip it is decided by what is RE-READ inside the block, not
+        # by `layer_b` alone. The recheck below short-circuits when `layer_b` is
+        # False, so it contributes no second read there -- but `_authorize_upload`
+        # re-reads the unattended grant for a SCHEDULED caller, and that grant's
+        # setter (`set_nightly_sessions`) writes under this same sidecar lock. The
+        # crew display half rides on every run, withheld or not, so a scheduled
+        # withheld run still has a permission that can be withdrawn mid-block and a
+        # payload that ships if the withdrawal is missed. It keeps the lock.
+        #
+        # The attended owner's withheld run is the one shape with neither: both
+        # scheduled-only re-reads are skipped, the recheck short-circuits, and what
+        # remains -- `is_app_enabled`, `aws_consent`, STS -- is not stored in this
+        # module's state file and takes no lock of ours, so an exclusive hold would
+        # order nothing. Taking none satisfies the invariant directly:
+        # `_authorize_upload` and `put_file` sit adjacent with no blocking call
+        # between them. Taking one costs what an exclusive hold costs -- the lock
+        # file is `_state_path()`'s sidecar, one path for every account, so every
+        # state writer of every account (`_record_run`, `set_sessions_layer_b`,
+        # `set_retention_keep`, the nightly loop) waits out this upload up to
+        # `_STATE_LOCK_TIMEOUT_SECS` for a guarantee this one path does not need.
+        # `contextlib.nullcontext` keeps that as one expression, so the body below
+        # reads the same either way.
         #
         # `_upload_lock`, not `_state_lock`: the sidecar FILE lock alone, without
-        # `_run_lock`. The setter (`set_sessions_layer_b` -> `_locked_state_update`
-        # -> `_state_lock`) takes this same file lock exclusively, so an exclusive
-        # hold here still orders a revocation wholly before or wholly after this
-        # block, in this process and in a second install writing the same state --
-        # the guarantee this gate exists for is untouched. `_run_lock` ALSO
+        # `_run_lock`. The setters (`set_sessions_layer_b` and `set_nightly_sessions`,
+        # each -> `_locked_state_update` -> `_state_lock`) take this same file lock
+        # exclusively, so an exclusive hold here still orders a revocation wholly
+        # before or wholly after this block, in this process and in a second install
+        # writing the same state -- the guarantee this gate exists for is untouched.
+        # `_run_lock` ALSO
         # serializes `last_runs`, which the dashboard's backup-status read goes
         # through, so holding it across a PUT allowed `_PUSH_TIMEOUT_SECS` would
         # stall every account's status surface for one account's upload -- which is
@@ -3936,9 +3954,17 @@ def run_sessions_backup(
         # a dedicated gate rather than `_run_lock`, so a purge does not stall the
         # status read either.
         #
-        # Nothing inside the block re-enters this lock: `_authorize_upload` reaches
-        # only `aws_consent`, `is_app_enabled`, an STS call and `_refuse_upload`,
-        # and the run record is written after the block. `_record_run` reaches the
+        # Nothing inside the block re-enters this lock. `_authorize_upload` reaches
+        # `is_app_enabled`, `aws_consent`, an STS call, `_refuse_upload`, and -- for a
+        # scheduled caller -- the unattended grant readers and
+        # `scheduled_sessions_blocked_reason`. The last two READ this module's state
+        # file, which is what the hold above orders them against, but they read it
+        # without taking the lock, so naming them here costs no reentrancy. The list
+        # is written out in full deliberately: a list that stops at STS reads as
+        # though the withheld path has no permission left to lose, which is the
+        # reasoning the hold above exists to refuse.
+        #
+        # The run record is written after the block. `_record_run` reaches the
         # same file lock through `_state_lock`, but only after this block has
         # released, and it holds no `_run_lock` while it waits for it -- so it
         # cannot deadlock against this block and it cannot drag the status read in
@@ -3956,7 +3982,11 @@ def run_sessions_backup(
         # What does NOT wait is every status read: `last_runs` and
         # `uploaded_objects` take only `_run_lock`, which neither this block nor a
         # writer parked on the file lock holds.
-        with _upload_lock() if layer_b else contextlib.nullcontext():
+        # Stated in the positive and checked in the negative, so a caller nobody
+        # anticipated holds the lock rather than skipping it -- the direction to be
+        # wrong in, since what the lock orders is unrecoverable once missed.
+        withheld_and_attended = not layer_b and caller == CALLER_OWNER
+        with contextlib.nullcontext() if withheld_and_attended else _upload_lock():
             # The live checks: the connection still points at this account, the app
             # is still enabled, and consent still stands. Immediately before the
             # upload, and under the lock when one is held, so none of them can go

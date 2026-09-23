@@ -779,18 +779,24 @@ class TestSessionsArchiveLayerBGate:
         assert seen["archive"] is False
         assert record["layer_b"] is True
 
-    def test_a_withheld_upload_does_not_hold_the_setter_lock(self, tmp_path, monkeypatch):
-        """A WITHHELD run uploads without holding the state lock.
+    def test_an_attended_withheld_upload_does_not_hold_the_setter_lock(self, tmp_path, monkeypatch):
+        """An owner-initiated WITHHELD run uploads without holding the state lock.
 
-        The mirror of the sibling above, and the common case rather than the edge
-        one: withholding is the default, so this is the path most runs take. The
-        lock exists to order this block against the SETTER, and the recheck it
-        orders is ``layer_b and not sessions_layer_b_enabled(account)``. With
-        ``layer_b`` False that short-circuits on its first operand, so the refusal
-        cannot fire and there is no second read for a revocation to interleave with
-        -- an exclusive hold would order nothing.
+        The mirror of the sibling above, and the one shape with no permission read
+        left inside the block. The lock exists to order this block against the
+        SETTERS. The recheck it orders is
+        ``layer_b and not sessions_layer_b_enabled(account)``, which short-circuits
+        on its first operand when ``layer_b`` is False; the unattended grant, the
+        other read a setter can overtake, is re-read for ``CALLER_SCHEDULED`` alone
+        and so is not read here. What is left -- ``is_app_enabled``,
+        ``aws_consent``, STS -- lives outside this module's state file. An exclusive
+        hold would order nothing.
 
-        What it would cost is measured across accounts. The lock file is
+        Scoped to ``CALLER_OWNER`` deliberately, and pinned from the other side by
+        ``test_a_scheduled_withheld_upload_holds_the_setter_lock``: a scheduled run
+        reaches this block with ``layer_b`` False too, and it must still hold.
+
+        What the hold would cost is measured across accounts. The lock file is
         ``_state_path()``'s sidecar, one path for every account, so a hold here puts
         every other account's state write behind this upload for up to
         ``_STATE_LOCK_TIMEOUT_SECS`` -- including the toggles an operator reaches
@@ -840,6 +846,65 @@ class TestSessionsArchiveLayerBGate:
         assert seen["archive"] is True, "the withheld upload held the state lock"
         # The withheld path, and one that reached the upload: the crew half alone
         # rode, so this is not a refusal that never got as far as `put_file`.
+        assert record["layer_b"] is False
+
+    def test_a_scheduled_withheld_upload_holds_the_setter_lock(self, tmp_path, monkeypatch):
+        """A SCHEDULED withheld run holds the lock, because it still has a grant to lose.
+
+        The withheld default does not make this block safe to leave unlocked. The
+        crew display half rides on every run, permitted or not, and for a scheduled
+        caller that half is authorized by the unattended grant, which
+        ``_authorize_upload`` re-reads inside this block and
+        ``set_nightly_sessions`` writes under this very sidecar lock. Unlocked, a
+        revocation committing between that read and ``put_file`` is not ordered
+        against the PUT, and the transcript ships after the owner withdrew the
+        grant -- an exposure with no recovery, since an object on S3 cannot be
+        taken back.
+
+        The counterpart of
+        ``test_an_attended_withheld_upload_does_not_hold_the_setter_lock``: same
+        withheld archive, same probe, opposite answer, and the caller is the only
+        difference between them. Discriminating in the direction that matters -- a
+        predicate keyed on ``layer_b`` alone fails this test.
+        """
+        self._skip_without_pinning()
+        self._both_halves(tmp_path, monkeypatch)
+        self._store(tmp_path, False)
+        seen: dict[str, bool] = {}
+
+        def _file_lock_is_free_to_another_thread() -> bool:
+            answer: dict[str, bool] = {}
+            lock_path = backup._state_path().with_suffix(".lock")
+
+            def probe() -> None:
+                try:
+                    with backup.open_lock_file(lock_path) as fd:
+                        with backup.file_lock(fd, exclusive=True, wait=False):
+                            answer["free"] = True
+                except OSError:
+                    answer["free"] = False
+
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "the probe thread blocked instead of answering"
+            return answer["free"]
+
+        def fake_put(
+            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+        ):
+            which = "label" if key.endswith(backup.LABEL_OBJECT_NAME) else "archive"
+            seen[which] = _file_lock_is_free_to_another_thread()
+
+        with (
+            mock.patch.object(backup, "_authorize_upload"),
+            mock.patch.object(backup.storage, "put_file", side_effect=fake_put),
+        ):
+            record = backup.run_sessions_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_SCHEDULED
+            )
+
+        assert seen["archive"] is False, "the scheduled withheld upload left the state lock free"
         assert record["layer_b"] is False
 
     def test_a_status_read_is_not_blocked_by_an_in_flight_upload(self, tmp_path, monkeypatch):
