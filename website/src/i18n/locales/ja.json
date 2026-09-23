@@ -10626,6 +10626,7 @@
       "opened_by_closed_session": "{{slot}} が開いた（終了済み）",
       "no_conductor_sessions_yet": "コンダクターセッションはまだありません",
       "needs_your_answer": "回答が必要です",
+      "new": "新規",
       "new_autopilot_chat": "新しいオートパイロットチャット",
       "new_chat": "新しいチャット",
       "new_chat_in_folder": "フォルダー内に新しいチャット",

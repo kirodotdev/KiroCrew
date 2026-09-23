@@ -4533,6 +4533,7 @@
       "session_failed_to_switch_one": "{{count}} session failed to switch",
       "session_failed_to_switch_other": "{{count}} sessions failed to switch",
       "session_source": "Session",
+      "new": "New",
       "new_chat": "New chat",
       "new_chat_on_crew": "New chat on crew",
       "no_inactive_sessions_to_archive": "No inactive sessions to archive.",

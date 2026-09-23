@@ -90,12 +90,12 @@ describe('ChatSidebar Folder Grouping', () => {
     expect(screen.queryByText('UNGROUPED')).not.toBeInTheDocument()
   })
 
-  it('labels the primary create action New chat', () => {
+  it('shortens the primary create action label to New', () => {
     renderWithProviders(<ChatSidebar {...defaultProps} />)
     const createButton = screen.getByRole('button', { name: 'New chat session' })
-    // Anchored, not a substring: the point of the key swap is that the visible
-    // label reads as a whole action, so a longer label must fail here too.
-    expect(createButton).toHaveTextContent(/^New chat$/)
+    // Anchored, not a substring: the header shows the short form recorded in
+    // docs/decisions, so the longer caret-row label must fail here too.
+    expect(createButton).toHaveTextContent(/^New$/)
   })
 
   it('shows provider logos on pull request chips', async () => {

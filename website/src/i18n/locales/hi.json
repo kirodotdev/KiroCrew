@@ -10776,6 +10776,7 @@
       "opened_by_closed_session": "{{slot}} द्वारा खोला गया (बंद)",
       "no_conductor_sessions_yet": "अभी कोई कंडक्टर सत्र नहीं",
       "needs_your_answer": "तुम्हारा उत्तर चाहिए",
+      "new": "नया",
       "new_autopilot_chat": "नई ऑटोपायलट चैट",
       "new_chat": "नई चैट",
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",

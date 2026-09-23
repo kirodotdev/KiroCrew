@@ -141,9 +141,9 @@ function openCreateMenu() {
 
 /** Reach a menu ROW by role, never by text.
  *
- *  The split button's main segment is labelled "New chat" too, so a bare
- *  `findByText('New chat')` matches the header span as well as this row and
- *  throws on the ambiguity. The role scopes the query to the menu, and the
+ *  The split button's main segment carries its own "New" label and a title of
+ *  "New chat", so a text query is one relabel away from matching the header as
+ *  well as this row. The role scopes the query to the menu, and the
  *  accessible name is the row's own label — the leading lucide icon
  *  contributes no text. */
 function findCreateMenuItem(label: string) {

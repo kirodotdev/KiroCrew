@@ -701,26 +701,27 @@ describe('ChatSidebar — Older Sessions pane', () => {
 })
 
 describe('ChatSidebar — narrow-width header', () => {
-  // The create label is 'New chat', not 'New'. The caret menu is closed in every
-  // case below, so the only node carrying it is the header button's own span.
+  // The header create label is the short 'New' (recorded in docs/decisions).
+  // The caret menu is closed in every case below, so the only node carrying it
+  // is the header button's own span.
   it('keeps the full header at a comfortable width', () => {
     localStorage.setItem('mc-sidebar-width', '400')
     renderSidebar()
     expect(screen.getByText('Sessions')).toBeTruthy()
-    expect(screen.getByText('New chat')).toBeTruthy()
+    expect(screen.getByText('New')).toBeTruthy()
   })
 
   it('drops the create label, then the panel title, as the sidebar narrows', () => {
     localStorage.setItem('mc-sidebar-width', '230')
     const compact = renderSidebar()
     expect(screen.getByText('Sessions')).toBeTruthy()
-    expect(screen.queryByText('New chat')).toBeNull()
+    expect(screen.queryByText('New')).toBeNull()
     compact.unmount()
 
     localStorage.setItem('mc-sidebar-width', '190')
     renderSidebar()
     expect(screen.queryByText('Sessions')).toBeNull()
-    expect(screen.queryByText('New chat')).toBeNull()
+    expect(screen.queryByText('New')).toBeNull()
   })
 
   it('ignores an out-of-range persisted width', () => {
@@ -728,7 +729,7 @@ describe('ChatSidebar — narrow-width header', () => {
     renderSidebar()
     // Falls back to the 260px default, which still shows both labels.
     expect(screen.getByText('Sessions')).toBeTruthy()
-    expect(screen.getByText('New chat')).toBeTruthy()
+    expect(screen.getByText('New')).toBeTruthy()
   })
 })
 

@@ -10626,6 +10626,7 @@
       "opened_by_closed_session": "{{slot}}이(가) 열었음 (종료됨)",
       "no_conductor_sessions_yet": "아직 컨덕터 세션이 없습니다",
       "needs_your_answer": "답변이 필요합니다",
+      "new": "신규",
       "new_autopilot_chat": "새 오토파일럿 채팅",
       "new_chat": "새 채팅",
       "new_chat_in_folder": "폴더에 새 채팅",

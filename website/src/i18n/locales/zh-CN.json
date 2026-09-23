@@ -10626,6 +10626,7 @@
       "opened_by_closed_session": "由 {{slot}} 开启（已关闭）",
       "no_conductor_sessions_yet": "暂无指挥会话",
       "needs_your_answer": "需要你回答",
+      "new": "新建",
       "new_autopilot_chat": "新建自动驾驶聊天",
       "new_chat": "新建对话",
       "new_chat_in_folder": "在文件夹中新建聊天",
