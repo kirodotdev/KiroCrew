@@ -847,10 +847,10 @@ def test_transient_agent_read_failure_keeps_the_previous_overlay(
     fail = {"on": True}
     victim_src = (src / "agent-1.json").resolve()
 
-    def flaky(real: Path) -> bytes:
+    def flaky(real: Path, **kwargs: Any) -> bytes:
         if fail["on"] and Path(real) == victim_src:
             raise OSError(errno.EACCES, "agent spec could not be read", str(real))
-        return real_read(real)
+        return real_read(real, **kwargs)
 
     monkeypatch.setattr(agent_discovery, "_read_spec_bytes", flaky)
     _rewrite(tmp_path)
@@ -1257,11 +1257,11 @@ def test_transient_source_read_failure_is_not_cached(
     real_read = agent_discovery._read_spec_bytes
     fail = {"on": True}
 
-    def flaky(real: Path) -> bytes:
+    def flaky(real: Path, **kwargs: Any) -> bytes:
         p = Path(real)
         if fail["on"] and p.name == "agent-0.json" and "agents" in p.parts:
             raise OSError(errno.EACCES, "agent spec could not be read", str(real))
-        return real_read(real)
+        return real_read(real, **kwargs)
 
     monkeypatch.setattr(agent_discovery, "_read_spec_bytes", flaky)
     _rewrite(tmp_path)
