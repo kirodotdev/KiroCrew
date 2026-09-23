@@ -45,6 +45,7 @@ from kiro_crew.autonudge import (
 )
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_core import _call_tool, _call_tool_inner
+from kiro_crew.mcp_tools import control
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.validation import ValidationError
 
@@ -218,6 +219,26 @@ def test_monitor_update_short_circuits_for_non_nudgeable_session(monkeypatch, ga
 
 
 # ── autonudge_stop ──
+
+
+def test_autonudge_stop_descriptor_keeps_remediable_permission_work_active():
+    descriptor = next(item for item in control.schemas() if item["name"] == "autonudge_stop")
+    description = descriptor["description"]
+
+    assert "missing permission" in description.lower()
+    assert "remediation work, not a stop condition" in description
+    assert "least-privileged allowed fix" in description
+    assert "verify the repair" in description
+    assert "keep the loop active" in description
+    # Remediation is bounded: the loop may repair what it is already allowed
+    # to touch, never widen its own authority to get past a blocker.
+    assert "never means granting yourself approvals or permissions" in description
+    assert "weakening or bypassing approval policy" in description
+    assert "editing governance controls" in description
+    assert "only an already-allowed least-privilege owner/config repair is permitted" in description
+    assert description.count("user can grant") == 1
+    assert "If only the user can grant the next approval" in description
+    assert "report that once and recheck later" in description
 
 
 def test_autonudge_stop_returns_directive_with_stripped_reason(default_install, gateway_posts):

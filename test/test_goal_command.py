@@ -4,6 +4,7 @@ Covers ``_handle_goal_command`` in isolation — the pure glue over the async
 and the AutoNudge-disabled path. The judge gate at ``HOOK_EVENT_STOP`` is a
 follow-up CR and is not exercised here.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -88,9 +89,7 @@ async def test_status_with_active_goal_shows_budget(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_arm_default_budget(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_arm_default_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     svc = _fake_service(loop=None)
     audit = _install(monkeypatch, svc)
     monkeypatch.setattr(chat_runner.Path, "home", classmethod(lambda cls: tmp_path))
@@ -115,12 +114,23 @@ async def test_arm_default_budget(
     assert "ship the feature" in call.kwargs["message"]
     assert "never git push" in call.kwargs["message"]
     # V1-4 lean nudge: compressed, but must still carry every load-bearing
-    # directive (STOP CHECK sentinel, evidence-based DONE CHECK, blocker path,
-    # one-atomic-step rule) so the shorter form can't silently drop a control.
+    # directive (STOP CHECK sentinel, evidence-based DONE CHECK,
+    # blocker-remediation path, one-atomic-step rule) so the shorter form can't
+    # silently drop a control.
     _msg = call.kwargs["message"]
     assert 'autonudge_stop(reason="sentinel")' in _msg
     assert 'autonudge_stop(reason="goal met")' in _msg
-    assert 'autonudge_stop(reason="blocked")' in _msg
+    assert 'autonudge_stop(reason="blocked")' not in _msg
+    assert "missing permission" in _msg.lower()
+    assert "allowed least-privilege fix with tests" in _msg
+    assert "keep this goal active" in _msg
+    # Remediation is bounded: the goal may repair what it is already allowed
+    # to touch, never widen its own authority to get past a blocker.
+    assert "never means granting yourself approvals or permissions" in _msg
+    assert "weakening or bypassing approval policy" in _msg
+    assert "editing governance controls" in _msg
+    assert "only an already-allowed least-privilege owner/config repair is permitted" in _msg
+    assert "never call autonudge_stop merely because work is blocked" in _msg
     assert "atomic step" in _msg
     assert "concrete evidence" in _msg
     # Sentinel path is per-slot, slug-sanitized, and cleared before re-arming.

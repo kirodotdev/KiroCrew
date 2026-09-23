@@ -638,11 +638,10 @@ def _notify_approval_stalled(session_key: str) -> None:
     """Tell AutoNudge that a prompt in *session_key* went unanswered.
 
     An unanswered prompt is the only evidence available that an UNATTENDED loop
-    cannot act: without it a monitor loop bound to this conversation keeps
-    firing, is denied every interactive tool, and burns its whole cycle budget
-    while reporting itself healthy — the per-turn cap is measured in tens of
-    minutes and the approval window in minutes, so every remaining cycle is spent
-    waiting to be denied. With it the loop deactivates naming the remedy.
+    could not deliver this action. A structured monitor deactivates naming the
+    remedy. A prompt/goal loop records and consumes the evidence but remains
+    active, because its next bounded cycle can remediate the permission, do other
+    safe work, or recheck a human-only approval later.
 
     Resolved through ``binding_key_for`` so it is inert for a key no loop could be
     bound to, lazily imported (autonudge imports channel packages, so a module

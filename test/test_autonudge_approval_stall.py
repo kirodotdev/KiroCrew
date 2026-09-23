@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService, NudgeLoop
+from kiro_crew.monitoring.models import MonitorState
 
 
 @pytest.fixture(autouse=True)
@@ -92,10 +94,10 @@ def _nosleep(monkeypatch):
     monkeypatch.setattr(_an.asyncio, "sleep", _noop)
 
 
-async def _armed(svc, **kwargs) -> NudgeLoop:
+async def _armed(svc, message: str = "go", **kwargs) -> NudgeLoop:
     """A started service with one loop whose initial armed timer has drained."""
     await svc.start()
-    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, **kwargs)
+    loop = await svc.add(slot_key="chat-1-123", message=message, idle_secs=15, **kwargs)
     await svc._timers[loop.id]
     return loop
 
@@ -129,13 +131,8 @@ async def test_starting_publishes_the_service_and_stopping_unpublishes_it(store_
 
 
 @pytest.mark.asyncio
-async def test_stall_stops_loop_before_the_next_cycle(svc, _nosleep):
-    """Recorded stall evidence deactivates the loop instead of firing again.
-
-    Same terminal treatment as the other bounds — deactivate (not remove) plus
-    ``expired``, so the loop stays inspectable and the operator is told it
-    stopped rather than finished.
-    """
+async def test_prompt_stall_keeps_loop_active_for_remediation(svc, _nosleep):
+    """A prompt loop consumes stall evidence and receives its next cycle."""
     fired: list[NudgeLoop] = []
 
     async def on_fire(loop):
@@ -151,16 +148,123 @@ async def test_stall_stops_loop_before_the_next_cycle(svc, _nosleep):
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
 
-    assert ("expired", loop.id) in events, f"no expired event emitted; got {events}"
+    assert ("expired", loop.id) not in events
     refreshed = svc._loops[loop.id]
-    assert refreshed.active is False
-    assert refreshed.stopped_reason == APPROVAL_STALL_REASON
-    assert fired == [], "a loop proved unable to act must not burn another cycle"
+    assert refreshed.active is True
+    assert refreshed.stopped_reason == ""
+    assert refreshed.approval_stalled is False
+    assert fired == [loop], "a remediation-first prompt loop must recheck later"
+
+
+@pytest.mark.asyncio
+async def test_prompt_stall_consumption_is_durable_before_fire(svc, _nosleep, monkeypatch):
+    """The remediation turn cannot publish before its consumed marker is durable."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    loop = await _armed(svc)
+    svc._on_fire = on_fire
+    svc.notify_approval_stalled("chat-1-123")
+    await asyncio.gather(*list(svc._inflight_adds))
+    svc._cancel_timer(loop.id)
+
+    write_started = threading.Event()
+    release_write = threading.Event()
+    original_write = svc._write_state
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=2), "test did not release the durable write"
+        original_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    timer = asyncio.create_task(svc._timer(loop))
+    assert await asyncio.to_thread(write_started.wait, 2)
+    assert fired == []
+    assert loop.approval_stalled is True
+
+    release_write.set()
+    await timer
+
+    assert fired == [loop]
+    assert loop.approval_stalled is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_stall_write_failure_retains_evidence_and_retries(svc, _nosleep, monkeypatch):
+    """A failed consumption write fires nothing and leaves retryable evidence."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    loop = await _armed(svc)
+    svc._on_fire = on_fire
+    svc.notify_approval_stalled("chat-1-123")
+    await asyncio.gather(*list(svc._inflight_adds))
+    svc._cancel_timer(loop.id)
+
+    def fail_write(_payload):
+        raise OSError("store unavailable")
+
+    monkeypatch.setattr(svc, "_write_state", fail_write)
+    rearmed: list[float | None] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda _loop, delay=None: rearmed.append(delay))
+
+    await svc._timer(loop)
+
+    assert fired == []
+    assert loop.active is True
+    assert loop.approval_stalled is True
+    assert rearmed == [min(_an._REARM_BACKOFF_SECS, loop.idle_secs)]
+
+
+@pytest.mark.asyncio
+async def test_gated_prompt_stall_grants_one_remediation_followup(svc, _nosleep, monkeypatch):
+    """An unchanged observed subject cannot suppress the promised remediation turn."""
+    fired: list[NudgeLoop] = []
+    polled: list[str] = []
+    message = "Watch https://github.com/kirodotdev/KiroCrew/pull/1"
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    def quiet_probe(_identity, prompt, _probe):
+        polled.append(prompt)
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing changed")
+
+    loop = await _armed(svc, message=message)
+    loop.gate = True
+    loop.monitor = MonitorState(
+        kind="gh-pr",
+        target="kirodotdev/KiroCrew#1",
+        objective="review_ready",
+        created_ts=loop.created_ts,
+    )
+    svc._on_fire = on_fire
+    monkeypatch.setattr(_an.probes, "build", lambda _kind: object())
+    monkeypatch.setattr(_an.irq, "poll", quiet_probe)
+    monkeypatch.setattr(svc, "_arm_from_deadline", lambda _loop: None)
+    svc.notify_approval_stalled("chat-1-123")
+    await asyncio.gather(*list(svc._inflight_adds))
+    svc._cancel_timer(loop.id)
+
+    await svc._timer(loop)
+
+    assert fired == [loop]
+    assert polled == [], "the remediation credit must bypass a QUIET observation"
+    assert loop.approval_stalled is False
+    assert loop.monitor.followup_ticks == 0
 
 
 @pytest.mark.asyncio
 async def test_loop_without_stall_evidence_fires_normally(svc, _nosleep):
-    """The stop is reactive: no recorded stall, no behaviour change.
+    """The evidence is reactive: no recorded stall, no behaviour change.
 
     This is the false-positive guard. A loop whose cycles only touch
     auto-approved tools never reaches an interactive approval wait, so nothing
@@ -218,9 +322,9 @@ async def test_runtime_budget_wins_over_stall(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_stall_hook_records_without_stopping(svc, _nosleep):
-    """The hook writes evidence and returns; _timer owns the stop.
+    """The hook writes evidence and returns; _timer owns its consumption.
 
-    Stopping inline would cancel a possibly-mid-fire timer and race the very
+    Acting inline would cancel a possibly-mid-fire timer and race the very
     turn that produced the evidence, so the loop must still be active (and its
     timer intact) immediately after the signal.
     """
@@ -254,25 +358,27 @@ async def test_stall_hook_ignores_unknown_and_inactive_loops(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_a_settings_save_on_an_active_loop_keeps_the_evidence(svc, _nosleep):
-    """Only an actual revival spends the evidence, not any ``active=True``.
+    """An ordinary save cannot spend evidence before the next prompt cycle.
 
     The goal popover sends ``active: true`` on every edit of an existing loop, so
-    a save landing between the stall and the next wake would otherwise erase
-    evidence recorded moments earlier and let one more doomed cycle fire.
+    a save landing between the stall and the next wake must not erase evidence
+    recorded moments earlier. The timer consumes it when remediation resumes.
     """
     loop = await _armed(svc)
     svc.notify_approval_stalled("chat-1-123")
 
-    # An ordinary settings edit on a loop that is still active.
+    # Hold the deadline so this settings write cannot concurrently run the timer;
+    # the test invokes the consuming wake explicitly below.
+    loop.next_due_ts = 0.0
     await svc.update(loop.id, message="revised", active=True)
 
-    assert svc._loops[loop.id].approval_stalled is True, (
-        "a settings save erased the stall evidence; the next cycle would fire "
-        "and be declined again"
-    )
+    assert (
+        svc._loops[loop.id].approval_stalled is True
+    ), "a settings save erased the stall evidence before the timer consumed it"
     svc._cancel_timer(loop.id)
     await svc._timer(loop)
-    assert svc._loops[loop.id].stopped_reason == APPROVAL_STALL_REASON
+    assert svc._loops[loop.id].active is True
+    assert svc._loops[loop.id].approval_stalled is False
 
 
 @pytest.mark.asyncio
@@ -284,8 +390,7 @@ async def test_revival_clears_stall_evidence(svc, _nosleep):
     """
     loop = await _armed(svc)
     svc.notify_approval_stalled("chat-1-123")
-    svc._cancel_timer(loop.id)
-    await svc._timer(loop)
+    await svc.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
     assert svc._loops[loop.id].stopped_reason == APPROVAL_STALL_REASON
 
     await svc.update(loop.id, active=True)

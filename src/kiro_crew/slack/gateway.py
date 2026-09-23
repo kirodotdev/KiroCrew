@@ -2760,8 +2760,9 @@ class GatewayOrchestrator:
                         # Nobody answered on either surface -- this branch also
                         # cancels the dashboard future below, so it is the single
                         # authoritative "unanswered" point for a channel-bound
-                        # loop's cycle. Record it so the loop stops on its next
-                        # wake instead of spending the rest of its cap.
+                        # loop's cycle. A structured monitor stops on the
+                        # evidence; a prompt loop consumes it and keeps its
+                        # bounded remediation lifecycle active.
                         if nudge_key:
                             try:
                                 svc = self.autonudge_svc

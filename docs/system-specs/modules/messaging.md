@@ -2943,8 +2943,10 @@ so a user who ignores the prompt does not lose their message.
 The pending-decision registry is channel-neutral (`messaging/approval.py`): a
 process-global map keyed `session_key:request_id` because ACP request ids restart
 at 1 per session, deny-by-default on timeout, and a timeout also signals
-`autonudge.notify_approval_stalled` so an unattended loop deactivates instead of
-burning its cycle budget being denied. The card's nonce is minted by that registry
+`autonudge.notify_approval_stalled`. A structured monitor deactivates because its
+accepted action could not be delivered; a prompt/goal loop consumes the evidence
+on its next wake and stays active for bounded remediation or a later recheck. The
+card's nonce is minted by that registry
 against the pending entry and validated INSIDE `resolve()`, as a precondition:
 checking it around the call would approve the tool first and only then discover
 the press was stale. A press carrying no nonce or request id fails closed, and

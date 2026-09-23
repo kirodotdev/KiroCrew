@@ -209,10 +209,17 @@ def _resolve_beat(beat: "asyncio.Future[None]") -> None:
 # model-authored text and the watchdog only needs the deterministic source.
 AUTONUDGE_STOP_REASON = "autonudge_stop"
 
-# Persisted reason for a loop stopped because one of its cycles could not obtain
-# tool approval. Named separately from the other bounds because its remedy is
-# different in kind: the cap and the budget are raised, this one needs an
-# authorization the loop cannot grant itself.
+# Persisted reason on a PRE-UPGRADE prompt/goal loop that ``_timer`` stopped
+# because one of its cycles could not obtain tool approval. No current code
+# path writes it: a prompt/goal loop now consumes the ``approval_stalled``
+# evidence and stays active for remediation, and a structured monitor records
+# its own ``MONITOR_STOP_APPROVAL_STALL`` (``"approval_stall"``) on
+# ``MonitorState.stopped_reason``, never this value on the outer loop. The
+# constant is kept so stores written before the upgrade still read, are
+# re-armable (``_TERMINAL_BOUND_REASONS``) and are explained by the directive
+# applier's paused-loop wording. Its remedy differs in kind from the cap and
+# the budget: those are raised, this one needed an authorization the loop
+# cannot grant itself.
 APPROVAL_STALL_REASON = "approval_stalled"
 
 # Persisted reason for a loop that stood down because its cycles kept failing to
@@ -722,8 +729,10 @@ class NudgeLoop:
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
     # "autonudge_stop" (deliberate directive), "cycle_cap",
-    # "runtime_budget", or "approval_stalled" (set by _timer's terminal
-    # bounds).
+    # "runtime_budget", or "approval_stalled" (pre-upgrade evidence only: no
+    # current writer sets it — a prompt/goal loop now stays active through an
+    # unanswered approval, and a structured monitor records "approval_stall"
+    # on ``MonitorState.stopped_reason`` rather than on this field).
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is
@@ -732,15 +741,15 @@ class NudgeLoop:
     stopped_reason: str = ""
     # Evidence that a cycle in this loop's session asked for tool approval and
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
-    # consumed by ``_timer`` as a terminal condition on the NEXT wake, which is
-    # the whole point: the loop stops on proof that it could not act, never on a
-    # prediction that it might not be able to. A loop whose turns only touch
-    # auto-approved tools never reaches an interactive wait, so it can never be
-    # flagged here — that is what keeps a working read-only loop running instead
-    # of needing a "does this loop need approval?" guess.
-    # Persisted, because the condition that produced it (a lapsed grant) usually
-    # outlives a restart; cleared on every revival so a re-granted loop is not
-    # stopped by stale evidence.
+    # consumed on the NEXT wake. It is terminal only for a structured monitor,
+    # whose sole accepted action could not be delivered; a prompt/goal loop
+    # clears the evidence and receives another cycle so it can repair the
+    # permission, do other safe work, or recheck a human-only approval later.
+    # A loop whose turns only touch auto-approved tools never reaches an
+    # interactive wait, so it can never be flagged here.
+    # Persisted because the condition can outlive a restart. Prompt loops clear
+    # it when they consume it; every revival clears it too, so a re-granted
+    # structured monitor is not stopped by stale evidence.
     approval_stalled: bool = False
     # How many of this loop's cycles in a row ended without ever getting a model
     # session (``session/new`` timed out or otherwise failed). Raised by
@@ -4236,6 +4245,38 @@ class AutoNudgeService:
             # observed while the caller still owns the lock.
             raise asyncio.CancelledError
 
+    async def _consume_prompt_approval_stall(self, loop: NudgeLoop) -> bool:
+        """Durably consume one prompt-loop stall before its remediation fire."""
+        async with self._lock:
+            if self._loops.get(loop.id) is not loop or not loop.active:
+                return False
+            if not loop.approval_stalled:
+                return True
+
+            staged = deepcopy(loop)
+            staged.approval_stalled = False
+            if staged.monitor is not None:
+                staged.monitor.followup_ticks = max(
+                    staged.monitor.followup_ticks,
+                    _WAKE_FOLLOWUP_TICKS,
+                )
+            payload = self._monitor_snapshot_with_replacement(loop, staged)
+
+            def publish() -> None:
+                loop.approval_stalled = False
+                if loop.monitor is not None and staged.monitor is not None:
+                    loop.monitor.followup_ticks = staged.monitor.followup_ticks
+
+            try:
+                await self._write_monitor_snapshot_locked(payload)
+            except asyncio.CancelledError:
+                # The writer drains before propagating cancellation, so the
+                # staged consumption is already durable and must become live.
+                publish()
+                raise
+            publish()
+            return True
+
     async def record_monitor_dispatch_failure(
         self,
         monitor_id: str,
@@ -4467,28 +4508,32 @@ class AutoNudgeService:
         never reaches the interactive wait, so this is unreachable for a loop
         whose cycles only touch read-only tools.
 
-        Records the fact and returns. The STOP is left to ``_timer``, which
-        already owns every terminal decision and evaluates them serialized before
-        a fire — stopping from here would mean cancelling a timer that may be
-        mid-fire (the one thing the fire-window contracts forbid, since it kills
-        the in-flight turn) and racing the very turn that produced the evidence.
-        Deferring costs the cycle already in flight and saves every later one.
+        Records the fact and returns. Terminal handling for a structured monitor
+        is left to its completion path or ``_timer``; a prompt/goal loop consumes
+        the evidence on its next wake and stays active for remediation. Acting
+        here would mean cancelling a timer that may be mid-fire (the one thing
+        the fire-window contracts forbid, since it kills the in-flight turn) and
+        racing the very turn that produced the evidence.
 
         The evidence is slot-level, not cycle-level: an unanswered prompt in an
-        attended tab counts too. That is the conservative direction — the loop
-        deactivates inspectable and restartable with a notice naming the remedy,
-        and a person who was merely away resumes it — whereas the alternative
-        needs a reliable "is this turn a nudge cycle?" test, which the fire
-        window does not provide for dashboard slots (their turn outlives it).
+        attended tab counts too. Structured monitors conservatively deactivate
+        inspectable and restartable with a notice naming the remedy. Prompt loops
+        instead clear the marker at their next wake; their instruction owns the
+        bounded decision to remediate or do other safe work.
         """
         loop = self._find_by_slot(slot_key)
         if not loop or not loop.active or loop.approval_stalled:
             return
         loop.approval_stalled = True
+        consequence = (
+            "the structured monitor will stop"
+            if is_structured_monitor_loop(loop)
+            else "the prompt loop will remain active for remediation"
+        )
         logger.warning(
-            "AutoNudge: a tool approval went unanswered in loop %s's session — "
-            "it will stop instead of firing another cycle",
+            "AutoNudge: a tool approval went unanswered in loop %s's session — %s",
             loop.id,
+            consequence,
         )
         self._persist_soon()
 
@@ -5455,31 +5500,37 @@ class AutoNudgeService:
             await self.update(loop.id, active=False, stopped_reason="runtime_budget")
             self._emit("expired", loop)
             return
-        # Proved unable to act? Checked LAST, so a loop that is also out of
-        # cycles or budget still reports the bound it would otherwise report. This
-        # one is reactive by construction: it fires only on recorded
-        # evidence that a cycle's approval went unanswered (see
-        # ``notify_approval_stalled``), never on a reading of whether a grant
-        # happens to be in force — a loop that only ever calls auto-approved
-        # tools needs no grant, and stopping it would turn a working
-        # configuration into a stopped one.
-        #
-        # Same terminal treatment as the other bounds: deactivate rather than
-        # remove, so the loop stays inspectable and can be resumed once the
-        # operator restores the authorization it cannot obtain for itself, and
-        # emit ``expired`` so the notifier tells them it stopped rather than
-        # finished. Without this the loop keeps waking, dispatching, being
-        # declined and spending its cap on cycles that were never able to work.
+        # Approval evidence is checked LAST, so an exhausted cycle/runtime bound
+        # still wins. Structured monitors have already returned through their
+        # typed controller above. For this prompt/goal path, consume the marker
+        # and deliver the next bounded cycle so it can repair the permission, do
+        # other safe work, or recheck a human-only approval later. The marker
+        # consumption and any gated follow-up allowance commit before the fire;
+        # a failed write retains the evidence and re-arms a bounded retry.
         if loop.approval_stalled:
             logger.info(
-                "AutoNudge: loop %s cannot obtain tool approval — deactivating "
-                "instead of firing cycle %d",
+                "AutoNudge: loop %s recorded an unanswered approval — keeping "
+                "the prompt loop active for remediation",
                 loop.id,
-                loop.cycle_count + 1,
             )
-            await self.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
-            self._emit("expired", loop)
-            return
+            try:
+                consumed = await self._consume_prompt_approval_stall(loop)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "AutoNudge: could not persist consumed approval evidence for "
+                    "loop %s — retaining it and retrying",
+                    loop.id,
+                )
+                if loop.active and loop.id in self._loops:
+                    self._arm_timer(
+                        loop,
+                        delay=min(_REARM_BACKOFF_SECS, loop.idle_secs),
+                    )
+                return
+            if not consumed:
+                return
         # Cycles that never reach a model session. A delivered cycle whose turn
         # dies on ``session/new`` produced nothing, and firing the next one on the
         # plain interval reproduces it -- 15 times in a row on the host this came

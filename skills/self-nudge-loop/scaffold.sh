@@ -121,7 +121,7 @@ BOARD (skip this block if no kanban-md board in use):
 3. kanban-md --dir \$BOARD list --status todo --json
 4. kanban-md --dir \$BOARD pick --assignee loop-<cycle_n>
 5. If pick returns nothing and a dep-met backlog card exists: kanban-md --dir \$BOARD move <id> --status todo ; then pick.
-6. If everything blocked AND you already posted a blocker this arming: autonudge_stop(reason="all blocked"), stop.
+6. If every current task is blocked: pick the highest-priority remediable blocker and take one unblocking step. A missing permission/config/dependency is work to fix (an already-allowed least-privilege owner/config repair; never grant yourself approvals or weaken policy). If only the user can act, report that once and keep the loop active to recheck later.
 
 EXECUTE (<=5 tool calls per cycle, hard cap):
 7. Read the one spec file for the claimed task.
