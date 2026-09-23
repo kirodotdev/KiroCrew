@@ -1243,6 +1243,83 @@ class TestLegitOAuthUrlCorpus:
         assert meta["oauth_url"] == url
 
 
+class TestJwsClientIdCarveOut:
+    """Contract: a compact-JWS ``client_id`` is accepted at an exact approved
+    endpoint, and the carve-out that allows it widens nothing else.
+
+    RFC 7591 constrains the format of a dynamically registered identifier not at
+    all, so a provider may issue one carrying the JWT signature shape. Accepting
+    it costs an exemption, and every boundary of that exemption is pinned here:
+    each rejection case below differs from the accepted URL in exactly one way.
+    """
+
+    _JWS = (
+        "mcp-client-eyJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ"
+        ".eyJ0b2tlblR5cGUiOiJqd3RfY2xpZW50X2lkIiwiaXNzIjoiZXhhbXBsZS1tY3Atc2VydmVyIn0"
+        ".AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
+    # Split so the literal does not read as a live key to a secret scanner.
+    _MARKER = "AKIA" + "IOSFODNN7EXAMPLED"
+    _TAIL = (
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A60527%2Foauth%2Fcallback"
+        "&scope=read+write"
+    )
+    _STATE = "&state=ff0238a7-a768-425d-94a9-ad87e798fafb"
+
+    def _url(self, *, host: str = "mcp.clickup.com", scheme: str = "https",
+             path: str = "/oauth/authorize", key: str = "client_id",
+             client_id: str | None = None, state: str | None = None) -> str:
+        return (
+            f"{scheme}://{host}{path}"
+            "?response_type=code"
+            f"&{key}={self._JWS if client_id is None else client_id}"
+            f"{self._STATE if state is None else f'&state={state}'}"
+            f"{self._TAIL}"
+        )
+
+    def test_jws_client_id_is_accepted_at_an_approved_endpoint(self):
+        assert oauth_url_contains_credential(self._url()) is False
+
+    def test_opaque_client_id_is_still_accepted(self):
+        assert oauth_url_contains_credential(self._url(client_id="0b3f1c8e4a2d")) is False
+
+    @pytest.mark.parametrize(
+        "case,url_kwargs",
+        [
+            ("unapproved_host", {"host": "evil.example.com"}),
+            ("unapproved_path", {"path": "/not/authorize"}),
+            ("explicit_port", {"host": "mcp.clickup.com:8443"}),
+            ("http_scheme", {"scheme": "http"}),
+            ("case_variant_param_name", {"key": "Client_Id"}),
+        ],
+    )
+    def test_endpoint_and_parameter_identity_are_required(self, case, url_kwargs):
+        """The exemption is keyed to an exact endpoint and an exact param name."""
+        assert oauth_url_contains_credential(self._url(**url_kwargs)) is True, case
+
+    @pytest.mark.parametrize(
+        "case,client_id",
+        [
+            ("credential_marker", _MARKER),
+            ("single_separator", f"aaa.{_MARKER}"),
+            ("standard_base64_alphabet", f"ab+cd.ef/gh.{_MARKER}"),
+            ("double_encoded", f"aaa.bbb.%2543%2541%2Fx{_MARKER}"),
+        ],
+    )
+    def test_only_the_compact_jws_shape_earns_the_exemption(self, case, client_id):
+        assert oauth_url_contains_credential(self._url(client_id=client_id)) is True, case
+
+    def test_a_marker_in_state_is_still_caught_beside_a_jws_client_id(self):
+        """The carve-out takes the identifier out of scope, not the whole query."""
+        assert oauth_url_contains_credential(self._url(state=self._MARKER)) is True
+
+    def test_a_marker_in_an_unknown_param_is_still_caught(self):
+        url = self._url() + f"&debug_key={self._MARKER}"
+        assert oauth_url_contains_credential(url) is True
+
+
 class TestOAuthParamCredentialScan:
     """A hard credential signature inside an OAuth param is still exfil."""
 
