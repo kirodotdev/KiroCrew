@@ -5,9 +5,10 @@
  * service worker). The native toast is best-effort — a throwing constructor
  * must never take down the code around it:
  *
- * - on the WebSocket approval path, an uncaught throw kills the rest of the
- *   message handler, so the approval never reaches the notification feed;
- * - in useNativeNotification, it kills the effect that watches the feed.
+ * - an approval frame reaches the OS through the feed entry useWebSocket
+ *   dispatches and the constructor in useNativeNotification; a throw there
+ *   must not unwind into the socket message handler or the feed;
+ * - in useNativeNotification alone, it kills the effect that watches the feed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -73,6 +74,9 @@ describe('page-context Notification construction is best-effort', () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
     vi.stubGlobal('Notification', ThrowingNotification)
+    // The constructor fires only while the user is away from the window;
+    // a focused window would never reach the throwing path.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
   })
 
   afterEach(() => {
@@ -86,16 +90,16 @@ describe('page-context Notification construction is best-effort', () => {
       return createElement(Provider, { store },
         createElement(QueryClientProvider, { client: queryClient }, children))
     }
-    const hook = renderHook(() => useWebSocket(), { wrapper })
+    const hook = renderHook(() => {
+      useWebSocket()
+      useNativeNotification('Kiro Crew', '/avatar.png')
+    }, { wrapper })
     const ws = WS_INSTANCES[0]
     act(() => { ws.simulateOpen() })
     return { hook, ws }
   }
 
   it('an approval frame still reaches the notification feed when the toast constructor throws', () => {
-    // The hidden-tab + permission-granted branch is the only one that
-    // constructs a Notification on the approval path.
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     const store = createTestStore()
     const { ws } = mountWs(store)
 

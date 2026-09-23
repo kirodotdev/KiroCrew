@@ -9086,8 +9086,6 @@
     "useWebSocket": {
       "response_ready": "Ответ готов",
       "waiting_for_input": "Ожидается твой ответ",
-      "a_task_needs_your_decision": "Задача требует твоего решения",
-      "approval_required": "Требуется подтверждение",
       "tool_approval": "Подтверждение инструмента: {{name}}",
       "approval_wait_expired": "Время ожидания подтверждения истекло, поэтому запрос был отклонён.",
       "approval_rejected": "В подтверждении было отказано, поэтому запрос был отклонён.",

@@ -9,6 +9,7 @@ import { useGuardedLeave } from '../NavigationLeaveGuard'
 import Clickable from '../Clickable'
 import ErrorNotice from '../ErrorNotice'
 import { MC_LIVE_NOTIFICATION_EVENT, type McLiveNotificationDetail } from '../../hooks/notificationEvent'
+import { isWindowAway } from '../../hooks/windowAway'
 import {
   BANNER_AUTO_HIDE_MS, BANNER_DECK_DEPTH, BANNER_EXPANDED_MAX, MC_BANNER_SETTING_CHANGED_EVENT,
   loadBannerEnabled, shouldBannerNote,
@@ -180,7 +181,9 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
       const ctx = ctxRef.current
       const ok = shouldBannerNote(note, {
         ...ctx,
-        windowFocused: typeof document !== 'undefined' && document.hasFocus() && !document.hidden,
+        // The complement of the OS toast's gate (useNativeNotification): the
+        // two surfaces split the same line, so a live note lands on exactly one.
+        windowFocused: !isWindowAway(),
       })
       if (!ok) return
       const next = [note, ...pendingRef.current.filter(n => n.ts !== note.ts)]

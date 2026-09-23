@@ -8852,8 +8852,6 @@
     "useWebSocket": {
       "response_ready": "উত্তর তৈরি",
       "waiting_for_input": "তোমার ইনপুটের জন্য অপেক্ষা করা হচ্ছে",
-      "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
-      "approval_required": "অনুমোদন দরকার",
       "tool_approval": "টুল অনুমোদন: {{name}}",
       "approval_wait_expired": "অনুমোদনের অপেক্ষার সময় শেষ হয়ে গেছে, তাই রিকোয়েস্টটি প্রত্যাখ্যাত হয়েছে।",
       "approval_rejected": "অনুমোদন নাকচ করা হয়েছে, তাই রিকোয়েস্টটি প্রত্যাখ্যাত হয়েছে।",

@@ -8852,8 +8852,6 @@
     "useWebSocket": {
       "response_ready": "Antwort ist bereit",
       "waiting_for_input": "Wartet auf deine Eingabe",
-      "a_task_needs_your_decision": "Eine Aufgabe braucht deine Entscheidung",
-      "approval_required": "Genehmigung erforderlich",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",

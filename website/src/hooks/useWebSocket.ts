@@ -1675,17 +1675,12 @@ export function useWebSocket() {
             if (!reconnectingRef.current) {
               dispatchMcNotification(APPROVAL_KIND)
             }
-            // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
-            if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              // Android Chrome throws "Illegal constructor" for page-context
-              // Notification; an uncaught throw here kills the whole message
-              // handler, so the native toast is best-effort.
-              try {
-                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), silent: true, tag: 'kirocrew-approval' })
-              } catch {
-                /* unsupported platform */
-              }
-            }
+            // No OS toast here. The addNotification below is what reaches the
+            // OS: useNativeNotification watches the unacked count and posts ONE
+            // toast per new note, tagged with its approval_id, only while the
+            // user is away from the window. A second constructor on this path
+            // carried a different tag, so the OS showed two banners for one
+            // approval.
             dispatch(addNotification({
               kind: 'approval',
               title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),

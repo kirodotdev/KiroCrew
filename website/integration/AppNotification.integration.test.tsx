@@ -55,6 +55,10 @@ describe('useNativeNotification', () => {
         requestPermission: vi.fn(),
       }),
     )
+    // The toast fires only while the user is away from the window (the in-app
+    // banner covers a focused one); happy-dom's default is the focused state,
+    // so hide the document for every formatting case below.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -64,6 +68,7 @@ describe('useNativeNotification', () => {
     act(() => root.unmount())
     container.remove()
     vi.unstubAllGlobals()
+    delete (document as { hidden?: boolean }).hidden
   })
 
   function mount(store: ReturnType<typeof createTestStore>) {

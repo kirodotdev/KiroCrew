@@ -2,10 +2,14 @@
  * Native page-context toasts must be SILENT: WebAudio (useNotificationSound) is
  * the single source of notification sound. If a `new Notification(...)` omits
  * `silent: true`, the OS plays its own system chime on top of the WebAudio
- * tone — a double sound. These tests pin `silent: true` on both call sites:
+ * tone — a double sound. These tests pin `silent: true` for both producers:
  *
- *  - useNativeNotification (the feed toast), and
- *  - the approval toast in useWebSocket (hidden tab + permission granted).
+ *  - a feed note reaching useNativeNotification (the ONE constructor), and
+ *  - an approval frame, which reaches the OS through the same constructor via
+ *    the feed entry useWebSocket dispatches.
+ *
+ * The window is hidden throughout: the constructor fires only while the user
+ * is away (see nativeNotificationAwayGate.test.ts for the gate itself).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -63,6 +67,7 @@ describe('native notification toasts are silent (WebAudio is the only sound)', (
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
     vi.stubGlobal('Notification', RecordingNotification)
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
   })
 
   afterEach(() => {
@@ -87,14 +92,16 @@ describe('native notification toasts are silent (WebAudio is the only sound)', (
     expect(NOTIF_OPTIONS[0]?.silent).toBe(true)
   })
 
-  it('the approval toast in useWebSocket sets silent: true', () => {
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+  it('an approval frame yields one toast, and it is silent', () => {
     const store = createTestStore()
     function wrapper({ children }: { children: React.ReactNode }) {
       return createElement(Provider, { store },
         createElement(QueryClientProvider, { client: queryClient }, children))
     }
-    renderHook(() => useWebSocket(), { wrapper })
+    renderHook(() => {
+      useWebSocket()
+      useNativeNotification('Kiro Crew', '/avatar.png')
+    }, { wrapper })
     const ws = WS_INSTANCES[0]
     act(() => { ws.simulateOpen() })
 

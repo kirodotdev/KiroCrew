@@ -8852,8 +8852,6 @@
     "useWebSocket": {
       "response_ready": "जवाब तैयार है",
       "waiting_for_input": "तुम्हारे इनपुट की प्रतीक्षा है",
-      "a_task_needs_your_decision": "एक कार्य को तुम्हारे फ़ैसले की ज़रूरत है",
-      "approval_required": "स्वीकृति आवश्यक",
       "tool_approval": "टूल की मंज़ूरी: {{name}}",
       "approval_wait_expired": "मंज़ूरी की प्रतीक्षा का समय समाप्त हो गया, इसलिए अनुरोध अस्वीकार कर दिया गया।",
       "approval_rejected": "मंज़ूरी को नामंज़ूर कर दिया गया, इसलिए अनुरोध अस्वीकार कर दिया गया।",

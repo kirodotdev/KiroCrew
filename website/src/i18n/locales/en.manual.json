@@ -3464,8 +3464,6 @@
     "useWebSocket": {
       "response_ready": "Response ready",
       "waiting_for_input": "Waiting for your input",
-      "a_task_needs_your_decision": "A task needs your decision",
-      "approval_required": "Approval Required",
       "tool_approval": "Tool approval: {{name}}",
       "approval_wait_expired": "The approval wait expired, so the request was denied.",
       "approval_rejected": "The approval was rejected, so the request was denied.",

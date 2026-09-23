@@ -8969,8 +8969,6 @@
     "useWebSocket": {
       "response_ready": "Respuesta lista",
       "waiting_for_input": "Esperando tu respuesta",
-      "a_task_needs_your_decision": "Una tarea necesita tu decisión",
-      "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "approval_wait_expired": "La espera de aprobación venció, así que la solicitud se denegó.",
       "approval_rejected": "La aprobación fue rechazada, así que la solicitud se denegó.",

@@ -8735,8 +8735,6 @@
     "useWebSocket": {
       "response_ready": "응답 준비 완료",
       "waiting_for_input": "입력을 기다리고 있습니다",
-      "a_task_needs_your_decision": "결정이 필요한 작업이 있습니다",
-      "approval_required": "승인 필요",
       "tool_approval": "도구 승인: {{name}}",
       "approval_wait_expired": "승인 대기 시간이 만료되어 요청이 거부되었습니다.",
       "approval_rejected": "승인이 거절되어 요청이 거부되었습니다.",

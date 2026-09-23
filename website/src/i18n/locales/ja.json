@@ -8735,8 +8735,6 @@
     "useWebSocket": {
       "response_ready": "応答の準備ができました",
       "waiting_for_input": "入力をお待ちしています",
-      "a_task_needs_your_decision": "タスクが決定を必要としています",
-      "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
       "approval_wait_expired": "承認の待機時間が期限切れになったため、リクエストは拒否されました。",
       "approval_rejected": "承認が却下されたため、リクエストは拒否されました。",

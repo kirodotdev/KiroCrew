@@ -8735,8 +8735,6 @@
     "useWebSocket": {
       "response_ready": "回复已就绪",
       "waiting_for_input": "等待你的输入",
-      "a_task_needs_your_decision": "有任务需要你决策",
-      "approval_required": "需要审批",
       "tool_approval": "工具审批：{{name}}",
       "approval_wait_expired": "审批等待已超时，因此该请求已被拒绝。",
       "approval_rejected": "审批已被拒绝，因此该请求未获批准。",

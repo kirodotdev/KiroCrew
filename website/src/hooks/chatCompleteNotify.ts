@@ -13,6 +13,7 @@
  * Settings > Notifications.
  */
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { isWindowAway } from './windowAway'
 
 /** localStorage key holding the opt-in. Absent — or anything but `'1'` —
  *  means off, so a corrupt or half-written value degrades to the default
@@ -66,8 +67,7 @@ export function shouldNotifyOnChatComplete(opts: {
   if (!opts.slot || opts.reconnecting) return false
   if (!loadChatCompleteNotify()) return false
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false
-  // "Away" needs both axes: `hidden` covers minimized / another virtual desktop
-  // / a background tab, while `hasFocus()` covers a window that is fully
-  // visible but sitting behind another application.
-  return document.hidden || !document.hasFocus()
+  // The shared "away" predicate (both axes: hidden, and visible-but-unfocused);
+  // see windowAway.ts for why one axis is not enough.
+  return isWindowAway()
 }

@@ -1,7 +1,21 @@
 /**
  * Fires a browser `Notification` whenever a new unacked notification lands in
- * the Redux store. Used by `App.tsx` to surface macOS notification-center
- * toasts.
+ * the Redux store while the user is away from the window. Used by `App.tsx`
+ * to surface macOS notification-center toasts.
+ *
+ * This is the ONLY place a feed note becomes an OS toast. The socket layer's
+ * `approval` frame dispatches `addNotification`, which grows the count read
+ * here, so the approval reaches the OS through this hook with the note's own
+ * title/body and its `approval_id` as the collapse tag. A second constructor
+ * on the approval path (with its own tag) meant two banners for one event,
+ * because the OS collapses only equal tags.
+ *
+ * The toast is gated on `isWindowAway()`: while the window is visible AND
+ * focused the in-app banner (`NotificationBanner`, gated by `shouldBannerNote`)
+ * and the bell badge already show the note, and an OS toast on top of them
+ * says the same thing a third time. A note that arrives while the user is
+ * watching advances the count without a toast and is NOT re-announced when
+ * the window later loses focus: it was seen.
  *
  * A muted channel's notes arrive with `silenced: true` and `priority:
  * "passive"` (`ChannelSettings.apply()`, `kiro_crew/notifications/settings.py`)
@@ -29,6 +43,9 @@ import { isSilencedNote } from '../store/notificationsSlice'
 // asterisks and underscores literally. Reuse the same flattener the in-app feed
 // row uses so both previews read identically.
 import { stripMd } from '../components/notifications/notifMeta'
+// The same "away" predicate the in-app banner and the chat-complete toast
+// read, so the three surfaces agree on when the user can see the app.
+import { isWindowAway } from './windowAway'
 
 export function useNativeNotification(botName: string, avatar: string) {
   const notifCount = useAppSelector(
@@ -43,7 +60,10 @@ export function useNativeNotification(botName: string, avatar: string) {
   useEffect(() => {
     if (notifCount > prev.current) {
       if (typeof Notification !== 'undefined') {
-        if (Notification.permission === 'granted') {
+        // The visibility gate sits inside the permission branch on purpose:
+        // the best-effort permission prompt below is about capability, not
+        // attention, and must not depend on where the window is.
+        if (Notification.permission === 'granted' && isWindowAway()) {
           const delta = notifCount - prev.current
           const title = latestNotif?.title || botName
           // stripMd only on the note's own markdown body; the generic fallback
