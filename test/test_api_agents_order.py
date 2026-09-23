@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
+from conftest import make_dir_link
 from kiro_crew.config.loader import KiroCrewAgentConfig
 
 DEFAULT_AGENT = "alpha"
@@ -223,3 +224,91 @@ class TestProjectScopeRoster:
 
         assert [a["name"] for a in data["agents"]] == CONFIG_ORDER
         assert all(a["scope"] == "global" for a in data["agents"])
+
+
+class TestOwnerProjectPathAudit:
+    """The owner ``?project_path=`` audit row names the tree that was scanned.
+
+    ``critical=True`` makes this write fail-closed, so the row is load-bearing:
+    an operator reads it to learn WHICH directory an owner's roster request
+    enumerated. A spelling and the tree it resolves to can differ (a symlinked
+    path, a ``~`` form), and the row has to name the latter.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_allowed_row_names_the_resolved_dir_not_the_spelling(
+        self, tmp_path, monkeypatch
+    ):
+        """Both platform outcomes are ASSERTED, neither is skipped.
+
+        Where a link resolves, the row must name the resolved tree rather than
+        the spelling. Where the pinned scan refuses a link in the target's
+        ancestry before anything resolves (Windows), the outcome is ``denied``
+        and the row takes the ``resolved_path or raw_project_path`` fallback at
+        :mod:`~kiro_crew.dashboard.handlers.agents`. Branching here rather than
+        skipping keeps the ratchet whole: the refused-link row is pinned HERE
+        and nowhere else, so a ``skipif`` left its spelling unverified on the
+        one platform that produces it.
+        """
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers import agents as agents_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        real = tmp_path / "real-project"
+        (real / ".kiro" / "agents").mkdir(parents=True)
+        link = tmp_path / "spelled-differently"
+        # A JUNCTION on Windows, where a directory symlink needs
+        # SeCreateSymbolicLinkPrivilege and fails WinError 1314 in an unelevated
+        # shell. The reparse machinery traverses both identically, so the
+        # audit-path assertions below run on every platform instead of being
+        # skipped on the one that would otherwise lose them.
+        make_dir_link(link, real)
+
+        audited: list[dict] = []
+        monkeypatch.setattr(
+            agents_mod,
+            "_sel",
+            lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw)),
+        )
+        # Patched at its SOURCE module: the handler imports this name inside the
+        # function body, so a module-attribute patch on `agents_mod` binds
+        # nothing the call site reads.
+        from kiro_crew.dashboard.handlers import source_providers as sp_mod
+
+        monkeypatch.setattr(sp_mod, "is_owner_dashboard_request", lambda request: True)
+
+        state = _make_state(tmp_path)
+        with patch(
+            "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
+            return_value=_fake_config(CONFIG_ORDER),
+        ):
+            async with TestClient(TestServer(_make_agents_app(state))) as client:
+                resp = await client.get("/api/agents", params={"project_path": str(link)})
+                # Both platform answers are ASSERTED, neither is skipped. Where
+                # the descriptor-pinned walk does not exist the owner scan
+                # REFUSES rather than degrading (the recorded Decision B), so no
+                # roster is served and the resolved-vs-spelling row below is
+                # unreachable -- which is itself the assertion on that platform.
+                assert resp.status in (200, 503), resp.status
+                if resp.status == 503:
+                    return
+
+        rows = [e for e in audited if e.get("outcome") in {"allowed", "denied"}]
+        assert rows, f"the owner scan emitted no audited row: {audited}"
+        row = rows[-1]
+        if row["outcome"] == "allowed":
+            # The resolved tree, not the symlink spelling the caller sent.
+            assert row["resources"] == str(real.resolve()), (
+                f"audit row names {row['resources']!r}, "
+                f"not the scanned tree {str(real.resolve())!r}"
+            )
+        else:
+            # The link was refused before anything resolved, so `resolved_path`
+            # is empty and the row falls back to the raw spelling. Asserting the
+            # SPELLING is the point: it is what an operator reads to learn which
+            # directory the request named when none was scanned.
+            assert row["resources"] == str(link), (
+                f"a refused-link row must fall back to the raw spelling "
+                f"{str(link)!r}, not {row['resources']!r}"
+            )

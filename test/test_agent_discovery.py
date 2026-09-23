@@ -5,58 +5,46 @@ Focus on the robustness/security guards around scanning ``~/.kiro/agents/*.json`
 - A ``*.json`` symlink pointing at a sensitive credential file must NOT be read.
 
 Tests use a tmp_path fake $HOME so the real filesystem is never touched.
+
+Split (file-line-cap gate) into sibling files that share the fixtures and test
+doubles in ``agent_discovery_test_helpers``:
+- ``test_agent_discovery_spec_coercion.py``
+- ``test_agent_discovery_warnings.py``
+- ``test_agent_discovery_scan_gate.py``
+- ``test_agent_discovery_pinned_signature.py``
 """
 
 from __future__ import annotations
 
+import errno
 import json
-import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+from agent_discovery_test_helpers import (
+    _agents_dir,
+    _mock_pinned_directory,
+    _project_agents_dir,
+    fake_home,
+)
 
 from conftest import requires_symlinks
-from kiro_crew import agent_state
 from kiro_crew.agent_discovery import (
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
-    AgentInfo,
-    AmbiguousAgentSpecError,
     clear_list_agents_cache,
     clear_project_agent_cache,
     list_agents,
     project_agent_files,
     project_agent_name,
     project_agent_names,
-    spec_by_declared_name,
 )
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 
-# caplog collects records from EVERY logger, not just the one at_level() names, so
-# a negative "logged no warning" assertion must filter by logger: an unrelated
-# neighbour's asyncio "Task was destroyed" record otherwise lands in the window
-# and fails the assertion depending on how the suite is sharded.
-_DISCOVERY_LOGGER = "kiro_crew.agent_discovery"
-
-
-@pytest.fixture
-def fake_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    return tmp_path
-
-
-def _agents_dir(home: Path) -> Path:
-    d = home / ".kiro" / "agents"
-    d.mkdir(parents=True)
-    return d
-
-
-def _project_agents_dir(root: Path) -> Path:
-    d = root / ".kiro" / "agents"
-    d.mkdir(parents=True)
-    return d
+__all__ = ["fake_home"]
 
 
 class TestProjectScopeDiscovery:
@@ -110,6 +98,44 @@ class TestProjectScopeDiscovery:
         names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
         assert names == ["declared"]
 
+    def test_native_skill_view_specs_are_not_listed_as_project_agents(self, fake_home, tmp_path):
+        """``kirocrew-skill-view-*`` is the projection's own machine namespace.
+
+        ``iter_agent_spec_files`` has always dropped these for the user-level
+        scan, and ``_require_unshadowed_templates`` documents the omission as
+        discovery's contract. The project scan reaches the twin rule through
+        ``split_listed_spec_paths``, which carries only that rule, so the alias
+        half is applied at the call site — without it a checkout could plant a
+        view into the very roster the projection reads to decide what to
+        project, and offer it as a pickable agent.
+        """
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        agents = _project_agents_dir(proj)
+        digest = "0" * 24
+        alias_json = agents / f"{NATIVE_SKILL_ALIAS_PREFIX}{digest}.json"
+        alias_json.write_text(json.dumps({"name": f"{NATIVE_SKILL_ALIAS_PREFIX}{digest}"}))
+        alias_md = agents / f"{NATIVE_SKILL_ALIAS_PREFIX}md{digest}.md"
+        alias_md.write_text(f"---\nname: {NATIVE_SKILL_ALIAS_PREFIX}md{digest}\n---\nPrompt\n")
+        # A real project agent beside them: the scan must still work, so an
+        # empty result cannot pass this test by accident.
+        (agents / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        clear_project_agent_cache()
+        leaked = [f for f in project_agent_files(str(proj)) if NATIVE_SKILL_ALIAS_PREFIX in f.name]
+        assert leaked == [], (
+            f"project scan listed the native skill-view alias(es) "
+            f"{[f.name for f in leaked]} as project agent specs; "
+            f"iter_agent_spec_files drops this namespace for the user-level scan"
+        )
+        assert [f.name for f in project_agent_files(str(proj))] == ["repobot.json"]
+        assert project_agent_names(str(proj)) == frozenset({"repobot"})
+        names = {a.name for a in list_agents(agents_dir=d, project_dir=str(proj))}
+        assert not {
+            n for n in names if n.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+        }, f"roster offered a native skill-view alias as a pickable agent: {sorted(names)}"
+
     def test_legacy_spec_is_not_offered_as_a_dispatchable_agent(self, fake_home, tmp_path):
         """``.agent-spec.json`` is not a location kiro-cli reads, so it must not be
         offered anywhere an agent gets dispatched — the picker would accept the name
@@ -148,9 +174,19 @@ class TestProjectScopeDiscovery:
             "kiro_crew.agent_discovery.is_sensitive_path",
             lambda p: str(p) == str(tmp_path / "secret"),
         )
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery._sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
         proj = tmp_path / "secret"
         (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
         assert project_agent_files(str(proj)) == []
+        # The refused scan must leave a denial trail, not just a debug line.
+        assert any(e.get("outcome") == "denied" for e in sel_events), (
+            f"sensitive project-dir rejection in project_agent_files must emit a "
+            f"SEL denial: {sel_events}"
+        )
 
     def test_list_agents_sensitive_project_dir_denied_before_any_stat(
         self, fake_home, tmp_path, monkeypatch
@@ -204,9 +240,9 @@ class TestProjectScopeDiscovery:
         names = [a.name for a in list_agents(agents_dir=d, project_dir=str(protected))]
 
         assert names == ["user-level"]
-        assert [e["outcome"] for e in sel_events] == ["denied"], (
-            f"one refusal owes exactly one denial row: {sel_events}"
-        )
+        assert [e["outcome"] for e in sel_events] == [
+            "denied"
+        ], f"one refusal owes exactly one denial row: {sel_events}"
 
     def test_list_agents_decides_project_sensitivity_exactly_once(
         self, fake_home, tmp_path, monkeypatch
@@ -309,6 +345,36 @@ class TestProjectScopeDiscovery:
         assert project_agent_files(None) == []
         assert project_agent_files("") == []
 
+    @pytest.mark.parametrize(
+        ("scan_path", "include_legacy"),
+        [(".kiro", True), (".kiro/agents", False)],
+    )
+    def test_non_directory_scan_scope_is_empty_without_a_denial(
+        self, tmp_path, monkeypatch, scan_path, include_legacy
+    ):
+        """A regular file at either scan scope means nothing to enumerate.
+
+        ``None`` is the sensitive-denied sentinel consumed by
+        ``project_agent_files``; an empty iterable is the ordinary no-agents
+        outcome. A wrong sentinel here emits a false SEL denial for a harmless
+        malformed checkout.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        proj = tmp_path / "repo"
+        occupied = proj / scan_path
+        occupied.parent.mkdir(parents=True)
+        occupied.write_text("not a directory", encoding="utf-8")
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            ad,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+
+        assert project_agent_files(str(proj), include_legacy=include_legacy) == []
+        assert sel_events == [], f"a non-directory scan scope emitted a denial: {sel_events}"
+
     def test_project_symlink_to_sensitive_file_is_not_read(self, fake_home, tmp_path):
         """The per-file resolved-target guard applies in the project scope too."""
         d = _agents_dir(fake_home)
@@ -335,6 +401,51 @@ class TestProjectScopeDiscovery:
             ad.is_sensitive_canonical_path = original
         assert names == []
 
+    @requires_symlinks
+    def test_project_agents_dir_symlinked_into_sensitive_tree_is_not_scanned(
+        self, fake_home, tmp_path
+    ):
+        """A ``.kiro/agents`` that RESOLVES into a sensitive tree is not enumerated.
+
+        Distinct from the per-file guard: here the SCAN DIRECTORY itself is a
+        symlink into a credential home, so a root-only sensitivity check passes
+        but ``glob``/``scandir`` would still probe the protected directory. The
+        dir-level guard (``_pinned_scan_dir``) must skip it entirely.
+        """
+        secret_tree = tmp_path / "creds_home"
+        secret_tree.mkdir()
+        (secret_tree / "leaked.json").write_text(json.dumps({"name": "leaked"}))
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        # <repo>/.kiro/agents -> the credential tree; the repo root is NOT sensitive.
+        os.symlink(secret_tree, proj / ".kiro" / "agents")
+
+        import kiro_crew.agent_discovery as ad
+
+        original = ad.is_sensitive_path
+        # Only the resolved credential tree is sensitive; the repo root is not.
+        ad.is_sensitive_path = lambda p: os.path.realpath(str(p)) == os.path.realpath(
+            str(secret_tree)
+        )
+        sel_events: list[dict] = []
+        original_sel = ad._sel
+        ad._sel = lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw))
+        try:
+            clear_list_agents_cache()
+            # The glob site must not enumerate the symlinked dir.
+            assert project_agent_files(str(proj)) == []
+            # The leaked name must never surface through the cached names path.
+            assert "leaked" not in project_agent_names(str(proj))
+            # And the sensitive SUBDIR skip must leave a denial trail — the root
+            # is not sensitive, so this row can only come from the scan-dir guard.
+            assert any(
+                e.get("outcome") == "denied" for e in sel_events
+            ), f"sensitive scan-dir skip must emit a SEL denial: {sel_events}"
+        finally:
+            ad.is_sensitive_path = original
+            ad._sel = original_sel
+            clear_list_agents_cache()
+
     def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):
         """Two checkouts must not serve each other's agents from one cache entry."""
         d = _agents_dir(fake_home)
@@ -360,6 +471,198 @@ class TestProjectAgentNameCache:
         (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
         clear_project_agent_cache()
         assert project_agent_names(str(proj)) == frozenset({"declared"})
+
+    def test_an_oversized_project_key_is_answered_but_never_retained(self, tmp_path):
+        """The count cap bounds HOW MANY keys live here, not how large one is.
+
+        The key is the caller's raw ``project_dir`` spelling, so 256 keys of
+        unbounded length is unbounded resident memory. A spelling past the named
+        character bound is still answered -- it simply is not kept, which costs
+        the next call a rescan, exactly what any miss here costs.
+
+        Mutation guard: drop the length check in ``_store_project_agent_names``
+        and the oversized key appears in the cache.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        oversized = "/" + "d" * (ad._PROJECT_NAMES_CACHE_MAX_KEY_CHARS + 1)
+        entry = ((), frozenset({"declared"}))
+        clear_project_agent_cache()
+
+        ad._store_project_agent_names(oversized, entry)
+
+        assert (
+            oversized not in ad._PROJECT_NAMES_CACHE
+        ), "an unbounded caller-supplied key must not be retained"
+
+        within = "/" + "d" * 16
+        ad._store_project_agent_names(within, entry)
+        assert (
+            within in ad._PROJECT_NAMES_CACHE
+        ), "an ordinary path must still be cached, or every lookup rescans"
+
+    def test_oversized_snapshot_is_answered_completely_but_not_retained(self, tmp_path):
+        """Every retained snapshot field has its own cache-owned memory bound.
+
+        A project above the names bound still returns its complete answer to the
+        off-loop caller. It simply remains uncached, so the cache cannot retain
+        an oversized names set. A separately oversized signature with a tiny
+        name set proves the signature rows are independently bounded.
+
+        Mutation guard: remove the two snapshot-size checks in
+        ``_store_project_agent_names`` and both oversized entries are retained.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        names_project = tmp_path / "many-names"
+        names_dir = _project_agents_dir(names_project)
+        expected = frozenset(
+            {f"agent-{index}" for index in range(ad._PROJECT_NAMES_CACHE_MAX_NAMES + 1)}
+        )
+        for name in expected:
+            (names_dir / f"{name}.json").write_text(json.dumps({"name": name}))
+
+        clear_project_agent_cache()
+
+        assert project_agent_names(names_project) == expected
+        assert (
+            str(names_project) not in ad._PROJECT_NAMES_CACHE
+        ), "a complete oversized names set must be returned without being retained"
+
+        signature_key = str(tmp_path / "many-signature-rows")
+        oversized_signature = (
+            tuple(
+                (f"agent-{index}.json", index)
+                for index in range(ad._PROJECT_NAMES_CACHE_MAX_SIGNATURE_ROWS + 1)
+            ),
+        )
+        ad._store_project_agent_names(signature_key, (oversized_signature, frozenset({"shared"})))
+        assert (
+            signature_key not in ad._PROJECT_NAMES_CACHE
+        ), "an oversized signature must not be retained even when its names set is small"
+
+    def test_a_truncated_listing_signature_is_never_reused(self, tmp_path):
+        """A listing that aborts part-way must not be cached as the directory.
+
+        ``_entries_signature`` describes a PREFIX when the walk raises mid-way.
+        Cached bare, that prefix is indistinguishable from a complete scan of a
+        smaller directory, so a second identical failure hits the entry and hands
+        back names the directory has stopped declaring -- including an agent a
+        folder's saved default still points at. The truncation row carries a
+        per-call value for exactly that reason: equality must fail against a
+        later PARTIAL signature too, not merely against a complete one.
+
+        A walk that collects nothing is NOT a prefix: an empty signature is the
+        documented answer for an absent or unlistable directory, so that case
+        stays ``()`` and is pinned here beside the truncated one.
+
+        Mutation guard: replace the row append with a bare ``pass`` and
+        ``partial == partial`` becomes True, reusing the stale roster.
+        """
+        agents = _project_agents_dir(tmp_path / "repo")
+        (agents / "a.json").write_text(json.dumps({"name": "a"}), encoding="utf-8")
+        (agents / "b.json").write_text(json.dumps({"name": "b"}), encoding="utf-8")
+        entries = sorted(os.scandir(agents), key=lambda e: e.name)
+
+        import kiro_crew.agent_discovery as ad
+
+        class _AbortsPartWay:
+            """Stands in for a listing whose walk raises after the first entry."""
+
+            def __iter__(self):
+                yield from entries[:1]
+                raise OSError(errno.EIO, "simulated mid-listing failure")
+
+        complete = ad._entries_signature(entries)
+        first_partial = ad._entries_signature(_AbortsPartWay())
+        second_partial = ad._entries_signature(_AbortsPartWay())
+
+        assert any(
+            row[0] == ad._DIR_TRUNCATED_ROW for row in first_partial
+        ), f"a truncated listing must say so in its signature: {first_partial}"
+        assert complete != first_partial
+        assert first_partial != second_partial, (
+            "two identical failures must not share a signature, or the second "
+            "reuses the first's stale roster"
+        )
+
+        class _FailsBeforeYielding:
+            """A walk that collects nothing: no directory, not a prefix of one."""
+
+            def __iter__(self):
+                raise OSError(errno.EIO, "simulated immediate failure")
+                yield  # pragma: no cover - makes this a generator
+
+        assert ad._entries_signature(_FailsBeforeYielding()) == (), (
+            "an empty signature is the documented answer for an unlistable "
+            "directory and must not pick up a per-call truncation row"
+        )
+
+    def test_parses_enumerated_spec_through_held_directory_descriptor(self, tmp_path, monkeypatch):
+        """A replacement directory cannot contribute an agent after enumeration.
+
+        The descriptor-pinned walk is the owner-supplied (``raise_unverifiable=True``)
+        caller's, so both halves ask for it. Asserted on EVERY platform through the
+        held-descriptor double, which
+        forces the pinned branch and fails if the scan re-opens the directory by
+        name. Where the real ``O_NOFOLLOW``/``dir_fd``/``O_DIRECTORY`` syscalls
+        exist the same contract is driven a second time against a real swap, so
+        neither the double's fidelity nor the syscalls' behaviour is taken on
+        trust -- and a platform without them still runs the first half rather
+        than skipping the contract entirely.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        entry = MagicMock()
+        entry.name = "enumerated.json"
+        doubled = tmp_path / "repo"
+        held = _project_agents_dir(doubled)
+        (held / "enumerated.json").write_text(json.dumps({"name": "enumerated"}))
+        listed: list[list[Path]] = []
+        real_split = ad.split_listed_spec_paths
+
+        def _record(directory, paths, **kwargs):
+            paths = list(paths)
+            listed.append(paths)
+            return real_split(directory, iter(paths), **kwargs)
+
+        with monkeypatch.context() as scoped:
+            state = _mock_pinned_directory(scoped, real_path=held, entries=[entry])
+            scoped.setattr(ad, "split_listed_spec_paths", _record)
+            clear_project_agent_cache()
+            ad.project_agent_names(doubled, raise_unverifiable=True)
+
+            assert state["scans"] and set(state["scans"]) == {
+                state["fd"]
+            }, f"a scan used a path instead of the held fd: {state['scans']}"
+            assert [p.name for p in listed[-1]] == ["enumerated.json"], (
+                "the roster's candidate paths came from somewhere other than the "
+                f"entries the held descriptor yielded: {listed[-1]}"
+            )
+
+        if not (
+            hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd
+            and hasattr(os, "O_DIRECTORY")
+        ):
+            return
+        project = tmp_path / "real-repo"
+        agents_dir = _project_agents_dir(project)
+        (agents_dir / "enumerated.json").write_text(json.dumps({"name": "enumerated"}))
+        real_split = ad.split_listed_spec_paths
+
+        def _swap_after_enumeration(directory, paths, **kwargs):
+            live, shadowed = real_split(directory, paths, **kwargs)
+            held_directory = directory.with_name("agents-held")
+            directory.rename(held_directory)
+            directory.mkdir()
+            (directory / "replacement.json").write_text(json.dumps({"name": "replacement"}))
+            return live, shadowed
+
+        monkeypatch.setattr(ad, "split_listed_spec_paths", _swap_after_enumeration)
+        clear_project_agent_cache()
+
+        assert project_agent_names(project, raise_unverifiable=True) == frozenset({"enumerated"})
 
     def test_sensitive_project_dir_denied_before_any_stat(self, tmp_path, monkeypatch):
         """A sensitive project dir is rejected BEFORE the signature stats, loudly.
@@ -394,9 +697,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(protected)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_decides_project_sensitivity_exactly_once(self, tmp_path, monkeypatch):
         """The sibling entry point decides once too, for the same reason.
@@ -490,6 +793,36 @@ class TestProjectAgentNameCache:
         assert project_agent_names("") == frozenset()
         assert project_agent_names(str(tmp_path / "nope")) == frozenset()
 
+    @pytest.mark.parametrize(
+        "oversized", [False, True], ids=("ordinary-write-site", "oversized-name-write-site")
+    )
+    def test_cache_is_bounded_across_many_distinct_projects(self, tmp_path, oversized):
+        """The cache key is a caller-supplied directory (the dashboard roster
+        endpoint's debounced picker fires one scan per path prefix typed), so it
+        must not grow one never-evicted entry per distinct path.
+
+        Regression: before the bound, driving more than
+        ``_PROJECT_NAMES_CACHE_MAX_KEYS`` distinct project dirs through
+        ``project_agent_names`` left every one of them cached forever. The
+        second, partial-roster write site (an oversized declared name) must be
+        bounded too — it is a distinct write and a distinct hazard, since it is
+        also keyed on the caller-supplied dir.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        declared_name = "x" * (ad._AGENT_NAME_MAX_CHARS + 1) if oversized else "a"
+        clear_project_agent_cache()
+        cap = ad._PROJECT_NAMES_CACHE_MAX_KEYS
+        for i in range(cap + 50):
+            proj = tmp_path / f"proj-{i}"
+            (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": declared_name}))
+            project_agent_names(str(proj))
+
+        assert len(ad._PROJECT_NAMES_CACHE) <= cap, (
+            f"cache grew to {len(ad._PROJECT_NAMES_CACHE)} entries, exceeding the "
+            f"{cap}-entry cap"
+        )
+
 
 class TestListAgentsRobustness:
     def test_oversized_spec_is_rejected_not_slurped(self, fake_home, monkeypatch):
@@ -573,827 +906,3 @@ class TestListAgentsRobustness:
         agents = list_agents(agents_dir=agents_dir)
         names = {a.name for a in agents}
         assert "good" in names, "well-formed sibling agent must survive a bad mcpServers value"
-
-
-class TestSpecModelCoercion:
-    """``AgentInfo.model`` is declared ``str`` and must always BE one.
-
-    ``~/.kiro/agents`` is shared with other tools whose specs spell ``model``
-    differently. A non-string reached the dashboard via ``to_dict()`` ->
-    ``/api/agents/installed`` and, rendered as a React child, threw error #31 —
-    taking the whole Agent Templates tab (and every other agent's row) down.
-    """
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            # ACP-style structured reference, observed in the wild. This exact
-            # shape produced "object with keys {id}" in the React #31 message.
-            {"id": "anthropic:claude-opus-4-8"},
-            None,  # key present but null
-            ["claude-opus-4-8"],
-            42,
-        ],
-        ids=["dict-id", "null", "list", "int"],
-    )
-    def test_non_string_model_degrades_to_auto(self, tmp_path: Path, raw: object) -> None:
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "foreign.json").write_text(
-            json.dumps({"name": "foreign", "model": raw}), encoding="utf-8"
-        )
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.model == "auto"
-        # to_dict() is what the API serialises — the guarantee has to hold there,
-        # since that is the value the dashboard renders.
-        assert isinstance(agent.to_dict()["model"], str)
-
-    def test_string_model_is_preserved(self, tmp_path: Path) -> None:
-        """The coercion must not flatten a legitimately pinned model."""
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "pinned.json").write_text(
-            json.dumps({"name": "pinned", "model": "claude-opus-4-6"}), encoding="utf-8"
-        )
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.model == "claude-opus-4-6"
-
-    def test_non_string_description_degrades_to_empty(self, tmp_path: Path) -> None:
-        """``model`` is not the only rendered field, so it is not the only one guarded.
-
-        The detail panel renders ``description`` as a JSX child too, and an object
-        is truthy — so a foreign spec with a structured ``description`` blanks the
-        whole tab exactly like a structured ``model`` does. Coercing per FIELD is
-        what closes the class rather than the one observed instance.
-        """
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "foreign.json").write_text(
-            json.dumps({"name": "foreign", "description": {"text": "hi"}, "model": "auto"}),
-            encoding="utf-8",
-        )
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.description == ""
-        assert isinstance(agent.to_dict()["description"], str)
-
-    def test_string_description_is_preserved(self, tmp_path: Path) -> None:
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "ok.json").write_text(
-            json.dumps({"name": "ok", "description": "a real one", "model": "auto"}),
-            encoding="utf-8",
-        )
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.description == "a real one"
-
-    def test_bad_model_does_not_drop_sibling_agents(self, tmp_path: Path) -> None:
-        """A foreign spec must cost only its own row, never the whole listing."""
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "foreign.json").write_text(
-            json.dumps({"name": "foreign", "model": {"id": "anthropic:claude-opus-4-8"}}),
-            encoding="utf-8",
-        )
-        (d / "good.json").write_text(
-            json.dumps({"name": "good", "model": "auto"}), encoding="utf-8"
-        )
-        clear_list_agents_cache()
-        names = {a.name for a in list_agents(agents_dir=d)}
-        assert names == {"foreign", "good"}
-
-    def test_edition_supplied_row_is_coerced(self, tmp_path: Path, monkeypatch) -> None:
-        """The edition seam is a SECOND ``AgentInfo`` construction site.
-
-        Rows arrive from out-of-tree code, so ``AgentInfo.model: str`` has to be
-        enforced there too — coercing only the on-disk path would leave the same
-        crash reachable through an edition build.
-        """
-        d = tmp_path / "agents"
-        d.mkdir()
-        # Stub the seam at ``safe_context_call``: it is what ``_with_edition_agents``
-        # funnels the platform lookup through, so this needs no platform context.
-        monkeypatch.setattr(
-            "kiro_crew.platform.context.safe_context_call",
-            lambda *_a, **_kw: [
-                {"name": "edition-foreign", "model": {"id": "anthropic:claude-opus-4-8"}}
-            ],
-        )
-        clear_list_agents_cache()
-        by_name = {a.name: a for a in list_agents(agents_dir=d)}
-        assert by_name["edition-foreign"].model == "auto"
-
-    def test_every_str_field_is_coerced_at_construction(self) -> None:
-        """The invariant is on the CONSTRUCTOR, not on any one caller.
-
-        `model` and `description` were the two fields observed failing, but
-        `name`, `package`, `source` and `filename` are rendered bare too
-        (`{a.name}`, `{a.package}`, `<SourceBadge source={a.source}>`,
-        `a.filename.startsWith(...)`), so a per-field fix at one call site only
-        looks complete. Constructing directly — as the out-of-tree edition seam
-        does — must still yield the declared types.
-        """
-        info = AgentInfo(
-            name={"id": "x"},  # type: ignore[arg-type]
-            filename=None,  # type: ignore[arg-type]
-            description=["a"],  # type: ignore[arg-type]
-            model={"id": "anthropic:claude-opus-4-8"},  # type: ignore[arg-type]
-            source=7,  # type: ignore[arg-type]
-            package={"n": 1},  # type: ignore[arg-type]
-        )
-        assert info.name == ""
-        assert info.filename == ""
-        assert info.description == ""
-        assert info.model == "auto"
-        assert info.source == "builtin"
-        assert info.package == ""
-        # to_dict() is the wire shape the dashboard renders. Non-string fields
-        # are excluded by NAME, not skipped silently: the lists render as chips
-        # (one element each), `kirocrew_owned` is the bool provenance flag and
-        # `markdown_only` the bool backend-compatibility flag — everything else
-        # must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned", "markdown_only"))
-        assert isinstance(info.to_dict()["kirocrew_owned"], bool)
-        assert isinstance(info.to_dict()["markdown_only"], bool)
-
-    def test_list_fields_drop_only_the_unusable_elements(self) -> None:
-        """`skills` / `mcp_servers` are rendered as chips, one element each.
-
-        A bad entry costs itself, not the whole list — dropping the list would
-        hide real skills the agent does have.
-        """
-        info = AgentInfo(
-            name="a",
-            filename="a.json",
-            description="",
-            model="auto",
-            skills=["good", {"bad": 1}, "also-good"],  # type: ignore[list-item]
-            mcp_servers=[None, "srv"],  # type: ignore[list-item]
-        )
-        assert info.skills == ["good", "also-good"]
-        assert info.mcp_servers == ["srv"]
-
-    def test_non_string_name_falls_back_to_filename_stem(self, tmp_path: Path) -> None:
-        """A structured `name` must degrade the row, not silently DROP it.
-
-        The package-detection branch does `stem.endswith(agent_name)`, which
-        raised TypeError on a non-string name; the loop's broad `except` then
-        swallowed it and the agent vanished from the listing entirely.
-        """
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "weird.json").write_text(
-            json.dumps({"name": {"id": "nope"}, "model": "auto"}), encoding="utf-8"
-        )
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.name == "weird"
-
-    def test_edition_row_with_unusable_name_is_skipped(self, tmp_path: Path, monkeypatch) -> None:
-        """Unlike cosmetic fields, an unusable NAME is not degraded.
-
-        The name is the dedup key, the React list key, and the argument every
-        mutation is addressed by, so a blank-named row would be unselectable and
-        would collide with any other nameless row.
-        """
-        d = tmp_path / "agents"
-        d.mkdir()
-        monkeypatch.setattr(
-            "kiro_crew.platform.context.safe_context_call",
-            lambda *_a, **_kw: [
-                {"name": {"id": "nope"}, "model": "auto"},
-                {"name": "usable", "model": "auto"},
-            ],
-        )
-        clear_list_agents_cache()
-        names = {a.name for a in list_agents(agents_dir=d)}
-        assert names == {"usable"}
-
-
-class TestListAgentsGlobalGuards:
-    """Global agent loader edge cases."""
-
-    @requires_symlinks
-    def test_global_symlink_loop_skipped_not_crashed(self, tmp_path: Path) -> None:
-        """A self-referential symlink is skipped, never an uncaught RuntimeError.
-
-        Regression: ``resolve(strict=True)`` signals a symlink LOOP with
-        RuntimeError (not OSError); only OSError was caught, so one
-        ``ln -s loop.json loop.json`` in a user-writable agents dir crashed
-        every surface that listed agents (e.g. Slack's ``!agent``).
-        """
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        loop = agents_dir / "loop.json"
-        loop.symlink_to(loop)
-        (agents_dir / "good.json").write_text(
-            json.dumps({"name": "ok", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        assert any(a.name == "ok" for a in agents)
-        assert not any(a.name == "loop" for a in agents)
-
-    @requires_symlinks
-    def test_global_broken_symlink_skipped(self, tmp_path: Path) -> None:
-        """list_agents skips broken symlinks in the global dir."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        broken = agents_dir / "broken.json"
-        broken.symlink_to(tmp_path / "nonexistent.json")
-        (agents_dir / "good.json").write_text(
-            json.dumps({"name": "ok", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        assert any(a.name == "ok" for a in agents)
-        assert not any(a.name == "broken" for a in agents)
-
-    def test_global_bad_json_skipped(self, tmp_path: Path) -> None:
-        """list_agents skips malformed JSON in the global dir."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "bad.json").write_text("not json {{{", encoding="utf-8")
-        (agents_dir / "ok.json").write_text(
-            json.dumps({"name": "ok", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        assert any(a.name == "ok" for a in agents)
-
-
-class TestListAgentsDedup:
-    """Deduplication and AIM package-name extraction edge cases."""
-
-    def test_aim_package_name_extracted(self, tmp_path: Path) -> None:
-        """AIM filename pattern extracts package name."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        # AIM filename pattern: {package}-{agent_name}.json
-        (agents_dir / "MyPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        a = next((x for x in agents if x.name == "myagent"), None)
-        assert a is not None
-        assert a.package == "MyPkg"
-        assert a.source == "package"
-
-    def test_aim_kirocrew_package_source(self, tmp_path: Path) -> None:
-        """A package-installed agent (e.g. KiroCrewAICapabilities) gets source='package'."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "KiroCrewAICapabilities-myskill.json").write_text(
-            json.dumps({"name": "myskill", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        a = next((x for x in agents if x.name == "myskill"), None)
-        assert a is not None
-        assert a.source == "package"
-
-    def test_aim_package_preferred_over_builtin(self, tmp_path: Path) -> None:
-        """AIM-packaged agent replaces same-name builtin in dedup."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        # "dev.json" is builtin (stem == name). "zzz-MyPkg-dev.json" is AIM-packaged.
-        # sorted() puts "dev.json" first, so builtin is seen first, then AIM replaces it.
-        (agents_dir / "dev.json").write_text(
-            json.dumps({"name": "dev", "model": "auto"}), encoding="utf-8"
-        )
-        (agents_dir / "zzz-MyPkg-dev.json").write_text(
-            json.dumps({"name": "dev", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        dev_agents = [a for a in agents if a.name == "dev"]
-        assert len(dev_agents) == 1
-        assert dev_agents[0].package == "zzz-MyPkg"
-
-    def test_local_prefix_stripped_from_aim_package(self, tmp_path: Path) -> None:
-        """AIM filename with 'local-' prefix has it stripped from package name."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "local-MyPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        agents = list_agents(agents_dir=agents_dir)
-        a = next((x for x in agents if x.name == "myagent"), None)
-        assert a is not None
-        assert a.package == "MyPkg"
-
-    def test_local_twin_of_same_package_does_not_warn(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A 'local-' twin of the same package dedupes silently (no WARNING).
-
-        Package managers publish a locally-built package as BOTH
-        ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
-        ``local-`` prefix is stripped from the package name, the twins collide on
-        the same (name, package) — an expected layout, not an anomaly, so it
-        must not log a self-contradictory "from packages 'X' and 'X'" WARNING
-        per agent per scan.
-        """
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "MyPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        (agents_dir / "local-MyPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        with caplog.at_level(logging.DEBUG, logger="kiro_crew.agent_discovery"):
-            agents = list_agents(agents_dir=agents_dir)
-        dupes = [a for a in agents if a.name == "myagent"]
-        assert len(dupes) == 1
-        # First-seen wins, and which twin enumerates first is platform-
-        # dependent (WindowsPath sorts case-insensitively, so "local-..."
-        # can precede "MyPkg-..."). The fix deliberately leaves selection
-        # untouched — assert only that exactly one twin survives.
-        assert dupes[0].filename in ("MyPkg-myagent.json", "local-MyPkg-myagent.json")
-        assert not [
-            r
-            for r in caplog.records
-            if r.levelno >= logging.WARNING and r.name == _DISCOVERY_LOGGER
-        ], "same-package local twin must not produce a WARNING"
-        # The twin is still visible at debug for diagnosis.
-        assert any("same-package twin" in r.getMessage() for r in caplog.records)
-
-    def test_cross_package_duplicate_still_warns(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A genuine name collision between two DIFFERENT packages still warns."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "AaaPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        (agents_dir / "BbbPkg-myagent.json").write_text(
-            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
-        )
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent_discovery"):
-            agents = list_agents(agents_dir=agents_dir)
-        dupes = [a for a in agents if a.name == "myagent"]
-        assert len(dupes) == 1
-        assert dupes[0].package == "AaaPkg"  # first-seen wins
-        warnings = [
-            r
-            for r in caplog.records
-            if r.levelno == logging.WARNING and "Duplicate agent name" in r.getMessage()
-        ]
-        assert len(warnings) == 1
-        assert "AaaPkg" in warnings[0].getMessage()
-        assert "BbbPkg" in warnings[0].getMessage()
-
-
-class TestListAgentsCache:
-    """list_agents caches parsed results per directory and reuses them while the
-    stat-only directory signature is unchanged."""
-
-    def test_cache_hit_skips_reparse(self, tmp_path: Path) -> None:
-        """An unchanged signature returns the cached result without re-parsing."""
-        clear_list_agents_cache()
-        d = tmp_path / "agents"
-        d.mkdir()
-        f = d / "a.json"
-        f.write_text(json.dumps({"name": "v1", "model": "auto"}), encoding="utf-8")
-        file_stat = f.stat()
-
-        first = [a.name for a in list_agents(agents_dir=d)]
-        assert first == ["v1"]
-
-        # Rewrite the content but restore the original mtime so the signature is
-        # unchanged: a re-parse would yield "v2"; a cache hit yields "v1".
-        f.write_text(json.dumps({"name": "v2", "model": "auto"}), encoding="utf-8")
-        os.utime(f, ns=(file_stat.st_atime_ns, file_stat.st_mtime_ns))
-
-        second = [a.name for a in list_agents(agents_dir=d)]
-        assert second == ["v1"], "unchanged signature must return the cached result"
-
-    def test_cache_invalidates_on_add(self, tmp_path: Path) -> None:
-        """Adding a file changes the signature and is reflected immediately."""
-        clear_list_agents_cache()
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
-
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
-        assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
-
-    def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
-        """Removing a file changes the signature and is reflected immediately."""
-        clear_list_agents_cache()
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
-        assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
-
-        (d / "b.json").unlink()
-        assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
-
-    def test_cache_invalidates_on_inplace_edit(self, tmp_path: Path) -> None:
-        """An in-place content edit (newer mtime) invalidates the cache."""
-        clear_list_agents_cache()
-        d = tmp_path / "agents"
-        d.mkdir()
-        f = d / "a.json"
-        f.write_text(json.dumps({"name": "v1", "model": "auto"}), encoding="utf-8")
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v1"]
-
-        f.write_text(json.dumps({"name": "v2", "model": "auto"}), encoding="utf-8")
-        # Bump mtime forward deterministically so the signature is guaranteed newer.
-        st = f.stat()
-        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
-
-    def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
-        """clear_list_agents_cache() forces a fresh scan even when the signature
-        is unchanged."""
-        clear_list_agents_cache()
-        d = tmp_path / "agents"
-        d.mkdir()
-        f = d / "a.json"
-        f.write_text(json.dumps({"name": "v1", "model": "auto"}), encoding="utf-8")
-        file_stat = f.stat()
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v1"]
-
-        # Change content but freeze the mtime so the signature would still hit ...
-        f.write_text(json.dumps({"name": "v2", "model": "auto"}), encoding="utf-8")
-        os.utime(f, ns=(file_stat.st_atime_ns, file_stat.st_mtime_ns))
-        # ... then force a clear: the next call must re-scan and see "v2".
-        clear_list_agents_cache()
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"]
-
-
-def _discovery_warnings(caplog):
-    """WARNING+ records from the discovery logger about a systematic scan failure.
-
-    Filtered by logger name per the module-top note, and by message so the
-    pre-existing shadowing/duplicate warnings never contaminate the count.
-    """
-    return [
-        r
-        for r in caplog.records
-        if r.name == _DISCOVERY_LOGGER
-        and r.levelno >= logging.WARNING
-        and "parsed 0" in r.getMessage()
-    ]
-
-
-class TestSystematicScanFailureWarning:
-    """A scan that rejects EVERY candidate spec warns once; anything less stays quiet.
-
-    Regression: `_read_agent_spec` degrades per file to ``None`` at debug level, so
-    a systematic refusal (e.g. the trusted-root gate rejecting an entire home
-    layout) is indistinguishable at default log levels from an empty
-    agents directory — discovery lists nothing and nothing says why.
-    """
-
-    def test_all_unreadable_user_specs_emit_one_warning(self, fake_home, caplog):
-        d = _agents_dir(fake_home)
-        for i in range(3):
-            (d / f"broken-{i}.json").write_bytes(b"\xff\xfe\x00\x01\xa3")
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert list_agents(agents_dir=d) == []
-        warnings = _discovery_warnings(caplog)
-        assert len(warnings) == 1, "exactly one warning per scan, not per file"
-        # Count asserted via the record's args: a digit-in-string match is
-        # satisfiable by digits in the pytest tmp path.
-        assert warnings[0].args[0] == 3
-        assert str(d) in warnings[0].getMessage()
-
-    def test_mixed_directory_emits_no_warning(self, fake_home, caplog):
-        d = _agents_dir(fake_home)
-        (d / "good.json").write_text(json.dumps({"name": "good"}))
-        (d / "broken.json").write_bytes(b"\xff\xfe\x00\x01\xa3")
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            names = [a.name for a in list_agents(agents_dir=d)]
-        assert names == ["good"]
-        assert _discovery_warnings(caplog) == []
-
-    def test_empty_and_absent_directories_emit_no_warning(self, fake_home, caplog):
-        empty = _agents_dir(fake_home)
-        absent = fake_home / "nowhere" / "agents"
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert list_agents(agents_dir=empty) == []
-            clear_list_agents_cache()
-            assert list_agents(agents_dir=absent) == []
-        assert _discovery_warnings(caplog) == [], "N=0 is not systematic failure"
-
-    def test_all_unreadable_project_specs_emit_one_warning(self, fake_home, tmp_path, caplog):
-        d = _agents_dir(fake_home)
-        proj = tmp_path / "repo"
-        pd = _project_agents_dir(proj)
-        (pd / "bad-a.json").write_text("not json at all")
-        (pd / "bad-b.json").write_text(json.dumps(["top-level", "array"]))
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert list_agents(agents_dir=d, project_dir=str(proj)) == []
-        warnings = _discovery_warnings(caplog)
-        assert len(warnings) == 1
-        assert warnings[0].args[0] == 2
-        assert str(pd) in warnings[0].getMessage()
-
-    def test_project_agent_names_warns_on_systematic_failure(self, tmp_path, caplog):
-        """The per-turn resolver's scan warns too — this is the exact path whose
-        silence lets model resolution fall back to auto."""
-        proj = tmp_path / "repo"
-        pd = _project_agents_dir(proj)
-        (pd / "bad.json").write_text("{broken")
-        clear_project_agent_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert project_agent_names(str(proj)) == frozenset()
-        warnings = _discovery_warnings(caplog)
-        assert len(warnings) == 1
-        assert str(pd) in warnings[0].getMessage()
-
-    def test_project_agent_names_mixed_directory_emits_no_warning(self, tmp_path, caplog):
-        proj = tmp_path / "repo"
-        pd = _project_agents_dir(proj)
-        (pd / "good.json").write_text(json.dumps({"name": "good"}))
-        (pd / "bad.json").write_text("{broken")
-        clear_project_agent_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert project_agent_names(str(proj)) == frozenset({"good"})
-        assert _discovery_warnings(caplog) == []
-
-    def test_sidecar_only_directory_emits_no_warning(self, fake_home, caplog):
-        """AppleDouble sidecars are rejected by design, not by failure — a
-        directory holding only ``._*.json`` is empty of specs, not broken."""
-        d = _agents_dir(fake_home)
-        (d / "._ghost.json").write_bytes(b"\x02\x00\x00\x00\xa3\x80\x81 not utf-8")
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert list_agents(agents_dir=d) == []
-        assert _discovery_warnings(caplog) == []
-
-    def test_row_construction_failure_counts_as_unparsed(self, fake_home, caplog, monkeypatch):
-        """A spec that parses but whose row construction raises still ends in
-        "discovery listed nothing" — the warning must cover that path too, so
-        the parsed counter means "produced a row", not "JSON loaded"."""
-        import kiro_crew.agent_discovery as mod
-
-        d = _agents_dir(fake_home)
-        (d / "parses.json").write_text(json.dumps({"name": "parses"}))
-
-        def _boom(f, data):
-            raise RuntimeError("row construction failed")
-
-        monkeypatch.setattr(mod, "_global_agent_info", _boom)
-        clear_list_agents_cache()
-        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
-            assert list_agents(agents_dir=d) == []
-        warnings = _discovery_warnings(caplog)
-        assert len(warnings) == 1
-        assert warnings[0].args[0] == 1
-
-
-class TestForkLineageEnrichment:
-    """list_agents stamps forked_from/private_to onto global-scope rows from the
-    agent_state sidecar (global scope only — forks are recorded against
-    user-level templates). The sidecar lives under the isolated KIROCREW_HOME."""
-
-    def test_forked_row_is_enriched(self, tmp_path):
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "design-crew.json").write_text(json.dumps({"name": "design-crew"}))
-        (d / "plain.json").write_text(json.dumps({"name": "plain"}))
-        agent_state.set_fork_info("design-crew", forked_from="kirocrew", private_to="design-crew")
-
-        clear_list_agents_cache()
-        by_name = {a.name: a for a in list_agents(agents_dir=d)}
-
-        assert by_name["design-crew"].forked_from == "kirocrew"
-        assert by_name["design-crew"].private_to == "design-crew"
-        # An un-forked sibling keeps the empty defaults.
-        assert by_name["plain"].forked_from == ""
-        assert by_name["plain"].private_to == ""
-
-    def test_unforked_rows_have_empty_lineage_when_no_sidecar(self, tmp_path):
-        d = tmp_path / "agents"
-        d.mkdir()
-        (d / "solo.json").write_text(json.dumps({"name": "solo"}))
-
-        clear_list_agents_cache()
-        (agent,) = list_agents(agents_dir=d)
-        assert agent.forked_from == ""
-        assert agent.private_to == ""
-
-
-class TestSpecByDeclaredName:
-    """The shared declared-name scan two session-start surfaces resolve through."""
-
-    @staticmethod
-    def _write(agents_dir: Path, filename: str, **fields: object) -> Path:
-        path = agents_dir / filename
-        path.write_text(json.dumps({"name": "kirocrew", **fields}), encoding="utf-8")
-        return path
-
-    def test_a_namespaced_spec_resolves_by_its_declared_name(self, tmp_path: Path) -> None:
-        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
-
-        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert spec is not None and spec["description"] == "namespaced"
-
-    def test_no_declared_match_is_none(self, tmp_path: Path) -> None:
-        self._write(tmp_path, "SomePackage-other.json", name="other")
-        (tmp_path / "other.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
-
-        assert spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test") is None
-
-    def test_two_differing_specs_declaring_one_name_are_refused_naming_both(
-        self, tmp_path: Path
-    ) -> None:
-        self._write(tmp_path, "Alpha-kirocrew.json", description="alpha")
-        self._write(tmp_path, "Beta-kirocrew.json", description="beta")
-
-        with pytest.raises(AmbiguousAgentSpecError) as exc:
-            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert "Alpha-kirocrew.json" in str(exc.value)
-        assert "Beta-kirocrew.json" in str(exc.value)
-        assert "differing content" in str(exc.value)
-        assert [p.name for p in exc.value.paths] == ["Alpha-kirocrew.json", "Beta-kirocrew.json"]
-
-    def test_identical_specs_declaring_one_name_resolve_to_that_one_spec(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A package installer that flattens dependencies writes the same spec
-        twice under two package prefixes. Both parse to one dict, so whichever
-        the backend runs, the policy and the projection read from it are the
-        same; the scan answers with that dict and warns naming both files."""
-        self._write(
-            tmp_path,
-            "Alpha-kirocrew.json",
-            description="shared",
-            managedToolPolicy={"exclude": ["shell"]},
-        )
-        self._write(
-            tmp_path,
-            "Beta-kirocrew.json",
-            description="shared",
-            managedToolPolicy={"exclude": ["shell"]},
-        )
-
-        with caplog.at_level("WARNING", logger="kiro_crew.agent_discovery"):
-            spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert spec == {
-            "name": "kirocrew",
-            "description": "shared",
-            "managedToolPolicy": {"exclude": ["shell"]},
-        }
-        (warning,) = [r for r in caplog.records if "identical specs" in r.getMessage()]
-        assert "Alpha-kirocrew.json" in warning.getMessage()
-        assert "Beta-kirocrew.json" in warning.getMessage()
-
-    def test_the_twin_warning_redacts_a_credential_shaped_name(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The warning names the files and the declared name, both untrusted
-        input from a user-writable directory, and it persists in gateway.log;
-        it goes through the same log-egress redaction as every other line
-        carrying text this process did not author."""
-        token = "ghp_" + "C" * 36
-        for stem in ("Alpha", "Beta"):
-            (tmp_path / f"{stem}-{token}.json").write_text(
-                json.dumps({"name": token, "description": "shared"}), encoding="utf-8"
-            )
-
-        with caplog.at_level("WARNING", logger="kiro_crew.agent_discovery"):
-            spec = spec_by_declared_name(tmp_path, token, operation="t", source="test")
-
-        assert spec is not None and spec["description"] == "shared"
-        (warning,) = [r for r in caplog.records if "identical specs" in r.getMessage()]
-        assert token not in warning.getMessage(), "the token reached the gateway log"
-        assert "REDACTED" in warning.getMessage()
-
-    def test_a_pair_equal_on_one_field_but_not_all_is_still_refused(self, tmp_path: Path) -> None:
-        """Equality is of the whole parse. Two specs that agree on the policy a
-        caller reads but differ in their tools are two agents, and which one
-        is live still decides what the session can do."""
-        self._write(
-            tmp_path, "Alpha-kirocrew.json", tools=["read"], managedToolPolicy={"exclude": []}
-        )
-        self._write(
-            tmp_path, "Beta-kirocrew.json", tools=["shell"], managedToolPolicy={"exclude": []}
-        )
-
-        with pytest.raises(AmbiguousAgentSpecError):
-            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-    def test_a_pair_differing_only_in_a_scalar_type_is_refused(self, tmp_path: Path) -> None:
-        """``True == 1`` in Python, but ``true`` and ``1`` are two documents to
-        a backend that parses the file itself, so they are two specs here too."""
-        self._write(tmp_path, "Alpha-kirocrew.json", includeMcpJson=True)
-        self._write(tmp_path, "Beta-kirocrew.json", includeMcpJson=1)
-
-        with pytest.raises(AmbiguousAgentSpecError):
-            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        self._write(tmp_path, "Beta-kirocrew.json", includeMcpJson=True)
-        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-        assert spec is not None and spec["includeMcpJson"] is True
-
-    def test_a_deeply_nested_identical_pair_resolves_without_a_recursion_error(
-        self, tmp_path: Path
-    ) -> None:
-        """The reader accepts a spec nested hundreds of levels deep, and the
-        comparison must answer for it rather than raise ``RecursionError`` out
-        of the scan: that exception is neither a resolution nor the typed
-        refusal, so a caller would fail its request instead of answering."""
-        deep: object = "leaf"
-        for _ in range(600):
-            deep = {"m": [deep]}
-        for stem in ("Alpha", "Beta"):
-            self._write(tmp_path, f"{stem}-kirocrew.json", metadata=deep)
-
-        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert spec is not None and "metadata" in spec
-
-    def test_an_identical_pair_beside_a_third_differing_claimant_is_refused(
-        self, tmp_path: Path
-    ) -> None:
-        """Three claimants, two of them twins: the odd one makes the set
-        divergent, so the refusal names all three."""
-        self._write(tmp_path, "Alpha-kirocrew.json", description="shared")
-        self._write(tmp_path, "Beta-kirocrew.json", description="shared")
-        self._write(tmp_path, "Gamma-kirocrew.json", description="odd")
-
-        with pytest.raises(AmbiguousAgentSpecError) as exc:
-            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert [p.name for p in exc.value.paths] == [
-            "Alpha-kirocrew.json",
-            "Beta-kirocrew.json",
-            "Gamma-kirocrew.json",
-        ]
-
-    def test_only_the_first_matching_parse_is_held(self, tmp_path: Path, monkeypatch) -> None:
-        """The refusal needs the duplicates' PATHS, not their parses.
-
-        Each file is capped by the reader, so the parsed-spec memory the scan
-        holds at its peak is set by how many parses it keeps at once. Holding
-        one per match makes that the number of same-name files in a
-        user-writable directory times the cap; holding one total makes it the
-        cap. (Paths are kept one per candidate either way; they are small and
-        the refusal message needs them.) The bound is a property of
-        the scan WHILE it runs -- once it raises, any list it held dies with its
-        frame either way -- so the probe sits inside the reader: on every read,
-        each earlier parse except the first and the one the loop body last
-        assigned must already be unreachable.
-        """
-        import gc
-        import weakref
-
-        from kiro_crew import agent_discovery
-
-        class _Spec(dict):
-            """A dict that can be weakly referenced."""
-
-        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
-            self._write(tmp_path, f"{stem}-kirocrew.json")
-
-        handed_out: list[weakref.ref] = []
-        retained_mid_scan: list[str] = []
-
-        def _reader(path: Path, *, operation: str, source: str) -> dict:
-            # Reads 0..n-2 are done; read n-2's parse is still the loop's own
-            # ``spec`` local until this call returns, so it is exempt. Read 0 is
-            # the match the scan may return, so it is exempt. Everything else
-            # must be gone.
-            gc.collect()
-            for ref in handed_out[1:-1]:
-                spec = ref()
-                if spec is not None:
-                    retained_mid_scan.append(spec["origin"])
-            spec = _Spec(name="kirocrew", origin=path.name)
-            handed_out.append(weakref.ref(spec))
-            return spec
-
-        monkeypatch.setattr(agent_discovery, "_read_agent_spec", _reader)
-
-        with pytest.raises(AmbiguousAgentSpecError) as exc:
-            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
-
-        assert len(handed_out) == 4, "the scan must have read every candidate"
-        assert retained_mid_scan == [], f"parses held past their read: {retained_mid_scan}"
-        # The refusal still names every duplicate: paths are kept, parses are not.
-        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
-            assert f"{stem}-kirocrew.json" in str(exc.value)
