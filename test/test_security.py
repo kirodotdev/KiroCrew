@@ -1475,6 +1475,120 @@ class TestBareSecretKeyRedaction:
         assert result == blob
         assert not warnings
 
+    _SHAREPOINT_SHARE_ID = f"IgCBh-{_NO_SLASH_KEY}"
+    _SHAREPOINT_BASE = "https://contoso.sharepoint.com/:f:/s/LaunchMaterials/"
+    _SHAREPOINT_URL = f"{_SHAREPOINT_BASE}{_SHAREPOINT_SHARE_ID}?e=zzO8op"
+
+    @staticmethod
+    def _trust_sharepoint(monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        import kiro_crew.platform.context as platform_context
+
+        credentials = SimpleNamespace(
+            exempt_exact_hosts=lambda: frozenset({"Contoso.SharePoint.com", "unrelated.example"})
+        )
+        monkeypatch.setattr(
+            platform_context,
+            "installed_context",
+            lambda: SimpleNamespace(credentials=credentials),
+        )
+
+    def test_sharepoint_share_id_is_not_redacted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A trusted SharePoint item id is a locator, not an AWS key."""
+        self._trust_sharepoint(monkeypatch)
+        result, warnings = redact_credentials(self._SHAREPOINT_URL)
+        assert result == self._SHAREPOINT_URL
+        assert warnings == []
+
+    def test_untrusted_sharepoint_tenant_does_not_earn_the_exemption(self) -> None:
+        """A route shape alone grants nothing on SharePoint's shared domain."""
+        result, warnings = redact_credentials(self._SHAREPOINT_URL)
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+
+    def test_sharepoint_policy_failure_fails_to_redaction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken platform composition cannot turn into a locator waiver."""
+        import kiro_crew.platform.context as platform_context
+
+        def broken_context() -> None:
+            raise RuntimeError("unavailable")
+
+        monkeypatch.setattr(platform_context, "installed_context", broken_context)
+        result, warnings = redact_credentials(self._SHAREPOINT_URL)
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+
+    def test_streamed_sharepoint_share_id_is_not_redacted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chunking must not change the batch decision for the sharing URL."""
+        self._trust_sharepoint(monkeypatch)
+        redactor = security.StreamRedactor()
+        text = f"[Launch materials]({self._SHAREPOINT_URL})"
+        pieces = (
+            "[Launch materials](https://contoso.sharepoint.com/:f:/s/",
+            "LaunchMaterials/IgCBh-",
+            _NO_SLASH_KEY[:19],
+            f"{_NO_SLASH_KEY[19:]}?e=zzO8op)",
+        )
+        result = "".join(redactor.feed(piece) for piece in pieces) + redactor.flush()
+        assert result == text
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"https://example.com/:f:/s/LaunchMaterials/IgCBh-{_NO_SLASH_KEY}?e=zzO8op",
+            f"https://other.sharepoint.com/:f:/s/LaunchMaterials/IgCBh-{_NO_SLASH_KEY}?e=zzO8op",
+            f"https://contoso.sharepoint.com/:f:/r/LaunchMaterials/IgCBh-{_NO_SLASH_KEY}?e=zzO8op",
+            f"https://contoso.sharepoint.com/:f:/s/LaunchMaterials/not-{_NO_SLASH_KEY}?e=zzO8op",
+            f"https://contoso.sharepoint.com/:f:/s/LaunchMaterials/IgCBh-{_NO_SLASH_KEY}A?e=zzO8op",
+            f"https://contoso.sharepoint.com/:f:/s/LaunchMaterials/IgCBh-{_NO_SLASH_KEY}",
+            f"https://contoso.sharepoint.com/:f:/s/LaunchMaterials/{_NO_SLASH_KEY}?e=zzO8op",
+        ],
+    )
+    def test_sharepoint_near_misses_do_not_earn_the_exemption(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Host, route, id shape and generated query marker are all required."""
+        self._trust_sharepoint(monkeypatch)
+        result, warnings = redact_credentials(url)
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+
+    @pytest.mark.parametrize("location", ["query", "fragment", "adjacent"])
+    def test_credentials_around_a_sharepoint_link_are_still_redacted(
+        self, location: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The locator exemption applies only to the captured item-id span."""
+        self._trust_sharepoint(monkeypatch)
+        if location == "query":
+            text = f"{self._SHAREPOINT_URL}&leak={_AWS_EXAMPLE_KEY}"
+        elif location == "fragment":
+            text = f"{self._SHAREPOINT_URL}#{_AWS_EXAMPLE_KEY}"
+        else:
+            text = f"{self._SHAREPOINT_URL} {_AWS_EXAMPLE_KEY}"
+
+        result, warnings = redact_credentials(text)
+        assert self._SHAREPOINT_SHARE_ID in result
+        assert _AWS_EXAMPLE_KEY not in result
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+
+    def test_fixed_credential_inside_sharepoint_id_is_still_redacted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Provider-prefixed credentials outrank the opaque-locator decision."""
+        self._trust_sharepoint(monkeypatch)
+        github_token = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234"
+        url = f"{self._SHAREPOINT_BASE}IgCBh-{github_token}?e=zzO8op"
+        result, warnings = redact_credentials(url)
+        assert github_token not in result
+        assert REDACTED_CREDENTIAL_TAG in result
+        assert warnings
+
 
 class TestPathWindowsAreNotBareSecrets:
     """A deep CamelCase absolute path must survive ``redact_credentials``.

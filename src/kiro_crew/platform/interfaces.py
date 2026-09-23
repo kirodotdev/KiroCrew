@@ -230,21 +230,23 @@ class CredentialPolicy(Protocol):
     def redact(self, text: str) -> str: ...
 
     def exempt_exact_hosts(self) -> "frozenset[str]":
-        """Exact-match hosts that skip ONLY the exfil *heuristics*.
+        """Exact-match trusted hosts for heuristic-only redaction exemptions.
 
         WIRED: ``security.scan_exfiltration_urls`` /
-        ``security.redact_exfiltration_urls`` read this set (via a function-local
-        deferred import of the platform context) and, for a URL whose domain is
-        an EXACT member, skip the base64-blob / query-length heuristics.  This is
-        **narrow-only**: it can only relax the heuristics, never the hard-credential
-        floor — the S3-presigned fast-path and the unconditional
-        ``_HARD_CREDENTIAL_RE`` path+query scan still run first, so a real AWS key /
-        SSH-or-PEM header / Slack token on an exempted host is still flagged and
-        redacted.  Matched exactly (not by suffix) so a shared multi-tenant domain
+        ``security.redact_exfiltration_urls`` use this set to skip the base64-blob
+        and query-length heuristics. ``security.redact_credentials`` also uses an
+        exact SharePoint tenant member to preserve only the provider-generated
+        ``/:<type>:/s/<site>/<46-char-item-id>?e=<code>`` item-id span from its markerless
+        bare-secret heuristic. Both uses are **narrow-only**: they never relax the
+        hard/fixed credential floor, encoded credentials, token parameters, or
+        text outside the captured locator span. A bare key deliberately wrapped
+        into the otherwise valid item-id is indistinguishable from the locator;
+        exact non-agent-writable tenant membership bounds that residual. Matched
+        exactly (not by suffix) so a shared multi-tenant domain
         (``*.sharepoint.com``) does not exempt every tenant.
 
         Public default = ``frozenset()`` (no exemptions — redaction unchanged); the
-        companion supplies its own trusted-tenant host list.  The set is NEVER
+        companion supplies its own trusted-tenant host list. The set is NEVER
         sourced from ``config.json`` — an agent-writable exemption would be a hole
         in the redaction ceiling, so the companion adapter is the only supplier.
         """
