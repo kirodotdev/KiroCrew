@@ -292,6 +292,10 @@ class AcpRuntimeProtocol(Protocol):
 
     def session_activity_at(self, session_id: str) -> float | None: ...
 
+    def take_kas_load_recap(self, session_id: str) -> str | None:
+        """Pop recap text captured before session/load registered its queue."""
+        ...
+
     def unregister_session(self, session_id: str) -> None: ...
 
     @property

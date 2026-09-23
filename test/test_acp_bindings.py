@@ -48,7 +48,8 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "f9df55c15d04", "acp"),
+    # Takes ``session_recap``: the KAS recap opt-in (``agent.session_recap``).
+    "__init__": ("function", False, "f34585d8314a", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -196,6 +197,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
     "take_batch_refusal": ("function", False, "85a6851f62f8", "acp"),
+    "take_session_recap": ("function", False, "f21e39ec5ffb", "acp"),
     "tested_version_notice": ("property", False, "bb418bb7ece8", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "telemetry_unconfirmed_notice": ("property", False, "bb418bb7ece8", "acp"),

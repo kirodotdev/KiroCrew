@@ -709,6 +709,12 @@ async def _run_turn(
                 "cancelled elicitation request id=%s stranded in the pre-turn drain",
                 _loggable_request_id(stale.id),
             )
+        elif stale is not None and self._is_kas_recap_frame(stale):
+            # With the opt-in on, KAS sends a recap after every turn, so one
+            # waits here by design. It is dropped without counting toward
+            # the leftover warning below. Only the recap KAS replays during
+            # session/load is shown, from the runtime's load slot.
+            logger.debug("pre-turn drain: dropped a post-turn KAS recap")
         else:
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.

@@ -875,6 +875,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         tool_search=bool(section.get("tool_search")),
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
+        session_recap=bool(section.get("session_recap")),
         session_sharing=bool(section.get("session_sharing")),
         chat_runtime_sharing_max_sessions=section.read(
             "chat_runtime_sharing_max_sessions", _safe_int, 1, 64

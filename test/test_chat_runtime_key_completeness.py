@@ -52,6 +52,8 @@ _SPAWN_INPUT_KEYED = {
     # The telemetry opt-out, judged once by the placement and sent in the founding
     # KAS initialize, which otherwise judges it at spawn.
     "kas_telemetry": "kas_telemetry",
+    # The KAS session recap opt-in (``agent.session_recap``), sent once in initialize.
+    "session_recap": "session_recap",
 }
 
 #: Runtime constructor parameter -> why it is NOT a compatibility property.

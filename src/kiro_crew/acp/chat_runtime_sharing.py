@@ -397,6 +397,10 @@ class ChatRuntimeKey:
         KAS process (``kas_cli_settings.kiro_cli_telemetry_enabled``). KAS takes the
         opt-out once, in ``initialize``, so a chat whose folder opts out must not
         join a process started with telemetry on. Always True for other backends.
+    ``session_recap``
+        Whether the KAS handshake opts in to the session recap
+        (``agent.session_recap``). KAS takes the opt-in once, in ``initialize``,
+        so a chat with the recap on must not join a process started without it.
     """
 
     work_dir: str
@@ -418,6 +422,7 @@ class ChatRuntimeKey:
     harness_pin: str
     agent_env: tuple[tuple[str, str], ...]
     kas_telemetry: bool
+    session_recap: bool
 
     @classmethod
     def build(
@@ -442,6 +447,7 @@ class ChatRuntimeKey:
         harness_pin: str | None = None,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        session_recap: bool = False,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -475,6 +481,7 @@ class ChatRuntimeKey:
             harness_pin=harness_pin or "",
             agent_env=_freeze_env(agent_env),
             kas_telemetry=bool(kas_telemetry),
+            session_recap=bool(session_recap),
         )
 
 

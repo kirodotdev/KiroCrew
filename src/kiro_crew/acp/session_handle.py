@@ -127,7 +127,12 @@ from kiro_crew.acp.mcp_session_report import (
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.session_handle_class import AcpSessionHandle
 from kiro_crew.acp.session_handle_compaction import _POST_COMPACTION_METADATA_GRACE_SECS
-from kiro_crew.acp.session_handle_kas import _KAS_HOOKS_METHODS
+from kiro_crew.acp.session_handle_kas import (
+    _KAS_HOOKS_METHODS,
+    _RECAP_MAX_CHARS,
+    _RECAP_REDACT_INPUT_MAX_CHARS,
+    _normalize_kas_recap_text,
+)
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import (
     _LAUNCH_MAX_ARGS,
