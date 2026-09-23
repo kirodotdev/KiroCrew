@@ -236,6 +236,11 @@ def _index_ledger_safely() -> dict[str, int]:
         from kiro_crew.vector_memory import VectorMemoryStore
 
         cfg = KiroCrewConfig.load()
+        # This helper is the automatic writer's service boundary. Keep the gate
+        # ahead of store construction: init creates or migrates memory.db, so a
+        # disabled persistence switch must leave no write-side effect behind.
+        if not cfg.memory.persistence_enabled:
+            return {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0}
         store_obj = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
         store_obj.init()
         return ledger_index.import_pending(store_obj)
