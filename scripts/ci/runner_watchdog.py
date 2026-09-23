@@ -147,6 +147,12 @@ Guard rails
   read, because a slow start inside it is saturation evidence (above).
 * Immediately before every re-run, the run must still be the newest run of
   its branch and event; otherwise it is reported for a human.
+* The saturation/outage hold does NOT apply to a ``push`` run a newer push has
+  already superseded. The hold protects a queued job whose result someone still
+  wants, and that run's result is discarded by the branch moving on, while holding
+  it keeps it alive in a ``cancel-in-progress: false`` concurrency group where it
+  evicts every later commit's run (``supersession_clears_hold`` carries the measured
+  incident). Such a run is cancelled, and the rule above still declines to re-run it.
 * A run whose head repository is a fork is reported but never touched: forks
   are never routed to CodeBuild, and the workflow token could not re-run them.
 * A run at ``Policy.max_attempt`` (3) or beyond is reported but never touched. Every
@@ -1427,6 +1433,56 @@ def is_newest_for_branch(api: Api, repo: str, verdict: RunVerdict) -> bool:
     return newest_run_id_for_branch(api, repo, verdict) == verdict.run_id
 
 
+def supersession_clears_hold(
+    api: Api, policy: Policy, verdict: RunVerdict, log: Callable[[str], None]
+) -> bool:
+    """Whether a fleet hold has nothing left to protect on this run. One branch listing.
+
+    The dispatch-evidence hold exists so a queued job that a runner may still pick
+    up is not cancelled out from under the run that wants its result. A run a newer
+    push has superseded has no result anyone wants: the branch moved on, and the heal
+    path's own pre-re-run check will decline to re-run it for exactly that reason. So
+    whether the fleet is dispatching, saturated or out decides nothing about it.
+
+    What holding it DOES cost: a workflow whose group keeps superseded runs alive
+    (``cancel-in-progress: false``, which ``ci.yml`` and ``fast-gate.yml`` both set on
+    ``main``) admits one running plus one pending run, so a superseded run that never
+    terminates holds the running slot and GitHub evicts every later commit's run from
+    the pending slot. Measured: ``fast-gate.yml`` run 35893226216 sat ``queued`` on one
+    orphaned job for 6 hours behind a partial-evidence hold; every later ``main`` Fast
+    Gate was evicted without running, and ``ci.yml``'s ``await-fast-gate`` failed
+    closed at its 720-second budget on each one, so 25 pushes produced 11 failures and
+    zero verdicts.
+
+    Asked ONLY when a hold would otherwise apply, so the ordinary orphan pays no extra
+    listing. Restricted to ``push``: on a pull request two open requests can share one
+    head branch, so a newer run of that branch does not establish that THIS run was
+    superseded -- the same reason ``_guard`` refuses the pull-request shape. The head
+    repository is compared too; a fork cannot push to this repository's branches, so
+    that test is belt-and-braces rather than the fork boundary itself.
+
+    A lookup that cannot answer leaves the hold standing: cancelling needs
+    supersession ESTABLISHED, never assumed from a failed read.
+    """
+    if verdict.event != "push" or verdict.head_repo.lower() != policy.repo.lower():
+        return False
+    try:
+        if is_newest_for_branch(api, policy.repo, verdict):
+            return False
+    except LookupInconclusive as exc:
+        log(
+            f"{_label(verdict)}: the fleet hold stands, because whether a newer run "
+            f"supersedes this one cannot be told ({exc})"
+        )
+        return False
+    log(
+        f"{_label(verdict)}: a newer push supersedes it, so the fleet hold has no result "
+        f"to protect and is not applied; freeing its concurrency group is what a cancel "
+        f"would then buy, and the re-run check still declines to re-run it"
+    )
+    return True
+
+
 def _fmt_delta(delta: timedelta) -> str:
     minutes = int(delta.total_seconds() // 60)
     return f"{minutes} min"
@@ -2418,6 +2474,8 @@ def run_watchdog(
             if verdict.verdict != ORPHANED:
                 continue
             hold = resolve_hold(api, policy, evidence, _latest_queue(verdict))
+            if hold is not None and supersession_clears_hold(api, policy, verdict, log):
+                hold = None
             if hold is not None:
                 verdict.verdict, verdict.detail = hold
                 log(f"::warning::{_label(verdict)}: {verdict.detail}")
@@ -2521,6 +2579,14 @@ def run_watchdog(
         hold = resolve_hold(
             api, replace(policy, now=tick.now()), fresh["evidence"], _latest_queue(verdict)
         )
+        if hold is not None and supersession_clears_hold(
+            api, replace(policy, now=tick.now()), verdict, log
+        ):
+            # Re-asked here as well as in the sweep: a run that was its branch's
+            # newest when the sweep read it can be superseded by the time the cancel
+            # is sent, and that is precisely when holding it starts costing every
+            # later commit its gate.
+            return None
         return None if hold is None else (*hold, None)
 
     outcomes = {

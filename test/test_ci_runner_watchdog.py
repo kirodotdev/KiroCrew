@@ -4275,3 +4275,161 @@ def test_the_classify_cap_costs_no_extra_api_read_to_flag_the_tail() -> None:
             api, _policy(), budget=0, tick=_tick(_Clock()), log=lambda _l: None
         )
     assert reads["jobs"] == 2
+
+
+# ── a superseded orphan is not protected by the fleet hold ──────────────────
+
+
+def test_a_superseded_orphan_is_cancelled_even_with_no_dispatch_evidence() -> None:
+    """The hold protects a result someone wants; a superseded run has none.
+
+    This is the shape of the 6-hour `fast-gate.yml` block: the tick held on evidence,
+    and the run it held kept every later commit's Fast Gate out of the group. The heal
+    still declines to RE-RUN it, so the cancel frees the slot without reviving a
+    verdict the branch has moved past.
+    """
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=90)]},
+        {1: [_job(11, minutes_ago=60)]},
+        evidence=False,
+        newest_by_branch={"main": 2},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert _posts(api, "/cancel") == [f"repos/{REPO}/actions/runs/1/cancel"]
+    assert not _posts(api, "/rerun")
+    assert outcomes[1] not in wd.FAILED_OUTCOMES
+
+
+def test_without_supersession_the_same_run_is_still_held_on_missing_evidence() -> None:
+    """Negative control: the evidence hold itself is not weakened.
+
+    Same runs, same absent evidence, only the branch listing differs. Without this
+    the change could have cleared every hold and read as passing.
+    """
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=90)]},
+        {1: [_job(11, minutes_ago=60)]},
+        evidence=False,
+        newest_by_branch={"main": 1},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
+    assert api.posts == []
+    assert outcomes == {}
+
+
+def test_the_supersession_question_is_not_asked_when_no_hold_applies() -> None:
+    """The ordinary orphan pays no extra branch listing: the heal path already asks.
+
+    Asserted on the CALL, not on a listing count, because the heal path legitimately
+    lists the branch more than once and an absolute count would pin that instead.
+    """
+    import unittest.mock as _mock
+
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    with _mock.patch.object(wd, "supersession_clears_hold") as spy:
+        _sweep(api)
+    assert spy.call_count == 0
+
+
+def test_the_supersession_question_is_asked_when_a_hold_applies() -> None:
+    """Positive control for the test above: the spy would be vacuous without it."""
+    import unittest.mock as _mock
+
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=90)]},
+        {1: [_job(11, minutes_ago=60)]},
+        evidence=False,
+    )
+    with _mock.patch.object(wd, "supersession_clears_hold", return_value=False) as spy:
+        _sweep(api)
+    assert spy.call_count >= 1
+
+
+def test_the_cleared_hold_is_logged_as_a_decision_not_as_a_cancel() -> None:
+    """The line is emitted from the hold loop, before anything has decided to cancel.
+
+    The scheduled tick runs with `dry_run` today (`WATCHDOG_ARMED` is false), so a line
+    asserting the run WAS cancelled would be false on every real tick, and a reader
+    debugging from the log would look for a cancel that never happened.
+    """
+    verdict = wd.RunVerdict(
+        run_id=1,
+        run_attempt=1,
+        head_branch="main",
+        head_repo=REPO,
+        event="push",
+        status="in_progress",
+        url="https://example.invalid/runs/1",
+        age=timedelta(minutes=60),
+        verdict=wd.ORPHANED,
+        workflow="ci.yml",
+    )
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]}, newest_by_branch={"main": 2})
+    lines: list[str] = []
+    assert wd.supersession_clears_hold(api, _policy(), verdict, lines.append)
+    line = " ".join(lines)
+    assert "is not applied" in line
+    assert "it is cancelled" not in line
+
+
+def test_a_pull_request_orphan_is_never_read_as_superseded() -> None:
+    """Two open pull requests can share one head branch, so a newer run of that branch
+    does not establish that THIS run was superseded."""
+    verdict = wd.RunVerdict(
+        run_id=1,
+        run_attempt=1,
+        head_branch="feature",
+        head_repo=REPO,
+        event="pull_request",
+        status="in_progress",
+        url="https://example.invalid/runs/1",
+        age=timedelta(minutes=60),
+        verdict=wd.ORPHANED,
+        workflow="ci.yml",
+    )
+    api = FakeApi({}, {}, newest_by_branch={"feature": 2})
+    assert not wd.supersession_clears_hold(api, _policy(), verdict, lambda _l: None)
+
+
+def test_a_fork_orphan_is_never_read_as_superseded() -> None:
+    verdict = wd.RunVerdict(
+        run_id=1,
+        run_attempt=1,
+        head_branch="main",
+        head_repo="someone/example-repo",
+        event="push",
+        status="in_progress",
+        url="https://example.invalid/runs/1",
+        age=timedelta(minutes=60),
+        verdict=wd.ORPHANED,
+        workflow="ci.yml",
+    )
+    api = FakeApi({}, {}, newest_by_branch={"main": 2})
+    assert not wd.supersession_clears_hold(api, _policy(), verdict, lambda _l: None)
+
+
+def test_an_unanswerable_supersession_lookup_leaves_the_hold_standing() -> None:
+    """Cancelling needs supersession ESTABLISHED, never assumed from a failed read."""
+    verdict = wd.RunVerdict(
+        run_id=1,
+        run_attempt=1,
+        head_branch="main",
+        head_repo=REPO,
+        event="push",
+        status="in_progress",
+        url="https://example.invalid/runs/1",
+        age=timedelta(minutes=60),
+        verdict=wd.ORPHANED,
+        workflow="ci.yml",
+    )
+
+    def explode(*_a: Any, **_k: Any) -> bool:
+        raise wd.LookupInconclusive("the branch listing could not be read")
+
+    import unittest.mock as _mock
+
+    api = FakeApi({}, {})
+    with _mock.patch.object(wd, "is_newest_for_branch", explode):
+        assert not wd.supersession_clears_hold(api, _policy(), verdict, lambda _l: None)
