@@ -139,7 +139,7 @@ class TestPolicyDocument:
             for s in iam.policy_document()["Statement"]
             if s["Sid"] == "IamPutRolePolicyAndTagRoleOnManaged"
         )
-        assert "iam:TagRole" in st["Action"]
+        assert set(st["Action"]) == {"iam:PutRolePolicy", "iam:TagRole"}
         assert iam.ROLE_NAME_PREFIX in st["Resource"]
         assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
         # It must NOT use iam:PermissionsBoundary — validated live that AWS does
@@ -235,7 +235,7 @@ class TestPolicyDocument:
             for s in iam.policy_document()["Statement"]
             if s["Sid"] == "IamPutRolePolicyAndTagRoleOnManaged"
         )
-        assert "iam:PutRolePolicy" in st["Action"]
+        assert set(st["Action"]) == {"iam:PutRolePolicy", "iam:TagRole"}
         assert iam.ROLE_NAME_PREFIX in st["Resource"]
         assert "iam:PermissionsBoundary" not in str(st.get("Condition", {}))  # no dead key
         # CreateRole/PutRolePolicy must not appear in the plain role statement.
