@@ -700,7 +700,10 @@ def _url_payload_command(n: int) -> str:
 #: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
 #: it, and the catalog comment on why their call names stand bare (both rows match
 #: exactly what they matched). Nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_802
+#: Raised by one, from 34,802, for the ``background`` leaf on the write-protected home
+#: paths (``paths_lists``): one entry, so a file tool cannot forge the gateway's
+#: background command records; the floor only grows.
+_PACKAGE_LINE_BUDGET = 34_803
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

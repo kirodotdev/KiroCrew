@@ -218,7 +218,7 @@ def _apply_worker_exclusions(granted: list[str], *, template_grants: list[str]) 
     A whole-server grant on an excluded server is therefore replaced by the SHIPPED
     TEMPLATE's own per-tool grants for that server. Those per-tool refs are the
     worker's narrowed cron surface: the template auto-approves the reading verbs and
-    names none of the excluded three, so substituting them states the narrowing in
+    names none of the excluded verbs, so substituting them states the narrowing in
     one place instead of enumerating a server's surface here, where a verb added to
     the server tomorrow would silently join the worker's allowlist. It also fails
     CLOSED — a template that grants nothing for that server leaves the worker
@@ -585,7 +585,7 @@ def _install_worker_agent() -> None:
         mirror would otherwise widen a worker's reach on its own. The cron grants in
         :data:`_WORKER_EXCLUDED_GRANTS` — a recurring job outlives the item, the session
         and the dispatch, so a worker does not auto-approve authoring one (see that
-        constant for why those three verbs and not the reading ones, and why the tool
+        constant for why those verbs and not the reading ones, and why the tool
         stays mounted). And the servers :func:`_worker_unassignable_servers` names — an
         ``opt_in`` set is assigned per agent, so one the operator mounted on their own
         agent is not thereby assigned to every worker they dispatch. The whole spec is

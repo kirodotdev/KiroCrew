@@ -498,7 +498,9 @@ _CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
 #: ``cron_secret_request`` are here for the same reason rather than as a tidy
 #: superset: rewriting an existing job's schedule or body is authoring a recurring
 #: job by another route, and requesting vault secrets is requesting them FOR a
-#: script job a worker may not create in the first place.
+#: script job a worker may not create in the first place. ``background_run`` is
+#: the same class: it runs a command with no per-command approval, so a worker
+#: never inherits an auto-approve for it either.
 #:
 #: The reading verbs the shipped template already grants — ``cron_list``,
 #: ``cron_pause``, ``cron_resume``, ``cron_trigger``, ``cron_remove``,
@@ -516,6 +518,7 @@ _WORKER_EXCLUDED_GRANTS: frozenset[str] = frozenset(
         "@kirocrew-cron/cron_add",
         "@kirocrew-cron/cron_update",
         "@kirocrew-cron/cron_secret_request",
+        "@kirocrew-cron/background_run",
     }
 )
 

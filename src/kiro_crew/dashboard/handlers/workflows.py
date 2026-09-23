@@ -9,6 +9,8 @@ Routes (registered in dashboard/server.py):
   POST /api/workflows/author   {intent}           → {ok, source, meta} | {ok:false, errors}
   POST /api/workflows/run      {source, args?, name?, budget_total?, timeout_secs?}
                                                     → {run_id} | {error}
+  POST /api/workflows/background {command, cwd?, label?, timeout_secs?}
+                                                    → {run_id, name, log_path, timeout_secs}
   GET  /api/workflows/runs                          → [{run_id, name, status, ...}]
   GET  /api/workflows/runs/{id}                     → {…, events:[…], plan?}  (full)
                                                       ``?plan=1`` adds ``plan``
@@ -26,14 +28,23 @@ import asyncio
 import json
 import logging
 import math
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
 
+from kiro_crew.background_commands import MAX_COMMAND_CHARS, BackgroundCommandError
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, effective_session_key
 from kiro_crew.dashboard.handlers._shared import internal_memory_scope, read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
+from kiro_crew.security import (
+    is_sensitive_write_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.workflows.preview import plan_from_source
 
 logger = logging.getLogger(__name__)
@@ -42,6 +53,10 @@ _OP_DEFINITION_CREATE = "workflow_definition_create"
 _OP_DEFINITION_UPDATE = "workflow_definition_update"
 _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
+_OP_BACKGROUND_RUN = "workflow_background_run"
+# How a background command is presented to the tool gate: as the agent's own
+# sandboxed shell call, carrying no MCP identity.
+_AGENT_SHELL_CALL: dict[str, Any] = {"tool_kind": "execute", "is_shell": True}
 
 
 def _redact_obj(obj):
@@ -771,6 +786,259 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         await run_admission.abandon()
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
+
+
+def _background_cwd(raw: Any, slot: Any) -> tuple[str, Optional[str]]:
+    """Resolve the command's working directory; relative paths join the chat's project."""
+    if raw is not None and not isinstance(raw, str):
+        return "", "cwd must be a string"
+    try:
+        base = Path(getattr(slot, "project", "") or Path.home()).expanduser()
+        candidate = Path(raw).expanduser() if raw else base
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError, ValueError):
+        # An unknown ``~user``, a symlink loop, or a component that cannot be read.
+        return "", "cwd could not be resolved"
+    if not resolved.is_dir():
+        return "", f"cwd is not a directory: {resolved}"
+    # Write-protected too: the sandbox seals those by path, which a pre-opened cwd sidesteps.
+    if is_sensitive_write_path(str(resolved)):
+        return "", "cwd is a protected location"
+    return str(resolved), None
+
+
+async def _chat_backend(state: DashboardState, slot: Any) -> str:
+    """The harness the chat runs on: its live session's, else the configured one.
+
+    Raises ``CrewmateHarnessUnavailable`` for a crewmate pinned to a harness this
+    gateway cannot start, as the provider factory does for that chat's own turns.
+    """
+    key = effective_session_key(slot)
+    provider = state.sessions.get_provider(key)
+    backend = getattr(getattr(provider, "capabilities", None), "backend", None)
+    if isinstance(backend, str):
+        return backend
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+    from kiro_crew.members import select_provider_backend
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    return select_provider_backend(
+        key,
+        config.agent.member_acp_backend,
+        config.agent.acp_backend,
+        crew_backend=crewmate_backend_pin(config, key),
+    )
+
+
+def _chat_agent(provider: Any, slot: Any) -> str:
+    """The agent that serves the chat's turns, or ``""`` when none can be named.
+
+    A KAS mode switch moves the live session to another agent
+    (``kas_projected_agent``), so that one wins; then the agent the provider was
+    built for (``read_effective_agent``), then the slot's own.
+    """
+    from kiro_crew.dashboard.handlers.usage import read_effective_agent
+    from kiro_crew.wrapper_chain import wrapper_chain
+
+    for node in wrapper_chain(provider) if provider is not None else ():
+        projected = getattr(node, "kas_projected_agent", "")
+        if isinstance(projected, str) and projected:
+            return projected
+    agent = read_effective_agent(provider) or getattr(slot, "agent", "") or ""
+    return agent if isinstance(agent, str) else ""
+
+
+def _shell_hook_reason(state: DashboardState, command: str) -> Optional[str]:
+    """Why a PreToolUse hook outside the agent's spec could refuse its shell call.
+
+    The user's ``~/.kiro/hooks`` files and the enabled Hooks-page hooks fire on
+    the agent's own shell call; a gateway-side spawn passes neither, so one whose
+    matcher can meet the shell (its names, or the call's ``Running: <command>``
+    title) refuses. Hooks that cannot be read refuse too.
+    """
+    from kiro_crew.agent_sdk.agent_specs import hook_matcher_covers_shell
+    from kiro_crew.agent_sdk.spec_hooks import user_hook_files
+    from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, persisted_hook_store
+
+    titles = (command, f"Running: {command}")
+    try:
+        store = getattr(state, "_hook_store", None) or persisted_hook_store()
+        saved = list(store.list_all())
+        files = user_hook_files()
+    except Exception:  # noqa: BLE001 -- unread hooks cannot be checked
+        logger.warning("background_run: PreToolUse hooks could not be read", exc_info=True)
+        return "its PreToolUse hooks cannot be read, so they cannot be checked"
+    for where, hooks in (("a Hooks-page", saved), ("a ~/.kiro/hooks", files)):
+        for hook in hooks:
+            if (
+                getattr(hook, "enabled", True)
+                and hook.event == HOOK_EVENT_PRE_TOOL_USE
+                and hook_matcher_covers_shell(hook.matcher, titles)
+            ):
+                return f"{where} PreToolUse hook can match its shell"
+    return None
+
+
+def _shell_restriction_refusal(state: DashboardState, slot: Any, command: str) -> Optional[str]:
+    """Why ``background_run`` is refused for this chat's agent, or ``None``. Blocking.
+
+    A gateway-side spawn runs only the gate tiers, never the agent's own shell
+    restrictions (a ``permissions`` deny or ask, ``deniedCommands``, a tool list
+    without the shell, a PreToolUse hook), so it is admitted only for an agent
+    whose shell is unrestricted (``agent_specs.spec_shell_restriction``) and that
+    no PreToolUse hook outside its spec can refuse. An agent that cannot be named,
+    and a spec that cannot be read, are refused.
+    """
+    from kiro_crew.agent_sdk.agent_specs import AgentSpecUnreadable, spec_shell_restriction
+
+    sessions = getattr(state, "sessions", None)
+    provider = sessions.get_provider(effective_session_key(slot)) if sessions is not None else None
+    agent = _chat_agent(provider, slot)
+    if not agent:
+        reason = "the agent serving this chat cannot be named, so its shell cannot be checked"
+    else:
+        work_dir = str(getattr(provider, "cwd", "") or getattr(slot, "project", "") or "") or None
+        try:
+            shape = spec_shell_restriction(agent, work_dir)
+        except AgentSpecUnreadable:
+            logger.warning("background_run: could not read agent spec %r", agent, exc_info=True)
+            reason = (
+                f"agent '{agent}''s spec cannot be read, so its shell restrictions cannot "
+                "be checked"
+            )
+        else:
+            hook = None if shape is not None else _shell_hook_reason(state, command)
+            restriction = shape or hook
+            if restriction is None:
+                return None
+            reason = f"agent '{agent}' restricts its shell ({restriction})"
+    return (
+        f"background_run needs an agent whose shell is unrestricted: {reason}; "
+        "run the command with the shell tool instead"
+    )
+
+
+def _background_command_denial(state: DashboardState, slot: Any, command: str) -> Optional[str]:
+    """Judge ``command`` with the same gate that judges the agent's own shell calls.
+
+    The ACP permission path sees only the MCP tool call, never the command inside
+    it, so the shell tiers (deny floor, sensitive paths, exfiltration, governance
+    ``commands``) run here instead. A deny refuses; anything else only means the
+    command passed the floor, because approval already happened on the tool call.
+    The agent's own shell restrictions are not re-judged here: an agent that has
+    any is refused before this (:func:`_shell_restriction_refusal`).
+    """
+    hooks = getattr(getattr(state, "context_builder", None), "hooks", None)
+    if hooks is None:
+        return "the tool gate is unavailable"
+    key = effective_session_key(slot)
+    shell_call = SimpleNamespace(
+        raw_tool_params={"command": command}, shell_command=command, **_AGENT_SHELL_CALL
+    )
+    verdict = hooks.on_tool_call(
+        "execute_bash",
+        session_key=key,
+        agent=getattr(slot, "agent", "") or "",
+        app=getattr(slot, "_app", "") or "",
+        **hook_gate_kwargs(shell_call),
+    )
+    if verdict.action == TOOL_DENY:
+        return (verdict.reason or "blocked").strip()
+    return None
+
+
+async def api_workflow_background_run(request: web.Request) -> web.Response:
+    """POST /api/workflows/background — start a gateway-owned background command."""
+    if request.get("internal_auth") is not True:
+        _audit_authorization(
+            request, _OP_BACKGROUND_RUN, "denied", error="not an internal tool call"
+        )
+        return _error(
+            "background commands start only from a chat session's tool call",
+            "background_run_internal_only",
+            403,
+        )
+    state: DashboardState = request.app["state"]
+    service = getattr(state, "background_commands", None)
+    if _svc(request) is None or service is None:
+        return _error("background commands are not available", "background_run_unavailable", 503)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    command = body.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return _error("command is required", "background_run_command_required", 400)
+    if len(command) > MAX_COMMAND_CHARS or "\x00" in command:
+        return _error(
+            f"command must be at most {MAX_COMMAND_CHARS} characters with no NUL byte",
+            "background_run_command_invalid",
+            400,
+        )
+    label = body.get("label", "")
+    if not isinstance(label, str):
+        return _error("label must be a string", "background_run_label_invalid", 400)
+    refusal = await _private_memory_refusal(request, _OP_BACKGROUND_RUN)
+    if refusal is not None:
+        return refusal
+    session_key = request.headers.get("X-Session-Key", "")
+    slot = state.get_slot(dashboard_slot_key(session_key)) if session_key else None
+    if slot is None or effective_session_key(slot) != session_key:
+        return _error(
+            "background_run needs an open dashboard chat to deliver its result to",
+            "background_run_no_session",
+            409,
+        )
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+    try:
+        backend = await _chat_backend(state, slot)
+    except CrewmateHarnessUnavailable as exc:
+        # The chat's own pinned harness cannot start, so neither can its command's mask.
+        return _error(_redact_obj(str(exc)), "background_run_unsupported", 409)
+    # Off the loop, like the gate: both read agent specs and hook files from disk.
+    restricted = await asyncio.to_thread(_shell_restriction_refusal, state, slot, command)
+    if restricted is not None:
+        _audit_authorization(request, _OP_BACKGROUND_RUN, "denied", error=restricted)
+        return _error(_redact_obj(restricted), "background_run_shell_restricted", 403)
+    # Off the loop: the gate can walk and stat profile storage.
+    denial = await asyncio.to_thread(_background_command_denial, state, slot, command)
+    if denial is not None:
+        _audit_authorization(request, _OP_BACKGROUND_RUN, "denied", error=denial)
+        return _error(
+            f"Blocked by security policy: {_redact_obj(denial)}", "background_run_denied", 403
+        )
+    # Audited as decided, so a start that later fails still leaves the allow on record.
+    _audit_authorization(request, _OP_BACKGROUND_RUN, "allowed")
+    cwd, cwd_error = await asyncio.to_thread(_background_cwd, body.get("cwd"), slot)
+    if cwd_error is not None:
+        return _error(_redact_obj(cwd_error), "background_run_cwd_invalid", 400)
+    try:
+        # Fair admission (Shared Crew), as every workflow run starts: the spawn runs
+        # in the admitted person's principal scope, so its systemd scope lands under
+        # their slice and their ceilings, and the run stays charged until it settles.
+        started = await _start_admitted(
+            request,
+            _svc(request),
+            body,
+            lambda: service.start(
+                session_key=session_key,
+                command=command,
+                cwd=cwd,
+                backend=backend,
+                label=label,
+                timeout_secs=_opt_int(body.get("timeout_secs")),
+                expected_store=request.get("workflow_expected_store"),
+            ),
+        )
+    except BackgroundCommandError as exc:
+        return _error(_redact_obj(str(exc)), exc.code, exc.status)
+    if isinstance(started, web.Response):
+        return started
+    return web.json_response(_redact_obj(started))
 
 
 async def api_workflow_run_intent(request: web.Request) -> web.Response:
