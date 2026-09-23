@@ -1388,9 +1388,11 @@ export function useWebSocket() {
         // socket died — for good, until a remount. The observed hydrate queries
         // are the registry of on-screen panes (api/slotMessagesQuery.ts): warm
         // each once through the same sanctioned path, which reconciles the rows
-        // to the server's canonical transcript, idles the run indicator only
-        // when the server says the turn ended, and raises the chunk replay
-        // floor when it is still live. The active slot is skipped here and
+        // to the server's canonical transcript, settles the run indicator to
+        // the server's answer (idle when the turn ended, streaming when one
+        // started during the outage) unless a live frame ordered after the
+        // warm already wrote it, and raises the chunk replay floor when the
+        // turn is still live. The active slot is skipped here and
         // again inside the thunk.
         for (const slot of observedPaneSlots(queryClient)) {
           if (slot === active || warmed.has(slot)) continue

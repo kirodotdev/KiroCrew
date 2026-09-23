@@ -1166,8 +1166,22 @@ interface ChatState {
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
   /** Path B: per-slot live stream state so a non-active pane shows its own
-   *  streaming/tool/idle indicator (mirrors slotActivity for tool events). */
-  slotRun: Record<string, { state: SlotState; lastChunkSeq?: number; lastChunkGen?: string }>
+   *  streaming/tool/idle indicator (mirrors slotActivity for tool events).
+   *  `tick` is the entry's receipt order: `state` is written only through
+   *  `setRunState`, which bumps it, so a point-in-time snapshot that captured
+   *  the tick at dispatch can tell, at fulfillment, whether an ordered writer ran
+   *  in between -- the ordering token a plain `state` cannot carry, because an
+   *  idle written by a `_done` frame is indistinguishable from an idle left by
+   *  an earlier turn. Read by `warmSlotCache` (captured at dispatch) and its
+   *  `fulfilled` reducer (compared before writing). Absent reads as 0. The
+   *  tick counts OBSERVED transitions only -- live frames, settlements, and
+   *  the hand-back of an active mirror that moved -- never a warm's own
+   *  write: two warms for one slot resolve in any order, so a warm that
+   *  consumed the tick would make a NEWER snapshot read as stale. Warm
+   *  against warm is ordered by `runWarmSeq`, the `warmSeq` of the newest
+   *  warm whose run-state verdict was applied; an older warm landing after
+   *  it declines. */
+  slotRun: Record<string, { state: SlotState; lastChunkSeq?: number; lastChunkGen?: string; tick?: number; runWarmSeq?: number }>
   /** Path B: per-slot one-time hydration guard so the server history is
    *  prepended exactly once even if a WS frame seeds slotMessages first. */
   slotHydrated: Record<string, boolean>
@@ -1193,6 +1207,14 @@ interface ChatState {
    *  `syncSlotRunningFromServer`, so an answer or snapshot that was true for
    *  THAT turn cannot idle a NEWER one (#9547, GPT rounds 2 and 7). */
   runEpoch: Record<string, number>
+  /** `runEpoch` of the active slot at the moment it became active. Read by
+   *  `enterActiveSlot` when the slot is left: a mirror whose state equals the
+   *  keyed entry's AND whose epoch is unchanged observed nothing while active
+   *  (a provisional switch in and out), so the hand-back must not consume the
+   *  entry's receipt tick -- a warm dispatched before the switch is still the
+   *  newest view. A same-value round trip (idle -> a turn ran -> idle) always
+   *  counts a turn start, so the epoch tells it apart from "never moved". */
+  activeRunEpochAtEntry: number
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
@@ -1322,6 +1344,7 @@ const initialState: ChatState = {
   folderSuggestions: {},
   stopPressedAt: {},
   runEpoch: {},
+  activeRunEpochAtEntry: 0,
   pendingTurnSlot: null,
 }
 
@@ -1352,6 +1375,82 @@ function bumpRunEpoch(state: ChatState, slot: string | null): void {
   if (!state.runEpoch) state.runEpoch = {}
   const k = safeKey(slot)
   state.runEpoch[k] = (state.runEpoch[k] ?? 0) + 1
+}
+
+/** The ONE writer of an OBSERVED `slotRun` state transition (see the field's
+ *  doc on `ChatState.slotRun`): the write and its receipt-tick bump are a
+ *  single operation, so the "every observed writer bumps" invariant is
+ *  structural rather than a convention each new writer has to remember -- a
+ *  writer that assigned `state` directly would be invisible to
+ *  `warmSlotCache.fulfilled`. A same-value write (idle over idle) bumps too:
+ *  that is exactly the transition a snapshot cannot see on its own. Callers:
+ *  the live frame writers, the two background settlements, and the active
+ *  mirror's hand-back. A warm's own write goes through `applyWarmRunState`. */
+function setRunState(run: { state: SlotState; tick?: number }, next: SlotState): void {
+  run.state = next
+  run.tick = (run.tick ?? 0) + 1
+}
+
+/** A warm's run-state write: records the verdict and the warm's own order
+ *  (`runWarmSeq`) WITHOUT consuming the receipt tick. The tick orders a
+ *  snapshot against observed transitions; a snapshot is not one, and two
+ *  warms for one slot resolve in any order -- the older one landing first
+ *  must not make the newer one read as stale (that ordering is `runWarmSeq`'s,
+ *  checked by the caller). Also used to record a verdict that changed nothing
+ *  (a running snapshot over a busier entry), so an older warm cannot land
+ *  after it and overwrite. */
+function applyWarmRunState(run: { state: SlotState; runWarmSeq?: number }, next: SlotState | null, warmSeq: number | undefined): void {
+  if (next !== null) run.state = next
+  if (typeof warmSeq === 'number') run.runWarmSeq = Math.max(run.runWarmSeq ?? 0, warmSeq)
+}
+
+/** THE way `activeSlot` moves to `target`: hands the outgoing slot's run
+ *  mirror back to its keyed entry, assigns, and records the entry epoch.
+ *  Fused into one setter so a future `activeSlot` writer cannot skip the
+ *  hand-back -- the same structural shape `setRunState` gives the tick bump.
+ *
+ *  Why the hand-back exists: while a slot is active every frame writes the
+ *  mirror (`slotRunning` / `slotState`) and not its `slotRun` entry, so
+ *  without it the entry keeps whatever its last BACKGROUND frame wrote: a
+ *  turn that ended on screen leaves the entry busy, and a warm dispatched for
+ *  the slot BEFORE it became active cannot see that its run state moved --
+ *  the active writers never touched the entry's tick -- so a stale
+ *  `running: true` fulfillment would relock the finished pane. The hand-back
+ *  is therefore an OBSERVED write of the entry (`setRunState`, tick bumped)
+ *  -- but only when the mirror observed something: a mirror whose state
+ *  equals the entry's and whose `runEpoch` is unchanged since entry (a
+ *  provisional switch in and straight out) is not an observation, and
+ *  consuming the tick for it would discard a pending warm that is still the
+ *  newest view. A same-value round trip always counts a turn start, so the
+ *  epoch check tells it apart from "never moved".
+ *
+ *  A running mirror that has not streamed yet hands over 'streaming', the
+ *  reading the tick-ordered warm gives a turn with no frame -- EXCEPT while
+ *  that turn is still an unconfirmed local send (`pendingTurnSlot`): the POST
+ *  may yet come back refused, and the `endLocalTurn` that follows clears only
+ *  the mirror, so a busy entry parked here would keep the background pane's
+ *  indicator on and its composer locked for a turn that never started. Such a
+ *  send parks idle; its first frame (or a warm that finds it running)
+ *  promotes the entry through the ordered writers.
+ *
+ *  Two `activeSlot` writers are deliberately NOT routed here, and leave no
+ *  slot worth handing back to: `deleteSlot.fulfilled` (the outgoing slot was
+ *  just evicted; a hand-back would recreate its entry) and the
+ *  `switchSlot.rejected` origin restore (the slot being left is the 404'd
+ *  target, which has no entry and never will). */
+function enterActiveSlot(state: ChatState, target: string | null): void {
+  const outgoing = state.activeSlot
+  if (outgoing !== null && outgoing !== target && !isUnsafeKey(outgoing)) {
+    const runs = (state.slotRun ??= {})
+    const entryState = runs[safeKey(outgoing)]?.state ?? 'idle'
+    const unconfirmedSend = state.pendingTurnSlot === outgoing && state.slotState === 'idle'
+    const mirrorState: SlotState = state.slotRunning && !unconfirmedSend ? (state.slotState === 'idle' ? 'streaming' : state.slotState) : 'idle'
+    const observed = mirrorState !== entryState
+      || (state.runEpoch?.[safeKey(outgoing)] ?? 0) !== (state.activeRunEpochAtEntry ?? 0)
+    if (observed) setRunState(runs[safeKey(outgoing)] ??= { state: 'idle' }, mirrorState)
+  }
+  state.activeSlot = target
+  state.activeRunEpochAtEntry = target !== null && !isUnsafeKey(target) ? (state.runEpoch?.[safeKey(target)] ?? 0) : 0
 }
 
 /** Load a slot's cached activity-panel state (or the empty defaults) into the
@@ -1422,7 +1521,7 @@ function applyNonActiveFrame(
       return
     }
     if (run.state === 'idle') bumpRunEpoch(state, slot)
-    run.state = 'streaming'
+    setRunState(run, 'streaming')
     syncOriginRun(state, slot, 'streaming')
     // Drop only the EMPTY thinking placeholder (mirror the active
     // sseChatMessage path at chatSlice ~998), keeping content-bearing reasoning
@@ -1458,7 +1557,7 @@ function applyNonActiveFrame(
     return
   }
   if (role === '_done') {
-    run.state = 'idle'
+    setRunState(run, 'idle')
     run.lastChunkSeq = undefined
     syncOriginRun(state, slot, 'idle')
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1466,7 +1565,7 @@ function applyNonActiveFrame(
     }
     return
   }
-  if (role === 'compacting') { if (run.state === 'idle') bumpRunEpoch(state, slot); run.state = 'compacting'; syncOriginRun(state, slot, 'compacting'); return }
+  if (role === 'compacting') { if (run.state === 'idle') bumpRunEpoch(state, slot); setRunState(run, 'compacting'); syncOriginRun(state, slot, 'compacting'); return }
   // Permission rows carry request_id/tool_input inside `cls` (JSON); lift it
   // here — BEFORE the guard — so the identity comparison sees the same
   // `tool_call_id` the stored row has.
@@ -1495,7 +1594,7 @@ function applyNonActiveFrame(
   if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
   if (role === 'tool') {
     if (run.state === 'idle') bumpRunEpoch(state, slot)
-    run.state = 'tool_running'
+    setRunState(run, 'tool_running')
     syncOriginRun(state, slot, 'tool_running')
     let insertIdx = msgs.length
     if (insertIdx > 0 && msgs[insertIdx - 1]?.role === 'streaming') insertIdx--
@@ -3369,6 +3468,12 @@ export const warmSlotCache = createAsyncThunk(
     // Captured BEFORE the fetch: two warms for one slot resolve in any order,
     // and the later-dispatched response is the newer view of the transcript.
     const warmSeq = nextWarmSeq()
+    // Also captured BEFORE the fetch: the run entry's receipt tick. The
+    // fulfilled reducer writes run state only while this still matches, so an
+    // ordered live frame that reduces in between (a `_done`, a new turn's
+    // first chunk) wins over the snapshot that predates it (see
+    // `ChatState.slotRun`).
+    const runTickAtDispatch = state.slotRun?.[safeKey(key)]?.tick ?? 0
     /* A populated cache is COUNT-MATCHED, by the same rule and the same owner
      * `refreshSlot` uses: ask for the span this pane already holds, never for the
      * whole chained transcript.
@@ -3442,9 +3547,9 @@ export const warmSlotCache = createAsyncThunk(
        * the baseline makes the next bounded warm's smaller collapsed count read as a
        * server shrink, which discards the mid-turn streaming row the page cannot
        * vouch for and restarts the in-flight reply mid-sentence. */
-      return { ...wide, comparableTotal: first.total, warmSeq }
+      return { ...wide, comparableTotal: first.total, warmSeq, runTickAtDispatch }
     }
-    return { ...first, warmSeq }
+    return { ...first, warmSeq, runTickAtDispatch }
   },
 )
 
@@ -4363,7 +4468,7 @@ const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
-    setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
+    setActiveSlot(state, action: PayloadAction<string | null>) { enterActiveSlot(state, action.payload); state.slotState = 'idle'; state.pendingTurnSlot = null },
     clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
@@ -4923,8 +5028,9 @@ const chatSlice = createSlice({
         // long finished, and every press came back `not running` (#9547).
         // The slots snapshot IS the server's answer, so take the idle
         // direction from it. Only that direction: the running direction stays
-        // with the live frames (see warmSlotCache.fulfilled for why a snapshot
-        // may not promote a pane to busy).
+        // with the live frames and the tick-ordered warm: a slots broadcast
+        // has no dispatch point to order its snapshot against (see
+        // warmSlotCache.fulfilled for the ordering a promotion needs).
         if (isUnsafeKey(slot)) return
         if (running) return
         // The snapshot answered about the turn the caller OBSERVED running.
@@ -4938,7 +5044,7 @@ const chatSlice = createSlice({
         if (!run || run.state === 'idle') return
         // `stopping` is ignored on purpose: a slot that is not running has
         // nothing left to stop, whatever flag the cancel left behind.
-        run.state = 'idle'
+        setRunState(run, 'idle')
         run.lastChunkSeq = undefined
         syncOriginRun(state, slot, 'idle')
         // The `_done` this settlement stands in for would also have finalized
@@ -4990,7 +5096,7 @@ const chatSlice = createSlice({
       }
       const run = state.slotRun?.[safeKey(slot)]
       if (!run || run.state === 'idle') return
-      run.state = 'idle'
+      setRunState(run, 'idle')
       run.lastChunkSeq = undefined
       syncOriginRun(state, slot, 'idle')
       // Stand-in for the `_done` that never came: finalize the trailing
@@ -6501,16 +6607,22 @@ const chatSlice = createSlice({
         // maintain: carrying A's higher floor into a running B would drop B's
         // opening chunks as replays.
         const runs = (state.slotRun ??= {})
-        if (state.activeSlot !== null && state.activeSlot !== target && !isUnsafeKey(state.activeSlot)) {
-          const outgoing = (runs[safeKey(state.activeSlot)] ??= { state: 'idle' })
+        const outgoingSlot = state.activeSlot
+        if (outgoingSlot !== null && outgoingSlot !== target && !isUnsafeKey(outgoingSlot)) {
+          const outgoing = (runs[safeKey(outgoingSlot)] ??= { state: 'idle' })
           outgoing.lastChunkSeq = raiseChunkSeq(floorForGen(outgoing.lastChunkSeq, outgoing.lastChunkGen, state.lastChunkGen), state.lastChunkSeq)
           if (state.lastChunkGen !== undefined) outgoing.lastChunkGen = state.lastChunkGen
         }
-        if (target !== state.activeSlot) {
+        // Move `activeSlot` NOW -- before the mirrors below are re-seeded for
+        // the target -- so the hand-back inside reads the mirror while it still
+        // describes the outgoing slot. WS events for the new slot are accepted
+        // from here on.
+        enterActiveSlot(state, target)
+        if (target !== outgoingSlot) {
           state.lastChunkSeq = runs[safeKey(target)]?.lastChunkSeq
           state.lastChunkGen = runs[safeKey(target)]?.lastChunkGen
           // The run mirrors describe the slot ON SCREEN, and from this reducer
-          // on that is the target: `activeSlot` moves below and the cached
+          // on that is the target: `activeSlot` moved above and the cached
           // transcript is restored with it, so a mirror still carrying the
           // outgoing slot's run state hands every reader of it -- the
           // transcript's fold, the composer's busy rule, the Stop affordance --
@@ -6521,15 +6633,13 @@ const chatSlice = createSlice({
           // write. A turn that started in the background but has not yet sent
           // its first frame reads idle here, exactly as its pane did while it
           // was in the background (the keyed entry is promoted only by ordered
-          // frames; see warmSlotCache.fulfilled).
+          // frames or a tick-ordered warm; see warmSlotCache.fulfilled).
           const incoming = runs[safeKey(target)]?.state ?? 'idle'
           state.slotState = incoming
           state.slotRunning = incoming !== 'idle'
           state.slotStopping = incoming === 'stopping'
         }
-        // Set activeSlot immediately so WS events for the new slot are accepted.
         // Restore cached messages if available (instant switch), otherwise show loading.
-        state.activeSlot = target
         // The older-history error belongs to the outgoing chat and ownership moves
         // here, so it must clear now rather than when the fetch settles.
         state.slotOlderError = false
@@ -6640,6 +6750,12 @@ const chatSlice = createSlice({
         const priorServerRows = existing.filter(m => m.role !== 'thinking')
         const { olderHead } = olderHeadAbovePage(priorServerRows, preserved)
         if (olderHead.length) next = [...olderHead, ...next]
+        // The active slot's server snapshot flipping to running is a turn
+        // start (see `ChatState.runEpoch`), as it is in
+        // syncSlotRunningFromServer; the hand-back in `enterActiveSlot` reads
+        // the epoch to tell a turn that ran on screen from a slot that saw
+        // nothing.
+        if (running && !state.slotRunning) bumpRunEpoch(state, key)
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
@@ -6877,6 +6993,12 @@ const chatSlice = createSlice({
         // user's pending queued messages. Routing all three slot-detail reducers
         // through hydrateQueuedBubbles is what stops them drifting apart again.
         state.messages = hydrateQueuedBubbles(state.messages, queue)
+        // The active slot's server snapshot flipping to running is a turn
+        // start (see `ChatState.runEpoch`), as it is in
+        // syncSlotRunningFromServer; the hand-back in `enterActiveSlot` reads
+        // the epoch to tell a turn that ran on screen from a slot that saw
+        // nothing.
+        if (running && !state.slotRunning) bumpRunEpoch(state, key)
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
@@ -7082,39 +7204,75 @@ const chatSlice = createSlice({
           state, key, cmpTotal, running, warmSeq,
           comparable !== undefined || action.payload.boundedRead,
         )
-        // Idle the per-slot run indicator only when the server says the turn is
-        // NOT running. This is a pure non-regression gate for the reconnect
-        // caller (which warms slots MID-TURN): idling is idempotent with the
-        // _done frame — the turn-done caller's belt-and-braces contract for the
-        // fetch-completes-after-_done ordering, unchanged — while the
-        // unconditional write it replaces wiped a RUNNING background pane's
-        // indicator with no server-side recovery until the next chunk frame.
-        // Deliberately NO write in the running direction: the warm is a
-        // point-in-time snapshot racing the ordered live-frame writers
-        // (chunk -> streaming, _done -> idle), and any promotion policy has a
-        // losing ordering (a late fulfillment resurrected a pane a _done had
-        // already idled, wedging its composer locked with no healer inside the
-        // reconnect suppression window). A turn that STARTED while the socket
-        // was down therefore still reads idle until its first post-reconnect
-        // frame — exactly as on main today, where reconnect never touches
-        // background run state at all; closing that pre-existing gap needs an
-        // ordering token on the run entry and is tracked separately.
+        // The run-state write is ORDERED against the live frame writers by the
+        // entry's receipt tick (`ChatState.slotRun`). The warm is a
+        // point-in-time snapshot, and the frame writers (chunk -> streaming,
+        // _done -> idle) are ordered, so the question is whether any of them
+        // ran between the snapshot and this reducer. The reconnect caller
+        // dispatches this warm only after `ws.onopen`, so every frame the tab
+        // missed while the socket was down is OLDER than the snapshot by
+        // construction; the only frames that can be newer are the ones this
+        // tab applied after the thunk captured `runTickAtDispatch`, and each
+        // of those bumped the tick. An unchanged tick therefore makes the
+        // snapshot the newest view of the run state in BOTH directions:
+        //   - `running: false` idles the entry: the turn ended while the socket
+        //     was down (idempotent with the `_done` frame, the turn-done
+        //     caller's belt-and-braces contract);
+        //   - `running: true` promotes an idle entry to streaming: the turn
+        //     STARTED while the socket was down, and without this write the
+        //     pane read idle -- composer unlocked, no indicator -- until its
+        //     first post-reconnect frame, minutes in a quiet phase.
+        // A changed tick means an ordered writer won and the snapshot is
+        // stale: a `_done` that idled the pane before a `running: true`
+        // snapshot reduced is kept (a promotion there resurrected a finished
+        // pane, wedging its composer locked with no healer inside the
+        // reconnect suppression window), and so is a new turn's first chunk
+        // that landed before a `running: false` snapshot reduced. The thunk
+        // always stamps the tick (an absent entry reads 0), so a payload
+        // without one is not a production shape and is treated as stale.
+        // Warm against warm is a separate order: two warms for one slot
+        // resolve in any order and neither consumes the tick, so the one with
+        // the higher `warmSeq` is the newer snapshot whichever lands first --
+        // an older warm landing after a newer one's verdict declines
+        // (`runWarmSeq`), and a newer one landing after an older one's still
+        // applies.
+        const runAtFulfil = state.slotRun[safeKey(key)]
+        const olderThanApplied = typeof warmSeq === 'number' && (runAtFulfil?.runWarmSeq ?? 0) >= warmSeq
+        const ordered = !olderThanApplied && (runAtFulfil?.tick ?? 0) === action.payload.runTickAtDispatch
         if (!running) {
-          const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
-          run.state = 'idle'
-          run.lastChunkSeq = undefined
-          // Deliberately NOT synced into the failed-switch origin snapshot:
-          // this write comes from a point-in-time HTTP snapshot racing the
-          // ordered live-frame writers (the block comment above), so a stale
-          // fulfillment landing mid-switch could mark a mid-turn origin idle
-          // and the restore would unlock its composer. Only the ORDERED frame
-          // writers in applyNonActiveFrame feed syncOriginRun.
+          if (ordered) {
+            const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
+            applyWarmRunState(run, 'idle', warmSeq)
+            run.lastChunkSeq = undefined
+            // Deliberately NOT synced into the failed-switch origin snapshot:
+            // this write comes from an HTTP snapshot, not a live frame, and
+            // the origin snapshot is fed only by the ORDERED frame writers in
+            // applyNonActiveFrame so a fulfillment landing mid-switch cannot
+            // mark a mid-turn origin idle and have the restore unlock its
+            // composer.
+          }
         } else {
+          if (ordered) {
+            const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
+            // Promote only FROM idle: a busier ordered state (tool_running,
+            // compacting) already says the turn is live and is not downgraded
+            // to streaming. The verdict is recorded either way so an older
+            // warm cannot land after it.
+            if (run.state === 'idle') {
+              // The FIRST busy signal after idle counts a turn start, as a
+              // chunk does (see `ChatState.runEpoch`).
+              bumpRunEpoch(state, key)
+              applyWarmRunState(run, 'streaming', warmSeq)
+              // Not synced into the origin snapshot, for the reason given on
+              // the idle write above.
+            } else {
+              applyWarmRunState(run, null, warmSeq)
+            }
+          }
           // A running pane's warm carries the newest chunk seq its streaming
           // row stands for; raise (never lower) the background replay floor so
           // a live chunk that raced this warm is not applied a second time.
-          // Only the floor moves: run.state stays with the ordered frame
-          // writers for the reason given above.
+          // The floor is monotonic, so it needs no tick guard.
           const seeded = snapshotChunkSeq(messages)
           if (seeded !== undefined) {
             const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
@@ -7166,7 +7324,7 @@ const chatSlice = createSlice({
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
           state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
         }
-        state.activeSlot = action.payload.key
+        enterActiveSlot(state, action.payload.key)
         state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId }
         // The replay floor belongs to the slot that was streaming, not to this
         // one. `state.lastChunkSeq` is the ACTIVE slot's floor, and a brand-new
@@ -7278,7 +7436,7 @@ const chatSlice = createSlice({
           const resumedRun = state.slotRun[safeKey(action.payload.key)]
           state.lastChunkSeq = resumedRun?.lastChunkSeq
           state.lastChunkGen = resumedRun?.lastChunkGen
-          state.activeSlot = action.payload.key
+          enterActiveSlot(state, action.payload.key)
           state.messages = mergePreservedPastes(state.messages, action.payload.messages)
           state.slotState = 'idle'
           state.pendingTurnSlot = null

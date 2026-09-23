@@ -21,9 +21,11 @@ const row = (role: string, content: string, mid?: string): ChatMessage =>
 const streamingRow = (content: string): ChatMessage =>
   ({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: 'c1' } })
 
+// `runTickAtDispatch: 0` is what the thunk stamps for an entry it found with
+// no tick: these fixtures model a warm with no ordered write in flight.
 const warm = (messages: ChatMessage[], running: boolean, warmSeq = 1) => ({
   type: warmSlotCache.fulfilled.type,
-  payload: { key: SLOT, messages, queue: [], hasMore: false, total: messages.length, running, warmSeq, boundedRead: false },
+  payload: { key: SLOT, messages, queue: [], hasMore: false, total: messages.length, running, warmSeq, boundedRead: false, runTickAtDispatch: 0 },
 })
 
 const seed = (prior: ChatMessage[], runState: 'streaming' | 'idle' = 'streaming') => ({

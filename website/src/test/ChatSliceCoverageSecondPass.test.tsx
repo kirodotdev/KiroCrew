@@ -947,9 +947,11 @@ describe('chatSlice slot-detail refresh merges', () => {
       slot: 'B',
       messages: [msg({ role: 'permission', content: 'run?', meta: { approval_id: 'ap-9', resolved: 'rejected' } })],
     }))
+    // `runTickAtDispatch: 0` is what the thunk stamps for an entry it found
+    // with no tick: no ordered write raced this warm, so its idle write lands.
     s = chatReducer(s, lifecycle('chat/warmSlotCache/fulfilled', 'B', detail('B', [
       msg({ role: 'permission', content: 'run?', meta: { approval_id: 'ap-9' } }),
-    ])))
+    ], { runTickAtDispatch: 0 })))
     expect(s.slotMessages.B[0].meta?.resolved).toBe('rejected')
     expect(s.slotRun.B.state).toBe('idle')
   })
