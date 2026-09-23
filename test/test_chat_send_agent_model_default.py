@@ -450,3 +450,85 @@ class TestSessionOpenedRecordsTheAllocationsSelection:
 
         assert slot._session_requested_model is None
         assert opened.call_args.kwargs["model_requested"] == ""
+
+
+class TestSessionOpenedCoversTheTierBelowTheCaller:
+    """A model resolved INSIDE ``get_or_create`` reaches ``model_requested``.
+
+    The turn selects through the slot pin, the crew pin and the resolved default.
+    When all three defer it asks for nothing, and the session manager resolves an
+    id from its own config; that call reports the provider, ``is_new`` and
+    ``resumed``, so the turn has no selection of its own to record. These turns
+    pin the stamp the allocation leaves as the fourth tier, and pin that a session
+    with no selection anywhere still writes no field.
+    """
+
+    @staticmethod
+    def _capture():
+        return unittest.mock.patch.object(
+            chat_runner.crew_log_emit, "on_session_opened", unittest.mock.MagicMock()
+        )
+
+    @staticmethod
+    def _all_tiers_defer(tmp_path: Path) -> KiroCrewConfig:
+        """A config whose global pin is empty, so the turn resolves ``""``."""
+        return _load_config(
+            tmp_path,
+            {
+                "agent": {"model": "", "provider": "acp"},
+                "agents": {"default": {"kiro_agent": "kirocrew", "memory_store": "default"}},
+                "default_agent": "default",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_allocations_own_resolution_is_recorded(self, tmp_path, _runner_config):
+        """The regression: the turn asks for nothing, the allocation resolves one."""
+        _runner_config(self._all_tiers_defer(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        state.sessions.allocation_requested_model = unittest.mock.MagicMock(
+            return_value=GLOBAL_DEFAULT
+        )
+        slot = _slot()
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert _session_model(state) is None
+        assert slot._session_requested_model == GLOBAL_DEFAULT
+        assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_no_tier_anywhere_still_records_nothing(self, tmp_path, _runner_config):
+        """An allocation that resolved nothing writes no field, not an empty one."""
+        _runner_config(self._all_tiers_defer(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        slot = _slot()
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model == ""
+        assert opened.call_args.kwargs["model_requested"] == ""
+
+    @pytest.mark.asyncio
+    async def test_the_turns_own_selection_is_not_replaced_by_the_stamp(
+        self, tmp_path, _runner_config
+    ):
+        """A resolved tier wins: the stamp names the allocation this turn made.
+
+        Ordering matters on a session found already registered, whose stamp is the
+        EARLIER allocation's. The turn's own selection is the one it records.
+        """
+        _runner_config(_config(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        state.sessions.allocation_requested_model = unittest.mock.MagicMock(
+            return_value="model-an-earlier-allocation-chose"
+        )
+        slot = _slot()
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model == GLOBAL_DEFAULT
+        assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT

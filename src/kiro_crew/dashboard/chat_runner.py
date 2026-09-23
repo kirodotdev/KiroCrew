@@ -6313,7 +6313,12 @@ async def _spawn_admitted_prefetch(
         await sessions.remove(session_key)
         return
     if not resumed:
-        slot._session_requested_model = _requested_model
+        # Same tier-below-the-caller read as the turn site: a spawn whose slot,
+        # crew and resolved default all defer asks for nothing, and the id the
+        # allocation resolved for itself is readable only from the stamp it left.
+        slot._session_requested_model = _requested_model or sessions.allocation_requested_model(
+            session_key
+        )
     logger.info(
         "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
         session_key,
@@ -9987,7 +9992,18 @@ async def _run_chat(
             # `resumed=True` observation for the real turn, so the value the
             # eager path stored survives rather than being replaced by this
             # turn's fresh resolution.
-            slot._session_requested_model = _requested_model
+            #
+            # The fallback covers the tier below the three resolved above. When the
+            # slot, the crew and the resolved default all defer, `_requested_model`
+            # is empty and `get_or_create` resolves an id from config itself; the
+            # stamp it leaves is that id, and it is the same value the provider was
+            # given. Reading it here is what makes the record cover every tier
+            # rather than the top three. Ordered `own or stamp` because a session
+            # found already registered carries the earlier allocation's stamp, which
+            # is not what this turn selected.
+            slot._session_requested_model = (
+                _requested_model or state.sessions.allocation_requested_model(session_key)
+            )
         _acquired = True
         # A fresh provider can still owe Kiro Crew history after its one-shot
         # ``is_new`` observation was consumed by a slash command. Keep that debt

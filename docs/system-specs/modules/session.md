@@ -167,7 +167,14 @@ member memory binding, history key, caller model and approval policy. An explici
 or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
 that disagrees with the saved Parent identity refuses startup.
 When no caller model is supplied, allocation resolves the member's model pin by
-its canonical alias, including members that have not enrolled capabilities.
+its canonical alias, including members that have not enrolled capabilities. The id
+it hands the provider is stamped on the registered session, because the allocation
+returns only the provider and its first-turn observation: a caller recording what
+the session was asked to run reads that stamp
+(`SessionManager.allocation_requested_model`) rather than resolving a second time,
+so the id sent and the id recorded are one value. An empty stamp means the
+allocation resolved nothing, or that a registration site which resolves no models
+made the session.
 
 Enrolled allocations bypass warm and shared processes. Full-spec loading is
 supported by the dedicated Kiro backend; other harnesses refuse explicitly rather

@@ -988,6 +988,73 @@ class TestCancelRaceCondition:
         await mgr.close_all()
 
 
+class TestAllocationRequestedModel:
+    """The model an allocation selects is readable by its caller.
+
+    A caller that pins nothing passes ``model=None``, and the allocation resolves
+    an id from config itself. ``get_or_create`` reports the provider, ``is_new``
+    and ``resumed``, so that id is otherwise invisible to the caller recording what
+    the session was asked to run.
+    """
+
+    @staticmethod
+    def _capturing_factory(captured: dict):
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            captured.update(kwargs)
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.context_usage_pct = lambda: 0.0
+            m.is_process_alive = lambda: True
+            m.is_alive.return_value = True
+            return m
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_the_internally_resolved_id_is_the_id_the_provider_got(self, cfg):
+        """One value: the stamp is the same string the factory received."""
+        cfg.agent.model = "claude-sonnet-5"
+        captured: dict = {}
+        mgr = SessionManager(cfg, provider_factory=self._capturing_factory(captured))
+
+        await mgr.get_or_create("alloc-resolved")
+
+        assert captured["model_override"] == "claude-sonnet-5"
+        assert mgr.allocation_requested_model("alloc-resolved") == "claude-sonnet-5"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_callers_explicit_model_is_reported_unchanged(self, cfg):
+        """An explicit model is stamped too, so one read serves both cases."""
+        captured: dict = {}
+        mgr = SessionManager(cfg, provider_factory=self._capturing_factory(captured))
+
+        await mgr.get_or_create("alloc-explicit", model="claude-haiku-5")
+
+        assert mgr.allocation_requested_model("alloc-explicit") == "claude-haiku-5"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_an_allocation_that_resolves_nothing_reports_nothing(self, cfg):
+        """No tier resolved an id, so there is no selection to report."""
+        cfg.agent.model = ""
+        captured: dict = {}
+        mgr = SessionManager(cfg, provider_factory=self._capturing_factory(captured))
+
+        await mgr.get_or_create("alloc-blank")
+
+        assert captured["model_override"] is None
+        assert mgr.allocation_requested_model("alloc-blank") == ""
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_key_reports_nothing(self, cfg):
+        """No session, so nothing to report — never an error."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        assert mgr.allocation_requested_model("never-allocated") == ""
+        await mgr.close_all()
+
+
 class TestDeadProviderCleanup:
     """Tests for orphaned child process cleanup when a dead provider is detected."""
 

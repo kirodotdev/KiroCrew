@@ -990,6 +990,21 @@ class _Session:
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
     capability_member: str = ""
+    # The model this session's allocation SELECTED, as handed to the provider.
+    # Stamped at registration from the same local the factory receives, so the id
+    # sent and the id readable here are one value and cannot diverge.
+    #
+    # It exists because a caller that pins nothing at any of its own tiers passes
+    # ``model=None`` and the allocation resolves one itself, inside a call whose
+    # return says only which provider, whether it is new, and whether it resumed.
+    # A caller recording what it asked for therefore has nothing to record for that
+    # allocation, while the session runs on a concrete id. Read through
+    # ``SessionManager.allocation_requested_model``.
+    #
+    # ``""`` means this allocation resolved nothing, or a registration site that
+    # does not resolve models made the session. Both are "no selection to report",
+    # which is what a consumer of the empty value states.
+    requested_model: str = ""
     loaded_capabilities: LoadedCapabilities | None = None
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
     queue: deque[tuple[str, str, dict]] = field(default_factory=deque)
@@ -2403,6 +2418,29 @@ class SessionManager:
     def consume_needs_reinjection(self, key: str) -> bool:
         """Consume a live session's reinjection marker."""
         return self._compaction.consume_needs_reinjection(key)
+
+    def allocation_requested_model(self, key: str) -> str:
+        """Return the model *key*'s live allocation selected, or ``""``.
+
+        The selection a caller makes is the caller's to record. This answers the
+        tier BELOW every caller: an allocation handed ``model=None`` resolves an
+        id from config itself, hands it to the provider, and reports only the
+        provider, ``is_new`` and ``resumed`` — so the caller's own record of what
+        was asked for is blank while the session runs on a concrete model. Reading
+        the stamp the allocation left is what closes that, and it is the SAME
+        value the provider received, not a second resolution.
+
+        A caller composes this UNDER its own selection (``own or this``) rather
+        than in place of it: a session found already registered keeps the stamp of
+        the allocation that created it, which is the right provenance for that
+        session and the wrong answer for a caller asking what IT selected.
+
+        ``""`` for an unknown key, a session with no selection, and a session made
+        by a registration site that resolves no models. All three are "nothing to
+        report", which is what an empty value says.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        return session.requested_model if session is not None else ""
 
     def provider_switch_replay_pending(self, key: str) -> bool:
         """Return whether a live session still owes conversation replay.

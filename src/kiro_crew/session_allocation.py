@@ -1842,6 +1842,14 @@ class SessionAllocationService:
                         agent=session_agent or "",
                     )
                     session.capability_member = preparation.member
+                    # The id the provider above was constructed with, kept
+                    # readable for the allocation's caller. ``model`` is resolved
+                    # from config when the caller passed none, and that resolution
+                    # is invisible in this call's return value, so a caller
+                    # recording the session's selection has no other source for it.
+                    # Stamped from the same local rather than re-resolved, which is
+                    # what keeps the id sent and the id read identical.
+                    session.requested_model = model or ""
                     session.loaded_capabilities = stamp
                     self.state.capability_failures.pop(key, None)
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True

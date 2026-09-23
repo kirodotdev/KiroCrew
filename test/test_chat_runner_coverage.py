@@ -80,6 +80,10 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # truthy, so every busy-probe would read "turn in flight" on an idle state.
     sessions.get_provider = MagicMock(return_value=None)
     sessions.resumable_sid = MagicMock(return_value=None)
+    # Production answers a plain string, "" when the allocation selected nothing.
+    # Left as a bare MagicMock it would answer a truthy object, which the runner
+    # would store as the slot's requested model and hand to the crew-log emitter.
+    sessions.allocation_requested_model = MagicMock(return_value="")
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)
