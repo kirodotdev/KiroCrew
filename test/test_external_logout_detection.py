@@ -2138,7 +2138,10 @@ class TestRetirementCoverage:
         assert smap._session_map.get_discarded_sid("marked") == "sid-old-account"
         assert self._stored_sid(smap, "unmarked") == "sid-current-account"
 
-    def test_marked_replay_settlement_consumes_lease_without_republishing_sid(self) -> None:
+    @pytest.mark.asyncio
+    async def test_marked_replay_settlement_consumes_lease_without_republishing_sid(
+        self,
+    ) -> None:
         """A landed replay cannot restore the identity sweep's discarded sid."""
 
         from kiro_crew.providers.acp import AcpProvider
@@ -2157,7 +2160,7 @@ class TestRetirementCoverage:
         smap._session_map.set("marked", "sid-old-account")
         smap._session_map.clear_sid("marked")
 
-        assert smap.commit_provider_switch_replay_sid("marked") is True
+        assert await smap.commit_provider_switch_replay_sid("marked") is True
         assert session.provider_switch_replay is False
         assert self._stored_sid(smap, "marked") == ""
         assert smap._session_map.get_discarded_sid("marked") == "sid-old-account"
@@ -2175,11 +2178,11 @@ class TestRetirementCoverage:
         writers: list[str] = []
         offenders: list[str] = []
 
-        def is_session_map_set(node: ast.AST) -> bool:
+        def is_session_map_sid_write(node: ast.AST) -> bool:
             return (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "set"
+                and node.func.attr in {"set", "settle_replay_sid"}
                 and isinstance(node.func.value, ast.Attribute)
                 and node.func.value.attr == "_session_map"
             )
@@ -2214,7 +2217,7 @@ class TestRetirementCoverage:
             parents = {
                 child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
             }
-            for call in (node for node in ast.walk(tree) if is_session_map_set(node)):
+            for call in (node for node in ast.walk(tree) if is_session_map_sid_write(node)):
                 assert isinstance(call, ast.Call)
                 function: ast.AST = call
                 while function in parents and not isinstance(

@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -133,6 +135,76 @@ def _stop_reason(info: SubagentInfo) -> str:
         f"recovering={info._recovering} mode_ready={info._memory_mode_ready} "
         f"mode={info.memory_mode!r} turns={info.turns}"
     )
+
+
+# A continuation gets five seconds AFTER its protected mode publication finishes.
+# The Windows full shard measured those real persistence writes at up to 5.87s;
+# charging them to this run deadline false-red'd and the old unshielded wait then
+# cancelled the product task, manufacturing cancel-recovery. The explicit test-
+# only completion signal separates that setup from execution without relaxing
+# this ratchet. Shielding remains load-bearing: an observer timeout reports a
+# slow run but cannot mutate it.
+_CONTINUATION_RUN_TIMEOUT_SECS = 5.0
+_MODE_PUBLICATION_SETUP_TIMEOUT_SECS = 10.0
+
+
+async def _await_continuation_run(
+    awaitable: Awaitable[object], *, timeout: float | None = None
+) -> None:
+    await asyncio.wait_for(
+        asyncio.shield(awaitable),
+        timeout=_CONTINUATION_RUN_TIMEOUT_SECS if timeout is None else timeout,
+    )
+
+
+async def _await_restricted_run_release(reader: Callable[[str], object], agent_id: str) -> None:
+    """Wait until terminal callbacks release a restricted run's live record."""
+
+    async def poll() -> None:
+        while True:
+            try:
+                reader(agent_id)
+            except ValueError as exc:
+                assert "run record is unavailable" in str(exc)
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=_CONTINUATION_RUN_TIMEOUT_SECS)
+
+
+@contextmanager
+def _mode_publication_completion(original_id: str) -> Iterator[threading.Event]:
+    """Expose the real continuation setup's completion without timing the run.
+
+    Successful restoration writes the original record and then the new run's
+    record. A refusal can stop on the first write, so an exception also closes
+    the setup window. Product code retains no test synchronization primitive.
+    """
+    from kiro_crew import subagent_persistence as persistence
+
+    completed = threading.Event()
+    real = persistence.tighten_run_memory_mode
+
+    def signal_completion(agent_id: str, memory_mode: str) -> str:
+        try:
+            mode = real(agent_id, memory_mode)
+        except BaseException:
+            completed.set()
+            raise
+        if agent_id != original_id:
+            completed.set()
+        return mode
+
+    with patch.object(persistence, "tighten_run_memory_mode", side_effect=signal_completion):
+        yield completed
+
+
+async def _await_mode_publication(completed: threading.Event) -> None:
+    async def poll() -> None:
+        while not completed.is_set():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=_MODE_PUBLICATION_SETUP_TIMEOUT_SECS)
 
 
 # ── SessionManager continuable override (real SessionManager, no processes) ──
@@ -3072,6 +3144,20 @@ class TestPersistenceGuards:
         cleanup.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_continuation_observer_timeout_does_not_cancel_the_run() -> None:
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _await_continuation_run(task, timeout=0.01)
+
+    assert not task.done()
+    assert not task.cancelled()
+    release.set()
+    await task
+
+
 class TestContinuationMemoryMode:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("original", ["persistent", "incognito", "temporary"])
@@ -3093,10 +3179,16 @@ class TestContinuationMemoryMode:
         # takes the accept and the claim as BEGIN IMMEDIATE on this loop, and
         # each waits on the lock the store's writer thread holds across a query
         # (`_the_continuation_path_takes_no_store_call_on_the_loop`).
-        info = await manager.continue_conversation_async(conv_id, "follow up")
-        assert info is not None and not info.error
-        assert not info._memory_mode_ready
-        await asyncio.wait_for(manager._tasks[info.id], timeout=5)
+        with _mode_publication_completion(conv_id) as mode_published:
+            info = await manager.continue_conversation_async(conv_id, "follow up")
+            assert info is not None and not info.error
+            assert not info._memory_mode_ready
+            await _await_mode_publication(mode_published)
+            task = manager._tasks.get(info.id)
+            if task is not None:
+                await _await_continuation_run(task)
+            else:
+                assert info.done, _stop_reason(info)
         expected = strictest((original, requested)) or "persistent"
         assert not info.error, info.error
         # A cancelled run publishes no mode, which the mode assertion below
@@ -3117,8 +3209,7 @@ class TestContinuationMemoryMode:
             # are released after terminal writers settle. The live result still
             # carries the captured mode/app, while the original conversation
             # record remains the restart authority.
-            with pytest.raises(ValueError, match="run record is unavailable"):
-                read_run_memory_mode(info.id)
+            await _await_restricted_run_release(read_run_memory_mode, info.id)
             assert info.memory_mode == expected
         assert read_run_memory_mode(conv_id) == expected
         assert read_run_app(conv_id) == ""
@@ -3127,9 +3218,15 @@ class TestContinuationMemoryMode:
         )
 
         restarted = _manager(_mock_sessions(resumed=True))
-        resumed = await restarted.continue_conversation_async(conv_id, "another turn")
-        assert resumed is not None and not resumed.error
-        await asyncio.wait_for(restarted._tasks[resumed.id], timeout=5)
+        with _mode_publication_completion(conv_id) as mode_published:
+            resumed = await restarted.continue_conversation_async(conv_id, "another turn")
+            assert resumed is not None and not resumed.error
+            await _await_mode_publication(mode_published)
+            task = restarted._tasks.get(resumed.id)
+            if task is not None:
+                await _await_continuation_run(task)
+            else:
+                assert resumed.done, _stop_reason(resumed)
         assert not resumed.error, resumed.error
         assert not resumed._cancel_retry_used, f"run cancelled: {_stop_reason(resumed)}"
         assert resumed.memory_mode == expected
@@ -3137,8 +3234,7 @@ class TestContinuationMemoryMode:
             assert read_run_agent_selection(resumed.id) == ("template", "")
             assert read_run_app(resumed.id) == ""
         else:
-            with pytest.raises(ValueError, match="run record is unavailable"):
-                read_run_agent_selection(resumed.id)
+            await _await_restricted_run_release(read_run_agent_selection, resumed.id)
             assert resumed.agent == ""
             assert resumed.app == ""
 
@@ -3158,20 +3254,12 @@ class TestContinuationMemoryMode:
         record.write_text(json.dumps(payload), encoding="utf-8")
         sessions = _mock_sessions(resumed=True)
         manager = _manager(sessions)
-        # The ASYNC entry for the same reason as the sibling test above, and it
-        # matters here for the same 5s deadline: the sync one's two BEGIN
-        # IMMEDIATEs run on THIS loop, so the deadline is spent waiting on the
-        # store lock rather than on the refusal being reached.
+        # Latest main validates the immutable execution snapshot in the async
+        # continuation prelude, before spawn_async creates either a run task or
+        # a mode writer.  A malformed policy must therefore return an immediate
+        # terminal refusal rather than reaching the allocation boundary.
         info = await manager.continue_conversation_async("missing-resume-policy", "must not run")
-        assert info is not None
-        # ``.get``, not ``[...]``: this refusal is raised on the run's first
-        # steps, and the async entry's own awaits give it enough of the loop to
-        # finish -- and be popped from ``_tasks`` by its finally -- before the
-        # dispatch returns. A missing entry therefore means the terminal is
-        # already recorded on ``info``, which is what the assertions below read.
-        task = manager._tasks.get(info.id)
-        if task is not None:
-            await asyncio.wait_for(task, timeout=5)
+        assert info is not None and info.done
         # A cancelled run carries no error at all, so the membership check below
         # would read "the refusal was worded differently" for a run that never
         # reached the allocation boundary.

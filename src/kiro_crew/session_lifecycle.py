@@ -32,6 +32,7 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_sessions_ended,
 )
+from kiro_crew.session_map import REPLAY_PENDING_FLAG
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -93,6 +94,10 @@ class _SessionEntry(Protocol):
 
 class _SessionMapPort(Protocol):
     def clear_sid(self, key: str) -> None: ...
+
+    def set_flag(self, key: str, flag: str, value: bool) -> None: ...
+
+    async def aflush(self) -> None: ...
 
     def delete(self, key: str, *, reason: str | None = None) -> None: ...
 
@@ -1617,12 +1622,19 @@ class SessionLifecycleService:
         replay: bool = True,
         skip_if_busy: bool = False,
         refuse_only_on_active_turn: bool = False,
+        preserve_replay_fallback: bool = False,
     ) -> bool:
         """Drop only the native conversation while preserving channel linkage.
 
         Returns whether a session was actually torn down. False means
         ``skip_if_busy`` made it a no-op; nothing was changed, including the
         replay flag and the session map.
+
+        ``preserve_replay_fallback`` keeps the current SID in the map but marks
+        it replay-pending. Allocation then starts a fresh native conversation
+        without resuming that SID; a landed replay replaces it atomically, while
+        a restart before settlement retries the fresh replay with the old SID
+        still available as a full-history fallback.
 
         ``skip_if_busy`` refuses the teardown when the session has a turn in
         flight, and is enforced HERE, atomically with the pop, for the same
@@ -1636,12 +1648,11 @@ class SessionLifecycleService:
         invisible to ``has_active_turn`` and is exactly the case a caller-side
         pre-check cannot close.
 
-        The sid clear runs in the SAME event-loop tick as the pop, with no await
-        between them, so a cold start racing this teardown cannot have mapped a
-        replacement sid for the key by the time it runs — the clear can never
-        erase a successor's pointer. Clearing it after the shutdown awaits would
-        do exactly that, since the shutdown is the window a concurrent channel
-        turn needs to create and map a new session under the same key.
+        Binding recovery first persists replay debt while the live provider is
+        still registered, then removes it under the same registry lock. A cold
+        start cannot register a successor between those steps. Ordinary discard
+        retains the existing post-pop SID clear: moving that clear after provider
+        shutdown would let a successor map its SID first and then be overwritten.
         """
         owner = self._owner
         key = owner._fold_key(key)
@@ -1651,6 +1662,15 @@ class SessionLifecycleService:
                 current, refuse_only_on_active_turn=refuse_only_on_active_turn
             ):
                 return False
+            if preserve_replay_fallback:
+                # This durability await intentionally holds the registry lock:
+                # binding recovery must not make the old provider unreachable
+                # until its old SID is durably resume-suppressed. ``aflush``
+                # performs disk IO on a worker thread, so it does not block the
+                # event loop; only cold-start registration waits for this key's
+                # safety transition to land.
+                owner._session_map.set_flag(key, REPLAY_PENDING_FLAG, True)
+                await owner._session_map.aflush()
             session = owner._sessions.pop(key, None)
             # Snapshot the runs this key owns in the SAME lock hold as the pop: every
             # await below is a window a cold start can register a successor under
@@ -1667,23 +1687,15 @@ class SessionLifecycleService:
             else:
                 self._suppress_replay.add(key)
             if session is not None:
-                # Same lock hold as the pop, exactly like the clear_sid below.
+                # Record teardown under the same lock as the registry pop.
                 await record_session_ended(key, end_reason=END_REASON_DISCARDED)
-        # The registry lock, not an absence of suspension points, is what keeps a
-        # cold start racing this teardown from registering a replacement sid for the
-        # key in between, so this clear cannot erase a SUCCESSOR's pointer. The end
-        # record above awaits, but it does so while ``owner._lock`` is still held --
-        # the lock that cold start must take to register and map a successor -- and
-        # releasing an ``asyncio.Lock`` wakes its waiter without yielding, so control
-        # reaches this line before any of them runs.
-        # Deferring it past the shutdown awaits below is exactly that bug: the
-        # provider shutdown is slow, a concurrent channel turn creates and maps a
-        # new session under the same key while it runs, and a clear in the
-        # ``finally`` then wipes the new session's sid. Mirrors ``reset``'s
-        # ``clear_conversation``, which clears in this same position for this
-        # same reason. Outside the lock rather than inside it because
-        # ``clear_sid`` persists to disk, and the lock must not span blocking IO.
-        owner._session_map.clear_sid(key)
+        # Ordinary discard still clears after releasing the registry lock because
+        # SessionMap persists to disk. Releasing an ``asyncio.Lock`` wakes its
+        # waiter without yielding, so control reaches this synchronous mutation
+        # before a cold start can register and map a successor. Binding recovery
+        # already persisted its retained SID and replay debt inside the lock.
+        if not preserve_replay_fallback:
+            owner._session_map.clear_sid(key)
         try:
             if session:
                 await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -1694,7 +1706,8 @@ class SessionLifecycleService:
             await self._cancel_parent_children(key, teardown_children, verb="discard_conversation")
             await owner.release_subagent_runtime(key)
             self._deps.logger.info(
-                "Discarded native conversation (sid cleared, map entry kept): %s",
+                "Discarded native conversation (%s, map entry kept): %s",
+                ("sid retained as replay fallback" if preserve_replay_fallback else "sid cleared"),
                 key,
             )
         return True

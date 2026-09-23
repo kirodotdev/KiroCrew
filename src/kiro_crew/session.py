@@ -197,6 +197,7 @@ from kiro_crew.session_lifecycle import (
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_map import (
     MIRROR_OPT_OUT_FLAG,
+    REPLAY_PENDING_FLAG,
     BindListener,
 )
 from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
@@ -2322,6 +2323,7 @@ class SessionManager:
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
+        defer_replay_sid_promotion: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -2337,6 +2339,7 @@ class SessionManager:
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
+            defer_replay_sid_promotion=defer_replay_sid_promotion,
             _won_race_retries=_won_race_retries,
             **extra_factory_kwargs,
         )
@@ -2424,14 +2427,14 @@ class SessionManager:
         session.provider_switch_replay = True
         return True
 
-    def commit_provider_switch_replay_sid(self, key: str) -> bool:
-        """Settle replay, promoting the live ACP SID when one was deferred.
+    async def commit_provider_switch_replay_sid(self, key: str) -> bool:
+        """Settle replay and durably promote its SID without blocking the loop.
 
         Allocation leaves the prior resumable SID in ``SessionMap`` only for an
         ACP provider that explicitly defers promotion. Other providers publish
-        their own SID during allocation, so a landed replay consumes the lease
-        without another mapping write. This keeps cross-provider history replay
-        one-shot instead of re-arming forever on a non-ACP session.
+        their own SID during allocation, so a landed replay only clears durable
+        debt. Both paths await an off-loop write before retiring the live replay
+        lease; a failed or cancelled write therefore leaves the lease armed.
         """
         folded = self._fold_key(key)
         session = self._sessions.get(folded)
@@ -2441,27 +2444,48 @@ class SessionManager:
             session.provider_switch_replay = False
             return True
         if not _is_acp_provider(session.provider):
+            await self._session_map.settle_replay_flag(
+                folded,
+                replay_flag=REPLAY_PENDING_FLAG,
+                still_current=lambda: (
+                    self._sessions.get(folded) is session and session.provider_switch_replay
+                ),
+            )
             session.provider_switch_replay = False
             return True
         client = getattr(session.provider, "client", None)
         sid = getattr(client, "_session_id", None)
         if not isinstance(sid, str) or not sid:
             return False
-        self._session_map.set(
+        await self._session_map.settle_replay_sid(
             folded,
             sid,
             provider=_provider_label(session.provider),
             cwd=session.provider.cwd,
+            replay_flag=REPLAY_PENDING_FLAG,
+            still_current=lambda: (
+                self._sessions.get(folded) is session and session.provider_switch_replay
+            ),
         )
         session.provider_switch_replay = False
         return True
 
     def consume_provider_switch_replay(self, key: str) -> bool:
-        """Explicitly retire replay after confirmed native history deletion."""
-        session = self._sessions.get(self._fold_key(key))
+        """Retire replay after confirmed native history deletion.
+
+        The provider has already destroyed history when this is called, so the
+        live lease must fall before persistence scheduling. The fallback SID is
+        not resumable after clear: a failed or cancelled settlement can restore
+        that pre-clear pointer together with replay debt, and clearing only the
+        debt would let a restart resurrect the deleted conversation. ``clear_sid``
+        retains the pointer only as diagnostic ``discarded_sid`` state.
+        """
+        folded = self._fold_key(key)
+        session = self._sessions.get(folded)
         if session is None or not session.provider_switch_replay:
             return False
         session.provider_switch_replay = False
+        self._session_map.clear_sid(folded)
         return True
 
     def consume_replay_suppression(self, key: str) -> bool:
@@ -2679,6 +2703,7 @@ class SessionManager:
         replay: bool = True,
         skip_if_busy: bool = False,
         refuse_only_on_active_turn: bool = False,
+        preserve_replay_fallback: bool = False,
     ) -> bool:
         """Drop native conversation state while retaining channel linkage.
 
@@ -2692,6 +2717,7 @@ class SessionManager:
             replay=replay,
             skip_if_busy=skip_if_busy,
             refuse_only_on_active_turn=refuse_only_on_active_turn,
+            preserve_replay_fallback=preserve_replay_fallback,
         )
 
     async def drain_active_turns(self, timeout: float | None = None) -> int:

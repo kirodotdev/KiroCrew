@@ -2415,6 +2415,10 @@ class _ChatSlot:
         "_model_access_recovery_session_stop_gen",
         "_model_access_recovery_session_key",
         "_model_access_recovery_queue_id",
+        "_binding_replay_queue_id",
+        "_binding_replay_session_key",
+        "_binding_replay_stop_gen",
+        "_binding_replay_session_stop_gen",
         "_posttoken_retry_used",
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
@@ -3085,6 +3089,14 @@ class _ChatSlot:
         #: shared across recovery paths, so a blanket removal by kind would
         #: destroy co-queued unrelated recoveries.
         self._model_access_recovery_queue_id: str = ""
+        # Preserved-thinking binding recovery replays the user's own text, so it
+        # needs an id-based dispatch guard just like refusal replay. These
+        # snapshots ensure a Stop, correction, or session rebind that lands while
+        # native-conversation teardown awaits can purge the queued retry.
+        self._binding_replay_queue_id: str = ""
+        self._binding_replay_session_key: str = ""
+        self._binding_replay_stop_gen: int = 0
+        self._binding_replay_session_stop_gen: int = 0
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
