@@ -101,11 +101,17 @@ import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.executors import crew_log_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime import stays gated
+    # Type-only, so the boot-path import gate is untouched: this name exists for the
+    # checker and for test_crew_log_exc_info_sites.py, which reads annotations to decide
+    # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
+    from kiro_crew.crew_log.store import CrewLog
 
 logger = logging.getLogger(__name__)
 
@@ -2124,7 +2130,7 @@ def _bound_open() -> None:
     _bound_unpinned(_open, _MAX_OPEN_CREW_LOGS, lambda k: k, "open handles")
 
 
-def _remember(session_id: str, log: Any) -> None:
+def _remember(session_id: str, log: CrewLog) -> None:
     with _lock:
         _open[session_id] = log
         _open.move_to_end(session_id)
@@ -2319,7 +2325,7 @@ def _next_attempt(session_id: str, turn: int) -> int:
         return attempt
 
 
-def _seed_attempts(session_id: str, log: Any) -> None:
+def _seed_attempts(session_id: str, log: CrewLog) -> None:
     """Rebuild *session_id*'s attempt map from the entries already in its file.
 
     Runs on the writer thread, and only when memory cannot answer instead: a
@@ -2686,7 +2692,7 @@ def _latch_class(session_id: str, observed: "tuple[str, str, bool, str]") -> Non
 
 
 def _note_class_change(
-    session_id: str, log: Any, observed: "tuple[str, str, bool, str] | None"
+    session_id: str, log: CrewLog, observed: "tuple[str, str, bool, str] | None"
 ) -> None:
     """Append ``session/class`` when *observed* is not what this log last stated.
 
@@ -3451,7 +3457,7 @@ def _bounded_attachment_data(
 
 
 def _append_body_entry(
-    log: Any,
+    log: CrewLog,
     entry_type: str,
     turn: int,
     *,
@@ -4932,7 +4938,7 @@ __all__ = [
 def _record_session_tree_edge(
     session_id: str,
     slot: str,
-    log: Any,
+    log: CrewLog,
     parent_slot: str | None,
     superseded: str | None,
 ) -> None:
@@ -4957,12 +4963,17 @@ def _record_session_tree_edge(
     and a missed record is recovered by the projection's tail replay on the next cold
     start. Raising would turn a bookkeeping miss into a failed session open.
     """
+    # The body is the docstring and this ONE try: nothing sits outside the guard, so
+    # nothing can raise into the writer job (pinned by the projection tests).
     try:
         from kiro_crew.crew_log.session_tree_projection import record_opened
 
         created_at = 0
         try:
-            header = log.header()
+            # ``header`` is a PROPERTY, not a method. Calling it raised TypeError, the
+            # outer handler swallowed that, and every edge folded with created_at 0 --
+            # which orders the tree wrong. Pinned by the projection test below.
+            header = log.header
             raw = getattr(header, "created_at", 0)
             if isinstance(raw, int) and not isinstance(raw, bool):
                 created_at = raw
@@ -4971,4 +4982,17 @@ def _record_session_tree_edge(
             created_at = 0
         record_opened(session_id, slot, created_at, parent_slot, superseded)
     except Exception:  # pragma: no cover -- defensive; record_opened guards itself
-        logger.debug("session tree projection not advanced for %s", session_id, exc_info=True)
+        # Rendered text, never ``exc_info``: ``log`` is a live ``CrewLog`` in this frame,
+        # and a record carrying the traceback carries this frame, so a handler that keeps
+        # records (``caplog``, a ``MemoryHandler``) keeps the handle and its write lease
+        # alive past the drop that should have released it. A string keeps no frames.
+        # The store's ``log_exception_text`` does exactly this, but this module is the
+        # boot-path import gate (see ``_crew_log``) and may not import the store at module
+        # level, so the render uses the ``traceback`` module already imported above --
+        # the same idiom ``_report`` uses. Pinned by test_crew_log_exc_info_sites.py.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "session tree projection not advanced for %s:\n%s",
+                session_id,
+                traceback.format_exc().rstrip(),
+            )

@@ -14,8 +14,15 @@ scan, which is exactly the regression worth catching.
 
 from __future__ import annotations
 
+import ast
+import gc
+import inspect
 import json
+import logging
+import logging.handlers
+import textwrap
 import threading
+import weakref
 from pathlib import Path
 
 import pytest
@@ -898,3 +905,163 @@ def test_a_removal_that_did_not_happen_keeps_the_record():
 
     assert status == crew_store.REMOVE_ABSENT
     assert "slot-a" in proj.nodes()
+
+
+def test_the_edge_carries_the_header_created_at_not_zero(monkeypatch):
+    """The emitter forwards the header's ``created_at``, so the fold can order siblings.
+
+    ``CrewLog.header`` is a property. The edge recorder called it, the TypeError was
+    swallowed by the handler that exists so a bookkeeping miss never fails a session
+    open, and every edge folded with 0 -- indistinguishable from a header that really
+    carried none. Nothing observable failed, which is why only a test that reads the
+    value the recorder passed on can catch it.
+    """
+    seen: list[int] = []
+    monkeypatch.setattr(
+        stp,
+        "record_opened",
+        lambda sid, slot, created_at, parent_slot, previous_sid: seen.append(created_at),
+    )
+
+    handle = _log("s-created-at", "slot-a")
+    emit._record_session_tree_edge("s-created-at", "slot-a", handle, None, None)
+
+    assert seen, "the edge recorder never reached record_opened"
+    assert seen[0] == handle.header.created_at
+    assert seen[0] > 0, "a real header's created_at reached the fold as 0"
+
+
+# ── the edge recorder must not pin the handle it was handed ─────────────────────────
+
+
+def _record_edge_then_drop(handle: CrewLog, retained: list[logging.LogRecord]) -> weakref.ref:
+    """Drive the REAL chain with a record-keeping handler attached; return a weakref.
+
+    The handler keeps every record the projection or the emitter logs while the chain
+    runs, which is what ``caplog`` or a ``MemoryHandler`` does. The caller then drops the
+    handle: with the records still held, only a record that carries no frames lets it go.
+    """
+    handler = logging.handlers.MemoryHandler(capacity=1 << 16)  # never flushes on its own
+    loggers = [logging.getLogger(stp.__name__), logging.getLogger(emit.__name__)]
+    levels = [lg_.level for lg_ in loggers]
+    for lg_ in loggers:
+        lg_.setLevel(logging.DEBUG)
+        lg_.addHandler(handler)
+    try:
+        ref = weakref.ref(handle)
+        emit._record_session_tree_edge(handle.header.id, "slot-a", handle, None, None)
+        retained.extend(handler.buffer)
+    finally:
+        for lg_, level in zip(loggers, levels):
+            lg_.removeHandler(handler)
+            lg_.setLevel(level)
+    return ref
+
+
+@pytest.mark.parametrize(
+    "site, arm",
+    [
+        (
+            "record_opened",
+            lambda mp: mp.setattr(
+                stp.SessionTreeProjection,
+                "apply",
+                lambda self, record: (_ for _ in ()).throw(RuntimeError("apply refused")),
+            ),
+        ),
+        (
+            "_schedule_checkpoint",
+            lambda mp: mp.setattr(
+                "kiro_crew.executors.maintenance_executor",
+                lambda: (_ for _ in ()).throw(RuntimeError("pool is shut down")),
+            ),
+        ),
+        (
+            "_record_session_tree_edge",
+            lambda mp: mp.setattr(
+                stp,
+                "record_opened",
+                lambda *a: (_ for _ in ()).throw(RuntimeError("projection refused")),
+            ),
+        ),
+    ],
+)
+def test_a_retained_projection_failure_record_does_not_keep_the_handle_alive(
+    monkeypatch, site, arm
+):
+    """A handler that keeps the failure record must not keep the ``CrewLog`` with it.
+
+    ``record_opened`` and ``_schedule_checkpoint`` hold no handle themselves, but both
+    run under ``emit._record_session_tree_edge``, whose ``log`` is a live handle. A
+    traceback taken in either reaches that frame through ``tb_frame.f_back``, so a
+    record carrying ``exc_info`` would carry the handle -- and its write lease -- for as
+    long as a ``MemoryHandler`` or ``caplog`` kept the record. The recorder's own
+    handler is the direct case. Rendered text carries no frames, which is what this
+    proves by dropping the handle while the record is held.
+    """
+    arm(monkeypatch)
+    retained: list[logging.LogRecord] = []
+    handle = _log(f"s-retain-{site}", "slot-a")
+    ref = _record_edge_then_drop(handle, retained)
+
+    del handle
+    gc.collect()
+
+    ours = (stp.__name__, emit.__name__)
+    failures = [r for r in retained if r.name in ours and r.levelno == logging.DEBUG]
+    assert failures, f"the {site} failure was not logged at all; the test drove nothing"
+    assert ref() is None, (
+        f"the CrewLog survived being dropped while a handler kept {site}'s failure record: "
+        "its write lease is pinned for as long as the record lives"
+    )
+    # The shape that makes the above hold, named so a regression says which it broke.
+    assert all(r.exc_info is None for r in failures), (
+        f"a record from {site} carries exc_info; its traceback reaches the edge recorder's "
+        "frame through f_back"
+    )
+    assert "RuntimeError" in "\n".join(
+        r.getMessage() for r in failures
+    ), "the failure's traceback was not rendered into the record text"
+
+
+def test_the_edge_recorder_swallows_a_projection_failure_as_text(monkeypatch, caplog):
+    """The recorder's own handler renders the traceback to text and lets nothing out.
+
+    The append this runs after has already succeeded, so a bookkeeping miss must neither
+    fail the session open nor put the traceback (and with it this frame's handle) on the
+    record.
+    """
+
+    def refuse(*_a, **_k):
+        raise RuntimeError("projection refused the record")
+
+    monkeypatch.setattr(stp, "record_opened", refuse)
+    handle = _log("s-swallow", "slot-a")
+    with caplog.at_level(logging.DEBUG, logger=emit.__name__):
+        emit._record_session_tree_edge("s-swallow", "slot-a", handle, None, None)  # must not raise
+
+    ours = [r for r in caplog.records if "session tree projection not advanced" in r.getMessage()]
+    assert len(ours) == 1, "the recorder did not report the miss exactly once"
+    assert ours[0].exc_info is None, "the traceback rode on the record as exc_info"
+    assert (
+        "projection refused the record" in ours[0].getMessage()
+    ), "the traceback text did not reach the record"
+
+
+def test_the_edge_recorder_body_is_one_guarded_try():
+    """Nothing in ``_record_session_tree_edge`` sits outside its ``try``.
+
+    The caller is the writer job, whose comment says this never raises. A statement
+    before the ``try`` -- an import, a lookup -- is a raise path the guard does not
+    cover, and ``session/opened`` is already on disk when it runs.
+    """
+    source = inspect.getsource(emit._record_session_tree_edge)
+    fn = ast.parse(textwrap.dedent(source)).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = fn.body
+    if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]  # the docstring
+    assert len(body) == 1 and isinstance(body[0], ast.Try), (
+        "the edge recorder has a statement outside its try/except, which can raise into "
+        f"the writer job: {[type(n).__name__ for n in body]}"
+    )

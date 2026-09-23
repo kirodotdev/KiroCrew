@@ -83,6 +83,7 @@ from kiro_crew.crew_log.session_tree import (
     TreeReading,
     fold_tree,
 )
+from kiro_crew.crew_log.store import log_exception_text
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
@@ -757,7 +758,15 @@ class SessionTreeProjection:
             # Including a pool shut down during teardown, which is ordinary at exit.
             with self._lock:
                 self._write_scheduled = False
-            logger.debug("session tree checkpoint could not be scheduled", exc_info=True)
+            # Rendered text, never ``exc_info``. This frame holds no handle, but its
+            # CALLER chain can: ``apply`` <- ``record_opened`` <- the emitter's edge
+            # recorder, whose ``log`` is a live ``CrewLog``. A retained traceback reaches
+            # that frame through ``tb_frame.f_back`` and keeps the handle, and its write
+            # lease, alive past the drop that should have released it. Pinned by
+            # test_crew_log_session_tree_projection.py.
+            log_exception_text(
+                logger, logging.DEBUG, "session tree checkpoint could not be scheduled"
+            )
 
     def cancel_pending_checkpoint(self) -> None:
         """Abandon a debounced write that has not fired yet. Never blocks, never raises.
@@ -987,7 +996,13 @@ def record_opened(
             )
         )
     except Exception:  # pragma: no cover -- defensive
-        logger.debug("session tree projection could not apply an opened record", exc_info=True)
+        # Rendered text, never ``exc_info``: the caller is the emitter's edge recorder,
+        # whose ``log`` is a live ``CrewLog``, and a retained traceback reaches that frame
+        # through ``tb_frame.f_back`` -- so a handler that keeps records would keep the
+        # handle and its write lease. Pinned by test_crew_log_session_tree_projection.py.
+        log_exception_text(
+            logger, logging.DEBUG, "session tree projection could not apply an opened record"
+        )
 
 
 def retract_unit_parent(sid: str) -> None:
