@@ -27,9 +27,11 @@ F5 ``build_spec`` -- a non-list ``tools`` skipped the isinstance branch and then
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import pathlib
+import re
 
 import pytest
 
@@ -151,16 +153,107 @@ def test_a_crew_name_that_can_address_a_path_is_refused(name, tmp_path: pathlib.
         mod.resolve_crew(name, tmp_path)
 
 
-def test_an_ordinary_crew_name_still_resolves(tmp_path: pathlib.Path) -> None:
-    """Non-vacuity: the check must not have become a blanket refusal.
+def test_the_path_check_is_not_a_blanket_refusal() -> None:
+    """Non-vacuity, asked of the path check alone.
 
-    Names with dots, dashes and unicode are legal filenames and legal crew names; only the
-    path-addressing shapes are refused.
+    Dots, dashes and underscores are ordinary filename characters and none of them can
+    address a path, so the guard that asks about path addressing must pass them. Asking it
+    directly rather than through ``resolve_crew`` is what keeps this about the path check:
+    ``resolve_crew`` also asks whether a launch can use the name, which is a different
+    question with a narrower answer, and routing this through it would let a blanket
+    path-refusal hide behind the launch refusal.
     """
+    mod = load_build()
     for name in ["frontdesk", "front.desk", "front-desk_2", "cafe-brulee"]:
+        assert mod._validated_crew_name(name) == name
+
+
+def test_an_ordinary_crew_name_still_resolves(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity: neither check may have become a blanket refusal.
+
+    A name inside the launch charset resolves to the spec beside the source the operator
+    named, so the two guards together still admit the ordinary case.
+    """
+    for name in ["frontdesk", "front-desk-2", "a", "a" * 32]:
         crew = mod_resolve(tmp_path, name)
         assert crew.agent_spec_path.name == f"{name}.json"
         assert crew.agent_spec_path.parent.name == "agents"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Frontdesk", "front.desk", "front-desk_2", "front desk", "-frontdesk", "frontdesk-", "a" * 33],
+)
+def test_a_crew_name_no_launch_can_use_is_refused_at_bundle_time(
+    name, tmp_path: pathlib.Path
+) -> None:
+    """A bundle the launch cannot accept is refused where the operator is still deciding.
+
+    Every name here clears the path check and is a legal filename, so the builder alone has
+    no reason to refuse it -- and each one is outside the charset the launch derives both
+    IAM role names, the task-definition family, the secret namespace and the log group
+    from. Accepting them produces a bundle whose only possible outcome is a CloudFormation
+    parameter error or a task-definition refusal, neither of which names the bundle that
+    caused it.
+
+    The cases are the ways the two charsets differ: an upper-case letter, a dot, an
+    underscore, a space, a leading and a trailing hyphen, and one character over the
+    length bound.
+    """
+    mod = load_build()
+    assert mod._validated_crew_name(name) == name, "the path check is not what refuses these"
+    with pytest.raises(mod.ExportRefused, match="cannot be launched"):
+        mod.resolve_crew(name, tmp_path)
+
+
+def test_the_builder_reads_the_launch_charset_rather_than_restating_it() -> None:
+    """One owner for the charset, so the two ends cannot drift.
+
+    The failure this closes is two validators that have to agree and nothing keeping them
+    in step. A pattern spelled a second time in this module would be exactly that, so the
+    builder's refusal is required to come from the module that owns the charset: extend the
+    charset there and the builder follows without being edited.
+    """
+    mod = load_build()
+    from kiro_crew.cloud.fargate import identity
+
+    accepted = "launchable"
+    assert identity.validated_crew_name(accepted) == accepted
+    assert mod._validated_crew_name(accepted) == accepted
+
+    # Widen the owner's charset and the builder must accept what the owner now accepts.
+    rejected_by_default = "Frontdesk"
+    with pytest.raises(identity.DocumentRefused):
+        identity.validated_crew_name(rejected_by_default)
+    original = identity._CREW_RE
+    try:
+        identity._CREW_RE = re.compile(r"^[A-Za-z0-9-]{1,32}\Z")
+        assert identity.validated_crew_name(rejected_by_default) == rejected_by_default
+        mod._refuse_unless_launchable(rejected_by_default)
+    finally:
+        identity._CREW_RE = original
+    with pytest.raises(mod.ExportRefused, match="cannot be launched"):
+        mod._refuse_unless_launchable(rejected_by_default)
+
+
+def test_an_unimportable_charset_refuses_the_build(monkeypatch) -> None:
+    """A build that cannot check the name cannot claim the bundle is launchable.
+
+    The direction matters: this module's other mandatory authorities refuse rather than
+    continue on a weaker local answer, and a local copy of the charset is exactly the
+    weaker answer this guard exists to avoid.
+    """
+    mod = load_build()
+    real_import = builtins.__import__
+
+    def _no_identity(name, *args, **kwargs):
+        if name == "kiro_crew.cloud.fargate.identity":
+            raise ImportError("blocked for this test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_identity)
+    with pytest.raises(mod.ExportRefused, match="not importable"):
+        mod._refuse_unless_launchable("frontdesk")
 
 
 def mod_resolve(root: pathlib.Path, name: str):

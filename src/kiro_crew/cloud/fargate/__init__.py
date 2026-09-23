@@ -48,6 +48,7 @@ from kiro_crew.cloud.fargate.identity import (
     sole_binding,
     task_family,
     task_role_arn,
+    validated_crew_name,
     validated_region,
 )
 from kiro_crew.cloud.fargate.runtask import (
@@ -137,5 +138,6 @@ __all__ = [
     "task_definition_document",
     "task_family",
     "task_role_arn",
+    "validated_crew_name",
     "validated_region",
 ]

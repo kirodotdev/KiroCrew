@@ -197,8 +197,19 @@ def _refuse(reason: str) -> NoReturn:
     raise DocumentRefused(reason)
 
 
-def _validated_crew(crew: str, *, source: str) -> str:
-    """The crew name, or refuse. Charset is checked before anything derives it."""
+def validated_crew_name(crew: str, *, source: str = "crew name") -> str:
+    """The crew name, or refuse. Charset is checked before anything derives it.
+
+    Public for the reason :func:`validated_region` is public. A crew name is read
+    in more than one place, and two places that have to agree about a charset is
+    the trap this module names elsewhere: the looser reader is the one a caller
+    reaches, and nothing makes a case added to one appear in the other. The crew
+    bundle builder decides a crew name at the step where an operator is still
+    choosing what the bundle contains, which is before any launch derives a
+    resource from it, so it asks THIS function instead of restating the pattern. A
+    name a bundle accepts is then a name a launch accepts, and the two cannot
+    drift apart.
+    """
     if not _CREW_RE.match(crew):
         _refuse(
             f"{source} names crew {crew!r}, which is not a crew name: 1 to 32 characters, "
@@ -314,7 +325,7 @@ def _crew_in_secret_arn(arn: str, *, source: str) -> CrewBinding:
     return CrewBinding(
         partition=partition,
         account=account,
-        crew=_validated_crew(crew, source=source),
+        crew=validated_crew_name(crew, source=source),
     )
 
 

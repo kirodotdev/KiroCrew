@@ -2693,8 +2693,11 @@ def _validated_crew_name(name: str) -> str:
     outside the source they named is never what they meant.
 
     Kept deliberately narrow: separators of either platform, parent steps, absolute paths,
-    a Windows drive, and the empty name. Everything else a filesystem accepts in a filename
-    is still a legal crew name.
+    a Windows drive, and the empty name. THIS check asks only whether the name can address
+    a path, and it deliberately does not ask whether a launch can use the name --
+    ``_refuse_unless_launchable`` owns that, against a charset it imports rather than
+    restates. So a name that clears this one is a name that stays inside the source
+    directory, which is not the same thing as a name a bundle is allowed to carry.
     """
     if not name or name in {".", ".."}:
         raise ExportRefused(f"crew name {name!r} is empty or a directory reference.")
@@ -2713,6 +2716,58 @@ def _validated_crew_name(name: str) -> str:
     return name
 
 
+def _refuse_unless_launchable(name: str) -> None:
+    """Refuse a crew name no launch can derive its AWS resources from.
+
+    ``_validated_crew_name`` above asks whether the name can address a path. This
+    asks the other question a bundle owes the operator who builds it: whether the
+    crew it names can become the resources that run it. A bundle exists to be
+    launched on Fargate -- the container supervisor is its only reader -- and the
+    launch derives both IAM role names, the task-definition family, the secret
+    namespace and the log group from the crew name. The charset those derivations
+    need is therefore the charset a bundle has to satisfy, and a name outside it
+    describes a bundle with no reachable future.
+
+    Asking HERE is the point. Bundling is where the operator decides: it selects
+    skills and MCP servers and prints the deny-by-default report, it exits 0, and
+    it hands back a digest, all of which read as confirmation that the crew is
+    deployable. The launch-side refusals land at a CloudFormation parameter error
+    or a task-definition refusal, and neither mentions a bundle, so the remedy --
+    rename the member and rebuild -- is not visible from either message.
+
+    The charset is IMPORTED rather than restated. ``cloud/fargate/identity.py``
+    owns it, and ``cloud/templates/kirocrew-fargate-crew.yaml`` mirrors it as a
+    CloudFormation ``AllowedPattern`` only because YAML cannot import; a third copy
+    spelled here is the drift this refusal exists to close. So an unimportable
+    validator refuses the build, the same direction every other mandatory authority
+    in this module fails: a build that cannot check the name cannot claim the
+    bundle is launchable either.
+    """
+    try:
+        from kiro_crew.cloud.fargate.identity import DocumentRefused, validated_crew_name
+    except Exception as exc:
+        raise ExportRefused(
+            f"cannot check whether crew name {name!r} is one a launch can use: this "
+            f"repository's own crew-name charset "
+            f"(kiro_crew.cloud.fargate.identity.validated_crew_name) is not importable "
+            f"here. The charset is owned there so the builder and the launch cannot "
+            f"disagree about it, and restating it in this module is the drift that check "
+            f"exists to prevent. Refusing rather than bundling a crew whose launchability "
+            f"is unknown."
+        ) from exc
+    try:
+        validated_crew_name(name, source="--crew")
+    except DocumentRefused as exc:
+        raise ExportRefused(
+            f"crew name {name!r} cannot be launched: {exc}. Both IAM role names, the "
+            f"task-definition family, the secret namespace and the log group are derived "
+            f"from this name, and the per-crew CloudFormation stack constrains its own "
+            f"Crew parameter to the same charset, so a bundle built under this name has "
+            f"no deployment that accepts it. Rename the member to a conforming name and "
+            f"build again."
+        ) from exc
+
+
 def resolve_crew(name: str, source: Path | None) -> ResolvedCrew:
     """Resolve a crew's agent spec and skills root.
 
@@ -2722,6 +2777,12 @@ def resolve_crew(name: str, source: Path | None) -> ResolvedCrew:
     and skills under ``$KIROCREW_HOME``. Never a temp dir.
     """
     name = _validated_crew_name(name)
+    # Two questions, asked in this order, because they refuse for different reasons: the
+    # one above is about what a name can address on THIS filesystem, and this one is about
+    # what a launch can derive from it. Both verbs come through here -- ``plan`` as much as
+    # ``build`` -- because ``plan`` is the step that writes the review template the operator
+    # fills in, and a review of a crew that can never launch is work spent on nothing.
+    _refuse_unless_launchable(name)
     if source is not None:
         # ONE guard, not two. A containment assertion on the resolved spec path was here as
         # defence in depth, and it is unreachable: with the name check above in place no
