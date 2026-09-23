@@ -143,10 +143,18 @@ defer passes no model, and `get_or_create` then resolves one from config inside 
 call that returns the provider, `is_new` and `resumed` -- so the caller has no
 selection of its own to record while the session runs on a concrete id. The
 allocation stamps the id it hands the provider on the live session, and the caller
-reads that stamp UNDER its own selection
-(`SessionManager.allocation_requested_model`). One string therefore reaches both the
-provider and this entry, and a session found already registered keeps the stamp of
-the allocation that created it rather than answering a later caller's question.
+reads that stamp FIRST (`SessionManager.allocation_requested_model`), falling back to
+its own selection only when nothing was stamped.
+
+That order is what the consumed observation forces. `is_new` with `resumed` false
+says the caller consumed a fresh first-turn observation, NOT that the caller
+allocated the session: a prewarmed session that started fresh arms exactly that
+observation, so a claim of one is indistinguishable from a cold start in the return
+value. The stamp is the allocation's own selection by construction and is therefore
+right for both. The caller's own resolution is right only for the cold start -- on a
+prewarmed claim it re-resolves a config that may have moved since, which would name a
+model the session never ran on in an entry nothing rewrites. One string therefore
+reaches both the provider and this entry.
 
 That unconditional rule is the point, because both ways of conditioning it lose
 the record. Suppressing it when it DIFFERS from `model` reports an honoured request

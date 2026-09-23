@@ -400,8 +400,11 @@ class TestSessionOpenedRecordsTheAllocationsSelection:
     ):
         """The regression: a claim of a pre-warmed session must not re-resolve.
 
-        An eager allocation arms a ``resumed=True`` observation for the real turn,
-        so this is the shape a prewarmed first turn sees. The config default has
+        An eager allocation that RESUMED arms a ``resumed=True`` observation for the
+        real turn, so this is the shape a resuming prewarmed first turn sees. (A
+        prewarm that started fresh arms ``FRESH`` instead and arrives as
+        ``is_new=True, resumed=False``; that shape is covered by
+        ``TestSessionOpenedCoversTheTierBelowTheCaller``.) The config default has
         moved since that allocation; the entry must still name what was allocated.
         """
         _runner_config(_config(tmp_path))
@@ -420,10 +423,10 @@ class TestSessionOpenedRecordsTheAllocationsSelection:
     async def test_a_fresh_allocation_replaces_a_dead_sessions_selection(
         self, tmp_path, _runner_config
     ):
-        """``is_new`` means THIS call allocated, so its own selection is the truth.
+        """A value left by a session that died without teardown must not outlive it.
 
-        A value left by a session that died without a teardown must not outlive it
-        and be reported as this session's provenance.
+        The live session stamped nothing, so the record falls back to this turn's own
+        selection rather than reporting the dead session's provenance.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
@@ -512,23 +515,47 @@ class TestSessionOpenedCoversTheTierBelowTheCaller:
         assert opened.call_args.kwargs["model_requested"] == ""
 
     @pytest.mark.asyncio
-    async def test_the_turns_own_selection_is_not_replaced_by_the_stamp(
+    async def test_the_allocations_stamp_beats_a_fresh_re_resolution(
         self, tmp_path, _runner_config
     ):
-        """A resolved tier wins: the stamp names the allocation this turn made.
+        """The stamp wins, because the branch cannot tell prewarmed from cold.
 
-        Ordering matters on a session found already registered, whose stamp is the
-        EARLIER allocation's. The turn's own selection is the one it records.
+        A prewarmed session arms ``FirstTurnState.FRESH``, whose ``is_new`` is True
+        and ``resumed`` is False, so a claim of one arrives here exactly as a cold
+        start does. Reading this turn's own resolution first would write a model the
+        session never ran on whenever config moved between the allocation and the
+        first turn -- into an entry nothing rewrites.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
         state.sessions.allocation_requested_model = unittest.mock.MagicMock(
-            return_value="model-an-earlier-allocation-chose"
+            return_value="model-the-allocation-chose"
         )
         slot = _slot()
 
         with self._capture() as opened:
             await _drive(state, slot)
 
+        assert _session_model(state) == GLOBAL_DEFAULT
+        assert slot._session_requested_model == "model-the-allocation-chose"
+        assert opened.call_args.kwargs["model_requested"] == "model-the-allocation-chose"
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_stamped_nothing_falls_back_to_this_turn(
+        self, tmp_path, _runner_config
+    ):
+        """A registration site that resolves no model stamps ``""``.
+
+        The fallback is what keeps the top three tiers recorded for such a session
+        rather than regressing them to absent.
+        """
+        _runner_config(_config(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        slot = _slot()
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert state.sessions.allocation_requested_model.return_value == ""
         assert slot._session_requested_model == GLOBAL_DEFAULT
         assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT

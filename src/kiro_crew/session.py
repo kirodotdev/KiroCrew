@@ -2430,10 +2430,15 @@ class SessionManager:
         the stamp the allocation left is what closes that, and it is the SAME
         value the provider received, not a second resolution.
 
-        A caller composes this UNDER its own selection (``own or this``) rather
-        than in place of it: a session found already registered keeps the stamp of
-        the allocation that created it, which is the right provenance for that
-        session and the wrong answer for a caller asking what IT selected.
+        A caller composes this OVER its own selection (``this or own``) rather
+        than under it. ``is_new`` with ``resumed`` false says the caller consumed a
+        fresh first-turn observation, NOT that the caller allocated the session: a
+        prewarmed session that started fresh arms exactly that observation, so a
+        claim of one is indistinguishable from a cold start in the return value.
+        This stamp is the allocation's own selection by construction and is right
+        for both cases; the caller's own resolution is right only for the cold
+        start, since on a prewarmed claim it re-resolves a config that may have
+        moved since the session was allocated.
 
         ``""`` for an unknown key, a session with no selection, and a session made
         by a registration site that resolves no models. All three are "nothing to
