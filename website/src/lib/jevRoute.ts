@@ -34,11 +34,20 @@
  *  `dashboard/chat_handlers.py`, which is the only reader. */
 export const JEV_ROUTE_MODEL = 'auto:jev'
 
-/** Whether a slot names no model, i.e. Jev's to pick when the preview is on.
+/** Whether the OWNER chose not to pin this slot, i.e. Jev's to pick when the
+ *  preview is on.
  *
  *  Mirrors `_JEV_ROUTE_AUTO_MODELS` in `dashboard/chat_runner.py`, which is the
- *  gate that actually routes: `auto` is the picker's inherit spelling and `''` is
- *  what a freshly dispatched slot carries, and both mean the same thing here.
+ *  gate that actually routes: `auto` is the picker's inherit spelling, and it is
+ *  the only value that arms routing.
+ *
+ *  `''` reads as PINNED here, and that is the distinction the chip exists to make
+ *  rather than a spelling quirk. `auto` is a choice the owner made at the picker;
+ *  `''` is a slot nobody has chosen for yet, and the gate cannot route it — the
+ *  first session the slot opens backfills the provider's resolved model into
+ *  `slot.model` before the routing question is asked. Reading the two alike made a
+ *  brand-new chat say `Auto (Jev)` while every turn ran on the backend default,
+ *  hiding the model that would actually answer.
  *
  *  Takes the slot's RAW `model`, never the composer's displayed one: the display
  *  value substitutes the backend's served id for an inheriting slot, so it is
@@ -46,8 +55,7 @@ export const JEV_ROUTE_MODEL = 'auto:jev'
  *  pinned. Stripped and lower-cased for the same reason the gate is.
  */
 export function isUnpinnedModel(model: string | undefined): boolean {
-  const named = (model || '').trim().toLowerCase()
-  return named === '' || named === 'auto'
+  return (model || '').trim().toLowerCase() === 'auto'
 }
 
 /** Whether the picker may offer the row at all.

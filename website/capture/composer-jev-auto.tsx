@@ -65,15 +65,15 @@ const EPISODES: Episode[] = [
   },
   {
     id: 'jev-auto',
-    slotModel: '',
+    slotModel: 'auto',
     preview: PREVIEW_ON,
-    caption: 'JEV AUTO — no model named and the preview is on, so Jev picks each turn',
+    caption: 'JEV AUTO — the owner picked Auto (Jev) (model "auto"), so Jev picks each turn',
   },
   {
     id: 'plain-auto',
     slotModel: '',
-    preview: PREVIEW_OFF,
-    caption: 'PLAIN AUTO — no model named and the preview is off, so the session inherits',
+    preview: PREVIEW_ON,
+    caption: 'FRESH — no model picked yet and the preview is on, so the chip names the real model',
   },
 ]
 

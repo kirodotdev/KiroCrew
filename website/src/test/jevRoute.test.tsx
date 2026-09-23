@@ -78,12 +78,23 @@ describe('jevRouteOffered', () => {
 })
 
 describe('isUnpinnedModel', () => {
-  it('reads both spellings of "no model", whatever their case or padding', () => {
-    // `''` is a freshly dispatched slot, `auto` is the picker's inherit row, and the
-    // value arrives from a client -- so a near-miss that read as a pin would turn
-    // the feature off for that session with nothing said.
-    for (const model of ['', 'auto', 'AUTO', '  auto  ', undefined]) {
+  it("reads the owner's inherit row, whatever its case or padding", () => {
+    // `auto` is the picker's inherit row and the value arrives from a client, so a
+    // near-miss that read as a pin would turn the feature off for that session with
+    // nothing said.
+    for (const model of ['auto', 'AUTO', '  auto  ']) {
       expect(isUnpinnedModel(model)).toBe(true)
+    }
+  })
+
+  it('reads a slot nobody has chosen for as pinned', () => {
+    // `''` is not a choice to inherit, it is the absence of a choice, and the gate
+    // cannot route it: the slot's first session backfills the provider's resolved
+    // model into `slot.model` before the routing question is asked. Reading it as
+    // unpinned is what made a brand-new chat's chip say `Auto (Jev)` while every
+    // turn ran on the backend default, hiding the model that would answer.
+    for (const model of ['', '   ', undefined]) {
+      expect(isUnpinnedModel(model)).toBe(false)
     }
   })
 
@@ -103,7 +114,7 @@ describe('isUnpinnedModel', () => {
       join(__dirname, '../../../src/kiro_crew/dashboard/chat_runner.py'),
       'utf8',
     )
-    expect(runner).toContain('_JEV_ROUTE_AUTO_MODELS = ("", "auto")')
+    expect(runner).toContain('_JEV_ROUTE_AUTO_MODELS = ("auto",)')
   })
 })
 
