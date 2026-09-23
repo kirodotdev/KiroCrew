@@ -28,22 +28,34 @@ That file is ALSO the identity auth store -- ``hooks.py`` classifies it as a
 token path and it holds live bearer tokens -- so the archive
 must never carry the file. It carries a table-scoped export instead: a fresh
 database holding ONLY the tables in ``_CONVERSATION_TABLES`` (an allowlist, so no
-identity or token table can leak even if kiro-cli adds one), read from the live
+identity or token TABLE can leak even if kiro-cli adds one -- the bound is per
+table and not per column, see ``_copy_table``), read from the live
 store under a single read-only snapshot as ``_export_cli_conversations``
 documents, under
-the ``conversations/`` archive root beside ``crew`` and ``cli``. The DECLARED
+the ``conversations/`` archive root beside ``crew`` and ``cli``. The store is
+looked up among FIXED, home-anchored locations only: ``XDG_DATA_HOME`` /
+``LOCALAPPDATA`` are not consulted, because the fence that keeps agent file tools
+out of this store is home-anchored and does not follow a redirected root, and this
+archive is uploaded off-host unattended. A host that relocates its store therefore
+gets no ``conversations/`` root, and the run record says so through
+``conversations_skipped`` rather than leaving an operator to infer it from an
+absent member. The DECLARED
 BOUNDARY of "conversation state" for this app is exactly ``conversations_v2``;
 if a future table is genuinely conversation state and not auth, it is added to
 ``_CONVERSATION_TABLES`` and this sentence is updated in the same change --
 there is no other place the boundary is expressed. The export rides the SAME
 standing permission as the ``cli`` half, :func:`sessions_layer_b_enabled`, and
-invents no new grant: both carry what a model actually held, unredacted, where
+invents no new grant: both carry what a model actually held, where
 the crew transcript carries what was displayed with display-time redaction
-applied, so an install whose operator withholds Layer B gets an archive with no
-``conversations/`` root either. Opening the store goes through the sanctioned
-credential-read audit
+applied. Neither is shipped raw: every text column of an exported conversation row
+goes through ``_redacted_row`` first, so what leaves the host is
+EGRESS-REDACTED, so an install whose operator withholds Layer B gets an archive with no
+``conversations/`` root either. Reading the store is RECORDED through the
+sanctioned credential-read audit
 (``hooks.emit_internal_read_audit`` under ``aws_control.conversation_export``,
-registered in ``hooks._AUDIT_ONLY_READ_IDS``) and FAILS CLOSED: an export whose
+registered in ``hooks._AUDIT_ONLY_READ_IDS``), which runs after the read rather
+than gating it -- it is an access log, not an authorization. What FAILS CLOSED is
+the SHIPPING: an export whose
 access cannot be recorded is dropped from the archive rather than shipped
 unaudited, because the file holds live bearer tokens whatever this reader
 touches.
@@ -118,7 +130,7 @@ import urllib.parse
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, NoReturn, Optional
+from typing import IO, Any, NamedTuple, NoReturn, Optional
 
 from kiro_crew import hooks, snapshot, snapshot_redact
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
@@ -128,9 +140,14 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.deploy.engine import AWSError, _checked
 from kiro_crew.history import SESSIONS_DIR_NAME
-from kiro_crew.identity_stores import state_db_candidates
+from kiro_crew.identity_stores import _store_write_time, state_db_candidates
 from kiro_crew.platform.context import redact_log_via_context
-from kiro_crew.platform_compat import file_lock, is_link_or_junction, open_lock_file
+from kiro_crew.platform_compat import (
+    file_lock,
+    first_linked_ancestor,
+    is_link_or_junction,
+    open_lock_file,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.snapshot import snapshot_main
@@ -198,6 +215,68 @@ STATE_DIR_LEAF = f"apps/{APP_NAME}/data"
 #: and a typo in any one of them would read as "not permitted" -- a silent OFF is
 #: the failure this constant exists to make impossible.
 SESSIONS_LAYER_B_KEY = "sessionsIncludeLayerB"
+
+#: Per-account key recording WHICH SCOPE the operator's Layer B grant was made
+#: under. The grant itself is one boolean and stays one boolean -- this is not a
+#: second toggle and gives the operator nothing new to set. It exists because the
+#: grant's meaning widened: a grant recorded before the terminal conversation
+#: export was disclosed authorized this product's own ``cli`` session files, and
+#: reading it as also authorizing ``conversations_v2`` would ship host-wide
+#: terminal context on a consent that never mentioned it, off-host and
+#: unrecallable. Written by :func:`set_sessions_layer_b` only when the caller NAMES
+#: this scope in the request: a bare enable carries no evidence of what the operator
+#: was shown, so an idempotent retry, an automation, and a client rendering older copy
+#: are indistinguishable from a deliberate re-consent, and none of them may widen what
+#: leaves the machine.
+SESSIONS_LAYER_B_SCOPE_KEY = "sessionsLayerBScope"
+
+#: The one scope value that covers the conversation export. Matched EXACTLY: an
+#: absent marker, a different string, or a non-string all read as cli-only. That is
+#: the fail-closed direction, and it is the direction a stored value this code does
+#: not understand must take -- widening on an unrecognised marker is how a consent
+#: boundary stops holding.
+SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS = "cli+conversations"
+
+#: Per-account fact: at least one sessions archive this install uploaded and has NOT
+#: retired carries a ``conversations/`` root. It is the ONE thing the retention sweep
+#: needs in order to tell "this run carries no conversations and none were ever
+#: retained" -- prune, nothing is at risk -- from "this run carries none while an older
+#: retained archive does" -- do not prune, that archive is the only copy.
+#:
+#: Deliberately ONE BOOLEAN read through a predicate, not a list of archives or of
+#: qualifying reasons. A second list that has to stay in sync with the archives is a
+#: place to forget one, and the cost of forgetting here is a permanent delete.
+#:
+#: It only ever goes True, and that is correct rather than lazy: while it is True the
+#: sweep is declined, so the archive it refers to is never retired, so the fact stays
+#: true. A run that DOES carry conversations prunes normally -- the newest archive holds
+#: them, so retiring older ones loses nothing -- which is what lets retention resume.
+SESSIONS_CONVERSATIONS_RETAINED_KEY = "sessionsConversationsRetained"
+
+#: The same fact carried ON the run record. It has to travel there as well, because the
+#: ACCOUNT-level key does not survive a failed state write: ``_remember_unpersisted``
+#: holds only the run record, and ``_merge_pending`` restores records, uploads and
+#: versions -- no account-level key. Held only on the account, the fact would vanish on an
+#: ``ENOSPC`` or read-only-filesystem write while the archive it protects stayed in the
+#: drive, and the only thing that could set it again is another conversation-bearing run,
+#: which a narrowed scope makes impossible. So the record carries it and
+#: :func:`_merge_pending` puts it back.
+_RUN_CONVERSATIONS_RETAINED = "conversations_retained"
+
+
+def _set_conversations_retained(entry: dict[str, Any]) -> None:
+    """Set the account-level conversations-retained fact. MONOTONIC by contract.
+
+    The ONE writer, so the invariant lives in one place: this fact is only ever SET and
+    never cleared, by this function or any other. A conversation-bearing archive that
+    reached the drive is not undone by a later run, by a superseded record, or by a
+    recovery merge -- and while the fact holds the retention sweep is declined, so the
+    archive it refers to is never retired and the fact stays accurate rather than stale.
+
+    Anything that lowered it would have to prove the archive is gone, and the only code
+    that removes archives is the sweep this fact declines.
+    """
+    entry[SESSIONS_CONVERSATIONS_RETAINED_KEY] = True
 
 
 def _state_path() -> Path:
@@ -1049,6 +1128,26 @@ def _default_label(install_id: str) -> str:
     return f"install-{install_id[:4]}"
 
 
+def _redact_egress(text: str) -> str:
+    """The two egress redactors, in one place, for everything this module ships.
+
+    Both callers need the same SEQUENCE and nothing else in common:
+    :func:`sanitize_label` wraps it in a printable filter and a length bound, and
+    :func:`_redacted_row` applies it per text column of the conversation export.
+    Keeping the sequence here is the point -- :func:`sanitize_label`'s own note says a
+    second copy of it is how one copy gains a redactor the other never gets, and an
+    export that missed a redactor the labels have would ship the thing it was added
+    for.
+
+    The two answer different questions and both are needed: one removes credential
+    SHAPES, the other removes URLs whose destination would exfiltrate. A conversation
+    holds both, because a model was shown a key and was asked to POST somewhere.
+    """
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    return text
+
+
 def sanitize_label(label: Any, *, fallback: str = "", limit: int = LABEL_MAX_CHARS) -> str:
     """A label safe to render, from a value that may not be ours.
 
@@ -1079,8 +1178,7 @@ def sanitize_label(label: Any, *, fallback: str = "", limit: int = LABEL_MAX_CHA
     text = "".join(ch for ch in label if ch.isprintable()).strip()
     if not text:
         return fallback
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = _redact_egress(text)
     text = text.strip()
     if not text:
         return fallback
@@ -1514,6 +1612,15 @@ def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
         versions = {key: dict(ids) for key, ids in _unpersisted_versions.items() if key[0] == path}
     for account, kind, record in pending:
         entry = _account_state(state, account)
+        # Restored BEFORE the `_run_is_newer` gate and deliberately outside it, because
+        # this fact is MONOTONIC while a run record is not. A record this document has
+        # already superseded is still evidence that a conversation-bearing archive
+        # reached the drive, and that archive does not un-exist because a later run's
+        # record won the slot. Gating it would let the recovery path silently drop the
+        # one fact that stops a later sweep erasing the only copy -- which is exactly
+        # the hole a state write failing with ENOSPC opens.
+        if record.get(_RUN_CONVERSATIONS_RETAINED) is True:
+            _set_conversations_retained(entry)
         runs = entry.setdefault("runs", {})
         if not isinstance(runs, dict):
             runs = entry["runs"] = {}
@@ -1695,6 +1802,9 @@ def _record_run(
     tree: str = "",
     uploaded: bool = True,
     layer_b: bool | None = None,
+    conversations_skipped: str = "",
+    layer_b_scope: str = "",
+    conversations_retained: bool = False,
 ) -> dict[str, Any]:
     # No ``_run_lock`` here, deliberately. Wrapping this call in it would hold it
     # while :func:`_state_lock` parks on the sidecar file lock, and
@@ -1712,6 +1822,9 @@ def _record_run(
         tree=tree,
         uploaded=uploaded,
         layer_b=layer_b,
+        conversations_skipped=conversations_skipped,
+        layer_b_scope=layer_b_scope,
+        conversations_retained=conversations_retained,
     )
     assert recorded is not None
     return recorded
@@ -1729,6 +1842,9 @@ def _record_run_locked(
     uploaded: bool = True,
     expected: object = _UNCONDITIONAL_RUN_WRITE,
     layer_b: bool | None = None,
+    conversations_skipped: str = "",
+    layer_b_scope: str = "",
+    conversations_retained: bool = False,
 ) -> Optional[dict[str, Any]]:
     global _run_sequence
     # Under ``_run_lock``, and under NOTHING else. The callers do not hold it, so this
@@ -1793,6 +1909,32 @@ def _record_run_locked(
     # and nothing afterwards would correct it.
     if layer_b is not None:
         record["layer_b"] = bool(layer_b)
+    # Only when there IS a reason, so a run that carried everything keeps its
+    # record shape. An absent key reads as "nothing was skipped", which is the
+    # common case and needs no field; a present one names what was left out, so an
+    # operator reading the record can tell a host with no terminal store from one
+    # whose store this export declines to reach.
+    if conversations_skipped:
+        record["conversations_skipped"] = conversations_skipped
+    # Recorded as the GRANT's state, not as a skip, so it does not reach the
+    # retention predicate above. Present only when Layer B is on and its grant does
+    # not cover the conversation export, which is the state an operator needs named
+    # to explain an absent `conversations/` root without a skip reason.
+    if layer_b_scope:
+        record["layer_b_scope"] = layer_b_scope
+    if conversations_retained:
+        # Set HERE, before `_locked_state_update`, for the same reason `sequence` is
+        # assigned out here: the update can abort BEFORE `mutate` ever runs -- the read
+        # raising `EACCES`/`EIO`, a scanner holding the file on Windows, non-UTF-8 bytes,
+        # or `_state_lock` timing out -- and the `except OSError` then hands
+        # `_remember_unpersisted` whatever the record already says. Assigned inside
+        # `mutate`, the field was missing from exactly the records that most need it, so
+        # both the persisted key and the overlay read False and the sweep could retire the
+        # only archive holding the conversations.
+        #
+        # The ACCOUNT-level key stays inside `mutate`: it is part of the document being
+        # written, so it belongs in the same atomic update as the run record.
+        record[_RUN_CONVERSATIONS_RETAINED] = True
 
     def mutate(state: dict[str, Any]) -> Optional[dict[str, Any]]:
         entry = _account_state(state, account)
@@ -1877,6 +2019,15 @@ def _record_run_locked(
             and type(previous.get("sequence")) is int
             and previous["sequence"] > sequence
         )
+        if conversations_retained:
+            # OUTSIDE the `superseded` guard: a superseded run still PUT a
+            # conversation-bearing archive in the drive. Which record wins the slot says
+            # nothing about what the drive holds, and the sweep erases objects, not
+            # records.
+            #
+            # The record's own field is set BEFORE `_locked_state_update` rather than
+            # here, because this function may never run -- see the assignment there.
+            _set_conversations_retained(entry)
         if not superseded:
             runs[kind] = record
         # A completed run ends the retry backoff, and it does so HERE -- inside the
@@ -2289,11 +2440,19 @@ _RETENTION_GATE = threading.Lock()
 
 
 class _RetentionCountWithdrawn(Exception):
-    """The count stopped authorizing the candidate set while the gate was held."""
+    """The count stopped authorizing the candidate set while the gate was held.
 
-    def __init__(self, reason: str) -> None:
+    ``audit_as_failure`` is carried on the exception rather than re-derived from
+    ``reason`` at the handler, because a reason the handler does not recognise falls to
+    its ``successful`` branch -- and a REFUSED permanent delete audited as a healthy
+    sweep that retired nothing is byte-identical in the SEL record to one that had
+    nothing to do. A raiser that knows the refusal matters says so here.
+    """
+
+    def __init__(self, reason: str, *, audit_as_failure: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.audit_as_failure = audit_as_failure
 
 
 class _RetentionAuthorizationWithdrawn(Exception):
@@ -2317,6 +2476,7 @@ def _delete_under_the_retention_gate(
     versions: list[tuple[str, str]],
     *,
     caller: str,
+    recheck_conversations_retained: bool = False,
 ) -> int:
     """Re-read the count and erase ``versions`` without letting a write interleave.
 
@@ -2352,6 +2512,32 @@ def _delete_under_the_retention_gate(
         keep_now, off_now = _retention_keep_for_sweep(account)
         if keep_now is None or keep_now > keep:
             raise _RetentionCountWithdrawn(off_now or "the retention count changed before deletion")
+        # Re-read the conversations fact HERE, for exactly the reason the count is
+        # re-read here: the candidate set was built outside this lock, and a fact that
+        # changed in between makes the set stale. Two same-account sessions runs can
+        # overlap -- the owner-triggered path does not pass the upload gate, so it is not
+        # serialized against a nightly run in flight -- so a wide run in ANOTHER process
+        # can land its archive, and its fact, after this sweep chose its candidates.
+        #
+        # This is the existing lock used correctly, not a new protocol: the file half
+        # orders other PROCESSES and `_RETENTION_GATE` orders other threads, which is the
+        # pair this block already holds, and the read below takes no lock of its own
+        # (`_read_state_checked` reads the file directly, and `_unpersisted_lock` is a
+        # documented leaf), so nothing nests and the module's one acquisition order is
+        # unchanged.
+        #
+        # Refusing costs a kept archive until the next sweep. Proceeding costs the only
+        # copy of somebody's conversations, permanently.
+        if recheck_conversations_retained and a_retained_archive_carries_conversations(account):
+            raise _RetentionCountWithdrawn(
+                "an archive holding conversations this run does not was recorded before deletion",
+                # A REFUSED permanent delete. Without this the handler's unmatched-reason
+                # branch would audit it `successful` with an empty error, identical to a
+                # sweep that found nothing to retire -- while the caller-side decline for
+                # the very same condition records `failed` plus the reason. The suppression
+                # stops the DELETE, never the audit.
+                audit_as_failure=True,
+            )
         # Consent is re-checked HERE, inside both locks, for the same reason the count
         # is: acquiring these locks can wait on another purge, and a gate is good for
         # the call that follows it rather than for one on the far side of a wait. This
@@ -2696,6 +2882,7 @@ def _prune_remote_archives(
     newest_key: str,
     *,
     caller: str,
+    recheck_conversations_retained: bool = False,
 ) -> dict[str, Any]:
     """Retire this install's oldest archives of ``kind``, keeping the newest ``keep``.
 
@@ -3100,7 +3287,14 @@ def _prune_remote_archives(
         #
         try:
             removed = _delete_under_the_retention_gate(
-                account, keep, profile, region, bucket, versions, caller=caller
+                account,
+                keep,
+                profile,
+                region,
+                bucket,
+                versions,
+                caller=caller,
+                recheck_conversations_retained=recheck_conversations_retained,
             )
         except _RetentionAuthorizationWithdrawn as withdrawn:
             cause = withdrawn.cause
@@ -3130,7 +3324,7 @@ def _prune_remote_archives(
             )
             # An owner who changed their mind is not a failure. An unreadable setting
             # is, which is the same split the first read files.
-            if exc.reason == "the retention setting could not be read":
+            if exc.audit_as_failure or exc.reason == "the retention setting could not be read":
                 _audit_retention(account, outcome, caller=caller, result="failed", error=exc.reason)
             else:
                 _audit_retention(account, outcome, caller=caller, result="successful")
@@ -3452,7 +3646,14 @@ def _unchanged_baseline(
 
 
 def _record_skip(
-    account: str, kind: str, baseline: dict[str, Any], tree: str
+    account: str,
+    kind: str,
+    baseline: dict[str, Any],
+    tree: str,
+    *,
+    layer_b: bool | None = None,
+    conversations_skipped: str = "",
+    layer_b_scope: str = "",
 ) -> Optional[dict[str, Any]]:
     """Record a run that sent nothing, carrying the baseline it matched.
 
@@ -3462,6 +3663,17 @@ def _record_skip(
     every few minutes for as long as the tree stayed unchanged -- turning a saving into
     a busy loop. Everything else is copied from the matched run so the next comparison
     still has a key it can prove and a version retention can retire.
+
+    ``layer_b``, ``conversations_skipped`` and ``layer_b_scope`` are passed by the
+    CALLER from what it
+    just measured, not copied from ``baseline``, and that distinction is the point:
+    this function REPLACES the run slot outright, so a field it does not forward is
+    erased. Coverage facts are exactly the fields an operator reads to decide whether
+    an archive holds their conversations, and a skip that dropped them would let the
+    first ordinary unchanged run quietly restore an assertion of complete coverage
+    over a run that had reported a gap. The caller measures them on every run,
+    including this one, so forwarding the CURRENT answer is also more correct than
+    preserving the old one.
 
     Returns ``None`` unless the run slot still holds the very record this baseline was
     read from, identified by its ``(process, sequence)`` pair. The caller uploads
@@ -3482,6 +3694,9 @@ def _record_skip(
         tree=tree,
         uploaded=False,
         expected=baseline,
+        layer_b=layer_b,
+        conversations_skipped=conversations_skipped,
+        layer_b_scope=layer_b_scope,
     )
 
 
@@ -3807,26 +4022,223 @@ def sessions_layer_b_enabled(account: str) -> bool:
 
     Default False; enable through the owner-gated
     ``POST /api/apps/aws-control/backup/{account}/layer-b``.
+
+    **What this permission covers, stated here because it is the grant's own
+    description.** Two payloads ride on it, and they differ in REACH rather than in
+    sensitivity class. The ``cli`` half is this product's own kiro-cli session files.
+    The ``conversations/`` export is ``conversations_v2`` from the terminal's state
+    store, which records every interactive kiro-cli use on the host -- including work
+    that has nothing to do with this product's sessions. An operator reading only
+    "unredacted context in the sessions archive" would price the first and receive
+    both, so the second is named.
+
+    One permission for both is the recorded decision, not an omission: the gate is
+    priced by the payload's sensitivity CLASS, and both are the byte-exact model
+    context window. The grant's SCOPE is what distinguishes them, and it is recorded
+    on the grant itself -- see :data:`SESSIONS_LAYER_B_SCOPE_KEY` and
+    :func:`layer_b_grant_covers_conversations`. A grant recorded before the
+    conversation export was disclosed covers the ``cli`` half only.
     """
     raw = _account_view(account).get(SESSIONS_LAYER_B_KEY, False)
     return raw if isinstance(raw, bool) else False
 
 
-def set_sessions_layer_b(account: str, enabled: bool) -> None:
+def layer_b_grant_covers_conversations(account: str) -> bool:
+    """Whether *account*'s Layer B grant was recorded with the conversation export in scope.
+
+    Both conditions are required, read from ONE view of the state document so the two
+    halves cannot come from different moments: the grant is on, and it carries
+    :data:`SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS`.
+
+    **A grant with no scope marker reads as ``cli``-only, always.** That is the whole
+    point of the marker rather than an edge case in it: such a grant was recorded when
+    the permission's own description covered this product's session files, so reading
+    it as covering ``conversations_v2`` would ship every interactive kiro-cli use on
+    the host off-host on a consent that never named them, and an object already in a
+    bucket cannot be recalled. An operator re-confirming through the existing
+    owner-gated endpoint gets the wider scope; nothing new is added for them to set.
+
+    Anything unrecognised -- a different string, a non-string, a missing key -- is
+    ``cli``-only for the same reason :func:`sessions_layer_b_enabled` reads an
+    unparseable value as OFF: a document this code cannot understand must not widen
+    what leaves the machine.
+    """
+    view = _account_view(account)
+    if view.get(SESSIONS_LAYER_B_KEY, False) is not True:
+        return False
+    return view.get(SESSIONS_LAYER_B_SCOPE_KEY) == SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS
+
+
+def a_retained_archive_carries_conversations(account: str) -> bool:
+    """Whether an archive this install has not retired carries a ``conversations/`` root.
+
+    Read as a predicate over one persisted boolean -- see
+    :data:`SESSIONS_CONVERSATIONS_RETAINED_KEY`. Anything that is not exactly ``True``
+    reads as False, the same posture :func:`sessions_layer_b_enabled` takes: a document
+    this code cannot understand must not be read as a reason to keep archives forever.
+
+    False here is the safe direction for STORAGE and the unsafe one for DATA, which is
+    the opposite of the grant readers, so it is worth stating why it is still right. An
+    install that never carried conversations has nothing to protect, and a corrupted or
+    absent value on an install that did will let one sweep retire the archive. The
+    alternative -- read an unparseable value as True -- freezes retention on every
+    install whose state file ever hiccups, which is the unbounded accumulation this
+    module keeps having to remove.
+
+    Read through the SAME unpersisted overlay as :func:`uploaded_objects` and
+    :func:`retention_recorded_versions`, and that is load-bearing rather than tidiness.
+    The sweep's candidate set and its version set both merge this process's held run
+    records; a predicate that read only the persisted document would put the two halves
+    of one decision on different snapshots BY CONSTRUCTION. Two same-account sessions
+    runs can overlap -- the owner-triggered path does not pass the upload gate, so it is
+    not serialized against a nightly run in flight -- and in that window the wide run's
+    key was already a live candidate under ``keep=1`` while the fact that protects it was
+    still invisible here. Same overlay, same lock, one snapshot.
+
+    This closes the IN-PROCESS half only. A run held unpersisted by ANOTHER process is
+    not visible to this map, and no reader of it can be -- see the retention spec for
+    that residue and what bounds it.
+    """
+    if _account_view(account).get(SESSIONS_CONVERSATIONS_RETAINED_KEY, False) is True:
+        return True
+    path = _state_key()
+    with _unpersisted_lock:
+        return any(
+            state_path == path
+            and acct == account
+            and record.get(_RUN_CONVERSATIONS_RETAINED) is True
+            for (state_path, acct, _kind), record in _unpersisted_runs.items()
+        )
+
+
+def set_sessions_layer_b(account: str, enabled: bool, *, scope: str | None = None) -> None:
     """Record the operator's Layer B decision for *account*.
 
     Raises ``OSError`` when the existing state could not be read, exactly as
     :func:`set_nightly` does: a permission the caller believes it stored and the
     next read contradicts is worse than a loud failure.
+
+    **The wider scope is stamped only when the CALLER ASKS FOR IT BY NAME**, through
+    *scope*. An enable whose *scope* is ABSENT records the grant and keeps the stored
+    marker ONLY while the grant was already in force -- nothing about it changed, so
+    neither widening nor narrowing was requested. An enable that turns the grant ON
+    clears the marker instead: a marker describes the grant that was in force when it
+    was written, so a grant being re-established cannot inherit it. The document can
+    hold ``enabled=false`` together with a marker, so that pairing must not become a
+    host-wide grant on a bare ``{"enabled": true}``. An enable naming a scope this code
+    does not recognise is a different request and CLEARS the marker: the caller said
+    what they wanted and it was not the conversation export, so an already-wide grant
+    must not stay wide for them.
+
+    The request shape is what makes this necessary: the route accepts a bare
+    ``{"enabled": true}``, which carries no evidence of what the operator was shown, so
+    an idempotent retry, an automation, and a client still rendering older copy all look
+    identical to a deliberate re-consent. Deriving consent from the act of enabling would
+    let any of those widen what leaves the machine, and the archive that follows cannot
+    be recalled.
+
+    A transition test -- stamp only when the grant goes from off to on -- closes the
+    retry but NOT a first enable from a stale client, where the operator reads older
+    copy and the grant silently covers the whole host. Requiring the caller to name the
+    scope closes both, because it is the only form in which the request itself carries
+    the decision.
+
+    A disable removes the marker with the grant, so a later enable cannot inherit a
+    scope from a decision that was withdrawn.
+
+    Both directions file a SEL event carrying what was decided -- see
+    :func:`_audit_layer_b_grant`. A widening that only the state file records is a
+    consent decision an incident review cannot read without that file, and a narrowing
+    is equally part of the consent history.
     """
+    resulting = {"scope": ""}
 
     def mutate(state: dict[str, Any]) -> None:
-        _account_state(state, account)[SESSIONS_LAYER_B_KEY] = bool(enabled)
+        entry = _account_state(state, account)
+        # Read BEFORE the assignment below overwrites it: whether the grant was already
+        # in force is what decides if an unscoped enable may keep the stored marker.
+        # Compared with ``is True`` to match the reader, so a corrupted stored value
+        # counts as OFF and enabling over it is a transition that clears the marker.
+        was_enabled = entry.get(SESSIONS_LAYER_B_KEY) is True
+        entry[SESSIONS_LAYER_B_KEY] = bool(enabled)
+        if not enabled:
+            entry.pop(SESSIONS_LAYER_B_SCOPE_KEY, None)
+        elif scope is None:
+            # The field was ABSENT, which is no statement about scope -- so the marker
+            # may be KEPT, but only while nothing about the grant changed. A marker
+            # describes the grant that was in force when it was written, so an enable
+            # that RE-ESTABLISHES the grant cannot inherit it: the stored value belongs
+            # to a decision other than the one this call puts in force. An off-to-on
+            # transition therefore clears it, and only an already-on grant preserves it.
+            if not was_enabled:
+                entry.pop(SESSIONS_LAYER_B_SCOPE_KEY, None)
+        elif scope == SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS:
+            entry[SESSIONS_LAYER_B_SCOPE_KEY] = SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS
+        else:
+            # The caller NAMED a scope and it is not this one, so they did not ask for
+            # the conversation export. Absent and unrecognised are different requests
+            # and must not collapse: leaving the marker here would keep an already-wide
+            # grant wide for a caller that asked for something else entirely, which is
+            # the widening-without-a-request this field exists to stop.
+            entry.pop(SESSIONS_LAYER_B_SCOPE_KEY, None)
+        stored = entry.get(SESSIONS_LAYER_B_SCOPE_KEY, "")
+        resulting["scope"] = stored if isinstance(stored, str) else ""
 
     _locked_state_update(mutate)
+    _audit_layer_b_grant(account, bool(enabled), resulting["scope"])
 
 
-def _audit_layer_b_decision(account: str, layer_b: bool, *, caller: str) -> None:
+def _audit_layer_b_grant(account: str, enabled: bool, scope: str) -> None:
+    """Record the operator's grant WRITE, with its direction and resulting scope.
+
+    :func:`_audit_layer_b_decision` records the decision a BACKUP RUN observed. This
+    records the moment the operator made it, which is a different event and the one a
+    consent question actually asks about: who widened this grant, and when.
+
+    The route that calls this is already audited as an API access, but that event
+    carries the operation and the path and not which way the decision went, so learning
+    what the grant became means reading the state file -- the on-disk dependency the
+    decision audit exists to remove. Both facts are therefore in ``resources``.
+
+    A NARROWING is filed too, on the same footing. A withdrawal is as much part of the
+    consent history as a grant: a review reconstructing what an archive was allowed to
+    carry on a given night needs the revocation as well as the grant, and filing only
+    widenings would leave the log reading as though a permission that was withdrawn is
+    still in force.
+
+    ``dashboard-owner`` matches the attribution the owner-gated route uses for its own
+    events, and that route is this permission's only writer.
+
+    ``successful`` for both directions, and best-effort like every audit in this module:
+    a failed record must never be what stops an operator's decision from persisting,
+    which is why this runs after the state write rather than before it.
+    """
+    # The grant term is part of this, not just the marker. A withdrawn grant covers
+    # nothing whatever a marker says, which is the same pair
+    # `layer_b_grant_covers_conversations` reads -- and reading only the marker here made
+    # the event truthful only because the disable branch happens to remove it. That is a
+    # dependency on a decision made elsewhere in the function, and an event that reported
+    # `conversations=allowed` for a withdrawal would misstate the one thing a consent
+    # review comes to this event for.
+    covered = enabled and scope == SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS
+    try:
+        sel().log_api_access(
+            caller="dashboard-owner",
+            operation="aws_control.backup_layer_b_grant",
+            outcome="successful",
+            source="aws-control",
+            resources=(
+                f"account={account} grant={'granted' if enabled else 'withdrawn'} "
+                f"conversations={'allowed' if covered else 'withheld'}"
+            )[:200],
+        )
+    except Exception:
+        logger.debug("aws-control Layer B grant audit failed", exc_info=True)
+
+
+def _audit_layer_b_decision(
+    account: str, layer_b: bool, *, conversations: bool, caller: str
+) -> None:
     """Record which way the Layer B decision went, at the point it is made.
 
     The permission decides whether unredacted model context leaves the machine,
@@ -3836,6 +4248,15 @@ def _audit_layer_b_decision(account: str, layer_b: bool, *, caller: str) -> None
     :func:`_refuse_upload`, but that helper only fires on a REFUSAL -- so the
     ALLOW direction, which is the one that ships the bytes, was the only decision
     here leaving no event at all.
+
+    ``conversations`` is carried for that same reason and is not derivable from
+    ``layer_b``. The grant's SCOPE is a second consent decision: a permitted run
+    whose grant predates the conversation export ships the ``cli`` half and withholds
+    the terminal conversations, and an event saying only ``layer_b=allowed`` describes
+    that run identically to one that shipped both. The run record does carry
+    ``layer_b_scope``, but this function exists precisely so a consent question has an
+    answer that survives the run record being gone, so reading the scope from disk
+    would put the audit back on the dependency it is here to remove.
 
     ``successful`` for both directions, because the decision itself succeeded
     either way; which way it went is in ``resources``. Filing a withhold as
@@ -3853,7 +4274,10 @@ def _audit_layer_b_decision(account: str, layer_b: bool, *, caller: str) -> None
             operation="aws_control.backup_layer_b_decision",
             outcome="successful",
             source="aws-control",
-            resources=f"account={account} layer_b={'allowed' if layer_b else 'withheld'}"[:200],
+            resources=(
+                f"account={account} layer_b={'allowed' if layer_b else 'withheld'} "
+                f"conversations={'allowed' if conversations else 'withheld'}"
+            )[:200],
         )
     except Exception:
         logger.debug("aws-control Layer B decision audit failed", exc_info=True)
@@ -3863,9 +4287,12 @@ def _audit_layer_b_decision(account: str, layer_b: bool, *, caller: str) -> None
 #: and the ONLY ones. Everything else in ``data.sqlite3`` -- every identity /
 #: token / usage table ``hooks.py`` classifies as an auth store, whatever its
 #: name -- is left behind by construction: the export writes THIS allowlist and
-#: nothing else, so the archive can never carry a byte of the auth half even if
-#: kiro-cli adds a new credential table tomorrow. A denylist would fail OPEN the
-#: day such a table appeared; an allowlist fails closed.
+#: nothing else, so the archive can never carry a byte of a table outside it, even
+#: if kiro-cli adds a new credential TABLE tomorrow. A denylist would fail OPEN the
+#: day such a table appeared; an allowlist fails closed. The bound is per table and
+#: not per column: every column an allowlisted table declares is copied, so a
+#: credential column added to one of THESE tables would ride -- see
+#: :func:`_copy_table`.
 #:
 #: ``conversations_v2`` is the terminal's own chat store. The
 #: boundary of what counts as "conversation state" is declared in this module's
@@ -3885,30 +4312,225 @@ _CONVERSATIONS_MANIFEST_ARCNAME = f"{_CONVERSATIONS_ARC_PREFIX}/CONVERSATIONS_MA
 #: The sanctioned credential-read audit id for opening the kiro-cli store. The
 #: store holds live bearer tokens, so every reader owes an SEL trail; this id is
 #: registered in ``hooks._AUDIT_ONLY_READ_IDS`` and the export fails closed if the
-#: audit cannot be recorded. One name so the reader and the registry cannot drift.
+#: audit cannot be recorded. The registry holds its own literal, so this constant
+#: does not make the two strings one -- what catches a drift is
+#: ``test_the_conversation_read_id_is_registered_in_hooks``, which asserts this
+#: value is present there. An unregistered id fails every read closed, so a drift
+#: is loud rather than silent, but it is the test that keeps them equal.
 _CONVERSATION_READ_ID = "aws_control.conversation_export"
 
+#: The per-cell byte ceiling for a copied conversation value, and the number of rows
+#: the copy fetches at a time. Together they are the export's peak-memory bound: at
+#: most ``_CONVERSATION_BATCH_ROWS * _CONVERSATION_MAX_CELL_BYTES`` of conversation
+#: text is live at once. A row count ALONE bounds nothing, because one field can be
+#: arbitrarily wide, and an allocation failure here would take the whole sessions
+#: backup down with it rather than costing only this sub-member.
+#:
+#: Both numbers come from a live store rather than a guess: its widest
+#: ``conversations_v2`` value measures 2.5 MiB, and the table totals 1.1 GiB across
+#: 3226 rows, so a 500-row batch of real data is roughly 180 MiB. The ceiling sits
+#: well above the widest real value so an ordinary host is never refused, and the
+#: batch is small because an average row here is hundreds of kilobytes.
+_CONVERSATION_MAX_CELL_BYTES = 16 * 1024 * 1024
+_CONVERSATION_BATCH_ROWS = 4
 
-def _kiro_cli_conversation_db() -> Path | None:
-    """The kiro-cli conversation/state store this host actually has, or ``None``.
 
-    Resolved through :func:`identity_stores.state_db_candidates`, which honours
-    ``XDG_DATA_HOME`` (POSIX) and ``LOCALAPPDATA`` (Windows) on the source side
-    just as the rest of kiro-cli state discovery does -- a store relocated by one
-    of those variables is a normal, supported layout, so it must be found rather
-    than silently skipped. The candidates come back current-platform, most likely
-    first, deduped; the first that is a regular file (not a symlink to somewhere
-    else) is this host's. ``None`` means the terminal has no store here, a normal
-    signed-out / never-used state, not an error.
+def _kiro_cli_conversation_db() -> tuple[Path | None, str]:
+    r"""This host's kiro-cli store, and why there is none when there is none.
+
+    Resolved through :func:`identity_stores.state_db_candidates` against FIXED,
+    home-anchored locations. The environment is deliberately NOT consulted -- not
+    ``XDG_DATA_HOME`` on POSIX, not ``LOCALAPPDATA`` or ``APPDATA`` on Windows --
+    which is why an empty mapping is passed rather than ``os.environ``.
+
+    **Why a relocated store is skipped rather than found.** The fence that makes
+    this store unreadable and unwritable by agent file tools is home-anchored:
+    ``security.paths`` splices in :func:`identity_stores.fenced_home_dirs`, and its
+    own comment records that "a profile redirected outside the home directory is
+    not covered". So a store re-rooted by one of those variables sits OUTSIDE the
+    fence, where an agent can author rows. This function feeds an archive that is
+    uploaded off-host unattended, so honouring the variable would let an agent
+    plant rows in a ``conversations_v2`` table at a location it may write and have
+    a scheduled backup ship them. An uploaded object cannot be un-sent.
+    :func:`kiro_prerequisite` records the same decision for the same two variables
+    and states the rule this follows: a fixed anchor cannot be pointed at
+    something the agent may write. Being wrong in this direction costs a
+    relocated-store install its terminal conversations, which the run record shows
+    as an absent ``conversations/`` root; being wrong in the other direction
+    uploads agent-authored content and cannot be undone.
+
+    The candidates come back current-platform, most likely first, deduped; the
+    first that is a regular file reached through no redirection is this host's.
+
+    **The second return value says WHY no store was used, and it is never empty when
+    none was.** It is a reason string, and the caller suppresses the retention sweep on
+    any reason, so each of these cases keeps an earlier archive alive rather than
+    letting this run retire it. Three cases reach it, and none is exotic:
+    ``store_rejected_link`` for a candidate refused by either redirection test -- and
+    the ancestor walk rejects on ANY parent from ``/`` down, including the home
+    directory, so an ordinary symlinked ``~/.local/share`` or a symlinked home takes
+    this exit permanently -- ``store_unreadable`` for one whose stat raised ``OSError``,
+    and ``store_absent`` when nothing is at any fenced location.
+
+    Absence reports a reason for a reason worth stating, since the opposite reads as
+    obvious: the question the caller asks is whether an EARLIER archive holds rows this
+    one does not, which is about backup history rather than about what is on disk now. A
+    store wiped to clear corruption, removed by a reinstall, or on a volume not mounted
+    at nightly-run time was present when last week's archive was written. Nothing pins a
+    store's presence from one run to the next, so a per-run observation cannot answer
+    the question, and answering it optimistically erases the last archive that held the
+    conversations.
+
+    **The ORDER of the two redirection tests and the file test is the guard, not a
+    detail.** ``is_file()`` on a LOCAL-looking path whose ANCESTOR is a junction to
+    ``\\host\share`` opens an outbound SMB connection that authenticates as this
+    process, and it does so inside the stat itself -- before any check of ours can
+    reject anything. So the ancestor walk runs FIRST, on every candidate, before
+    the path is stat-ed at all. :func:`platform_compat.first_linked_ancestor` tests
+    ancestors root-first and stops at the first link, so the walk never traverses
+    one either. It deliberately excludes the leaf, which is why
+    :func:`platform_compat.is_link_or_junction` still tests the candidate itself:
+    ``islink`` alone answers False for a Windows junction, so a bare symlink check
+    would accept a junction and read the store it points at instead of this host's.
+    A fixed anchor bounds where a candidate may live; it does not stop a link
+    planted AT that anchor from redirecting the read, so both guards are needed.
     """
-    candidates = state_db_candidates(sys.platform, Path.home(), os.environ)
+    # Fixed home-anchored candidates only -- an empty mapping, never `os.environ`.
+    # See the relocation note above: a redirected root falls outside the
+    # agent-file-tool fence, and this feeds an off-host upload.
+    candidates = state_db_candidates(sys.platform, Path.home(), {})
+    # Why a candidate was declined, for the caller. The FIRST decline is kept rather
+    # than the last: candidates come back most-likely-first, so the earliest one is
+    # the store this host would have used.
+    declined = ""
+    # Every candidate that clears both redirection tests AND is a regular file, not
+    # just the first. On Windows the table lists Local (the current layout) before
+    # Roaming (legacy), so returning the first would let a leftover in the abandoned
+    # root mask the live account. `identity_stores.selected_store` already arbitrates
+    # that exact state by write time; this reuses its READING rather than its answer,
+    # because that function stats its candidates itself, before anything has checked
+    # them for redirection -- wrapping it would put the outbound stat back ahead of
+    # the guard, which is the hole the ordering above exists to close.
+    #
+    # `_store_write_time` is imported rather than reimplemented even though it is that
+    # module's private name. Two copies of "newest write across the main file and its
+    # WAL sidecar" can drift, and the cost of drift here is exporting a stale store
+    # while reporting success, silently; a rename instead breaks the import loudly, at
+    # import time, under mypy and every test that loads this module.
+    cleared: list[Path] = []
     for db in candidates:
         try:
-            if db.is_file() and not db.is_symlink():
-                return db
+            # Redirection tests BEFORE `is_file()`. See the order note above: the
+            # stat is the outbound connection, so it must not run on a path this
+            # has not already cleared.
+            if first_linked_ancestor(db) or is_link_or_junction(db):
+                declined = declined or "store_rejected_link"
+                continue
+            if db.is_file():
+                cleared.append(db)
         except OSError:
+            declined = declined or "store_unreadable"
             continue
-    return None
+    if cleared:
+        try:
+            # `max` keeps the FIRST maximal element, so equal write times prefer the
+            # earlier table row -- Local, the current layout -- exactly as
+            # `selected_store` resolves a tie. `_store_write_time` also reads the
+            # `-wal` sidecar, because a commit lands there and the main file's mtime
+            # does not advance until a checkpoint, so the main file alone
+            # under-reports recency on the very store being written.
+            return max(cleared, key=_store_write_time), ""
+        except OSError:
+            # A store vanished between the check above and the stat. Fall back to the
+            # current-layout row rather than losing the export, which is what
+            # `selected_store` does when a write time cannot be read.
+            return cleared[0], ""
+    # Absence is reported too, and is NOT the reasonless case it looks like. The
+    # question the caller asks this field is "could an older archive hold
+    # conversations this one does not", which is about backup HISTORY, not about
+    # whether a store is here now. A store wiped to clear corruption, removed by a
+    # reinstall, or sitting on an unmounted volume at nightly-run time was present
+    # last week, so last week's archive holds rows this run cannot carry. Nothing
+    # pins a store's presence across runs, which is the same reason the relocation
+    # flag could not be treated as standing: a per-run observation cannot answer a
+    # question about earlier archives.
+    return None, declined or "store_absent"
+
+
+def _store_relocated_outside_the_fence() -> bool:
+    """Whether this host's environment re-roots the store away from the fenced set.
+
+    :func:`_kiro_cli_conversation_db` deliberately reads only fixed, home-anchored
+    candidates, so a relocated store is skipped. Skipping it SILENTLY is the
+    failure this answers: an operator whose store lives outside home would believe
+    an archive holds their terminal conversations when it holds none, and nothing in
+    the run record would say otherwise.
+
+    Compares the two candidate sets by PATH and touches the filesystem not at all --
+    no ``stat``, no open, nothing. That is deliberate rather than incidental: the
+    relocated root is outside the agent-file-tool fence, and probing a path there is
+    the very thing the ancestor guard in :func:`_kiro_cli_conversation_db` exists to
+    stop. A set difference needs no probe, so this reports the condition without
+    reproducing the risk.
+
+    True means "the environment names at least one store location this export will
+    not read". It does NOT mean a store exists there; that question cannot be
+    answered without a probe, and is not worth one. Reporting the relocation is
+    enough for an operator to understand an absent ``conversations/`` root, which is
+    the whole job.
+
+    **Only a variable that MOVES a candidate counts, and that is the whole test.**
+    ``LOCALAPPDATA`` and ``XDG_DATA_HOME`` re-root their own candidate, so the
+    difference sees them. ``APPDATA`` does not, and is deliberately not compared: the
+    Windows Roaming candidate is a fixed home anchor because
+    :func:`identity_stores.state_db_candidates` does not follow that variable -- "the
+    current generation writes the ``LOCALAPPDATA`` location, and the roaming default
+    is retained only as a legacy fallback". A store kiro-cli does not write to cannot
+    be relocated away from this export, so an ``APPDATA`` mismatch is not evidence of
+    a relocation. Comparing it anyway reported one on any host with a redirected
+    Roaming folder, which is an ordinary enterprise configuration, and that false
+    positive froze retention permanently while a readable Local store sat beside it
+    inside the fence. Nothing is lost by leaving it out: a legacy install that really
+    does keep its store at a redirected Roaming root has no store at either fixed
+    candidate, so the lookup reports ``store_absent`` and the sweep is suppressed on
+    that path instead.
+    """
+    fixed = set(state_db_candidates(sys.platform, Path.home(), {}))
+    relocatable = state_db_candidates(sys.platform, Path.home(), os.environ)
+    return any(candidate not in fixed for candidate in relocatable)
+
+
+class _ConversationExport(NamedTuple):
+    """What one conversation export actually put in the archive.
+
+    ``rows`` and ``members`` are tracked SEPARATELY because they answer different
+    questions and genuinely disagree on a path this module takes: a present-but-
+    empty allowlisted table IS carried, so a restore sees the real schema, and that
+    archive holds two members and zero rows. Measuring content by rows alone reads
+    such an archive as empty, and :func:`run_sessions_backup`'s "nothing to
+    archive" guard would then discard members it had already written.
+
+    ``rows`` feeds the archive's content count and the unchanged-run comparison.
+    ``members`` answers only "is there a ``conversations/`` root in here".
+    ``skipped`` names a reason the export carried less than the host holds, for the
+    run record, and is empty when there is none. It exists because a silent skip is
+    how an operator ends up believing they hold a backup they do not hold.
+
+    **Any non-empty ``skipped`` also suppresses the retention sweep**, so setting it
+    is not merely a reporting act -- see :func:`run_sessions_backup`. That is why the
+    suppression is a predicate on this field rather than a list of qualifying reasons:
+    a new reason added here cannot be forgotten from a predicate, and every reason
+    this module emits qualifies anyway. Leave it EMPTY only when this run READ
+    everything the host holds -- a successful export -- or when the operator has
+    withheld the permission, which is a consented withdrawal rather than a gap. An
+    absent store is NOT one of those: the question is whether an EARLIER archive holds
+    rows this one does not, and a store that is missing now may have been present when
+    that archive was written.
+    """
+
+    rows: int
+    members: int
+    skipped: str = ""
 
 
 def _add_bytes(tar: tarfile.TarFile, payload: bytes, arcname: str) -> None:
@@ -3921,33 +4543,200 @@ def _add_bytes(tar: tarfile.TarFile, payload: bytes, arcname: str) -> None:
     tar.addfile(info, io.BytesIO(payload))
 
 
-def _add_regular_file(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
-    """Add a file THIS module just wrote (a temp export) to ``tar``.
+class _ScratchExportUnsafe(Exception):
+    """The scratch export this module wrote is not the file it wrote.
 
-    Unlike :func:`_add_pinned`, no descriptor pinning is needed: the source is a
-    file this process created under its own private ``TemporaryDirectory``, not an
-    agent-writable tree, so there is no swap race to defend against.
+    Raised BEFORE the first tar write, so the caller reports a reason and carries
+    nothing rather than shipping a member whose bytes came from somewhere else.
     """
-    st = path.stat()
+
+
+def _conversation_scratch_parent() -> Path:
+    """The agent-masked directory the conversation export is written under.
+
+    This is the FIRST line of defence and it removes the attack rather than detecting
+    it. A shared temp root cannot be made safe by descriptor pinning alone, because the
+    pinning happens after a name the agent can already reach: a same-UID agent that
+    replaces the temp DIRECTORY before this process opens it hands over a directory of
+    its own, in which every pinned check passes on a file the attacker chose.
+
+    ``app_data_dir(APP_NAME)`` is masked from agent sandboxes as a whole directory
+    (``sandbox._CREW_HIDDEN_LEAVES`` carries ``apps/aws-control/data``), and it is the
+    STRICTER of the two masked roots this app has: the sibling ``aws-control-staging``
+    is deliberately granted to the AWS CLI spawn, and this scratch file is read only by
+    this process, so it has no reason to be reachable from that child.
+
+    Guarded exactly as :func:`restore_archive`'s staging is, and for the same reasons a
+    per-file check cannot cover: a link planted AT the root would put the scratch file
+    outside the fence wholesale, and ``exist_ok=True`` happily accepts a pre-existing
+    link, so the resolve is re-checked after the ``mkdir`` rather than before it.
+    """
+    base = app_data_dir(APP_NAME)
+    scratch = base / "conversations"
+    if is_link_or_junction(scratch):
+        raise ValueError("conversation scratch directory is not a real directory")
+    # `mode=` at creation rather than a chmod afterwards: it leaves no instant in which
+    # the directory exists group- or world-readable. umask can only clear bits, so the
+    # result is never wider than 0700. Ignored on Windows, where the masked parent and
+    # its own ACL are what restrict this.
+    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if scratch.resolve() != (base.resolve() / "conversations"):
+        raise ValueError("conversation scratch directory resolves outside app storage")
+    if not scratch.is_dir():
+        raise ValueError("conversation scratch directory is not a real directory")
+    return scratch
+
+
+def _add_open_file(tar: tarfile.TarFile, fh: IO[bytes], size: int, arcname: str) -> None:
+    """Add an ALREADY-OPEN, already-validated file to ``tar`` as ``arcname``.
+
+    Takes the handle rather than a path because the caller's descriptor IS the
+    authorization: re-deriving the file from its name here would reopen the swap
+    window the caller just closed.
+    """
     info = tarfile.TarInfo(name=arcname)
-    info.size = st.st_size
+    info.size = size
     info.mode = 0o600
     info.mtime = 0
     info.type = tarfile.REGTYPE
-    with path.open("rb") as fh:
-        tar.addfile(info, fh)
+    tar.addfile(info, fh)
+
+
+def _open_pinned_scratch(dir_fd: int, name: str) -> tuple[IO[bytes], int]:
+    """Open ``name`` under ``dir_fd`` and prove it is still the file we wrote.
+
+    An earlier version of this read the scratch export BY PATH and stated that
+    pinning was unnecessary "because the source is a file this process created under
+    its own private ``TemporaryDirectory``". That justification was WRONG, and the way
+    it was wrong is the reusable part: ``TemporaryDirectory`` is mode 0700, which
+    excludes other USERS and not the same-UID agent this product's threat model
+    assumes -- the one :mod:`kiro_crew.sandbox` describes planting links in the
+    world-writable root. The directory was never private from the attacker that
+    matters, so ``stat`` then ``open`` on a name left exactly the swap window
+    :func:`_add_pinned` exists to close, and it paid out as a host file uploaded
+    off-host with no recall.
+
+    Three checks, each closing a different substitution:
+
+    * ``O_NOFOLLOW`` -- the name may not resolve through a symlink.
+    * ``S_ISREG`` on the DESCRIPTOR -- not a FIFO or device that would make the read
+      block or return a stream that is not the export.
+    * ``st_nlink == 1`` -- a hard link defeats the other two by construction, because
+      the target is a genuine regular file reached under our own name.
+
+    The size comes from the same ``fstat`` as the checks, so the header cannot
+    describe one file while the body streams another.
+
+    Reachable only through :func:`run_sessions_backup`, which refuses outright on a
+    platform without descriptor pinning, so these flags are real here and never the
+    ``getattr`` zero fallback.
+    """
+    fd = os.open(name, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK, dir_fd=dir_fd)
+    handle = open(fd, "rb", closefd=True)
+    try:
+        st = os.fstat(handle.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise _ScratchExportUnsafe("the scratch export is not a regular file")
+        if st.st_nlink != 1:
+            raise _ScratchExportUnsafe(f"the scratch export carries {st.st_nlink} links")
+        return handle, st.st_size
+    except BaseException:
+        handle.close()
+        raise
+
+
+class _ConversationTooLarge(Exception):
+    """One conversation field is wider than the ceiling, so nothing this export read ships.
+
+    Its own exit rather than a folded-in ``store_unreadable``: the store was read
+    fine and one field is pathological, which asks a different thing of the operator.
+    The export carries nothing instead of dropping the row, for the reason
+    :class:`_RedactionFailed` gives -- a partial copy produces an archive a restore
+    reads as complete.
+    """
+
+
+class _RedactionFailed(Exception):
+    """A redactor raised on a value, so nothing this export read may be shipped.
+
+    Its own exit, not folded into ``store_unreadable``: the store WAS read here, and
+    the two states need different reasons because they call for different operator
+    action. Silently dropping the row would ship an archive a restore reads as
+    complete, and falling back to the raw value would ship the credential this pass
+    exists to remove -- so the export carries nothing and says why.
+    """
+
+
+def _redacted_row(row: tuple[Any, ...]) -> tuple[Any, ...]:
+    """One source row with credentials and exfiltration URLs removed from its text.
+
+    Only ``str`` values are rewritten. The allowlisted table's real schema is
+    ``key``/``conversation_id``/``value`` TEXT plus two INTEGER timestamps, measured on
+    a live store where every text column reports ``typeof() == 'text'``, so no BLOB
+    carries conversation text and an integer has nothing to scrub.
+
+    Raises :class:`_RedactionFailed` rather than returning the row: a caller that
+    cannot scrub a value must not choose between dropping it and shipping it.
+    """
+    out: list[Any] = []
+    for value in row:
+        if not isinstance(value, str):
+            out.append(value)
+            continue
+        try:
+            cleaned = _redact_egress(value)
+        except Exception as exc:  # noqa: BLE001 - any failure here means do not ship
+            raise _RedactionFailed(str(exc)) from exc
+        out.append(cleaned)
+    return tuple(out)
+
+
+def _refuse_an_oversized_cell(source: sqlite3.Connection, table: str, cols: list[str]) -> None:
+    """Raise unless every cell of ``table`` fits :data:`_CONVERSATION_MAX_CELL_BYTES`.
+
+    Measured in SQLite, in the caller's read transaction, BEFORE the first
+    ``fetchmany``: ``length(cast(c as blob))`` yields a byte count without handing
+    Python the value, so the ceiling is established rather than discovered by
+    allocating. Being inside the snapshot is what makes one pass enough for the whole
+    copy -- a writer committing a wider value mid-copy is outside it and cannot be
+    read. One extra scan of the table is the price of a bound that precedes the fetch
+    rather than following it.
+
+    The message names the column and the byte count, never the value.
+    """
+    widest = ", ".join(f'max(length(cast("{c}" as blob)))' for c in cols)
+    measured = source.execute(f'SELECT {widest} FROM "{table}"').fetchone() or ()
+    for name, size in zip(cols, measured):
+        if size is not None and size > _CONVERSATION_MAX_CELL_BYTES:
+            raise _ConversationTooLarge(
+                f"{table}.{name} holds a {size}-byte value, over the "
+                f"{_CONVERSATION_MAX_CELL_BYTES}-byte ceiling"
+            )
 
 
 def _copy_table(source: sqlite3.Connection, target: sqlite3.Connection, table: str) -> int:
     """Copy every row of ONE allowlisted table into ``target``. Returns row count.
 
     The destination schema is taken from the source's own ``CREATE TABLE`` text
-    (``sqlite_schema.sql``), and rows are moved with an EXPLICIT column list read
-    from ``PRAGMA table_info`` -- never ``SELECT *`` -- so the copy carries exactly
-    the columns the source declares for this one table and nothing that a wider
-    query could sweep in. The table name is validated against the caller's
-    allowlist before it reaches here, so it is never attacker-controlled; column
-    identifiers are quoted defensively all the same.
+    (``sqlite_schema.sql``), and rows are moved through a named column list built
+    from ``PRAGMA table_info`` rather than a literal ``SELECT *``. Be precise about
+    what that buys: the list is derived from whatever columns the source declares
+    at copy time, so it is NOT an allowlist and does NOT hold a column back. A
+    column added to this table upstream -- including a credential-bearing one --
+    is enumerated by the same ``PRAGMA`` and copied. What the named list gives is a
+    stable, quoted column ORDER shared by the SELECT and the INSERT, so the copy
+    cannot silently mis-align if the two ever saw different column sets. The
+    fail-closed boundary is the TABLE allowlist in
+    :data:`_CONVERSATION_TABLES`, one level up; column granularity is not
+    implemented here.
+
+    The table name is validated against the caller's allowlist before it reaches
+    here, so it is never attacker-controlled; column identifiers are quoted
+    defensively all the same.
+
+    Peak memory is bounded by :data:`_CONVERSATION_BATCH_ROWS` rows of at most
+    :data:`_CONVERSATION_MAX_CELL_BYTES` each, and a table holding a wider cell is
+    refused outright rather than copied -- see :func:`_refuse_an_oversized_cell`.
     """
     create_sql = source.execute(
         "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (table,)
@@ -3961,18 +4750,23 @@ def _copy_table(source: sqlite3.Connection, target: sqlite3.Connection, table: s
     col_list = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join("?" for _ in cols)
     count = 0
+    _refuse_an_oversized_cell(source, table, cols)
     cursor = source.execute(f'SELECT {col_list} FROM "{table}"')
     insert = f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})'
     while True:
-        rows = cursor.fetchmany(500)
+        rows = cursor.fetchmany(_CONVERSATION_BATCH_ROWS)
         if not rows:
             break
-        target.executemany(insert, rows)
+        # A GENERATOR, not a list comprehension: the raw batch is already held, and
+        # materialising the redacted copy beside it doubles the peak for the length of
+        # the statement. ``executemany`` consumes one row at a time, so only one
+        # redacted row is live at once.
+        target.executemany(insert, (_redacted_row(row) for row in rows))
         count += len(rows)
     return count
 
 
-def _export_cli_conversations(tar: tarfile.TarFile) -> int:
+def _export_cli_conversations(tar: tarfile.TarFile) -> _ConversationExport:
     """Export ONLY the terminal conversation tables into ``tar``. Returns row count.
 
     ``data.sqlite3`` is BOTH the terminal's conversation store and its identity
@@ -3980,8 +4774,11 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
     holds live bearer tokens. Tar-ing the file would upload live
     credentials off-host, strictly worse than the gap this closes. So this reads
     the source and writes a FRESH database holding only :data:`_CONVERSATION_TABLES`
-    -- an allowlist, so no other byte of the file (no identity row, no token
-    column) can reach the archive even if kiro-cli adds a credential table later.
+    -- an allowlist, so no byte of any table OUTSIDE it (no identity row, no token
+    column of an auth table) can reach the archive even if kiro-cli adds a
+    credential table later. The bound is per TABLE, not per column: every column an
+    allowlisted table declares is copied, so a credential column added to
+    ``conversations_v2`` itself would ride. See :func:`_copy_table`.
 
     **The source is a LIVE WAL-mode database, so a consistent read needs care.**
     A commit lands in the ``-wal`` sidecar and folds into the main file only on a
@@ -4000,25 +4797,103 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
 
     Steps:
 
-    1. Open the source READ-ONLY (``mode=ro``) so this can never write the
-       operator's live store, and open one deferred read transaction so all reads
-       share a single consistent snapshot including committed WAL frames.
-    2. Copy the allowlisted tables with an explicit per-table column list, so the
-       destination carries only the columns the source declares -- never a
-       ``SELECT *`` that could sweep a column added upstream.
+    1. Open the source READ-ONLY (``mode=ro``) so this writes no database page and
+       runs no checkpoint against the operator's live store. It is not a promise of
+       zero filesystem writes: on a WAL store SQLite may still update the ``-shm``
+       shared-memory sidecar to take a read mark, which is how a reader
+       participates in WAL at all. The store's own DATA is what is untouchable
+       here. Open one deferred read transaction so all reads share a single
+       consistent snapshot including committed WAL frames.
+    2. Copy the allowlisted tables through a named per-table column list, which
+       fixes a stable column order for the copy -- see :func:`_copy_table` for what
+       that does and does not bound, since the list is derived from the source's
+       declared columns and is not a column allowlist. The fail-closed boundary is
+       the TABLE allowlist in :data:`_CONVERSATION_TABLES`.
 
-    Best-effort at the STORE level (a missing store, an unreadable one) -- those
-    return 0 and the sessions backup proceeds with the transcript halves. NOT
+    Best-effort at the STORE level (a missing store, an unreadable one, a store that
+    cannot be resolved at all) -- those
+    return an empty :class:`_ConversationExport` and the sessions backup proceeds
+    with the transcript halves. NOT
     best-effort at the ROW level: once a readable store is found, every row of
     every allowlisted table is copied and counted, and the manifest's count is
     asserted against the source in the tests, so a partial copy fails loudly
     rather than shipping a short archive.
+
+    **One exit deliberately does NOT report a skip: a failure while WRITING the
+    members into the tar.** ``tarfile.addfile`` raising part-way leaves the archive in
+    an undefined state, so swallowing it would upload a damaged tarball under a record
+    saying the run succeeded -- worse than the failure it hides, and the one case where
+    losing the whole archive is the correct outcome. Everything before the first tar
+    write is guarded and reports; from the first tar write onward, an
+    exception propagates.
     """
-    db = _kiro_cli_conversation_db()
+    # RELOCATION FIRST, before any lookup. A file may still sit at the fixed anchor
+    # after the environment says the store moved -- a leftover from before the
+    # relocation -- and looking there first would export those stale conversations
+    # and report complete coverage, because the relocation would only be noticed
+    # when the fixed lookup found nothing. `identity_stores.selected_store` arbitrates
+    # this same "leftover in the abandoned root" state by mtime, so it is a state
+    # this codebase already expects rather than a hypothetical. A store the
+    # environment has moved away from is stale by definition, and exporting stale
+    # conversations while recording complete coverage is worse than exporting
+    # nothing and saying so.
+    # Discovery is GUARDED, not because either call is expected to raise, but because
+    # an exception escaping here would fail the whole sessions backup and throw away a
+    # correct transcript archive over a missing sub-member. Both calls reach
+    # ``Path.home()``, which raises when the home directory cannot be determined, and
+    # the candidate walk touches the filesystem. This function's contract is
+    # best-effort at the store level, so an unusable store must look the same however
+    # it became unusable. ``RuntimeError`` is named for ``Path.home()`` specifically.
+    try:
+        relocated = _store_relocated_outside_the_fence()
+        db, declined = (None, "") if relocated else _kiro_cli_conversation_db()
+    except (OSError, RuntimeError) as exc:
+        logger.warning(
+            "aws-control: the kiro-cli conversation store could not be resolved, so no "
+            "conversations were carried in this archive: %s",
+            redact_log_via_context(str(exc)),
+        )
+        return _ConversationExport(0, 0, "store_discovery_failed")
+    if relocated:
+        logger.warning(
+            "aws-control: the kiro-cli conversation export reads only fixed, "
+            "home-anchored store locations, and this host's environment names a "
+            "relocated one, so no conversations were carried in this archive"
+        )
+        return _ConversationExport(0, 0, "store_relocated_outside_fence")
     if db is None:
-        return 0
+        # No store was USED, and every way of reaching that reports a reason. The
+        # tempting exemption is absence: a host with no store looks like it has no
+        # conversations for an older archive to hold. That asks about the store NOW,
+        # while retention decides the fate of an archive written EARLIER -- a store wiped
+        # to clear corruption, dropped by a reinstall, or on an unmounted volume was
+        # present when that archive was written. An ordinary symlinked home reaches the
+        # rejection case permanently, and either case erases the last complete archive
+        # if it prunes, so both suppress.
+        logger.warning(
+            "aws-control: the kiro-cli conversation export used no store (%s), so no "
+            "conversations were carried in this archive",
+            declined,
+        )
+        return _ConversationExport(0, 0, declined)
     per_table: dict[str, int] = {}
-    with tempfile.TemporaryDirectory(prefix="kc-conv-") as tmp:
+    # Cut under the AGENT-MASKED app data root, not the system temp directory. That is
+    # the defence; the descriptor pinning below is depth behind it. See
+    # `_conversation_scratch_parent`.
+    #
+    # Its own failure is a REASON rather than an exception: a host whose data home
+    # cannot hold a directory has not failed the backup, and the transcript halves are
+    # already archived by the time this runs.
+    try:
+        scratch_parent = _conversation_scratch_parent()
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "aws-control: kiro-cli conversation export dropped -- its masked scratch "
+            "root was unusable, so nothing was carried: %s",
+            redact_log_via_context(str(exc)),
+        )
+        return _ConversationExport(0, 0, "scratch_root_unusable")
+    with tempfile.TemporaryDirectory(prefix="kc-conv-", dir=str(scratch_parent)) as tmp:
         dst = Path(tmp) / "conversations.sqlite3"
         src_uri = f"file:{urllib.parse.quote(str(db))}?mode=ro"
         try:
@@ -4043,6 +4918,41 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
                             continue
                         per_table[table] = _copy_table(source, target, table)
                     target.commit()
+        except _RedactionFailed as exc:
+            # The store was read and could not be SANITISED. Per the invariant this
+            # module walks, that is a failed read rather than a policy decline, so it
+            # carries a reason and suppresses the retention sweep. The audit records a
+            # successful contact, because the read itself succeeded -- what failed is
+            # the shipping, and conflating the two would misreport which half broke.
+            hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "success")
+            logger.warning(
+                "aws-control: kiro-cli conversation export could not redact a value, so "
+                "nothing was carried rather than shipping it unredacted: %s",
+                redact_log_via_context(str(exc)),
+            )
+            return _ConversationExport(0, 0, "conversations_unredactable")
+        except _ConversationTooLarge as exc:
+            # Read fine, refused on width. Same shape as the redaction exit: the READ
+            # succeeded, so the audit says so, and the reason suppresses the retention
+            # sweep because an older archive may hold what this one does not.
+            hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "success")
+            logger.warning(
+                "aws-control: kiro-cli conversation export refused a value wider than "
+                "its per-cell ceiling, so nothing was carried: %s",
+                redact_log_via_context(str(exc)),
+            )
+            return _ConversationExport(0, 0, "conversations_oversized")
+        except MemoryError:
+            # The bound above is meant to make this unreachable; it is caught anyway
+            # because the alternative is losing a correct transcript archive over a
+            # sub-member. Nothing is formatted into the message, since a handler for an
+            # allocation failure should not ask for more memory.
+            hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "success")
+            logger.warning(
+                "aws-control: kiro-cli conversation export ran out of memory, so it was "
+                "left out of this archive and the rest of the backup continues"
+            )
+            return _ConversationExport(0, 0, "conversations_memory_exhausted")
         except (OSError, sqlite3.Error) as exc:
             # The store was opened (or the open failed) -- either way the contact
             # with a credential-bearing file owes a trail. Record it as unreadable
@@ -4051,9 +4961,9 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
             logger.warning(
                 "aws-control: kiro-cli conversation export could not read the store, so it "
                 "was left out of this archive: %s",
-                redact_credentials(str(exc)),
+                redact_log_via_context(str(exc)),
             )
-            return 0
+            return _ConversationExport(0, 0, "store_unreadable")
         total = sum(per_table.values())
         if not per_table:
             # No allowlisted table existed at all: nothing to carry, and no empty
@@ -4061,7 +4971,7 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
             # restore sees the real schema.) The store WAS opened, so the access
             # is still audited.
             hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "no_table")
-            return 0
+            return _ConversationExport(0, 0, "no_conversation_table")
         # The store holds live bearer tokens, so opening it -- even to copy only
         # the conversation allowlist -- goes through the sanctioned credential-read
         # audit, and FAILS CLOSED: an export whose access cannot be recorded is
@@ -4073,14 +4983,60 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> int:
                 "audit could not be recorded, so the conversations are left out of this "
                 "archive rather than shipped unaudited"
             )
-            return 0
-        _add_regular_file(tar, dst, _CONVERSATIONS_DB_ARCNAME)
+            return _ConversationExport(0, 0, "credential_audit_unavailable")
+        added: list[str] = []
+        # Open and VALIDATE before the first tar write, so a substituted scratch file
+        # costs the conversations member and a reason -- not a damaged archive. The tar
+        # write itself is deliberately outside this guard: per this function's contract,
+        # everything before the first write reports and the write onward propagates.
+        #
+        # PLATFORM: the pinned read needs `openat`, and on a host without it the checks
+        # have no equivalent worth inventing -- `os.open` cannot open a directory on
+        # Windows, `O_NOFOLLOW` and `O_DIRECTORY` do not exist there, and `st_nlink` from
+        # `fstat` is not a dependable link count. Rather than degrade to a weaker read,
+        # this reports. It is unreachable in production: `run_sessions_backup` refuses
+        # outright without `_CAN_PIN_TRAVERSAL` (`kind_unavailable_reason`), so the whole
+        # sessions kind is already unavailable on such a host. The branch exists so a
+        # DIRECT caller cannot quietly obtain the unpinned read the refusal exists to
+        # prevent.
+        if not _CAN_PIN_TRAVERSAL:
+            logger.warning(
+                "aws-control: kiro-cli conversation export dropped -- this platform has "
+                "no descriptor-pinned open, so the scratch export cannot be read safely"
+            )
+            return _ConversationExport(0, 0, "scratch_pinning_unavailable")
+        try:
+            tmp_fd = os.open(tmp, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+        except OSError as exc:
+            logger.warning(
+                "aws-control: kiro-cli conversation export dropped -- its scratch "
+                "directory could not be pinned: %s",
+                redact_log_via_context(str(exc)),
+            )
+            return _ConversationExport(0, 0, "scratch_export_unsafe")
+        try:
+            handle, size = _open_pinned_scratch(tmp_fd, dst.name)
+        except (OSError, _ScratchExportUnsafe) as exc:
+            logger.warning(
+                "aws-control: kiro-cli conversation export dropped -- the scratch export "
+                "was not the file this run wrote, so nothing was carried: %s",
+                redact_log_via_context(str(exc)),
+            )
+            return _ConversationExport(0, 0, "scratch_export_unsafe")
+        finally:
+            os.close(tmp_fd)
+        with handle:
+            _add_open_file(tar, handle, size, _CONVERSATIONS_DB_ARCNAME)
+        added.append(_CONVERSATIONS_DB_ARCNAME)
         manifest = json.dumps(
             {"tables": dict(sorted(per_table.items())), "total_rows": total},
             sort_keys=True,
         ).encode("utf-8")
         _add_bytes(tar, manifest, _CONVERSATIONS_MANIFEST_ARCNAME)
-    return total
+        added.append(_CONVERSATIONS_MANIFEST_ARCNAME)
+    # Members are accumulated as they are written rather than asserted as a
+    # constant, so the number the caller reads cannot drift from what this added.
+    return _ConversationExport(total, len(added))
 
 
 def run_sessions_backup(
@@ -4118,7 +5074,16 @@ def run_sessions_backup(
     # window is caught before the upload instead, by refusing -- see the recheck
     # below, which adds no second answer for the record to disagree with.
     layer_b = sessions_layer_b_enabled(account)
-    _audit_layer_b_decision(account, layer_b, caller=caller)
+    # Read beside the permission, so both describe the same moment. A grant recorded
+    # before the conversation export was disclosed covers the `cli` half only; see
+    # `layer_b_grant_covers_conversations`.
+    layer_b_conversations = layer_b and layer_b_grant_covers_conversations(account)
+    # Named for the record. Present only for the state that needs explaining: the
+    # permission is on, and its grant does not reach the conversation export. A grant
+    # that does reach it, or no grant at all, needs no scope line -- `layer_b` already
+    # says which of those happened.
+    layer_b_scope = "cli" if layer_b and not layer_b_conversations else ""
+    _audit_layer_b_decision(account, layer_b, conversations=layer_b_conversations, caller=caller)
     with tempfile.TemporaryDirectory(prefix="kc-backup-") as tmp:
         archive = Path(tmp) / f"sessions-{_stamp()}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
@@ -4149,14 +5114,42 @@ def run_sessions_backup(
             # cannot be un-sent. It is also what puts the export behind the
             # withdrawal recheck below, which keys off `layer_b`.
             #
-            # Counted separately for the same reason as `layer_b_files`, and folded
-            # into the recorded answer: an archive carrying conversation rows holds
-            # Layer-B-class content whether or not the `cli` tree had any files, so
-            # a record reading `layer_b=False` beside those rows would describe an
-            # archive that does not exist.
-            conversation_rows = _export_cli_conversations(tar) if layer_b else 0
-            count += conversation_rows
-        if count == 0:
+            # Counted separately for the same reason as `layer_b_files`, and rows
+            # and members are kept apart because they disagree: a present-but-empty
+            # allowlisted table is carried so a restore sees the real schema, which
+            # is a `conversations/` root with zero rows. Folding that into the row
+            # count alone would let the "nothing to archive" guard below throw away
+            # members this already wrote.
+            # Gated on the grant's SCOPE, not just on the permission. Both reasonless
+            # exits here are the operator's own decision rather than a failed read: no
+            # grant at all, and a grant whose recorded scope does not reach this
+            # payload. Per the invariant this module walks, a policy decline may be
+            # reasonless -- and deliberately sets NO `conversations_skipped`, because
+            # that field suppresses the retention sweep. Writing one here would freeze
+            # retention on EVERY install that granted Layer B before the export
+            # existed, all at once, which is the unbounded-accumulation failure the
+            # suppression exists to avoid rather than an instance of it.
+            #
+            # And suppressing nothing is SAFE here, which is the claim that makes the
+            # reasonless exit legitimate rather than convenient. The sweep is only
+            # dangerous when an earlier archive holds conversations this run does not,
+            # and no released version wrote one: verified against this PR's base and
+            # against main, where the sessions archive has exactly the `crew` and `cli`
+            # roots and the export does not exist. Nothing needs protecting, under any
+            # grant. The bound on that claim is a host that ran an UNRELEASED build of
+            # this branch, which could hold conversations under a legacy grant; that is
+            # a pre-merge test host, not an operator install.
+            #
+            # Visibility is carried as the grant's STATE, the way the Layer B gate
+            # itself is: `layer_b_scope` below says the grant covers `cli`, rather than
+            # claiming an export was skipped.
+            conversations = (
+                _export_cli_conversations(tar)
+                if layer_b_conversations
+                else _ConversationExport(0, 0)
+            )
+            count += conversations.rows
+        if count == 0 and conversations.members == 0:
             raise RuntimeError("no session files to archive")
         # `volatile_root=False`: this archive's roots are `crew` and `cli`, which are
         # meaningful and stable. Only the snapshot bundle carries a timestamped root.
@@ -4165,7 +5158,15 @@ def run_sessions_backup(
             account, KIND_SESSIONS, tree, profile, region, bucket, caller=caller
         )
         if baseline is not None:
-            record = _record_skip(account, KIND_SESSIONS, baseline, tree)
+            record = _record_skip(
+                account,
+                KIND_SESSIONS,
+                baseline,
+                tree,
+                layer_b=(layer_b_files > 0 or conversations.members > 0),
+                conversations_skipped=conversations.skipped,
+                layer_b_scope=layer_b_scope,
+            )
             if record is not None:
                 logger.info(
                     "aws-control: sessions backup for %s found both session trees unchanged "
@@ -4295,6 +5296,23 @@ def run_sessions_backup(
                     " the transcript half",
                     caller=caller,
                 )
+            # The SCOPE is rechecked on the same footing, because the grant staying on
+            # does not mean it still covers this payload. A disable followed by an
+            # enable that names no scope leaves the permission ON with the marker gone,
+            # so the check above passes while the conversations already written into
+            # this tar sit outside what the grant now covers -- and the object cannot be
+            # recalled once it is PUT. Same asymmetry as above: only the withdrawn
+            # direction refuses, since a scope granted mid-build leaves an archive
+            # without the
+            # conversations, which is the withholding default and needs no refusal.
+            if layer_b_conversations and not layer_b_grant_covers_conversations(account):
+                _refuse_upload(
+                    account,
+                    "the Layer B conversation scope was withdrawn while this archive"
+                    " was being built, so it was not uploaded; start the backup again"
+                    " to store the transcript half",
+                    caller=caller,
+                )
             version = storage.put_file(
                 profile,
                 region,
@@ -4313,7 +5331,14 @@ def run_sessions_backup(
             _body_fingerprint(archive),
             version,
             tree=tree,
-            layer_b=(layer_b_files + conversation_rows) > 0,
+            layer_b=(layer_b_files > 0 or conversations.members > 0),
+            conversations_skipped=conversations.skipped,
+            layer_b_scope=layer_b_scope,
+            # Records that THIS archive carries a `conversations/` root, so a later run
+            # that carries none knows an older archive is the only copy. Keyed on
+            # MEMBERS rather than rows, because a present-but-empty allowlisted table is
+            # still carried and a restore still needs it.
+            conversations_retained=conversations.members > 0,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
@@ -4321,9 +5346,115 @@ def run_sessions_backup(
         # LAST, and after a push that succeeded. This is the only step here that
         # deletes, so it runs once everything proving this run worked is already
         # done -- and it cannot fail the run. See _prune_remote_archives.
-        _prune_remote_archives(
-            account, profile, region, bucket, KIND_SESSIONS, identity["id"], key, caller=caller
-        )
+        #
+        # SKIPPED whenever the conversation export reported ANY reason. Deliberately a
+        # predicate on the field, not membership in a list of reasons: every reason this
+        # module emits belongs in that list, so the list was only a slower way of
+        # writing "any reason at all" -- and a sixth reason added later by someone who
+        # never read this comment cannot be forgotten from a predicate, while it can
+        # absolutely be forgotten from a frozenset. The two lists would have had to be
+        # kept in sync forever, with a silent data-loss bug as the cost of drift.
+        #
+        # This includes a relocation. The relocation flag is read from THIS PROCESS's
+        # environment, so a daemon-launched run and a shell-launched run can disagree
+        # about it with the operator relocating nothing -- which means an earlier archive
+        # really may hold conversations this one does not.
+        #
+        # Retention protects only the key this run just
+        # uploaded, so at `keep=1` retiring the previous archive would erase the one
+        # copy that still held the conversations, and `delete_object_versions` erases
+        # versions outright -- there is no recovery for the retired object, while the
+        # gap here recovers on the next successful run. Keeping one archive too many
+        # costs storage; retiring the last complete one costs the data. The archives
+        # accumulate past the keep count only while the condition persists, and
+        # `conversations_skipped` in the record is what tells the operator why.
+        #
+        # It does NOT over-suppress, but the line is not where it first looks. What may
+        # stay reasonless is a run that READ everything the host holds, or one where the
+        # operator withheld the permission -- a consented withdrawal, and the default,
+        # so an ordinary install prunes exactly as it did before this feature existed.
+        # An ABSENT store does not qualify: the question is whether an earlier archive
+        # holds rows this one does not, and a store missing at nightly-run time may have
+        # been present when that archive was written. The accepted cost is narrow
+        # because the permission is owner-gated and defaults off -- only a host that
+        # opted INTO conversation backup and has no store to back up stops pruning, and
+        # that combination is a misconfiguration the record now names rather than a
+        # working state.
+        #
+        # THE DECLINE IS AUDITED. Suppressing the sweep suppresses the DELETION, never
+        # the record of the decision: `_audit_retention` is only reachable from inside
+        # `_prune_remote_archives`, so an early return here would have filed no SEL
+        # event at all, on the one path in the app that erases object versions for good
+        # -- exactly the invisibility that function exists to prevent, and its contract
+        # says every terminal outcome files one "including the ones that deleted
+        # nothing". A decline is a terminal outcome. It is filed as `failed` with the
+        # reason as `error`, matching the sweep's own refusal-to-act on a listing that
+        # does not show the archive just uploaded: nothing was deleted and the operator
+        # needs to know why, which is not the same as a withdrawn consent (`denied`
+        # belongs to the gate). This is also what keeps the accumulation VISIBLE: while
+        # the condition persists the archives pile up past the keep count, and one event
+        # per run naming the reason is how an auditor sees that rather than inferring it
+        # from a sweep that silently never ran.
+        # TWO independent conditions, not one replacing the other. The first is this
+        # run's own export coming up short, which is the `skipped` reason above. The
+        # second is this run carrying no conversations at all while an older RETAINED
+        # archive carries them -- which the grant's own scope can produce with nothing
+        # wrong: an in-scope run uploads conversations, the scope is then narrowed, and
+        # the next run's archive omits them while the sweep would retire the one that
+        # holds them. That path sets no skip reason, because a scope the operator
+        # narrowed is a policy decline rather than a failed read, so the first condition
+        # cannot see it.
+        #
+        # Expressed as a predicate over one persisted boolean rather than a set of
+        # qualifying cases -- same reason the `skipped` suppression is a predicate: a
+        # second list to keep in sync is a place to forget one, and the cost of
+        # forgetting here is a permanent delete.
+        decline = conversations.skipped
+        if not decline and conversations.members == 0:
+            if a_retained_archive_carries_conversations(account):
+                decline = "conversations_retained_in_an_older_archive"
+        if decline:
+            logger.warning(
+                "aws-control: skipping the sessions retention sweep for %s (%s), so an "
+                "older archive that may hold conversations this one does not is kept",
+                account,
+                decline,
+            )
+            _audit_retention(
+                account,
+                {
+                    "kind": KIND_SESSIONS,
+                    # "off" is reserved for "no count configured". The count may well be
+                    # set here; this run simply did not act on it, which `result` and
+                    # `error` say. Naming a number would claim a sweep that never ran.
+                    "keep": "declined",
+                    "live": 0,
+                    "retired": 0,
+                    "versions": 0,
+                    "unclaimed": 0,
+                    "unclaimedBytes": 0,
+                    "unrecorded": 0,
+                    "unrecordedBytes": 0,
+                    "skipped": "",
+                },
+                caller=caller,
+                result="failed",
+                error=f"retention declined: {decline}",
+            )
+        else:
+            _prune_remote_archives(
+                account,
+                profile,
+                region,
+                bucket,
+                KIND_SESSIONS,
+                identity["id"],
+                key,
+                caller=caller,
+                # Only when THIS run carried no conversations. A run that carried them
+                # set the fact itself, so re-checking would refuse its own sweep.
+                recheck_conversations_retained=conversations.members == 0,
+            )
         return record
 
 

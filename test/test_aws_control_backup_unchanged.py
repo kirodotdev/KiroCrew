@@ -1089,7 +1089,7 @@ class TestRunSessionsBackupSkip:
         # Isolate the kiro-cli conversation export: this suite compares
         # the archive's fingerprint across runs, so it must not depend on whatever
         # live terminal store the test host happens to have.
-        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: None)
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (None, ""))
         self.crew = crew
         yield
 

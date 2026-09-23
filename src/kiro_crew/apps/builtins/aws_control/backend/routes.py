@@ -74,7 +74,7 @@ import tempfile
 import time
 import weakref
 from contextlib import asynccontextmanager
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -2597,9 +2597,24 @@ async def _handle_backup_layer_b(request: web.Request) -> web.Response:
     if not isinstance(raw, bool):
         return _bad_request("enabled must be a boolean", "invalid_enabled")
     enabled = raw
+    # The grant's SCOPE must be NAMED by the caller, never derived from the act of
+    # enabling. A bare `{"enabled": true}` carries no evidence of what the operator was
+    # shown, so an idempotent retry, an automation, and a client still rendering older
+    # copy all look identical to a deliberate re-consent -- and the wider scope ships
+    # host-wide terminal conversations off-host, unrecallably. Absent means the narrower
+    # grant, which is why this field is optional rather than required: the existing
+    # request shape keeps its existing meaning.
+    scope = body.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        return _bad_request("scope must be a string", "invalid_scope")
     account, _profile, _region = target
     try:
-        await asyncio.to_thread(backup_mod.set_sessions_layer_b, account, enabled)
+        if scope is None:
+            await asyncio.to_thread(backup_mod.set_sessions_layer_b, account, enabled)
+        else:
+            await asyncio.to_thread(
+                partial(backup_mod.set_sessions_layer_b, account, enabled, scope=scope)
+            )
     except OSError:
         # Same contract as the nightly toggle: the write can genuinely fail, and
         # a permission the console renders as stored while the next read denies it
@@ -2613,7 +2628,21 @@ async def _handle_backup_layer_b(request: web.Request) -> web.Response:
             },
             status=500,
         )
-    return web.json_response({"sessionsIncludeLayerB": enabled})
+    if scope is None:
+        return web.json_response({"sessionsIncludeLayerB": enabled})
+    # Echoed only when a scope was asked for, so the existing request shape keeps its
+    # existing response. A caller that named one needs to see what it actually got: an
+    # unrecognised value records the narrower grant rather than failing, so silence here
+    # would let it believe it had consented to the wider payload.
+    granted = await asyncio.to_thread(backup_mod.layer_b_grant_covers_conversations, account)
+    return web.json_response(
+        {
+            "sessionsIncludeLayerB": enabled,
+            "sessionsLayerBScope": (
+                backup_mod.SESSIONS_LAYER_B_SCOPE_WITH_CONVERSATIONS if granted else ""
+            ),
+        }
+    )
 
 
 async def _handle_backup_restore(request: web.Request) -> web.Response:

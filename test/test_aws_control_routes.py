@@ -3305,6 +3305,60 @@ class TestBackupEndpoints:
             assert _payload(resp)["code"] == "invalid_enabled"
             setter.assert_not_called()
 
+    def test_a_named_layer_b_scope_is_passed_through_and_echoed(self):
+        # The wider scope ships host-wide terminal conversations off-host,
+        # unrecallably, so it must be NAMED in the request rather than derived from
+        # the act of enabling: a bare `{"enabled": true}` is indistinguishable from an
+        # idempotent retry or a client still rendering older copy. The resulting scope
+        # is echoed because an unrecognised value records the narrower grant rather
+        # than failing, and a caller that named one must be able to see what it got.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/layer-b", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"enabled": True, "scope": "cli+conversations"}
+        )
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "set_sessions_layer_b") as setter,
+            mock.patch.object(
+                routes_mod.backup_mod, "layer_b_grant_covers_conversations", return_value=True
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/layer-b")](req)  # type: ignore[operator]
+            )
+        assert _payload(resp) == {
+            "sessionsIncludeLayerB": True,
+            "sessionsLayerBScope": "cli+conversations",
+        }
+        setter.assert_called_once_with(ACCOUNT, True, scope="cli+conversations")
+
+    def test_a_non_string_layer_b_scope_is_refused_and_never_persisted(self):
+        # Same posture as the boolean above. A coerced scope is a consent boundary
+        # decided by `str()` rather than by the operator.
+        handlers = _registered()
+        for raw in (True, 1, 0, [], {}, 1.5):
+            p1, p2, p3 = _enabled_owner_env()
+            req = _request("POST", f"/backup/{ACCOUNT}/layer-b", match_info={"account": ACCOUNT})
+            req.json = AsyncMock(  # type: ignore[method-assign]
+                return_value={"enabled": True, "scope": raw}
+            )
+            with (
+                p1,
+                p2,
+                p3,
+                mock.patch.object(routes_mod.backup_mod, "set_sessions_layer_b") as setter,
+            ):
+                resp = asyncio.run(
+                    handlers[("POST", "/backup/{account}/layer-b")](req)  # type: ignore[operator]
+                )
+            assert resp.status == 400, f"{raw!r} was accepted"
+            assert _payload(resp)["code"] == "invalid_scope"
+            setter.assert_not_called()
+
     def test_a_layer_b_write_that_failed_does_not_report_success(self):
         # A permission the console renders as stored while the next read denies it
         # is worse than an error, so the failure is loud, structured, and does not
