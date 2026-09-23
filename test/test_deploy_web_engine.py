@@ -142,6 +142,149 @@ def test_aws_bin_fallback_hit_failing_provenance_returns_bare_name(monkeypatch, 
     assert engine.resolve_aws_bin() == "aws"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_aws_bin_refused_dir_does_not_shadow_a_good_later_dir(monkeypatch, tmp_path):
+    """A refusal ends that DIR, not the search.
+
+    Reported from a macOS host where Homebrew is managed by a second
+    unprivileged account (Workbrew): /opt/homebrew/bin/aws is owned by
+    ``workbrew`` and correctly refused, but it also sorts first, so stopping at
+    the refusal never reached the root-owned official-pkg /usr/local/bin/aws and
+    every SSM tunnel died at gateway start with "[Errno 2] ... 'aws'". Installing
+    the official pkg — the documented remedy — could not fix it.
+    """
+    bad_dir = tmp_path / "brew"
+    good_dir = tmp_path / "usrlocal"
+    empty_bin = tmp_path / "emptybin"
+    for d in (bad_dir, good_dir, empty_bin):
+        d.mkdir()
+    for d in (bad_dir, good_dir):
+        binary = d / "aws"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bad_dir), str(good_dir)))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+    from kiro_crew import github_runner
+
+    def _refuse_only_bad(candidate):
+        if candidate.startswith(str(bad_dir)):
+            raise ValueError("owned by another unprivileged account")
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse_only_bad)
+
+    assert engine.resolve_aws_bin() == str(good_dir / "aws")
+    # The refused dir is remembered so it stays off a credential-bearing
+    # child's PATH; the accepted one must not be recorded.
+    assert engine._REFUSED_AWS_BIN_DIRS == {str(bad_dir)}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_aws_spawn_env_omits_a_refused_dir_while_widening_for_a_good_one(monkeypatch, tmp_path):
+    """Walking past a refusal must not smuggle the refused dir onto the child.
+
+    A resolved absolute head no longer implies every install dir was clean, so
+    the widening has to drop the individual dirs that were refused — otherwise
+    the shim just rejected as the argv head becomes reachable again through the
+    CLI's own onward session-manager-plugin lookup, with AWS credentials.
+    """
+    bad_dir = tmp_path / "brew"
+    good_dir = tmp_path / "usrlocal"
+    empty_bin = tmp_path / "emptybin"
+    for d in (bad_dir, good_dir, empty_bin):
+        d.mkdir()
+    for d in (bad_dir, good_dir):
+        binary = d / "aws"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bad_dir), str(good_dir)))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+    from kiro_crew import github_runner
+
+    def _refuse_only_bad(candidate):
+        if candidate.startswith(str(bad_dir)):
+            raise ValueError("owned by another unprivileged account")
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse_only_bad)
+
+    aws_bin = engine.resolve_aws_bin()
+    child_path = engine.aws_spawn_env(aws_bin)["PATH"].split(os.pathsep)
+
+    assert str(good_dir) in child_path  # the plugin's real install dir
+    assert str(bad_dir) not in child_path  # refused: must stay unreachable
+    assert child_path.index(str(empty_bin)) < child_path.index(str(good_dir))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_aws_bin_every_dir_refused_still_returns_bare_name(monkeypatch, tmp_path):
+    """Exhausting the list is still fail-closed: no dir may be executed, and the
+    prior not-found/execvp error is what the caller gets."""
+    first = tmp_path / "brew"
+    second = tmp_path / "usrlocal"
+    empty_bin = tmp_path / "emptybin"
+    for d in (first, second, empty_bin):
+        d.mkdir()
+    for d in (first, second):
+        binary = d / "aws"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(first), str(second)))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+    from kiro_crew import github_runner
+
+    def _refuse(candidate):
+        raise ValueError("planted shim")
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+    assert engine.resolve_aws_bin() == "aws"
+    # A bare head means the env stays unwidened, so neither dir is reachable.
+    assert engine.aws_spawn_env("aws").get("PATH", "") == str(empty_bin)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_aws_bin_repaired_dir_is_cleared_from_the_refused_set(monkeypatch, tmp_path):
+    """Fixing the install must take effect without a gateway restart: the
+    resolver re-validates on every call, so a dir that passes again is cleared
+    and its PATH entry comes back."""
+    install = tmp_path / "brew"
+    empty_bin = tmp_path / "emptybin"
+    for d in (install, empty_bin):
+        d.mkdir()
+    binary = install / "aws"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+    from kiro_crew import github_runner
+
+    ownership_fixed = {"yet": False}
+
+    def _validate(candidate):
+        if not ownership_fixed["yet"]:
+            raise ValueError("owned by another unprivileged account")
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _validate)
+
+    assert engine.resolve_aws_bin() == "aws"
+    assert engine._REFUSED_AWS_BIN_DIRS == {str(install)}
+
+    ownership_fixed["yet"] = True
+
+    assert engine.resolve_aws_bin() == str(binary)
+    assert engine._REFUSED_AWS_BIN_DIRS == set()
+
+
 def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
     """When the CLI is nowhere on PATH or the extra dirs, fall back to the bare
     'aws' so the prior 'not found' behaviour/error is preserved."""
