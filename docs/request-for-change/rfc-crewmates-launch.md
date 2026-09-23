@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806]
+implementation-prs: [12797, 12798, 12805, 12806, 12924]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -125,6 +125,20 @@ Decided:
   folded.
 - After create, the new crewmate's chat opens and shows its first greeting.
   There is no separate confirmation.
+- With crewmates present and none named in the URL, the Crewmates tab lands
+  on the most-recently-used crewmate's chat: the one this browser last opened
+  when it remembers one, else the one with the latest activity. There is no
+  "Pick a crewmate" sentence and no "joined your crew" banner; below the
+  medium breakpoint the tab still lands on the roster.
+
+Why the landing rule: the tab is a place to talk to a teammate, not a menu of
+them. A returning person almost always wants the conversation they left, and a
+sentence asking them to pick is a step that answers nothing. Opening the last
+chat is what a messaging app does; the roster stays one column away for the
+rare switch. This replaces the earlier "the user picks" default (#11763), which
+predated crewmates having conversations worth returning to. The auto-open is
+an ordering of what already exists — the remembered crewmate first, activity
+second — so a wrong guess costs one click and loses nothing.
 
 ### 03 Pruning the crewmates an earlier release generated
 
@@ -323,7 +337,8 @@ Open at the time of writing:
 Branches not yet open as PRs; each will add its number to
 `implementation-prs` when it opens:
 
-- `feat/crewmates-page-empty-create` — empty state and New crewmate (screen 02).
+- [#12924](https://github.com/kirodotdev/KiroCrew/pull/12924) — empty state,
+  New crewmate and the returning-visit landing (screen 02).
 - `feat/crewmate-chat-bubbles` — chat shows only what it says to you, grouped
   bubbles (screen 05).
 - `feat/reply-threads-ui` — thread footer and side-panel thread (screen 07,
