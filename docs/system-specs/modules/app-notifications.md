@@ -262,10 +262,14 @@ server-side.
 
 The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
 which `useWebSocket` fires for a `notification` frame received on a live
-connection. It never reads the Redux list: the boot `fetchNotifications`
+connection and for the feed note it synthesizes from an `approval` frame (the
+note carries the owning `slot`, so `targetsCurrentView` skips it while that
+chat is on screen and its inline permission card is visible; an approval with
+no slot banners on every surface). It never reads the Redux list: the boot `fetchNotifications`
 snapshot and reconnect refetches fill the store with history, and history is
 never bannered. `useWebSocket` withholds the event during a reconnect catch-up
-(`reconnectingRef`), the same window that mutes the turn-done chime.
+(`reconnectingRef`) for both frames, the same window that mutes the turn-done
+chime.
 
 ### Priorities
 

@@ -1,11 +1,16 @@
 /**
- * useWebSocket `notification` frame -> MC_LIVE_NOTIFICATION_EVENT relay.
+ * useWebSocket `notification` and `approval` frames -> MC_LIVE_NOTIFICATION_EVENT
+ * relay.
  *
  * The in-app banner listens to this event, not to the store, so the socket
  * layer must (a) fire it for a frame received on a live connection and
  * (b) NOT fire it during a reconnect catch-up replay, where the frames are
  * history the bell already holds. The store still receives every frame
  * either way — suppression is about the banner, never about the inbox.
+ *
+ * An approval is a blocking event: while the window is focused the banner is
+ * its visible interrupt (the OS toast stays quiet for a focused window), so
+ * the `approval` frame relays its feed note the same way.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -15,6 +20,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { MC_LIVE_NOTIFICATION_EVENT, type McLiveNotificationDetail } from '../hooks/notificationEvent'
+import { shouldBannerNote } from '../hooks/notificationBanner'
+import type { Notification } from '../types'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -60,12 +67,14 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
   let queryClient: QueryClient
   let store: ReturnType<typeof createTestStore>
   const seen: string[] = []
-  const listener = (e: Event) => { seen.push((e as CustomEvent<McLiveNotificationDetail>).detail.note.ts) }
+  const notes: Notification[] = []
+  const listener = (e: Event) => { const n = (e as CustomEvent<McLiveNotificationDetail>).detail.note; seen.push(n.ts); notes.push(n) }
 
   beforeEach(() => {
     vi.clearAllMocks()
     WS_INSTANCES.length = 0
     seen.length = 0
+    notes.length = 0
     store = createTestStore()
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
@@ -112,5 +121,67 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
     })
     expect(seen).toEqual([])
     expect(store.getState().notifications.items.map(n => n.ts)).toContain('replayed-1')
+  })
+
+  it('relays an approval frame on a live connection, carrying its owning slot', () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => {
+      ws.simulateMessage({
+        type: 'approval',
+        data: { id: 'ap-live-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 7 },
+      })
+    })
+    expect(seen).toEqual(['7'])
+    expect(notes[0].kind).toBe('approval')
+    expect(notes[0].approval_id).toBe('ap-live-1')
+    expect(notes[0].slot).toBe('slot-a')
+    // The relayed note IS the feed entry, not a second object.
+    expect(store.getState().notifications.items.find(n => n.approval_id === 'ap-live-1')?.slot).toBe('slot-a')
+  })
+
+  it('relays an unowned approval with no slot, so the banner cannot mistake it for the active chat', () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => {
+      ws.simulateMessage({
+        type: 'approval',
+        data: { id: 'ap-live-2', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 8 },
+      })
+    })
+    expect(seen).toEqual(['8'])
+    expect('slot' in notes[0]).toBe(false)
+  })
+
+  it('the banner gate shows the approval on another surface and skips it over its own open chat', () => {
+    const note = { kind: 'approval', title: 'Tool approval: Bash', body: '', ts: '9', approval_id: 'ap-gate', slot: 'slot-a' } as Notification
+    const focused = { enabled: true, popoverOpen: false, windowFocused: true }
+    // Settings page, or a chat showing a different slot: the banner is the interrupt.
+    expect(shouldBannerNote(note, { ...focused, pathname: '/settings', activeSlot: 'slot-a' })).toBe(true)
+    expect(shouldBannerNote(note, { ...focused, pathname: '/chat', activeSlot: 'slot-b' })).toBe(true)
+    // The owning chat is on screen: the inline permission card already shows it.
+    expect(shouldBannerNote(note, { ...focused, pathname: '/chat', activeSlot: 'slot-a' })).toBe(false)
+  })
+
+  it('stays silent for an approval replayed during a reconnect catch-up', () => {
+    vi.useFakeTimers()
+    renderHook(() => useWebSocket(), { wrapper })
+    const first = WS_INSTANCES[0]
+    act(() => { first.simulateOpen() })
+    act(() => { first.simulateClose() })
+    act(() => { vi.runOnlyPendingTimers() })
+    const second = WS_INSTANCES[1]
+    expect(second).toBeTruthy()
+    act(() => {
+      second.simulateOpen()
+      second.simulateMessage({
+        type: 'approval',
+        data: { id: 'ap-replay-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 10 },
+      })
+    })
+    expect(seen).toEqual([])
+    expect(store.getState().notifications.items.find(n => n.approval_id === 'ap-replay-1')).toBeDefined()
   })
 })

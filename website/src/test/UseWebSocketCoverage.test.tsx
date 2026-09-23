@@ -388,7 +388,10 @@ describe('useWebSocket frame router', () => {
     expect(note?.body).toBe(delivery === 'live' ? `${body}\n\n**Reason:** cleanup` : body)
   })
 
-  it('raises a desktop notification for an approval while the tab is hidden', () => {
+  it('hands an approval to the feed and raises no desktop notification of its own', () => {
+    // The feed entry is what reaches the OS (useNativeNotification constructs
+    // the toast, tagged with the approval id); a constructor here would be a
+    // second banner for the same approval.
     class MockNotification {
       static permission = 'granted'
       static instances: { title: string }[] = []
@@ -404,7 +407,10 @@ describe('useWebSocket frame router', () => {
           data: { id: 'ap-1', slot: ACTIVE, source: 'agent', tool: 'execute_bash', tool_input: '{}', ts: 5 },
         })
       })
-      expect(MockNotification.instances).toHaveLength(1)
+      expect(MockNotification.instances).toHaveLength(0)
+      const feedNote = testStore.getState().notifications.items.find(n => n.approval_id === 'ap-1')
+      expect(feedNote?.kind).toBe('approval')
+      expect(feedNote?.title).toContain('execute_bash')
       const card = chat().messages.find(m => m.role === 'permission')
       expect(card?.meta?.approval_id).toBe('ap-1')
       expect(chat().toolLog.some(e => e.approval_id === 'ap-1')).toBe(true)

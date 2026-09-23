@@ -11,9 +11,10 @@
  * because the OS collapses only equal tags.
  *
  * The toast is gated on `isWindowAway()`: while the window is visible AND
- * focused the in-app banner (`NotificationBanner`, gated by `shouldBannerNote`)
- * and the bell badge already show the note, and an OS toast on top of them
- * says the same thing a third time. A note that arrives while the user is
+ * focused the in-app banner (`NotificationBanner`, gated by `shouldBannerNote`,
+ * fed by the socket layer's live relay for both `notification` and `approval`
+ * frames) and the bell badge already show the note, and an OS toast on top of
+ * them says the same thing a third time. A note that arrives while the user is
  * watching advances the count without a toast and is NOT re-announced when
  * the window later loses focus: it was seen.
  *
