@@ -593,6 +593,14 @@ class TestTokenMint:
         argv = _build_ssh_argv("cd-1", "echo hi")
         assert argv[0] == "ssh" and argv[-2] == "cd-1"
         assert "BatchMode=yes" in argv and "AddressFamily=inet" in argv
+        # -n redirects ssh's stdin from the null device. Without it the child
+        # inherits the gateway's stdin, and through a ProxyCommand that channel
+        # stays open after the remote command exits, so ssh waits for an EOF a
+        # console-less gateway never sends and the probe reports a reachable
+        # host as unreachable. It must precede the host, or ssh reads it as
+        # part of the remote command.
+        assert "-n" in argv
+        assert argv.index("-n") < argv.index("cd-1")
         # Default fail-fast connect bound is preserved for callers that
         # don't thread a budget (e.g. run_remote_kirocrew).
         assert "ConnectTimeout=10" in argv
@@ -4242,11 +4250,17 @@ class TestDiagnostics:
 
         async def fake_exec(*argv, **k):
             captured["argv"] = argv
+            captured["kw"] = k
             return FakeProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         assert asyncio.run(diag._probe_ssh("cd-1", connect_timeout_secs=42.0)) is True
         assert "ConnectTimeout=42" in captured["argv"]
+        # Probe children never inherit the gateway's stdin: an inherited one
+        # keeps the ssh stdin channel open past the remote command's exit and
+        # the probe's only bound is its wall-clock cap, whose expiry the ladder
+        # renders as SSH_UNREACHABLE on a healthy host.
+        assert captured["kw"].get("stdin") is asyncio.subprocess.DEVNULL
         # Both probes share token_mint._build_ssh_argv with the mint, so the two
         # options a probe cannot work without are pinned HERE too: without
         # BatchMode a probe hangs on an interactive prompt instead of reporting
@@ -4263,6 +4277,8 @@ class TestDiagnostics:
         assert "ConnectTimeout=42" in captured["argv"]
         assert "BatchMode=yes" in captured["argv"]
         assert "AddressFamily=inet" in captured["argv"]
+        # Same for the stdout-capturing probe path (_run_stdout).
+        assert captured["kw"].get("stdin") is asyncio.subprocess.DEVNULL
 
     def test_probe_local_forward(self):
         from kiro_crew.instances import diagnostics as diag

@@ -354,11 +354,16 @@ def _build_ssh_argv(
     prompt; ``ConnectTimeout`` bounds the TCP connect (and, on OpenSSH >= 8.6,
     the banner/KEX exchange — which is where a slow ProxyCommand spends its
     time, so the mint passes its own configurable budget here instead of the
-    10s fail-fast default). ``ssh_host`` is validated by the caller
+    10s fail-fast default). ``-n`` redirects ssh's own stdin from the null
+    device: every caller here runs a remote command and none of them writes the
+    child's stdin, and an inherited console-less stdin keeps the channel open
+    after the remote command exits (notably through a ``ProxyCommand``), so ssh
+    waits for an EOF that never arrives. ``ssh_host`` is validated by the caller
     (registry / tunnel manager) before reaching here.
     """
     return [
         "ssh",
+        "-n",
         "-o",
         "BatchMode=yes",
         "-o",
