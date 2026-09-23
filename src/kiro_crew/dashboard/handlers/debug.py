@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Final
@@ -1105,6 +1106,30 @@ async def api_debug_threads(request: web.Request) -> web.Response:
     return web.json_response(json.loads(redact(json.dumps(payload, default=str))))
 
 
+#: Guards the one-time construction of the process roster's rate baseline.
+_RATE_BASELINE_LOCK = threading.Lock()
+_RATE_BASELINE: Any = None
+
+
+def _process_rate_baseline(procs: Any) -> Any:
+    """The one rate baseline this route keeps, built on first use.
+
+    ``cpu_pct`` and ``runq_wait_pct`` are deltas, so whoever reads them has to
+    hold the previous roster; :mod:`kiro_crew.diag.procs` deliberately holds no
+    background state, which makes this route the owner. The route is also the
+    honest owner of the cadence: the gap the delta measures is the gap between
+    two reads of it.
+
+    Built lazily rather than at import, because importing this module must not
+    pull in the diag package.
+    """
+    global _RATE_BASELINE
+    with _RATE_BASELINE_LOCK:
+        if _RATE_BASELINE is None:
+            _RATE_BASELINE = procs.RateBaseline()
+        return _RATE_BASELINE
+
+
 async def api_debug_processes(request: web.Request) -> web.Response:
     """GET /api/debug/processes — the process family, or 501 without diag."""
     denied = await _authorize_debug_read(request, "processes", "debug.processes")
@@ -1127,7 +1152,9 @@ async def api_debug_processes(request: web.Request) -> web.Response:
     fmt = (request.query.get("format") or "tree").strip()
 
     def _scan() -> dict[str, Any]:
-        return procs.tree(procs.scan(), fmt, **filters)
+        # scan_with_rates, not scan: cpu_pct and runq_wait_pct are deltas, and
+        # the baseline they need is this route's to hold.
+        return procs.tree(procs.scan_with_rates(_process_rate_baseline(procs)), fmt, **filters)
 
     payload = await asyncio.to_thread(_scan)
     stale = _stale_grant_refusal(request, "processes", "debug.processes")

@@ -150,6 +150,25 @@ class FakeProcTable:
         params.update(kwargs)
         return procs.scan(prev, **params)  # type: ignore[arg-type]
 
+    def scan_rated(self, baseline: "procs.RateBaseline", **kwargs: object) -> procs.Roster:
+        """Scan through the read path that keeps the previous roster itself.
+
+        The same stubs as :meth:`scan`, so the only difference under test is who
+        holds the counters between two reads.
+        """
+        params: dict[str, object] = {
+            "proc_root": self.root,
+            "platform_name": "linux",
+            "gateway_pid": GATEWAY,
+            "clk_tck": self.clk_tck,
+            "subreaper_pids_fn": lambda: {1},
+            "tracked_pids_fn": set,
+            "tracked_owners_fn": dict,
+            "unreachable_orphan_fn": lambda pid, cmdline, tracked: False,
+        }
+        params.update(kwargs)
+        return procs.scan_with_rates(baseline, **params)
+
 
 @pytest.fixture
 def family(tmp_path: Path) -> FakeProcTable:
@@ -976,3 +995,250 @@ def test_the_module_exposes_nothing_that_signals_or_writes() -> None:
     source = Path(procs.__file__).read_text(encoding="utf-8")
     for banned in ("os.kill", "pidfd_send_signal", "killpg", "SIGKILL", "SIGTERM"):
         assert banned not in source, banned
+
+
+# -- rates through the read path ---------------------------------------------
+# scan() is pure and every test above hands it a previous roster by hand. These
+# cover the read path instead, which has to keep that roster itself, because a
+# caller that keeps none gets null rates and a gil hint that cannot fire.
+
+
+def _age_baseline(baseline: "procs.RateBaseline", seconds: float) -> None:
+    """Age the stored baseline, as the delta tests age a roster by hand."""
+    stored = baseline._prev
+    assert stored is not None, "nothing stored to age"
+    stored.monotonic -= seconds
+
+
+def test_a_first_read_declines_rates_and_names_the_reason(family: FakeProcTable) -> None:
+    """A cold start reports null, but never a null the reader has to interpret.
+
+    A bare null reads exactly like an idle host, which is the wrong answer the
+    rates exist to prevent. The reason travels with it.
+    """
+    roster = family.scan_rated(procs.RateBaseline())
+
+    assert roster.nodes[CHAT].cpu_pct is None
+    assert roster.nodes[CHAT].runq_wait_pct is None
+    assert any("two reads" in note for note in roster.degraded_report())
+
+
+def test_a_second_read_carries_real_cpu_and_runq_rates(tmp_path: Path) -> None:
+    """The read path produces the deltas with no caller holding a roster."""
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
+
+    baseline = procs.RateBaseline()
+    first = table.scan_rated(baseline)
+    assert first.nodes[CHAT].cpu_pct is None
+    _age_baseline(baseline, 10.0)
+
+    # 5 CPU-seconds of user time and 2 seconds of run-queue wait over 10s wall.
+    table.add(
+        CHAT,
+        GATEWAY,
+        cmdline=CHAT_ARGV,
+        env=dict(MARKER),
+        utime=table.clk_tck * 5,
+        runq_ns=2_000_000_000,
+    )
+    second = table.scan_rated(baseline)
+
+    assert second.nodes[CHAT].cpu_pct == pytest.approx(50.0, abs=1.0)
+    assert second.nodes[CHAT].runq_wait_pct == pytest.approx(20.0, abs=1.0)
+    assert not any("two reads" in note for note in second.degraded_report())
+
+
+def test_a_stale_baseline_declines_the_rate_instead_of_averaging_the_gap(
+    tmp_path: Path,
+) -> None:
+    """Past the window the quotient is true and misleading.
+
+    It averages the whole gap, so a process pinned for the last seconds of an
+    hour reads near zero -- the same "idle" answer as the null.
+    """
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
+
+    baseline = procs.RateBaseline()
+    table.scan_rated(baseline)
+    _age_baseline(baseline, procs.MAX_RATE_GAP_SECS + 60.0)
+
+    table.add(
+        CHAT,
+        GATEWAY,
+        cmdline=CHAT_ARGV,
+        env=dict(MARKER),
+        utime=table.clk_tck * 30,
+        runq_ns=5_000_000_000,
+    )
+    second = table.scan_rated(baseline)
+
+    assert second.nodes[CHAT].cpu_pct is None
+    assert second.nodes[CHAT].runq_wait_pct is None
+    assert any("averages the whole gap" in note for note in second.degraded_report())
+
+
+def test_two_reads_too_close_together_decline_the_rate(tmp_path: Path) -> None:
+    """Below the floor, clock-tick granularity dominates the figure."""
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
+
+    baseline = procs.RateBaseline()
+    table.scan_rated(baseline)
+    # No ageing: two back-to-back reads are a fraction of a second apart.
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=table.clk_tck * 5)
+    second = table.scan_rated(baseline)
+
+    assert second.nodes[CHAT].cpu_pct is None
+    assert any("at least" in note for note in second.degraded_report())
+
+
+def test_a_read_refused_as_too_soon_does_not_restart_the_window(tmp_path: Path) -> None:
+    """A refused read must leave the baseline alone, or readers starve each other.
+
+    Replacing it would restart the very window the read was too early for, so
+    readers arriving faster than the floor -- two sessions calling the tool, or a
+    poller beside one -- would reset each other forever and none would ever see a
+    rate. That is the starvation these figures exist to end, so it is checked two
+    ways: the baseline is untouched, and a later read still recovers a real rate.
+    """
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
+
+    baseline = procs.RateBaseline()
+    table.scan_rated(baseline)
+    _age_baseline(baseline, 0.8)
+    stored = baseline._prev
+    assert stored is not None
+    pinned = stored.monotonic
+
+    refused = table.scan_rated(baseline)
+    assert refused.nodes[CHAT].cpu_pct is None, "0.8s apart is under the floor"
+    assert baseline._prev is not None
+    assert baseline._prev.monotonic == pinned, "the refused read replaced the baseline"
+
+    # 0.8s + 0.6s clears the 1s floor. Had the refused read replaced the
+    # baseline, only the 0.6s would remain and this read would be refused too.
+    # 0.7 CPU-seconds and 0.14s of run-queue wait over that window.
+    _age_baseline(baseline, 0.6)
+    table.add(
+        CHAT,
+        GATEWAY,
+        cmdline=CHAT_ARGV,
+        env=dict(MARKER),
+        utime=table.clk_tck * 7 // 10,
+        runq_ns=140_000_000,
+    )
+    recovered = table.scan_rated(baseline)
+
+    # A BAND, not a point. Both ageings have to stay under the 1s floor for the
+    # discrimination above to mean anything, which caps the elapsed window under
+    # 2s, so the runner's own microseconds are never negligible here -- 34 ms of
+    # it moved this figure 1.2 points. The ceiling is the real invariant: the
+    # window is at least the 1.4s aged, so 0.7 CPU-seconds cannot read above 50%.
+    # The exact arithmetic is pinned by the 10s-window test instead, where
+    # overhead is a rounding error.
+    assert recovered.nodes[CHAT].cpu_pct is not None, "the window should have recovered"
+    assert 20.0 < recovered.nodes[CHAT].cpu_pct <= 50.0
+    assert recovered.nodes[CHAT].runq_wait_pct is not None
+    assert 4.0 < recovered.nodes[CHAT].runq_wait_pct <= 10.0
+
+
+def test_a_read_refused_as_too_old_does_replace_the_baseline(tmp_path: Path) -> None:
+    """The stale case is the opposite: keeping it would make recovery impossible."""
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
+
+    baseline = procs.RateBaseline()
+    table.scan_rated(baseline)
+    _age_baseline(baseline, procs.MAX_RATE_GAP_SECS + 60.0)
+    stale = baseline._prev
+    assert stale is not None
+    pinned = stale.monotonic
+
+    table.scan_rated(baseline)
+
+    assert baseline._prev is not None
+    assert baseline._prev.monotonic > pinned, "a stale baseline must be replaced"
+
+
+def test_the_gil_hint_can_fire_through_the_read_path(tmp_path: Path) -> None:
+    """The hint is gated on cpu_pct, so the read path is what makes it reachable."""
+    table = FakeProcTable(tmp_path / "proc")
+    table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
+    argv = nul_argv(b"/v/bin/python3", b"worker.py")
+    states = ("R", "S", "S")
+    wchans = ("0", "futex_wait_queue_me", "futex_wait_queue_me")
+
+    table.add(
+        CHAT, GATEWAY, cmdline=argv, env=dict(MARKER), thread_states=states, thread_wchans=wchans
+    )
+    baseline = procs.RateBaseline()
+    first = table.scan_rated(baseline)
+    assert first.nodes[CHAT].gil_saturated_hint is False, "no rate, so no hint"
+    _age_baseline(baseline, 10.0)
+
+    table.add(
+        CHAT,
+        GATEWAY,
+        cmdline=argv,
+        env=dict(MARKER),
+        thread_states=states,
+        thread_wchans=wchans,
+        utime=table.clk_tck * 9,
+    )
+    second = table.scan_rated(baseline)
+
+    node = second.nodes[CHAT]
+    assert node.cpu_pct == pytest.approx(90.0, abs=1.0)
+    assert node.gil_saturated_hint is True
+    assert node.gil_hint_basis is not None
+
+
+def test_the_baseline_keeps_counters_and_not_process_nodes(family: FakeProcTable) -> None:
+    """Retaining the nodes would hold argv and environment for every host process."""
+    baseline = procs.RateBaseline()
+    roster = family.scan_rated(baseline)
+
+    stored = baseline._prev
+    assert stored is not None
+    assert stored.nodes == {}
+    assert stored.cpu_ticks == roster.cpu_ticks
+    assert stored.runq_ns == roster.runq_ns
+    assert stored.starts == roster.starts
+
+
+def test_an_older_roster_does_not_replace_a_newer_baseline(family: FakeProcTable) -> None:
+    """Concurrent reads finish out of order, and the newer counters must win.
+
+    A baseline younger than the read differencing against it yields a negative
+    elapsed time, which declines every rate on the host.
+    """
+    baseline = procs.RateBaseline()
+    newer = family.scan_rated(baseline)
+
+    baseline.remember(procs.Roster(ts=1.0, monotonic=newer.monotonic - 5.0, platform="linux"))
+
+    stored = baseline._prev
+    assert stored is not None
+    assert stored.monotonic == newer.monotonic
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "extra"),
+    [("win32", {}), ("darwin", {"ps_snapshot_fn": lambda: None})],
+)
+def test_a_platform_without_counters_is_not_told_to_read_again(
+    family: FakeProcTable, platform_name: str, extra: dict[str, object]
+) -> None:
+    """Neither platform reads the counters, so a second read changes nothing there."""
+    roster = family.scan_rated(procs.RateBaseline(), platform_name=platform_name, **extra)
+
+    assert roster.platform == platform_name
+    assert not any("two reads" in note for note in roster.degraded_report())
