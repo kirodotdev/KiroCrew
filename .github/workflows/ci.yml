@@ -54,7 +54,14 @@ jobs:
   changes:
     name: Detect changed surface
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    # 15, not 5: the job's own work is seconds, but its `fetch-depth: 0`
+    # checkout (paths-filter and the leaf resolver diff against the merge base
+    # with local git) is a full-history fetch of a large repository, and on a
+    # slow hosted runner that fetch alone has run past 5 minutes and had the
+    # job CANCELLED mid-checkout. Every test lane `needs` this job, so that one
+    # cancel skipped the whole matrix and failed Coverage Gate with nothing to
+    # read (#13111). The budget covers a slow fetch; a hung one still ends.
+    timeout-minutes: 15
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is

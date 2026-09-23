@@ -29,7 +29,13 @@ jobs:
   pr-scope:
     name: PR Scope
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    # 15, not 5: the job's own work is seconds, but its `fetch-depth: 0`
+    # checkout (it needs the merge base for `BASE...HEAD`) is a full-history
+    # fetch of a large repository, and on a slow hosted runner that fetch alone
+    # has run past 5 minutes and had the job CANCELLED mid-checkout -- no
+    # failure to read, no retry, and on a fork PR another maintainer release
+    # to re-run (#13111). The budget covers a slow fetch; a hung one still ends.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
