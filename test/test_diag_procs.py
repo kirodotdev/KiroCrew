@@ -1003,6 +1003,13 @@ def test_the_module_exposes_nothing_that_signals_or_writes() -> None:
 # caller that keeps none gets null rates and a gil hint that cannot fire.
 
 
+#: Slack for a float rate compared against its nominal ceiling. The window under
+#: a rate is a difference of monotonic readings that were aged by hand, and two
+#: readings of one coarse-clock tick do not cancel exactly once a constant has
+#: been subtracted from one of them; the quotient can overshoot by ~1e-12.
+_FLOAT_SLACK = 1e-6
+
+
 def _age_baseline(baseline: "procs.RateBaseline", seconds: float) -> None:
     """Age the stored baseline, as the delta tests age a roster by hand."""
     stored = baseline._prev
@@ -1144,9 +1151,13 @@ def test_a_read_refused_as_too_soon_does_not_restart_the_window(tmp_path: Path) 
     # The exact arithmetic is pinned by the 10s-window test instead, where
     # overhead is a rounding error.
     assert recovered.nodes[CHAT].cpu_pct is not None, "the window should have recovered"
-    assert 20.0 < recovered.nodes[CHAT].cpu_pct <= 50.0
+    # The ceiling itself is float arithmetic on a large monotonic base: the
+    # 1.4s window is `now - (stored - 0.8 - 0.6)`, and when `now` is the same
+    # coarse-clock tick as `stored` the difference is 1.4 to a few ulps, so
+    # 0.7 / window can read 50.000000000005 on Windows. Slack, not a point.
+    assert 20.0 < recovered.nodes[CHAT].cpu_pct <= 50.0 + _FLOAT_SLACK
     assert recovered.nodes[CHAT].runq_wait_pct is not None
-    assert 4.0 < recovered.nodes[CHAT].runq_wait_pct <= 10.0
+    assert 4.0 < recovered.nodes[CHAT].runq_wait_pct <= 10.0 + _FLOAT_SLACK
 
 
 def test_a_read_refused_as_too_old_does_replace_the_baseline(tmp_path: Path) -> None:

@@ -1448,7 +1448,9 @@ class TestPrewarmYieldsToALiveStub:
             assert totals == ["1"], f"the pass warmed {totals} of 2 keys, warmed={warmed}"
             assert warmed == ["hot-one"], "the second key stood down for the queued stub"
             assert deadlines and deadlines[0] is not None, "a prewarm wait must be bounded"
-            assert deadlines[0] - time.monotonic() <= gw._PREWARM_SPAWN_WAIT_SECS
+            # `(now + cap) - now'` in floats overshoots the cap by ulps when both
+            # readings fall in one coarse-clock tick; the bound is to float slack.
+            assert deadlines[0] - time.monotonic() <= gw._PREWARM_SPAWN_WAIT_SECS + 1e-6
         finally:
             stop_event.set()
             await asyncio.wait_for(daemon, timeout=15)

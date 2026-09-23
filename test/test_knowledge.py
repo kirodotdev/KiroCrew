@@ -37,6 +37,12 @@ from kiro_crew.knowledge.sync import SyncScheduler
 # ---------------------------------------------------------------------------
 
 
+#: Slack for a float budget compared against its nominal cap. Two readings of
+#: the same monotonic tick do not cancel exactly once a cap has been added to
+#: one of them, so `(now + cap) - now <= cap` is not a sound assertion.
+_FLOAT_SLACK = 1e-6
+
+
 @pytest.fixture()
 def store(tmp_path):
     s = KnowledgeStore(str(tmp_path / "test.db"))
@@ -63,10 +69,16 @@ def store_factory(tmp_path):
 # 1. KnowledgeStore
 # ---------------------------------------------------------------------------
 
+
 class TestKnowledgeStore:
     def test_create_and_get_item(self, store):
-        item_id = store.add_item("Auth Design", "JWT tokens with 1h expiry", "design_doc",
-                                 summary="Auth overview", tags=["auth", "jwt"])
+        item_id = store.add_item(
+            "Auth Design",
+            "JWT tokens with 1h expiry",
+            "design_doc",
+            summary="Auth overview",
+            tags=["auth", "jwt"],
+        )
         item = store.get_item(item_id)
         assert item is not None
         assert item["title"] == "Auth Design"
@@ -135,22 +147,32 @@ class TestKnowledgeStore:
         resume walking a folder the user had paused.
         """
         s1 = store_factory("export-status.db")
-        paused = s1.add_source("vault", "local_folder", "/tmp/rt-paused",
-                               properties={"sync_status": "paused"})
-        unconfirmed = s1.add_source("docs", "local_folder", "/tmp/rt-unconfirmed",
-                                    properties={"sync_status": "pending_confirmation"})
+        paused = s1.add_source(
+            "vault", "local_folder", "/tmp/rt-paused", properties={"sync_status": "paused"}
+        )
+        unconfirmed = s1.add_source(
+            "docs",
+            "local_folder",
+            "/tmp/rt-unconfirmed",
+            properties={"sync_status": "pending_confirmation"},
+        )
         # An outcome state a completed operation wrote: a bundle is untrusted
         # input, so restoring it as-is would assert work that never ran here.
         errored = s1.add_source("dead", "local_folder", "/tmp/rt-errored")
         s1.update_source(errored, sync_status="error")
         bundle = s1.export_all()
         assert {s["sync_status"] for s in bundle["sources"]} == {
-            "paused", "pending_confirmation", "error"}
+            "paused",
+            "pending_confirmation",
+            "error",
+        }
 
         s2 = store_factory("import-status.db")
         s2.import_bundle(bundle)
-        restored = {r["id"]: r["sync_status"] for r in s2.db.execute(
-            "SELECT id, sync_status FROM sources").fetchall()}
+        restored = {
+            r["id"]: r["sync_status"]
+            for r in s2.db.execute("SELECT id, sync_status FROM sources").fetchall()
+        }
         assert restored[paused] == "paused"
         assert restored[unconfirmed] == "pending_confirmation"
         # The refused 'error' does not survive. It lands 'pending_confirmation' rather
@@ -162,14 +184,22 @@ class TestKnowledgeStore:
     def test_export_import_restores_a_legacy_bundle_from_the_blob(self, store_factory):
         """A bundle written before the column travelled still restores."""
         s2 = store_factory("import-legacy.db")
-        s2.import_bundle({"sources": [{
-            "id": "legacy-1", "name": "vault", "source_type": "local_folder",
-            "uri": "/tmp/rt-legacy",
-            "properties": json.dumps({"sync_status": "paused"}),
-        }]})
+        s2.import_bundle(
+            {
+                "sources": [
+                    {
+                        "id": "legacy-1",
+                        "name": "vault",
+                        "source_type": "local_folder",
+                        "uri": "/tmp/rt-legacy",
+                        "properties": json.dumps({"sync_status": "paused"}),
+                    }
+                ]
+            }
+        )
         row = s2.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?",
-            ("legacy-1",)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", ("legacy-1",)
+        ).fetchone()
         assert row["sync_status"] == "paused"
         assert "sync_status" not in json.loads(row["properties"])
 
@@ -190,14 +220,22 @@ class TestKnowledgeStore:
         db = str(tmp_path / "import-refused.db")
         s1 = KnowledgeStore(db)
         try:
-            s1.import_bundle({"sources": [{
-                "id": "refused-1", "name": "vault", "source_type": "local_folder",
-                "uri": "/tmp/rt-refused",
-                "properties": json.dumps({"sync_status": "error"}),
-            }]})
+            s1.import_bundle(
+                {
+                    "sources": [
+                        {
+                            "id": "refused-1",
+                            "name": "vault",
+                            "source_type": "local_folder",
+                            "uri": "/tmp/rt-refused",
+                            "properties": json.dumps({"sync_status": "error"}),
+                        }
+                    ]
+                }
+            )
             row = s1.db.execute(
-                "SELECT sync_status, properties FROM sources WHERE id = ?",
-                ("refused-1",)).fetchone()
+                "SELECT sync_status, properties FROM sources WHERE id = ?", ("refused-1",)
+            ).fetchone()
             assert row["sync_status"] == "pending_confirmation"
             # The refused value is gone from the blob too, so nothing can lift it later.
             assert "sync_status" not in json.loads(row["properties"] or "{}")
@@ -207,7 +245,8 @@ class TestKnowledgeStore:
         s2 = KnowledgeStore(db)
         try:
             row = s2.db.execute(
-                "SELECT sync_status FROM sources WHERE id = ?", ("refused-1",)).fetchone()
+                "SELECT sync_status FROM sources WHERE id = ?", ("refused-1",)
+            ).fetchone()
             assert row["sync_status"] == "pending_confirmation"
         finally:
             s2.close()
@@ -224,14 +263,20 @@ class TestKnowledgeStore:
         store.update_source(sid, sync_status="error")
 
         store.update_source(sid, sync_status="synced", if_sync_status="missing")
-        assert store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?",
-            (sid,)).fetchone()["sync_status"] == "error"
+        assert (
+            store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()[
+                "sync_status"
+            ]
+            == "error"
+        )
 
         store.update_source(sid, sync_status="synced", if_sync_status="error")
-        assert store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?",
-            (sid,)).fetchone()["sync_status"] == "synced"
+        assert (
+            store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()[
+                "sync_status"
+            ]
+            == "synced"
+        )
 
     def test_migration_lift_loses_to_a_concurrent_column_write(self, store, tmp_path):
         """The repair binds the COLUMN it read, not just the blob.
@@ -248,8 +293,17 @@ class TestKnowledgeStore:
         store.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, "s", "local_folder", "/tmp/repair-race",
-             json.dumps({"sync_status": "pending_confirmation"}), "pending", now, now))
+            (
+                sid,
+                "s",
+                "local_folder",
+                "/tmp/repair-race",
+                json.dumps({"sync_status": "pending_confirmation"}),
+                "pending",
+                now,
+                now,
+            ),
+        )
         store.db.commit()
         store.close()
 
@@ -258,15 +312,17 @@ class TestKnowledgeStore:
 
         def confirm_lands_mid_scan(raw):
             parsed = real_loads(raw)
-            if (not fired and isinstance(parsed, dict)
-                    and parsed.get("sync_status") == "pending_confirmation"):
+            if (
+                not fired
+                and isinstance(parsed, dict)
+                and parsed.get("sync_status") == "pending_confirmation"
+            ):
                 fired.append(True)
                 # The user confirms the source while the pass is mid-row: a
                 # COLUMN-only transition, leaving properties untouched.
                 conn = sqlite3.connect(db_path, timeout=30)
                 try:
-                    conn.execute(
-                        "UPDATE sources SET sync_status = 'active' WHERE id = ?", (sid,))
+                    conn.execute("UPDATE sources SET sync_status = 'active' WHERE id = ?", (sid,))
                     conn.commit()
                 finally:
                     conn.close()
@@ -276,9 +332,12 @@ class TestKnowledgeStore:
             reopened = KnowledgeStore(db_path)
         try:
             assert fired, "the mid-scan write never landed; the test proves nothing"
-            assert reopened.db.execute(
-                "SELECT sync_status FROM sources WHERE id = ?",
-                (sid,)).fetchone()["sync_status"] == "active"
+            assert (
+                reopened.db.execute(
+                    "SELECT sync_status FROM sources WHERE id = ?", (sid,)
+                ).fetchone()["sync_status"]
+                == "active"
+            )
         finally:
             reopened.close()
 
@@ -298,7 +357,7 @@ class TestKnowledgeStore:
         # test_cron_count_from_disk.py's `"[" * depth + "]" * depth`. The depth
         # is load-bearing, not padding: python3.12 decodes ~10,000 levels
         # before RecursionError, so a small number would assert nothing.
-        deep = '{"a": ' * 60000 + '{"sync_status": "active"}' + '}' * 60000
+        deep = '{"a": ' * 60000 + '{"sync_status": "active"}' + "}" * 60000
         with pytest.raises(RecursionError):
             json.loads(deep)
 
@@ -312,14 +371,17 @@ class TestKnowledgeStore:
             store.db.execute(
                 "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, "s", "local_folder", uri, props_json, "pending", now, now))
+                (sid, "s", "local_folder", uri, props_json, "pending", now, now),
+            )
         store.db.commit()
         store.close()
 
         reopened = KnowledgeStore(str(tmp_path / "test.db"))
         try:
-            rows = {r["id"]: r["sync_status"] for r in reopened.db.execute(
-                "SELECT id, sync_status FROM sources").fetchall()}
+            rows = {
+                r["id"]: r["sync_status"]
+                for r in reopened.db.execute("SELECT id, sync_status FROM sources").fetchall()
+            }
             # The row that could be read is still repaired; the other is skipped.
             assert rows[ok] == "active"
             assert rows[bad] == "pending"
@@ -345,15 +407,16 @@ class TestKnowledgeStore:
         store.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (escaped, "s", "local_folder", "/tmp/escaped", raw, "pending", now, now))
+            (escaped, "s", "local_folder", "/tmp/escaped", raw, "pending", now, now),
+        )
         store.db.commit()
         store.close()
 
         reopened = KnowledgeStore(str(tmp_path / "test.db"))
         try:
             row = reopened.db.execute(
-                "SELECT sync_status, properties FROM sources WHERE id = ?",
-                (escaped,)).fetchone()
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (escaped,)
+            ).fetchone()
             assert row["sync_status"] == "paused"
             # Retired too, and re-serialized, so the escape cannot come back.
             assert json.loads(row["properties"]) == {}
@@ -375,22 +438,25 @@ class TestKnowledgeStore:
         ent.update(overrides)
         return ent
 
-    @pytest.mark.parametrize("props", [
-        "{not json",          # unparseable
-        "",                   # empty string: json.loads("") raises
-        "[]",                 # parses, wrong shape (readers index a dict)
-        "null",               # parses to None, not a dict
-        {"k": "v"},           # non-string: would bind str(dict) repr as TEXT
-        7,                    # non-string scalar
-        pytest.param(
-            "[" * 200000 + "]" * 200000,  # json.loads raises RecursionError
-            # Short id: the default id embeds all 400k characters, and on
-            # Windows pytest's PYTEST_CURRENT_TEST env var (which carries the
-            # full test id) is capped at 32767 chars -> setup ValueError.
-            id="deep-nesting",
-        ),
-        '{"x": "\ud800"}',    # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
-    ])
+    @pytest.mark.parametrize(
+        "props",
+        [
+            "{not json",  # unparseable
+            "",  # empty string: json.loads("") raises
+            "[]",  # parses, wrong shape (readers index a dict)
+            "null",  # parses to None, not a dict
+            {"k": "v"},  # non-string: would bind str(dict) repr as TEXT
+            7,  # non-string scalar
+            pytest.param(
+                "[" * 200000 + "]" * 200000,  # json.loads raises RecursionError
+                # Short id: the default id embeds all 400k characters, and on
+                # Windows pytest's PYTEST_CURRENT_TEST env var (which carries the
+                # full test id) is capped at 32767 chars -> setup ValueError.
+                id="deep-nesting",
+            ),
+            '{"x": "\ud800"}',  # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
+        ],
+    )
     def test_import_bundle_rejects_malformed_properties(self, store, props):
         bundle = {"sources": [self._source(properties=props)]}
         with pytest.raises(KnowledgeBundleError):
@@ -398,14 +464,17 @@ class TestKnowledgeStore:
         # The transaction rolled back: no partial row committed.
         assert store.db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"] == 0
 
-    @pytest.mark.parametrize("aliases", [
-        "{not json",          # unparseable
-        "",                   # empty string
-        "{}",                 # parses, wrong shape (find_entity iterates a list)
-        '["ok", 3]',          # list with a non-string element (.lower() crashes)
-        ["a"],                # non-string: a Python list, not JSON text
-        '["\ud800"]',         # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
-    ])
+    @pytest.mark.parametrize(
+        "aliases",
+        [
+            "{not json",  # unparseable
+            "",  # empty string
+            "{}",  # parses, wrong shape (find_entity iterates a list)
+            '["ok", 3]',  # list with a non-string element (.lower() crashes)
+            ["a"],  # non-string: a Python list, not JSON text
+            '["\ud800"]',  # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
+        ],
+    )
     def test_import_bundle_rejects_malformed_aliases(self, store, aliases):
         bundle = {"entities": [self._entity(aliases=aliases)]}
         with pytest.raises(KnowledgeBundleError):
@@ -489,6 +558,7 @@ class TestKnowledgeStore:
 # 2. HeadingAwareChunker
 # ---------------------------------------------------------------------------
 
+
 class TestHeadingAwareChunker:
     def test_chunk_markdown(self):
         text = "# Introduction\nThis is the intro paragraph.\n\n# Details\nHere are the details."
@@ -563,6 +633,7 @@ class TestHeadingAwareChunker:
 # 3. FileReader
 # ---------------------------------------------------------------------------
 
+
 class TestFileReader:
     def test_read_markdown(self, tmp_path):
         md = tmp_path / "test.md"
@@ -585,7 +656,7 @@ class TestFileReader:
 
     def test_supported_formats(self):
         reader = FileReader()
-        for ext in ('.md', '.txt', '.py', '.html', '.json', '.jsonl', '.ndjson', '.yaml', '.csv'):
+        for ext in (".md", ".txt", ".py", ".html", ".json", ".jsonl", ".ndjson", ".yaml", ".csv"):
             assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
 
     def test_powershell_extensions_ingested_as_plain_text(self, tmp_path):
@@ -595,9 +666,9 @@ class TestFileReader:
         # the generic _read_text path, not a _DISPATCH reader.
         reader = FileReader()
         samples = {
-            '.ps1': 'Write-Host "hello from a script"',
-            '.psm1': 'function Get-Thing { "hello from a module" }',
-            '.psd1': "@{ ModuleVersion = '1.0'; Description = 'hello manifest' }",
+            ".ps1": 'Write-Host "hello from a script"',
+            ".psm1": 'function Get-Thing { "hello from a module" }',
+            ".psd1": "@{ ModuleVersion = '1.0'; Description = 'hello manifest' }",
         }
         for ext, content in samples.items():
             assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
@@ -606,14 +677,15 @@ class TestFileReader:
             f.write_text(content, encoding="utf-8")
             text, meta = reader.read(str(f))
             assert content in text
-            assert meta['format'] == ext.lstrip('.')
-            assert meta['extension'] == ext
+            assert meta["format"] == ext.lstrip(".")
+            assert meta["extension"] == ext
         # Scripts and modules chunk at function boundaries like their .sh/.rb
         # peers; the .psd1 manifest is data, so it stays on the generic path.
         from kiro_crew.knowledge.ingestion import CODE_EXTS
-        assert '.ps1' in CODE_EXTS
-        assert '.psm1' in CODE_EXTS
-        assert '.psd1' not in CODE_EXTS
+
+        assert ".ps1" in CODE_EXTS
+        assert ".psm1" in CODE_EXTS
+        assert ".psd1" not in CODE_EXTS
 
     def test_kotlin_and_peer_code_extensions_ingested_as_plain_text(self, tmp_path):
         # Kotlin (.kt/.kts) and the C#/Swift/Scala trio are plain UTF-8 text, so
@@ -625,11 +697,11 @@ class TestFileReader:
         # indexes only its README and config.
         reader = FileReader()
         samples = {
-            '.kt': 'fun main() { println("hello from kotlin") }',
-            '.kts': 'val greeting = "hello from a kotlin script"',
-            '.cs': 'internal class Greeter { public void Hi() {} }',
-            '.swift': 'func greet() { print("hello from swift") }',
-            '.scala': 'object Greeter { def hi(): Unit = () }',
+            ".kt": 'fun main() { println("hello from kotlin") }',
+            ".kts": 'val greeting = "hello from a kotlin script"',
+            ".cs": "internal class Greeter { public void Hi() {} }",
+            ".swift": 'func greet() { print("hello from swift") }',
+            ".scala": "object Greeter { def hi(): Unit = () }",
         }
         for ext, content in samples.items():
             assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
@@ -638,8 +710,8 @@ class TestFileReader:
             f.write_text(content, encoding="utf-8")
             text, meta = reader.read(str(f))
             assert content in text
-            assert meta['format'] == ext.lstrip('.')
-            assert meta['extension'] == ext
+            assert meta["format"] == ext.lstrip(".")
+            assert meta["extension"] == ext
 
     def test_code_extensions_are_a_subset_of_supported(self):
         # CODE_EXTS (ingestion.py) and SUPPORTED (readers.py) are two
@@ -648,7 +720,8 @@ class TestFileReader:
         # reaches the chunker it selects -- the file is dropped upstream with no
         # error -- so the subset relation is the guard against that silent drift.
         from kiro_crew.knowledge.ingestion import CODE_EXTS
-        assert {'.kt', '.kts'} <= CODE_EXTS
+
+        assert {".kt", ".kts"} <= CODE_EXTS
         missing = sorted(CODE_EXTS - FileReader.SUPPORTED)
         assert not missing, f"CODE_EXTS entries absent from FileReader.SUPPORTED: {missing}"
 
@@ -656,9 +729,10 @@ class TestFileReader:
         # .kts is a Kotlin build/script file, not prose: it must reach chunk_code
         # like .kt rather than the generic prose chunker.
         from kiro_crew.knowledge.ingestion import _run_chunker
+
         chunker = MagicMock()
-        _run_chunker(chunker, '.kts', 'val x = 1', 'file:///build.gradle.kts')
-        chunker.chunk_code.assert_called_once_with('val x = 1', language='kts')
+        _run_chunker(chunker, ".kts", "val x = 1", "file:///build.gradle.kts")
+        chunker.chunk_code.assert_called_once_with("val x = 1", language="kts")
         chunker.chunk.assert_not_called()
 
     def test_utf16_powershell_files_decode_cleanly(self, tmp_path):
@@ -678,22 +752,23 @@ class TestFileReader:
             f.write_bytes(bom + content.encode(encoding))
             text, meta = reader.read(str(f))
             assert content in text, f"{name}: UTF-16 content not decoded"
-            assert '\x00' not in text, f"{name}: NUL bytes leaked into indexed text"
-            assert meta['format'] == 'psd1'
+            assert "\x00" not in text, f"{name}: NUL bytes leaked into indexed text"
+            assert meta["format"] == "psd1"
         # A BOM that lies (truncated/invalid UTF-16 payload) degrades to
         # latin-1 like the utf-8 branch does -- ingest never hard-fails on it.
         liar = tmp_path / "truncated.psd1"
-        liar.write_bytes(codecs.BOM_UTF16_LE + b'A')
+        liar.write_bytes(codecs.BOM_UTF16_LE + b"A")
         text, meta = reader.read(str(liar))
-        assert meta['format'] == 'psd1', "invalid UTF-16 must degrade, not error"
+        assert meta["format"] == "psd1", "invalid UTF-16 must degrade, not error"
         # The HTML reader shares the same decode: BOM'd UTF-16 HTML from
         # Windows tooling must not fall into the latin-1 mojibake path either.
         page = tmp_path / "saved.html"
-        page.write_bytes(codecs.BOM_UTF16_LE
-                         + "<html><body>utf16 page body</body></html>".encode("utf-16-le"))
+        page.write_bytes(
+            codecs.BOM_UTF16_LE + "<html><body>utf16 page body</body></html>".encode("utf-16-le")
+        )
         text, meta = reader.read(str(page))
         assert "utf16 page body" in text
-        assert '\x00' not in text
+        assert "\x00" not in text
 
 
 def _make_pdf(text: str = "Hello PDF regression") -> bytes:
@@ -726,8 +801,7 @@ def _make_pdf(text: str = "Hello PDF regression") -> bytes:
     for off in offsets:
         out.write(b"%010d 00000 n \n" % off)
     out.write(
-        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF"
-        % (len(objs) + 1, xref_pos)
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF" % (len(objs) + 1, xref_pos)
     )
     return out.getvalue()
 
@@ -744,16 +818,15 @@ class TestFileReaderPdf:
 
     def test_pdf_extension_supported_and_dispatched(self):
         reader = FileReader()
-        assert '.pdf' in reader.SUPPORTED
-        assert reader._DISPATCH.get('.pdf') == '_read_pdf'
+        assert ".pdf" in reader.SUPPORTED
+        assert reader._DISPATCH.get(".pdf") == "_read_pdf"
 
     def test_pdfplumber_runtime_dep_present(self):
         # The extractor child imports pdfplumber; the parent only checks it is
         # installed. If this fails, 'pdfplumber' is missing from setup.cfg
         # install_requires.
         assert pdf_extract.pdfplumber_available(), (
-            "pdfplumber import failed -- declare 'pdfplumber' in setup.cfg "
-            "install_requires"
+            "pdfplumber import failed -- declare 'pdfplumber' in setup.cfg " "install_requires"
         )
 
     def test_read_pdf_extracts_text(self, tmp_path):
@@ -787,7 +860,11 @@ class TestFileReaderPdf:
         assert head == b"%PDF-"
         assert max_chars == readers._PDF_MAX_CHARS
         assert max_pages == pdf_extract.PDF_MAX_PAGES
-        assert 0 < remaining <= readers._PDF_WALL_SECS
+        # `remaining` is `(now + cap) - now'` in floats: with `now` a large
+        # monotonic reading and `now'` the same tick on a coarse clock, the
+        # result lands a few ulps either side of the cap, so an exact `<=`
+        # trips by ~1e-13 on Windows. The bound is the cap, to float slack.
+        assert 0 < remaining <= readers._PDF_WALL_SECS + _FLOAT_SLACK
 
     def test_read_pdf_flate_bomb_is_a_read_error(self, tmp_path):
         """A page that inflates past the child's ceiling is the ordinary error
@@ -828,21 +905,31 @@ class TestFileReaderPdf:
 # 4. EntityExtractor
 # ---------------------------------------------------------------------------
 
+
 class TestEntityExtractor:
     def test_extract_no_agent(self):
         import asyncio
+
         ext = EntityExtractor(pool=None)
         result = asyncio.get_event_loop().run_until_complete(ext.extract("some text"))
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_parse_json_response(self):
         ext = EntityExtractor()
-        raw = json.dumps({
-            "entities": [{"name": "Svc", "type": "service", "description": "A service"}],
-            "relations": [],
-            "category": "design_doc",
-            "summary": "A service doc."
-        })
+        raw = json.dumps(
+            {
+                "entities": [{"name": "Svc", "type": "service", "description": "A service"}],
+                "relations": [],
+                "category": "design_doc",
+                "summary": "A service doc.",
+            }
+        )
         result = ext._parse_response(raw)
         assert len(result["entities"]) == 1
         assert result["category"] == "design_doc"
@@ -858,6 +945,7 @@ class TestEntityExtractor:
 # ---------------------------------------------------------------------------
 # 5. HybridRetriever
 # ---------------------------------------------------------------------------
+
 
 class TestHybridRetriever:
     def test_keyword_search(self, store):
@@ -971,9 +1059,7 @@ class TestHybridRetriever:
         # An artifact result carries the artifact slug + name (from
         # artifact_item_state) for a /artifacts/<slug> citation.
         sid = store.add_source("Artifacts", "artifact", "artifact://aggregate")
-        item_id = store.add_item(
-            "OP Vision", "vision content goes here", "document", source_id=sid
-        )
+        item_id = store.add_item("OP Vision", "vision content goes here", "document", source_id=sid)
         store.db.execute(
             "INSERT INTO artifact_item_state (source_id, slug, item_ids, updated_at, name) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -1103,17 +1189,11 @@ class TestHybridRetrieverNamespaceFilter:
         # and the namespace survives the seed legs.
         src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
         src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
-        store.add_item(
-            "Match", "JWT tokens here", "doc", source_id=src_a, namespace="client-a"
-        )
+        store.add_item("Match", "JWT tokens here", "doc", source_id=src_a, namespace="client-a")
         # Same source, wrong namespace.
-        store.add_item(
-            "Wrong NS", "JWT tokens here", "doc", source_id=src_a, namespace="client-b"
-        )
+        store.add_item("Wrong NS", "JWT tokens here", "doc", source_id=src_a, namespace="client-b")
         # Right namespace, wrong source.
-        store.add_item(
-            "Wrong Src", "JWT tokens here", "doc", source_id=src_b, namespace="client-a"
-        )
+        store.add_item("Wrong Src", "JWT tokens here", "doc", source_id=src_b, namespace="client-a")
         retriever = HybridRetriever(store)
         results = retriever.search("JWT", source_id=src_a, namespace="client-a")
         assert [r["title"] for r in results] == ["Match"]
@@ -1216,8 +1296,9 @@ class TestKnowledgeStoreExtended:
         assert store.get_item("nonexistent") is None
 
     def test_add_source_and_get_by_uri(self, store):
-        sid = store.add_source("myfile", "local_file", "/tmp/test.md",
-                               properties={"content_hash": "abc123"})
+        sid = store.add_source(
+            "myfile", "local_file", "/tmp/test.md", properties={"content_hash": "abc123"}
+        )
         found = store.get_source_by_uri("/tmp/test.md")
         assert found is not None
         assert found["id"] == sid
@@ -1234,10 +1315,14 @@ class TestKnowledgeStoreExtended:
         blob so the row cannot hold two answers.
         """
         sid = store.add_source(
-            "vault", "local_folder", "/tmp/vault",
-            properties={"sync_status": "pending_confirmation"})
+            "vault",
+            "local_folder",
+            "/tmp/vault",
+            properties={"sync_status": "pending_confirmation"},
+        )
         row = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         assert row["sync_status"] == "pending_confirmation"
         assert "sync_status" not in json.loads(row["properties"])
 
@@ -1250,8 +1335,7 @@ class TestKnowledgeStoreExtended:
     def test_add_source_sync_status_defaults_to_pending(self, store):
         """A caller that states no sync_status keeps the column's default."""
         sid = store.add_source("f", "local_file", "/tmp/nostatus.md", properties={})
-        row = store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "pending"
 
     def test_add_source_rejects_non_initial_sync_status(self, store):
@@ -1265,10 +1349,11 @@ class TestKnowledgeStoreExtended:
         """
         for forged in ("syncing", "synced", "error", "missing", "garbage"):
             sid = store.add_source(
-                "f", "local_file", f"/tmp/forged-{forged}.md",
-                properties={"sync_status": forged})
+                "f", "local_file", f"/tmp/forged-{forged}.md", properties={"sync_status": forged}
+            )
             row = store.db.execute(
-                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+            ).fetchone()
             assert row["sync_status"] == "pending", forged
             assert "sync_status" not in json.loads(row["properties"]), forged
 
@@ -1279,10 +1364,10 @@ class TestKnowledgeStoreExtended:
         now the only place that state can live -- dropping it would silently
         resume scanning a folder the user stopped.
         """
-        sid = store.add_source("vault", "local_folder", "/tmp/vault-paused",
-                               properties={"sync_status": "paused"})
-        row = store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        sid = store.add_source(
+            "vault", "local_folder", "/tmp/vault-paused", properties={"sync_status": "paused"}
+        )
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "paused"
 
     def test_auto_added_source_persists_sync_status_column(self, store):
@@ -1294,11 +1379,15 @@ class TestKnowledgeStoreExtended:
         already active.
         """
         sid = store.add_source(
-            "agent-added", "agent", "agent://",
-            properties={"sync_status": "active", "auto_added": True})
+            "agent-added",
+            "agent",
+            "agent://",
+            properties={"sync_status": "active", "auto_added": True},
+        )
         assert sid is not None
         row = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         assert row["sync_status"] == "active"
         assert "sync_status" not in json.loads(row["properties"])
         assert json.loads(row["properties"])["auto_added"] is True
@@ -1332,14 +1421,17 @@ class TestKnowledgeStoreExtended:
             store.db.execute(
                 "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, "s", "local_folder", uri, props_json, column, now, now))
+                (sid, "s", "local_folder", uri, props_json, column, now, now),
+            )
         store.db.commit()
         store.close()
 
         reopened = KnowledgeStore(str(tmp_path / "test.db"))
         try:
-            rows = {r["id"]: r["sync_status"] for r in reopened.db.execute(
-                "SELECT id, sync_status FROM sources").fetchall()}
+            rows = {
+                r["id"]: r["sync_status"]
+                for r in reopened.db.execute("SELECT id, sync_status FROM sources").fetchall()
+            }
             assert rows[divergent] == "pending_confirmation"
             assert rows[live] == "paused"
             assert rows[agree] == "pending"
@@ -1368,8 +1460,17 @@ class TestKnowledgeStoreExtended:
         store.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, "s", "local_folder", "/tmp/race",
-             json.dumps({"sync_status": "pending_confirmation"}), "pending", now, now))
+            (
+                sid,
+                "s",
+                "local_folder",
+                "/tmp/race",
+                json.dumps({"sync_status": "pending_confirmation"}),
+                "pending",
+                now,
+                now,
+            ),
+        )
         store.db.commit()
         store.close()
 
@@ -1380,14 +1481,18 @@ class TestKnowledgeStoreExtended:
             parsed = real_loads(raw)
             # Fire once, only for the row under test: the pass parses each
             # candidate row between its SELECT and its UPDATE.
-            if (not fired and isinstance(parsed, dict)
-                    and parsed.get("sync_status") == "pending_confirmation"):
+            if (
+                not fired
+                and isinstance(parsed, dict)
+                and parsed.get("sync_status") == "pending_confirmation"
+            ):
                 fired.append(True)
                 conn = sqlite3.connect(db_path, timeout=30)
                 try:
                     conn.execute(
                         "UPDATE sources SET properties = ? WHERE id = ?",
-                        (json.dumps({"sync_status": "error", "consecutive_failures": 3}), sid))
+                        (json.dumps({"sync_status": "error", "consecutive_failures": 3}), sid),
+                    )
                     conn.commit()
                 finally:
                     conn.close()
@@ -1398,7 +1503,8 @@ class TestKnowledgeStoreExtended:
         try:
             assert fired, "the mid-scan write never landed; the test proves nothing"
             row = reopened.db.execute(
-                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+            ).fetchone()
             # Never the stale snapshot: the row the scheduler gave up on must not
             # come back offering Confirm.
             assert row["sync_status"] == "pending"
@@ -1414,7 +1520,8 @@ class TestKnowledgeStoreExtended:
         settled = KnowledgeStore(db_path)
         try:
             row = settled.db.execute(
-                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+            ).fetchone()
             assert row["sync_status"] == "pending"
             assert "sync_status" not in json.loads(row["properties"])
             assert json.loads(row["properties"])["consecutive_failures"] == 3
@@ -1436,10 +1543,18 @@ class TestKnowledgeStoreExtended:
         listprops = str(uuid4())
         now = datetime.now().isoformat()
         for sid, column, props_json, uri in (
-            (divergent, "pending",
-             json.dumps({"sync_status": "pending_confirmation"}), "/tmp/divergent"),
-            (legacy_error, "pending", json.dumps({"sync_status": "error",
-                                                  "consecutive_failures": 3}), "/tmp/legacy"),
+            (
+                divergent,
+                "pending",
+                json.dumps({"sync_status": "pending_confirmation"}),
+                "/tmp/divergent",
+            ),
+            (
+                legacy_error,
+                "pending",
+                json.dumps({"sync_status": "error", "consecutive_failures": 3}),
+                "/tmp/legacy",
+            ),
             (healthy, "synced", json.dumps({"mtime": 1}), "/tmp/healthy"),
             # A pre-column failure recorded in the blob, then a successful
             # re-ingest that wrote the COLUMN only. The column is the newer
@@ -1452,14 +1567,19 @@ class TestKnowledgeStoreExtended:
             store.db.execute(
                 "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, "s", "local_folder", uri, props_json, column, now, now))
+                (sid, "s", "local_folder", uri, props_json, column, now, now),
+            )
         store.db.commit()
         store.close()
 
         reopened = KnowledgeStore(str(tmp_path / "test.db"))
         try:
-            rows = {r["id"]: dict(r) for r in reopened.db.execute(
-                "SELECT id, sync_status, properties FROM sources").fetchall()}
+            rows = {
+                r["id"]: dict(r)
+                for r in reopened.db.execute(
+                    "SELECT id, sync_status, properties FROM sources"
+                ).fetchall()
+            }
             # An initial state IS repaired onto an un-written column.
             assert rows[divergent]["sync_status"] == "pending_confirmation"
             # A lifecycle value is NOT promoted, whatever the column reads.
@@ -1489,21 +1609,33 @@ class TestKnowledgeStoreExtended:
         before = str(uuid4())
         after = str(uuid4())
         now = datetime.now().isoformat()
-        for sid, column, uri in ((before, "synced", "/tmp/before"),
-                                 (after, "pending", "/tmp/after")):
+        for sid, column, uri in (
+            (before, "synced", "/tmp/before"),
+            (after, "pending", "/tmp/after"),
+        ):
             store.db.execute(
                 "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, "s", "local_folder", uri,
-                 json.dumps({"sync_status": "error", "consecutive_failures": 3}),
-                 column, now, now))
+                (
+                    sid,
+                    "s",
+                    "local_folder",
+                    uri,
+                    json.dumps({"sync_status": "error", "consecutive_failures": 3}),
+                    column,
+                    now,
+                    now,
+                ),
+            )
         store.db.commit()
         store.close()
 
         first = KnowledgeStore(str(tmp_path / "test.db"))
         try:
-            rows = {r["id"]: r["sync_status"] for r in first.db.execute(
-                "SELECT id, sync_status FROM sources").fetchall()}
+            rows = {
+                r["id"]: r["sync_status"]
+                for r in first.db.execute("SELECT id, sync_status FROM sources").fetchall()
+            }
             # Recovered before the upgrade: never overwritten.
             assert rows[before] == "synced"
             assert rows[after] == "pending"
@@ -1516,8 +1648,10 @@ class TestKnowledgeStoreExtended:
 
         second = KnowledgeStore(str(tmp_path / "test.db"))
         try:
-            rows = {r["id"]: r["sync_status"] for r in second.db.execute(
-                "SELECT id, sync_status FROM sources").fetchall()}
+            rows = {
+                r["id"]: r["sync_status"]
+                for r in second.db.execute("SELECT id, sync_status FROM sources").fetchall()
+            }
             assert rows[before] == "synced"
             assert rows[after] == "synced"
         finally:
@@ -1533,7 +1667,8 @@ class TestKnowledgeStoreExtended:
         sid = store.add_source("f", "local_file", "/tmp/lift.md")
         store.update_source(sid, properties={"sync_status": "missing", "mtime": 7})
         row = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         props = json.loads(row["properties"])
         assert "sync_status" not in props
         assert props["mtime"] == 7
@@ -1551,16 +1686,21 @@ class TestKnowledgeStoreExtended:
         sid = store.add_source("f", "local_file", "/tmp/stale.md")
         store.db.execute(
             "UPDATE sources SET properties = ?, sync_status = 'synced' WHERE id = ?",
-            (json.dumps({"sync_status": "missing", "mtime": 1}), sid))
+            (json.dumps({"sync_status": "missing", "mtime": 1}), sid),
+        )
         store.db.commit()
 
-        legacy_blob = json.loads(store.db.execute(
-            "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()["properties"])
+        legacy_blob = json.loads(
+            store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()[
+                "properties"
+            ]
+        )
         legacy_blob["mtime"] = 2
         store.update_source(sid, properties=json.dumps(legacy_blob))
 
         row = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         assert row["sync_status"] == "synced"
         assert json.loads(row["properties"]) == {"mtime": 2}
 
@@ -1568,17 +1708,16 @@ class TestKnowledgeStoreExtended:
         """Callers that hand over pre-serialized JSON get the same treatment."""
         sid = store.add_source("f", "local_file", "/tmp/lift-str.md")
         store.update_source(sid, properties=json.dumps({"sync_status": "error", "mtime": 3}))
-        row = store.db.execute(
-            "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
         assert json.loads(row["properties"]) == {"mtime": 3}
 
     def test_update_source_writes_an_explicit_status(self, store):
         """The kwarg is the only channel a transition may use."""
         sid = store.add_source("f", "local_file", "/tmp/lift-both.md")
-        store.update_source(
-            sid, properties={"sync_status": "missing"}, sync_status="active")
+        store.update_source(sid, properties={"sync_status": "missing"}, sync_status="active")
         row = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         assert row["sync_status"] == "active"
         assert "sync_status" not in json.loads(row["properties"])
 
@@ -1586,8 +1725,7 @@ class TestKnowledgeStoreExtended:
         """A blob that is not a JSON object is stored as given, not rewritten."""
         sid = store.add_source("f", "local_file", "/tmp/lift-list.md")
         store.update_source(sid, properties="[]")
-        row = store.db.execute(
-            "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["properties"] == "[]"
 
     def test_update_source(self, store):
@@ -1605,7 +1743,8 @@ class TestKnowledgeStoreExtended:
         item_id = store.add_item("Doc", "content", "doc", source_id=sid)
         store.add_source_location(item_id, sid, chunk_range="0-10", section_title="Intro")
         rows = store.db.execute(
-            "SELECT * FROM source_locations WHERE item_id = ?", (item_id,)).fetchall()
+            "SELECT * FROM source_locations WHERE item_id = ?", (item_id,)
+        ).fetchall()
         assert len(rows) == 1
         assert rows[0]["section_title"] == "Intro"
 
@@ -1678,9 +1817,7 @@ class TestKnowledgeStoreExtended:
         result = s2.import_bundle(bundle)
         assert result["items_imported"] == 1
         assert s2.get_item(item_id)["title"] == "Doc"
-        mentions = s2.db.execute(
-            "SELECT * FROM mentions WHERE item_id = ?", (item_id,)
-        ).fetchall()
+        mentions = s2.db.execute("SELECT * FROM mentions WHERE item_id = ?", (item_id,)).fetchall()
         assert len(mentions) == 1
         assert mentions[0]["entity_id"] == eid
 
@@ -1738,8 +1875,16 @@ class TestKnowledgeStoreExtended:
         sid = store.add_source("f", "local_file", "/tmp/del.md")
         store.add_source_location(item_id, sid)
         store.delete_item(item_id)
-        assert store.db.execute("SELECT * FROM mentions WHERE item_id = ?", (item_id,)).fetchone() is None
-        assert store.db.execute("SELECT * FROM source_locations WHERE item_id = ?", (item_id,)).fetchone() is None
+        assert (
+            store.db.execute("SELECT * FROM mentions WHERE item_id = ?", (item_id,)).fetchone()
+            is None
+        )
+        assert (
+            store.db.execute(
+                "SELECT * FROM source_locations WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            is None
+        )
 
     def test_get_stats(self, store):
         store.add_item("A", "a", "doc")
@@ -1799,19 +1944,22 @@ class TestRetireAutoRegisteredFolders:
     @staticmethod
     def _row(store, sid):
         r = store.db.execute(
-            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)
+        ).fetchone()
         return r["sync_status"], json.loads(r["properties"] or "{}")
 
     @staticmethod
     def _watcher(store):
         from kiro_crew.knowledge.watcher import KnowledgeWatcher
+
         return KnowledgeWatcher(store=store, pipeline=object(), interval=1)
 
     # -- the funnel ---------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_a_scan_of_an_auto_registered_source_is_refused_and_retires_it(
-            self, store, tmp_path):
+        self, store, tmp_path
+    ):
         """The gate is in scan_source, so every caller is covered by construction.
 
         A database written before the removal holds such a row, and ``import_bundle``
@@ -1825,9 +1973,14 @@ class TestRetireAutoRegisteredFolders:
         fw = self._watcher(store)._folder_watcher
         fw._do_scan = AsyncMock()  # type: ignore[method-assign]
 
-        stats = await fw.scan_source({"id": sid, "uri": str(folder),
-                                      "source_type": "local_folder",
-                                      "properties": json.dumps({"auto_added": True})})
+        stats = await fw.scan_source(
+            {
+                "id": sid,
+                "uri": str(folder),
+                "source_type": "local_folder",
+                "properties": json.dumps({"auto_added": True}),
+            }
+        )
 
         fw._do_scan.assert_not_awaited()
         assert stats["unconfirmed"] is True
@@ -1857,12 +2010,16 @@ class TestRetireAutoRegisteredFolders:
                 events.append(kw)
 
         with patch("kiro_crew.knowledge.folder_watcher.sel", lambda: _Sel()):
-            await fw.scan_source({"id": sid, "uri": str(folder),
-                                  "source_type": "local_folder",
-                                  "properties": json.dumps({"auto_added": True})})
+            await fw.scan_source(
+                {
+                    "id": sid,
+                    "uri": str(folder),
+                    "source_type": "local_folder",
+                    "properties": json.dumps({"auto_added": True}),
+                }
+            )
 
-        denied = [e for e in events
-                  if e.get("tool_name") == "knowledge.source.scan_denied"]
+        denied = [e for e in events if e.get("tool_name") == "knowledge.source.scan_denied"]
         assert len(denied) == 1, events
         assert denied[0]["outcome"] == "denied"
         assert f"source_id={sid}" in denied[0]["resources"]
@@ -1879,8 +2036,9 @@ class TestRetireAutoRegisteredFolders:
         fw = self._watcher(store)._folder_watcher
         fw._do_scan = AsyncMock(return_value={"new": 0})  # type: ignore[method-assign]
 
-        await fw.scan_source({"id": sid, "uri": str(folder),
-                              "source_type": "local_folder", "properties": "{}"})
+        await fw.scan_source(
+            {"id": sid, "uri": str(folder), "source_type": "local_folder", "properties": "{}"}
+        )
 
         fw._do_scan.assert_awaited_once()
         assert self._row(store, sid)[0] == "active"
@@ -1895,9 +2053,14 @@ class TestRetireAutoRegisteredFolders:
         fw = self._watcher(store)._folder_watcher
         fw._do_scan = AsyncMock(return_value={"new": 0})  # type: ignore[method-assign]
 
-        await fw.scan_source({"id": sid, "uri": str(folder),
-                              "source_type": "local_folder",
-                              "properties": json.dumps(props)})
+        await fw.scan_source(
+            {
+                "id": sid,
+                "uri": str(folder),
+                "source_type": "local_folder",
+                "properties": json.dumps(props),
+            }
+        )
 
         fw._do_scan.assert_awaited_once()
         assert self._row(store, sid)[0] == "active"
@@ -1918,12 +2081,15 @@ class TestRetireAutoRegisteredFolders:
 
     # -- the marker contract ------------------------------------------------
 
-    @pytest.mark.parametrize("props", [
-        {"auto_added": "false"},       # truthy string: must NOT look auto-added
-        {"auto_added": 1},             # not a real boolean
-        {"auto_added": True, "auto_registration_retired": "false"},  # fail-OPEN if truthy
-        {"auto_added": True, "auto_registration_retired": 0},
-    ])
+    @pytest.mark.parametrize(
+        "props",
+        [
+            {"auto_added": "false"},  # truthy string: must NOT look auto-added
+            {"auto_added": 1},  # not a real boolean
+            {"auto_added": True, "auto_registration_retired": "false"},  # fail-OPEN if truthy
+            {"auto_added": True, "auto_registration_retired": 0},
+        ],
+    )
     def test_markers_are_compared_strictly(self, props):
         """``properties`` is user-editable JSON and arrives through import_bundle.
 
@@ -1932,16 +2098,16 @@ class TestRetireAutoRegisteredFolders:
         """
         from kiro_crew.knowledge.store import is_auto_registered
 
-        expected = (props.get("auto_added") is True
-                    and props.get("auto_registration_retired") is not True)
+        expected = (
+            props.get("auto_added") is True and props.get("auto_registration_retired") is not True
+        )
         assert is_auto_registered(props) is expected
 
     def test_a_real_legacy_row_is_recognised(self):
         from kiro_crew.knowledge.store import is_auto_registered
 
         assert is_auto_registered({"auto_added": True}) is True
-        assert is_auto_registered({"auto_added": True,
-                                   "auto_registration_retired": True}) is False
+        assert is_auto_registered({"auto_added": True, "auto_registration_retired": True}) is False
 
     # -- the store primitive ------------------------------------------------
 
@@ -1956,8 +2122,7 @@ class TestRetireAutoRegisteredFolders:
     def test_the_aggregate_sources_are_out_of_scope(self, store):
         """They carry the marker and walk nothing, so they must not be gated."""
         agent = self._add(store, {"auto_added": True}, uri="agent://", stype="agent")
-        artifact = self._add(store, {"auto_added": True}, uri="artifact://",
-                             stype="artifact")
+        artifact = self._add(store, {"auto_added": True}, uri="artifact://", stype="artifact")
         for sid in (agent, artifact):
             assert store.retire_auto_registered_folder(sid) is False
             status, props = self._row(store, sid)
@@ -1975,8 +2140,7 @@ class TestRetireAutoRegisteredFolders:
 
     def test_an_unreadable_properties_blob_is_not_retired_and_does_not_raise(self, store):
         sid = self._add(store, {}, uri="/tmp/broken")
-        store.db.execute("UPDATE sources SET properties = ? WHERE id = ?",
-                         ("{not json", sid))
+        store.db.execute("UPDATE sources SET properties = ? WHERE id = ?", ("{not json", sid))
         store.db.commit()
         assert store.retire_auto_registered_folder(sid) is False
 
@@ -1995,6 +2159,7 @@ class TestRetireAutoRegisteredFolders:
         would land whether or not a lock is held, and the test would prove nothing.
         """
         from kiro_crew.knowledge import store as store_mod
+
         sqlite = store_mod.sqlite3
 
         db_path = str(tmp_path / "test.db")
@@ -2007,8 +2172,7 @@ class TestRetireAutoRegisteredFolders:
             if not outcome and isinstance(parsed, dict) and parsed.get("auto_added"):
                 conn = sqlite.connect(db_path, timeout=0.2, isolation_level=None)
                 try:
-                    conn.execute(
-                        "UPDATE sources SET sync_status = 'synced' WHERE id = ?", (sid,))
+                    conn.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (sid,))
                     outcome.append("landed")
                 except sqlite.OperationalError as exc:
                     outcome.append(f"refused: {exc}")
@@ -2033,6 +2197,7 @@ class TestRetireAutoRegisteredFolders:
         a failed scan the user cannot act on.
         """
         from kiro_crew.knowledge import store as store_mod
+
         sqlite = store_mod.sqlite3
 
         db_path = str(tmp_path / "test.db")
@@ -2062,21 +2227,26 @@ class TestImportedFolderSourcesWaitForConfirmation:
 
     @staticmethod
     def _bundle(source):
-        return {"version": 1, "sources": [source], "items": [], "entities": [],
-                "relations": []}
+        return {"version": 1, "sources": [source], "items": [], "entities": [], "relations": []}
 
     @staticmethod
     def _status(store, sid):
-        return store.db.execute(
-            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()[0]
+        return store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()[
+            0
+        ]
 
     @pytest.mark.parametrize("claimed", ["active", "synced", "pending", "error", None])
     @pytest.mark.parametrize("stype", ["local_folder", "obsidian_vault"])
     def test_a_restored_walking_source_waits(self, store, tmp_path, claimed, stype):
         """Every status the sweep would scan is narrowed, including 'pending'."""
         sid = str(uuid4())
-        src = {"id": sid, "name": "imported", "source_type": stype,
-               "uri": str(tmp_path / "anywhere"), "properties": "{}"}
+        src = {
+            "id": sid,
+            "name": "imported",
+            "source_type": stype,
+            "uri": str(tmp_path / "anywhere"),
+            "properties": "{}",
+        }
         if claimed is not None:
             src["sync_status"] = claimed
         store.import_bundle(self._bundle(src))
@@ -2091,11 +2261,18 @@ class TestImportedFolderSourcesWaitForConfirmation:
         row.
         """
         sid = str(uuid4())
-        store.import_bundle(self._bundle({
-            "id": sid, "name": "paused", "source_type": stype,
-            "uri": str(tmp_path / "paused"), "sync_status": "paused",
-            "properties": "{}",
-        }))
+        store.import_bundle(
+            self._bundle(
+                {
+                    "id": sid,
+                    "name": "paused",
+                    "source_type": stype,
+                    "uri": str(tmp_path / "paused"),
+                    "sync_status": "paused",
+                    "properties": "{}",
+                }
+            )
+        )
         assert self._status(store, sid) == "paused"
 
     def test_the_markers_do_not_change_that(self, store, tmp_path):
@@ -2105,12 +2282,20 @@ class TestImportedFolderSourcesWaitForConfirmation:
         The status is refused on the source TYPE, so the markers never get a say.
         """
         sid = str(uuid4())
-        store.import_bundle(self._bundle({
-            "id": sid, "name": "adopted?", "source_type": "local_folder",
-            "uri": str(tmp_path / "claimed"), "sync_status": "active",
-            "properties": json.dumps({"auto_added": True,
-                                      "auto_registration_retired": True}),
-        }))
+        store.import_bundle(
+            self._bundle(
+                {
+                    "id": sid,
+                    "name": "adopted?",
+                    "source_type": "local_folder",
+                    "uri": str(tmp_path / "claimed"),
+                    "sync_status": "active",
+                    "properties": json.dumps(
+                        {"auto_added": True, "auto_registration_retired": True}
+                    ),
+                }
+            )
+        )
         assert self._status(store, sid) == "pending_confirmation"
 
     @pytest.mark.parametrize("stype", ["local_file", "agent", "artifact", "wiki"])
@@ -2122,10 +2307,18 @@ class TestImportedFolderSourcesWaitForConfirmation:
         bundle legitimately carries.
         """
         sid = str(uuid4())
-        store.import_bundle(self._bundle({
-            "id": sid, "name": "agg", "source_type": stype, "uri": f"{stype}://x",
-            "sync_status": "active", "properties": "{}",
-        }))
+        store.import_bundle(
+            self._bundle(
+                {
+                    "id": sid,
+                    "name": "agg",
+                    "source_type": stype,
+                    "uri": f"{stype}://x",
+                    "sync_status": "active",
+                    "properties": "{}",
+                }
+            )
+        )
         assert self._status(store, sid) == "active"
 
 
@@ -2135,6 +2328,7 @@ class TestWatcherRunLoop:
     @staticmethod
     def _watcher(store, interval=0.01):
         from kiro_crew.knowledge.watcher import KnowledgeWatcher
+
         return KnowledgeWatcher(store=store, pipeline=object(), interval=interval)
 
     @pytest.mark.asyncio
@@ -2182,6 +2376,7 @@ class TestScheduledDedupCadence:
     @staticmethod
     def _watcher(store):
         from kiro_crew.knowledge.watcher import KnowledgeWatcher
+
         return KnowledgeWatcher(store=store, pipeline=object(), interval=1)
 
     @staticmethod
@@ -2193,8 +2388,10 @@ class TestScheduledDedupCadence:
     @pytest.mark.asyncio
     async def test_zero_disables_the_scheduled_pass(self, store):
         w = self._watcher(store)
-        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
-                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+        with (
+            patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep,
+        ):
             cfg.load.return_value = self._cfg(0)
             await w._maybe_dedup_sweep()
         sweep.assert_not_called()
@@ -2203,8 +2400,10 @@ class TestScheduledDedupCadence:
     async def test_it_only_runs_on_the_cadence(self, store):
         w = self._watcher(store)
         w._sweep_count = 5  # 5 % 4 != 0
-        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
-                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+        with (
+            patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep,
+        ):
             cfg.load.return_value = self._cfg(4)
             await w._maybe_dedup_sweep()
         sweep.assert_not_called()
@@ -2226,8 +2425,10 @@ class TestScheduledDedupCadence:
             calls.append({"apply": apply, "certain_only": certain_only})
             return [{"loser": "a", "winner": "b", "reason": "exact"}]
 
-        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
-                patch("kiro_crew.knowledge.watcher.dedup_sweep", _sweep):
+        with (
+            patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep", _sweep),
+        ):
             cfg.load.return_value = self._cfg(4)
             await w._maybe_dedup_sweep()
             assert w._dedup_applied_once is True
@@ -2242,9 +2443,10 @@ class TestScheduledDedupCadence:
         without anything ever having been logged."""
         w = self._watcher(store)
         w._sweep_count = 4
-        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
-                patch("kiro_crew.knowledge.watcher.dedup_sweep",
-                      side_effect=RuntimeError("locked")):
+        with (
+            patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep", side_effect=RuntimeError("locked")),
+        ):
             cfg.load.return_value = self._cfg(4)
             await w._maybe_dedup_sweep()  # contained, must not raise
         assert w._dedup_applied_once is False
@@ -2252,8 +2454,10 @@ class TestScheduledDedupCadence:
     @pytest.mark.asyncio
     async def test_an_unreadable_cadence_setting_skips_the_pass(self, store):
         w = self._watcher(store)
-        with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg, \
-                patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep:
+        with (
+            patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep,
+        ):
             cfg.load.side_effect = RuntimeError("no config")
             await w._maybe_dedup_sweep()
         sweep.assert_not_called()
@@ -2353,19 +2557,30 @@ class TestHybridRetrieverExtended:
 class TestEntityExtractorExtended:
     def test_extract_empty_text(self):
         import asyncio
+
         ext = EntityExtractor(pool=None)
         result = asyncio.get_event_loop().run_until_complete(ext.extract(""))
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_extract_with_agent(self):
         import asyncio
 
         class MockPool:
             async def send(self, prompt, timeout=60.0):
-                return json.dumps({
-                    "entities": [{"name": "Svc", "type": "service", "description": "A"}],
-                    "relations": [], "category": "design_doc", "summary": "test"
-                })
+                return json.dumps(
+                    {
+                        "entities": [{"name": "Svc", "type": "service", "description": "A"}],
+                        "relations": [],
+                        "category": "design_doc",
+                        "summary": "test",
+                    }
+                )
 
             async def send_batch(self, prompts, timeout=60.0):
                 return [await self.send(p, timeout) for p in prompts]
@@ -2387,7 +2602,13 @@ class TestEntityExtractorExtended:
 
         ext = EntityExtractor(pool=BadPool())
         result = asyncio.get_event_loop().run_until_complete(ext.extract("text"))
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_parse_response_prose_wrapped(self):
         ext = EntityExtractor()
@@ -2398,7 +2619,13 @@ class TestEntityExtractorExtended:
     def test_parse_response_garbage(self):
         ext = EntityExtractor()
         result = ext._parse_response("totally invalid garbage")
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_parse_response_stray_brace_in_prose(self):
         # The old greedy first-'{'-to-last-'}' regex spanned from the
@@ -2420,7 +2647,13 @@ class TestEntityExtractorExtended:
         ext = EntityExtractor()
         raw = '[{"entities": []}]'
         result = ext._parse_response(raw)
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_parse_response_two_different_payloads_refuse_the_guess(self):
         # The shared extractor's ambiguity contract: two DIFFERENT
@@ -2428,7 +2661,13 @@ class TestEntityExtractorExtended:
         ext = EntityExtractor()
         raw = '{"summary": "first"} or maybe {"summary": "second"}'
         result = ext._parse_response(raw)
-        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+        assert result == {
+            "title": "",
+            "entities": [],
+            "relations": [],
+            "category": "document",
+            "summary": "",
+        }
 
     def test_validate_partial_data(self):
         ext = EntityExtractor()
@@ -2609,7 +2848,12 @@ class TestPysqlite3Fallback:
 
 class TestChunkMarkdown:
     def test_splits_on_headings(self):
-        text = "# Intro\nParagraph one.\n\n## Details\n" + " ".join(["detail"] * 400) + "\n\n## Conclusion\n" + " ".join(["final"] * 400)
+        text = (
+            "# Intro\nParagraph one.\n\n## Details\n"
+            + " ".join(["detail"] * 400)
+            + "\n\n## Conclusion\n"
+            + " ".join(["final"] * 400)
+        )
         chunker = HeadingAwareChunker(target_size=500)
         chunks = chunker.chunk_markdown(text)
         assert len(chunks) >= 2
@@ -2637,7 +2881,12 @@ class TestChunkMarkdown:
         assert chunks[0]["content"] == text
 
     def test_section_titles_extracted(self):
-        text = "## Architecture\n" + " ".join(["arch"] * 300) + "\n\n## Security\n" + " ".join(["sec"] * 300)
+        text = (
+            "## Architecture\n"
+            + " ".join(["arch"] * 300)
+            + "\n\n## Security\n"
+            + " ".join(["sec"] * 300)
+        )
         chunker = HeadingAwareChunker(target_size=500)
         chunks = chunker.chunk_markdown(text)
         titles = [c["section_title"] for c in chunks]
@@ -2657,12 +2906,12 @@ class TestChunkMarkdown:
         # ran (merged_sections - 1) lines past the end of the file -- a citation
         # pointing past EOF. line_end must track the last real SOURCE line.
         text = (
-            "## Alpha\n"      # line 1
-            "body a\n"        # line 2
-            "## Bravo\n"      # line 3
-            "body b\n"        # line 4
-            "## Charlie\n"    # line 5
-            "body c\n"        # line 6
+            "## Alpha\n"  # line 1
+            "body a\n"  # line 2
+            "## Bravo\n"  # line 3
+            "body b\n"  # line 4
+            "## Charlie\n"  # line 5
+            "body c\n"  # line 6
         )
         total_lines = text.count("\n")  # 6 source lines
         chunker = HeadingAwareChunker(target_size=500)
@@ -2682,11 +2931,11 @@ class TestChunkMarkdown:
         # line_end must stay on the last line carrying real text (4) instead of
         # counting the blank tail line (5) that the content does not hold.
         text = (
-            "## Alpha\n"      # line 1
-            "body a\n"        # line 2
-            "## Bravo\n"      # line 3
-            "body b\n"        # line 4
-            "   \n"           # line 5 -- whitespace only
+            "## Alpha\n"  # line 1
+            "body a\n"  # line 2
+            "## Bravo\n"  # line 3
+            "body b\n"  # line 4
+            "   \n"  # line 5 -- whitespace only
         )
         chunker = HeadingAwareChunker(target_size=500)
         chunks = chunker.chunk_markdown(text)
@@ -2725,7 +2974,7 @@ class TestDocxContentType:
     def test_docx_content_type_in_dispatch(self):
         """Verify .docx is in the dispatch table."""
         reader = FileReader()
-        assert '.docx' in reader._DISPATCH
+        assert ".docx" in reader._DISPATCH
 
 
 class TestCosineSimilarityDimensionMismatch:
@@ -2754,8 +3003,9 @@ class TestCosineSimilarityDimensionMismatch:
 
     def test_mismatched_dims_other_order_also_zero(self):
         # Order must not matter: shorter query vs longer item is equally incomparable.
-        sim = HybridRetriever._cosine_similarity([1.0, 1.0, 1.0, 1.0],
-                                                 [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+        sim = HybridRetriever._cosine_similarity(
+            [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        )
         assert sim == 0.0
 
     def test_equal_dims_unaffected(self):
@@ -2773,6 +3023,8 @@ class TestCosineSimilarityDimensionMismatch:
         assert HybridRetriever._cosine_similarity([1.0], []) == 0.0
         # [] vs [] are equal-length but zero-norm -> 0.0 (zero-norm guard).
         assert HybridRetriever._cosine_similarity([], []) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Embedding rebuild background job
 # ---------------------------------------------------------------------------
@@ -2815,14 +3067,18 @@ class TestRebuildEmbeddingsJob:
         # Seed active items, each with a stale (single-element) embedding so we can
         # prove the rebuild overwrites in place rather than only filling NULLs.
         from kiro_crew.knowledge.embedder import floats_to_bytes
+
         for i in range(n_items):
-            store.add_item(f"Item {i:03d}", f"body {i}", "document",
-                           embedding=floats_to_bytes([9.9]))
+            store.add_item(
+                f"Item {i:03d}", f"body {i}", "document", embedding=floats_to_bytes([9.9])
+            )
         job_id = "rebuildjob01"
         now = "2026-06-16T00:00:00"
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES (?, NULL, 'processing', ?, ?)", (job_id, now, now))
+            "VALUES (?, NULL, 'processing', ?, ?)",
+            (job_id, now, now),
+        )
         store.db.commit()
         await _rebuild_embeddings_job(None, store, embedder, job_id)
         return job_id
@@ -2831,6 +3087,7 @@ class TestRebuildEmbeddingsJob:
         # More than one _REBUILD_BATCH_SIZE page to exercise the id-cursor loop.
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         from kiro_crew.knowledge.ingestion import _REBUILD_BATCH_SIZE
+
         n = _REBUILD_BATCH_SIZE + 5
         embedder = _FakeEmbedder()
         job_id = await self._run(store, embedder, n)
@@ -2839,8 +3096,7 @@ class TestRebuildEmbeddingsJob:
         assert len(embedder.embedded_titles) == n
         assert len(set(embedder.embedded_titles)) == n
 
-        job = store.db.execute(
-            "SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+        job = store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
         assert job["status"] == "completed"
         assert job["items_total"] == n
         assert job["items_processed"] == n
@@ -2849,7 +3105,8 @@ class TestRebuildEmbeddingsJob:
         # every item is stamped with the current signature + an embedded_at timestamp.
         row = store.db.execute(
             "SELECT embedding, embedding_sig, embedded_at FROM items "
-            "WHERE status = 'active' LIMIT 1").fetchone()
+            "WHERE status = 'active' LIMIT 1"
+        ).fetchone()
         assert row["embedding"] == floats_to_bytes([0.1, 0.2, 0.3, 0.4])
         assert row["embedding_sig"] == embed_signature(embedder.model, embedder.dim)
         assert row["embedded_at"]
@@ -2862,6 +3119,7 @@ class TestRebuildEmbeddingsJob:
 
         # A second rebuild on an unchanged setup finds nothing stale -> no-op.
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
+
         second = _FakeEmbedder()
         processed = await rebuild_embeddings(store, second)
         assert processed == 0
@@ -2871,10 +3129,12 @@ class TestRebuildEmbeddingsJob:
         # One item already carries the current sig; the rest are stale (NULL sig).
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
+
         embedder = _FakeEmbedder()
         sig = embed_signature(embedder.model, embedder.dim)
-        done = store.add_item("done", "body", "document",
-                              embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
+        done = store.add_item(
+            "done", "body", "document", embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4])
+        )
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, done))
         for i in range(2):
             store.add_item(f"stale {i}", "body", "document")
@@ -2891,6 +3151,7 @@ class TestRebuildEmbeddingsJob:
         await self._run(store, embedder, 3)
 
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
+
         forced = _FakeEmbedder()
         processed = await rebuild_embeddings(store, forced, force=True)
         assert processed == 3
@@ -2902,8 +3163,7 @@ class TestRebuildEmbeddingsJob:
                 raise RuntimeError("ollama down mid-rebuild")
 
         job_id = await self._run(store, _BoomEmbedder(), 3)
-        job = store.db.execute(
-            "SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+        job = store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
         assert job["status"] == "failed"
         assert "ollama down" in (job["error"] or "")
 
@@ -2932,7 +3192,9 @@ class TestRebuildEmbeddingsJob:
         base = "2026-06-16T00:00:00"
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES (?, NULL, 'processing', ?, ?)", (job_id, base, base))
+            "VALUES (?, NULL, 'processing', ?, ?)",
+            (job_id, base, base),
+        )
         store.db.commit()
 
         await rebuild_embeddings(store, _RecordingEmbedder(), job_id=job_id)
@@ -2940,9 +3202,9 @@ class TestRebuildEmbeddingsJob:
         # By the 2nd/3rd item, the committed updated_at has advanced past the
         # batch-start value — proving a per-item heartbeat, not a per-batch one.
         assert seen_updated_at, "embedder never ran"
-        assert any(ts > base for ts in seen_updated_at[1:]), (
-            f"updated_at never advanced mid-batch: {seen_updated_at}"
-        )
+        assert any(
+            ts > base for ts in seen_updated_at[1:]
+        ), f"updated_at never advanced mid-batch: {seen_updated_at}"
 
 
 @pytest.mark.asyncio
@@ -2952,6 +3214,7 @@ class TestWatcherSelfHeal:
 
         class _Pipe:
             pass
+
         pipe = _Pipe()
         pipe.embedder = embedder
         return KnowledgeWatcher(store, pipe)
@@ -2959,6 +3222,7 @@ class TestWatcherSelfHeal:
     async def test_stale_items_trigger_rebuild_job(self, store):
         # Items with NULL sig are stale -> watcher fires a tracked rebuild job.
         from kiro_crew.knowledge.embedder import embed_signature
+
         embedder = _FakeEmbedder()
         for i in range(3):
             store.add_item(f"Item {i}", "body", "document")
@@ -2970,23 +3234,27 @@ class TestWatcherSelfHeal:
 
         job = store.db.execute(
             "SELECT * FROM ingestion_jobs WHERE source_id IS NULL "
-            "ORDER BY created_at DESC LIMIT 1").fetchone()
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
         assert job["status"] == "completed"
         assert job["items_processed"] == 3
         assert len(embedder.embedded_titles) == 3
         sig = embed_signature(embedder.model, embedder.dim)
         stale = store.db.execute(
             "SELECT COUNT(*) AS c FROM items WHERE embedding_sig IS NULL OR embedding_sig != ?",
-            (sig,)).fetchone()["c"]
+            (sig,),
+        ).fetchone()["c"]
         assert stale == 0
 
     async def test_no_stale_items_is_noop(self, store):
         # Everything already current -> no job created.
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
+
         embedder = _FakeEmbedder()
         sig = embed_signature(embedder.model, embedder.dim)
-        item_id = store.add_item("current", "body", "document",
-                                 embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
+        item_id = store.add_item(
+            "current", "body", "document", embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4])
+        )
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, item_id))
         store.db.commit()
         watcher = self._watcher(store, embedder)
@@ -3003,7 +3271,9 @@ class TestWatcherSelfHeal:
         now = datetime.now().isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES ('inflight0001', NULL, 'processing', ?, ?)", (now, now))
+            "VALUES ('inflight0001', NULL, 'processing', ?, ?)",
+            (now, now),
+        )
         store.db.commit()
         watcher = self._watcher(store, embedder)
 
@@ -3016,12 +3286,15 @@ class TestWatcherSelfHeal:
         # from a crash that bypassed cleanup -> the guard ignores it and the watcher
         # starts a fresh rebuild rather than being permanently blocked.
         from kiro_crew.knowledge.ingestion import _REBUILD_STALE_AFTER
+
         embedder = _FakeEmbedder()
         store.add_item("stale", "body", "document")
         old = (datetime.now() - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES ('dead00000001', NULL, 'processing', ?, ?)", (old, old))
+            "VALUES ('dead00000001', NULL, 'processing', ?, ?)",
+            (old, old),
+        )
         store.db.commit()
         watcher = self._watcher(store, embedder)
 
@@ -3040,7 +3313,9 @@ class TestWatcherSelfHeal:
         now = datetime.now().isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES ('cancel000001', NULL, 'processing', ?, ?)", (now, now))
+            "VALUES ('cancel000001', NULL, 'processing', ?, ?)",
+            (now, now),
+        )
         store.db.commit()
 
         async def _boom(*a, **k):
@@ -3051,7 +3326,8 @@ class TestWatcherSelfHeal:
                 await watcher._run_reembed_job(embedder, "cancel000001")
 
         row = store.db.execute(
-            "SELECT status FROM ingestion_jobs WHERE id = 'cancel000001'").fetchone()
+            "SELECT status FROM ingestion_jobs WHERE id = 'cancel000001'"
+        ).fetchone()
         assert row["status"] == "cancelled"
 
 
@@ -3390,12 +3666,14 @@ class TestWatcherLargeRebuildWarning:
 
         class _Pipe:
             pass
+
         pipe = _Pipe()
         pipe.embedder = _FakeEmbedder()
         return KnowledgeWatcher(store, pipe)
 
     async def test_large_stale_count_logs_warning(self, store, monkeypatch, caplog):
         import kiro_crew.knowledge.watcher as watcher_mod
+
         monkeypatch.setattr(watcher_mod, "_LARGE_REBUILD_WARN_THRESHOLD", 3)
         for i in range(3):
             store.add_item(f"Item {i}", "body", "document")
@@ -3406,13 +3684,17 @@ class TestWatcherLargeRebuildWarning:
         assert watcher._reembed_task is not None
         await watcher._reembed_task
 
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING
-                    and "full background re-embed" in r.getMessage()]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "full background re-embed" in r.getMessage()
+        ]
         assert len(warnings) == 1
         assert "3 items" in warnings[0].getMessage()
 
     async def test_small_stale_count_no_warning(self, store, monkeypatch, caplog):
         import kiro_crew.knowledge.watcher as watcher_mod
+
         monkeypatch.setattr(watcher_mod, "_LARGE_REBUILD_WARN_THRESHOLD", 100)
         store.add_item("Only item", "body", "document")
         watcher = self._watcher(store)
@@ -3422,8 +3704,11 @@ class TestWatcherLargeRebuildWarning:
         assert watcher._reembed_task is not None
         await watcher._reembed_task
 
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING
-                    and "full background re-embed" in r.getMessage()]
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "full background re-embed" in r.getMessage()
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -3508,6 +3793,7 @@ class TestEntityExtractorNonceDelimiters:
 # SyncScheduler.sync_all -- errored sources must be quiesced
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 class TestSyncAllSkipsErroredSources:
     """sync_all must skip an errored source, whichever writer marked it.
@@ -3563,8 +3849,11 @@ class TestSyncAllSkipsErroredSources:
         ok_id = str(uuid4())
         now = datetime.now().isoformat()
         for sid, uri, props_json in (
-            (err_id, "/tmp/legacy",
-             json.dumps({"sync_status": "error", "consecutive_failures": 3})),
+            (
+                err_id,
+                "/tmp/legacy",
+                json.dumps({"sync_status": "error", "consecutive_failures": 3}),
+            ),
             (ok_id, "/tmp/legacy-ok", json.dumps({})),
         ):
             # local_folder: the reopen also runs the orphan cleanup, which
@@ -3572,7 +3861,8 @@ class TestSyncAllSkipsErroredSources:
             store.db.execute(
                 "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, "LegacyDead", "local_folder", uri, props_json, "pending", now, now))
+                (sid, "LegacyDead", "local_folder", uri, props_json, "pending", now, now),
+            )
         store.db.commit()
         store.close()
 
@@ -3580,14 +3870,19 @@ class TestSyncAllSkipsErroredSources:
         try:
             scheduler, attempted = self._scheduler(reopened)
             await scheduler.sync_all()
-            assert attempted == [err_id, ok_id] or set(attempted) == {err_id, ok_id}, (
-                "both legacy rows are polled, the blob-errored one included")
+            assert attempted == [err_id, ok_id] or set(attempted) == {
+                err_id,
+                ok_id,
+            }, "both legacy rows are polled, the blob-errored one included"
 
             # An attempt that FAILS is what writes the column.
             scheduler._record_failure(err_id)
-            assert reopened.db.execute(
-                "SELECT sync_status FROM sources WHERE id = ?",
-                (err_id,)).fetchone()["sync_status"] == "error"
+            assert (
+                reopened.db.execute(
+                    "SELECT sync_status FROM sources WHERE id = ?", (err_id,)
+                ).fetchone()["sync_status"]
+                == "error"
+            )
 
             attempted.clear()
             await scheduler.sync_all()
@@ -3615,12 +3910,16 @@ class TestCjkKeywordRecall:
 
     # "investigated the data-leak problem in memory today" -- holds both halves
     # of LEAK as adjacent pairs, but spelled apart in the sentence.
-    DOC_APART = "\u4eca\u5929\u8c03\u67e5\u4e86\u5185\u5b58\u91cc\u7684\u6570\u636e\u6cc4\u6f0f\u95ee\u9898"
+    DOC_APART = (
+        "\u4eca\u5929\u8c03\u67e5\u4e86\u5185\u5b58\u91cc\u7684\u6570\u636e\u6cc4\u6f0f\u95ee\u9898"
+    )
     # "finished locating the memory leak" -- holds the whole run verbatim.
     DOC_RUN = "\u5185\u5b58\u6cc4\u6f0f\u5b9a\u4f4d\u5b8c\u6210\u4e86"
     # "a record of the internal relief valve and the water leak" -- reuses all
     # four characters of LEAK, but spells neither "memory" nor "leak".
-    DOC_DECOY = "\u5185\u90e8\u4fdd\u5b58\u4e86\u6cc4\u538b\u9600\u548c\u6f0f\u6c34\u7684\u8bb0\u5f55"
+    DOC_DECOY = (
+        "\u5185\u90e8\u4fdd\u5b58\u4e86\u6cc4\u538b\u9600\u548c\u6f0f\u6c34\u7684\u8bb0\u5f55"
+    )
     # "the user decided to use this model for inference"
     DOC_MODEL = "\u7528\u6237\u51b3\u5b9a\u7528\u8fd9\u4e2a\u6a21\u578b\u6765\u505a\u63a8\u7406"
 
@@ -3637,12 +3936,12 @@ class TestCjkKeywordRecall:
         either way, which is exactly why the marker is what distinguishes them.
         """
         store.ensure_fts_index_current()
-        rowid = store.db.execute(
-            "SELECT rowid FROM items WHERE title = ?", (title,)).fetchone()[0]
+        rowid = store.db.execute("SELECT rowid FROM items WHERE title = ?", (title,)).fetchone()[0]
         store.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
         store.db.execute(
             "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-            (rowid, title, content, tags))
+            (rowid, title, content, tags),
+        )
         store.db.execute("PRAGMA user_version = 0")
 
     def test_store_fts_finds_spaceless_cjk_query(self, store):
@@ -3756,14 +4055,14 @@ class TestCjkKeywordRecall:
             for i in range(60):
                 first.add_item(f"doc{i}", self.DOC_RUN, "note")
             keep = first.add_item("keep", self.DOC_RUN, "note")
-            rows = first.db.execute(
-                "SELECT rowid, title, content, tags FROM items").fetchall()
+            rows = first.db.execute("SELECT rowid, title, content, tags FROM items").fetchall()
             first.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
             first.db.execute("BEGIN IMMEDIATE")
             for r in rows:
                 first.db.execute(
                     "INSERT INTO items_fts (rowid,title,content,tags) VALUES (?,?,?,?)",
-                    (r["rowid"], r["title"], r["content"], r["tags"]))
+                    (r["rowid"], r["title"], r["content"], r["tags"]),
+                )
             first.db.execute("PRAGMA user_version = 0")
             first.db.execute("COMMIT")
         finally:
@@ -3874,7 +4173,8 @@ class TestCjkKeywordRecall:
             "_entity_items_rows": handler_mod._entity_items_rows,
         }
         missing = [
-            name for name, fn in readers.items()
+            name
+            for name, fn in readers.items()
             if "ensure_fts_index_current" not in inspect.getsource(fn)
         ]
         assert not missing, (
@@ -4084,8 +4384,8 @@ class TestCjkKeywordRecall:
             assert self._titles(reopened.search_items_fts(self.LEAK)) == ["run"]
             assert reopened._fts_index_current is True
             from kiro_crew.knowledge.store import FTS_INDEX_VERSION
-            assert reopened.db.execute(
-                "PRAGMA user_version").fetchone()[0] == FTS_INDEX_VERSION
+
+            assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == FTS_INDEX_VERSION
         finally:
             reopened.close()
 
@@ -4111,8 +4411,7 @@ class TestCjkKeywordRecall:
         try:
             results = []
             threads = [
-                threading.Thread(
-                    target=lambda: results.append(store.search_items_fts(self.LEAK)))
+                threading.Thread(target=lambda: results.append(store.search_items_fts(self.LEAK)))
                 for _ in range(4)
             ]
             for t in threads:
@@ -4163,8 +4462,7 @@ class TestCjkKeywordRecall:
         reopened = KnowledgeStore(path)
         try:
             assert self._titles(reopened.search_items_fts(self.LEAK)) == ["run"]
-            assert reopened.db.execute(
-                "PRAGMA user_version").fetchone()[0] == FTS_INDEX_VERSION
+            assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == FTS_INDEX_VERSION
         finally:
             reopened.close()
 
@@ -4183,7 +4481,8 @@ class TestCjkKeywordRecall:
         reopened = KnowledgeStore(path)
         try:
             assert self._titles(reopened.search_items_fts(self.LEAK, limit=50)) == [
-                f"doc{i}" for i in range(5)]
+                f"doc{i}" for i in range(5)
+            ]
         finally:
             reopened.close()
 
@@ -4209,7 +4508,8 @@ class TestCjkFts5Primitives:
         # The 4-char "memory leak" run -> its three overlapping pairs, each a
         # phrase over the segmented characters.
         assert fts5_cjk_match_groups("\u5185\u5b58\u6cc4\u6f0f") == [
-            '("\u5185 \u5b58" OR "\u5b58 \u6cc4" OR "\u6cc4 \u6f0f")']
+            '("\u5185 \u5b58" OR "\u5b58 \u6cc4" OR "\u6cc4 \u6f0f")'
+        ]
 
     def test_single_cjk_character_has_no_pair(self):
         from kiro_crew._sqlite_compat import fts5_cjk_match_groups
@@ -4219,8 +4519,7 @@ class TestCjkFts5Primitives:
     def test_mixed_script_token_ands_its_runs(self):
         from kiro_crew._sqlite_compat import fts5_cjk_match_groups
 
-        assert fts5_cjk_match_groups("kirocrew\u90e8\u7f72") == [
-            '("kirocrew" AND "\u90e8 \u7f72")']
+        assert fts5_cjk_match_groups("kirocrew\u90e8\u7f72") == ['("kirocrew" AND "\u90e8 \u7f72")']
 
     def test_quotes_in_input_cannot_escape_the_literal(self):
         from kiro_crew._sqlite_compat import fts5_cjk_match_groups
