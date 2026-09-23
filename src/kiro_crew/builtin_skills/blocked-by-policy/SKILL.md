@@ -192,6 +192,11 @@ The reason has two possible forms:
 - `Blocked: <sentence>` — the always-on floor (sensitive paths, the trust root,
   exfiltration shapes). These name the class directly.
 
+Where the `kirocrew-debug` tools are granted, `debug_refusals` reads the gateway's
+own record and gives each refusal its real class, which the refusal text alone does
+not carry — in particular `unverifiable_path`, a path the resolver never finished
+judging, which is retried rather than worked around.
+
 ## Useful checks
 
 - `kirocrew doctor` — reports the credential posture: which AWS profiles are
