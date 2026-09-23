@@ -599,9 +599,15 @@ class TestDocumentPass:
         assert "bomb.pdf skipped: extractor memory" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_a_pdf_the_parser_refuses_is_a_settled_answer(self, tmp_path):
+    async def test_a_pdf_the_parser_refuses_is_a_settled_answer(self, tmp_path, monkeypatch):
         """Not a PDF under a .pdf name: no hit, no skip, no partial flag -- the
         same shape as a workbook that is not a zip."""
+        # The refusal still costs an extractor child (an interpreter start), and
+        # the .docx beside it is opened only after that child answers. Under
+        # the default budget a slow runner spends the whole deadline on the
+        # spawn, reports the PDF as a timeout skip and never reaches spec.docx
+        # -- the budget under test is the parser's verdict, not spawn latency.
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)
         root = tmp_path / "mixed"
         root.mkdir()
         (root / "paper.pdf").write_bytes(b"%PDF-1.4\n\x00 the WIDGET plan\n")
