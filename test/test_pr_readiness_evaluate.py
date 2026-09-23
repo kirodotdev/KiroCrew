@@ -663,7 +663,7 @@ class TestLaneStateIsLoggedNotOnlySummarized:
         # Real lane labels, not just a non-empty bucket -- proves the log line
         # carries the SAME names the summary does, not a placeholder.
         assert "CI" in log_line
-        assert "Opus 4.8 Review" in log_line
+        assert "Opus 5 Review" in log_line
 
     def test_a_stuck_lane_is_named_in_the_log_line(self, runner: Runner):
         # The shape this guards: one lane never completes (still queued),
@@ -1372,7 +1372,7 @@ class _ForkLaneVerdictBinding:
 
 class TestForkOpusVerdictIsBoundToItsPullRequest(_ForkLaneVerdictBinding):
     PREFIX = "opus-pr-"
-    CHECK_NAME = "Opus 4.8 Review"
+    CHECK_NAME = "Opus 5 Review"
 
 
 class TestForkGptVerdictIsBoundToItsPullRequest(_ForkLaneVerdictBinding):

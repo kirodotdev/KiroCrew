@@ -546,7 +546,7 @@ jobs:
 
             THIS IS A UX REVIEW, NOT A CODE OR DESIGN REVIEW. Three other
             automated reviewers already cover line-level correctness, security,
-            and style (Opus 4.8 / GPT 5.6) and design-level problem/solution
+            and style (Opus 5 / GPT 5.6) and design-level problem/solution
             fit (Design Review). Do NOT duplicate them: no correctness bugs, no
             security findings, no style/naming/import nits, no "is this the
             right architecture". Your lens is exclusively what a HUMAN USING

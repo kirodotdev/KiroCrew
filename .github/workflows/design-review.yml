@@ -190,7 +190,7 @@ jobs:
           echo "Rendered evidence: $n image(s), $clips recording(s), $k committed image(s); ${failed:-0} download(s) failed."
 
       # Dependabot (a design review adds little to a mechanical version bump)
-      # and let the advisory status pass — same skip contract as the Opus 4.8 /
+      # and let the advisory status pass — same skip contract as the Opus 5 /
       # GPT 5.6 reviewers. github.actor is set by GitHub and cannot be spoofed by
       # PR content. Also skip when a human override is recorded, so an OIDC
       # failure can never keep the override from clearing the lane.

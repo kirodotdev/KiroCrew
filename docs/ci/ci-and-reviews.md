@@ -55,7 +55,7 @@ pull_request
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
-  |-- claude-review.yml "Opus 4.8 Review"     line-level, code-only, blocking
+  |-- claude-review.yml "Opus 5 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
   |-- ux-review.yml     "UX Review"         rendered experience, advisory
@@ -1238,8 +1238,8 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
-| GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 4.8 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
+| Opus 5 | `Opus 5 Review` | Agentic Opus 5 with Opus 4.8 as the overload fallback, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 5 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
 | First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
@@ -1398,7 +1398,7 @@ is deliberate — premise and cause here, shape quality there — and if the two
 converge in practice, the answer is to trim the overlap out of Design Review, not to
 tune two prompts against each other.
 
-### Why Opus 4.8 is code-only
+### Why Opus 5 is code-only
 
 It is the agentic reviewer, so pulling attacker-controllable PR prose into its
 context is a prompt-injection surface. `gh pr view` and `gh api` are disallowed, and
@@ -1467,7 +1467,7 @@ and therefore cannot contradict itself across rounds.
 
 The markers are the **only** gate:
 
-- Opus 4.8 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
+- Opus 5 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
   blocking finding exists. Both are parsed out of the action's `execution_file`
   transcript rather than a `--json-schema` structured output, because the harness's
   internal structured-output tool is unreliable when other tools are enabled:
@@ -2022,7 +2022,7 @@ steps still run, which is deliberate, because a lane reporting `skipped` is read
 "the review has not posted yet" and waited on. What the gate buys is that the two
 failure sources this ruling is about — an outage and a flaky matrix leg — cannot red
 a PR the lane would not have judged. And
-it matches `Opus 4.8 Review` and `GPT 5.6 Review`, both fail-closed in the table
+it matches `Opus 5 Review` and `GPT 5.6 Review`, both fail-closed in the table
 above; a security lane resolving softer than them would be the weakest link in the
 same rollup. To reverse the ruling, set `_UNSETTLED_CONCLUSION = "concerns"` — one
 constant, no other edit, both lanes already map `concerns` to a non-blocking
@@ -2069,7 +2069,7 @@ commit status plus one `readiness:` label**.
   `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
   whose base is not the default branch it never starts, and a monitored lane that
   reads `(not started)` would freeze the verdict at pending forever.
-- **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
+- **Additionally required on a same-repo PR:** CodeQL, Opus 5 Review, GPT 5.6
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
 - **Design Review, UX Review and First Principles Review are completion-required
@@ -2257,7 +2257,7 @@ protection remain separate gates.
 **completion of `Fast Gate`** (stage 1) and run privileged from the default branch
 (stage 2), gated on
 `workflow_run.head_repository.full_name != github.repository`. Each posts a check-run
-named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
+named exactly like its same-repo twin (`Opus 5 Review`, `GPT 5.6 Review`,
 `Design Review`, `UX Review`, `First Principles Review`, `Security Scope Review`),
 so branch protection is
 satisfied on either path, and it opens that check-run as early as possible keyed to
@@ -2498,7 +2498,7 @@ waive a new defect or authorize a green verdict.
 GPT makes exactly two GPT calls. Pass 1 discovers candidates across the
 full diff; pass 2 attempts to falsify each candidate and emits the only GPT
 verdict exposed to the comment and gate. Blocking candidates may then receive a
-separate, conditional Opus 4.8 adjudication. Pass 2 also drops or downgrades a
+separate, conditional Opus 5 adjudication. Pass 2 also drops or downgrades a
 candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
 cannot be anchored to an AUTOSDE rule or residual defect class, and a
 relocated variant of a ledger-adjudicated class; an adjudication goes stale
@@ -2522,7 +2522,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
-Internal Content Scan, Opus 4.8 Review, GPT 5.6 Review (two GPT passes plus
+Internal Content Scan, Opus 5 Review, GPT 5.6 Review (two GPT passes plus
 conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
 and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result
@@ -2587,14 +2587,14 @@ resists this:
 - **Both line reviewers share an identical FIX BAR:** every finding must carry a fix
   expressible as an edit to lines **this PR changed**. If the fix would need a new
   function, module, abstraction, config knob, dependency, or an edit to untouched
-  code, it is out of scope for the bot. GPT 5.6 drops such a finding; Opus 4.8
+  code, it is out of scope for the bot. GPT 5.6 drops such a finding; Opus 5
   **demotes it to advisory instead of dropping it** -- the author cannot land the
   remedy in this PR, so it must not gate the merge, but the signal is real and a
   human decides. A regression the diff itself introduces still blocks either way,
   since reverting the hunk is an in-diff fix. **The absence of a
   mechanism is never a finding.** This makes "add mechanism X" structurally
   un-reportable: the demand fails the bar before it can become a finding. A scope cap
-  complements it: Opus 4.8 stays within the evident scope of the diff (it is code-only),
+  complements it: Opus 5 stays within the evident scope of the diff (it is code-only),
   and GPT 5.6 stays within the PR's stated purpose, flagging a
   description-versus-diff mismatch as an **advisory** finding rather than a block.
 - **The WHAT BLOCKS list is closed:** exhaustive, never extended, never reasoned about

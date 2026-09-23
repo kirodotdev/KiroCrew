@@ -6,7 +6,7 @@ name: GPT 5.6 Review
 # authenticates to Bedrock with the OIDC role's SigV4 credentials via the AWS
 # SDK credential chain. No proxy, no bearer token, no OpenAI API key.
 #
-# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 4.8
+# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 5
 # reviewer's. Two structural changes vs. the original three-pass design:
 #   * pass 2 is a FALSIFICATION pass, not a second discovery pass. The old
 #     "find what pass 1 missed" instruction was a recall ratchet that only ever
@@ -458,7 +458,7 @@ jobs:
       # Assume the Bedrock role only now, immediately before the step that calls
       # Bedrock, to minimize the window the credentials exist in the job
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
-      # pull_request-scoped) so a leaked token can't reach the Opus 4.8 reviewer's model access.
+      # pull_request-scoped) so a leaked token can't reach the Opus 5 reviewer's model access.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -1007,7 +1007,9 @@ jobs:
           # adjudicator model bump, and raise the @anthropic-ai/claude-code pin
           # in .github/review-cli/package.json to satisfy it -- the assertion
           # below is what turns a floor/pin mismatch into a configuration-time
-          # failure instead of a silent per-PR one.
+          # failure instead of a silent per-PR one. The floor must cover both
+          # the primary (--model) and the overload fallback (--fallback-model);
+          # 2.1.255 is the Opus 4.8 fallback's minimum.
           ADJ_CLAUDE_CODE_FLOOR: "2.1.255"
         run: |
           set -euo pipefail
@@ -1031,7 +1033,7 @@ jobs:
           echo "Claude Code $installed satisfies the adjudicator's floor $ADJ_CLAUDE_CODE_FLOOR"
           echo "path=$bin" >> "$GITHUB_OUTPUT"
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Opus 5 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -1052,7 +1054,8 @@ jobs:
           # enter an agentic reviewer's context, and this stage in particular
           # must not be able to post its own verdict anywhere.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -1148,7 +1151,7 @@ jobs:
             # produced none reads like an adjudication that ran and declined to
             # overturn. Surface the failure where the conclusion is read instead.
             note="Adjudication produced no [GPT-ADJUDICATED] marker for $HEAD: the adjudication stage FAILED TO RUN (its raw output is in the Adjudication details block -- typically an API or setup error), so no proportionality review took place and GPT's blocking verdict stands unreviewed."
-            echo "::error::the Opus 4.8 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 4.8 adjudication' step output; GPT's blocking verdict stands unreviewed."
+            echo "::error::the Opus 5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5 adjudication' step output; GPT's blocking verdict stands unreviewed."
           elif [ "$fenced" -gt 0 ]; then
             note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$adjudicable" -eq 0 ]; then
@@ -1288,7 +1291,7 @@ jobs:
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"
                 verdict="✅ no blocking findings (all downgraded on adjudication)"
-                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Opus 4.8 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Opus 5 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"
                 verdict="🔴 changes requested (blocking)"
@@ -1333,7 +1336,7 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Opus 5) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
@@ -1516,7 +1519,7 @@ jobs:
           # finding, any upheld finding) leaves it at "uphold" and this gate red.
           if grep -Fq "$blocked" codex-review-output.md; then
             if [ "${ADJ_DECISION:-}" = "cleared" ]; then
-              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Opus 4.8 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
+              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Opus 5 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
             else
               echo "::error::GPT 5.6 review flagged a blocking issue on $HEAD — see PR comment. ${ADJ_NOTE:-}"
               exit 1

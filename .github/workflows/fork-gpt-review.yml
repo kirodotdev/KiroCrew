@@ -1028,7 +1028,8 @@ jobs:
           # The minimum Claude Code the selected adjudicator model accepts.
           # Bump alongside any adjudicator model bump, with the
           # @anthropic-ai/claude-code pin in .github/review-cli/package.json
-          # raised to satisfy it.
+          # raised to satisfy it. The floor must cover both the primary and the
+          # overload fallback model; 2.1.255 is the Opus 4.8 fallback's minimum.
           ADJ_CLAUDE_CODE_FLOOR: "2.1.255"
         run: |
           set -euo pipefail
@@ -1071,7 +1072,7 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Opus 5 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
@@ -1097,7 +1098,8 @@ jobs:
           # is posted by the SAME comment step that surfaces an unstamped
           # review. Deny the read path, as the fork Opus lane's model steps do.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -1180,7 +1182,7 @@ jobs:
             # (#9216). Sits ABOVE the fenced wording so a stage that produced
             # no ruling is never reported in words that read like one.
             note="Adjudication produced no [GPT-ADJUDICATED] marker for $HEAD: the adjudication stage FAILED TO RUN (its raw output is in the Adjudication details block -- typically an API or setup error), so no proportionality review took place and GPT's blocking verdict stands unreviewed."
-            echo "::error::the Opus 4.8 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 4.8 adjudication' step output; GPT's blocking verdict stands unreviewed."
+            echo "::error::the Opus 5 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 5 adjudication' step output; GPT's blocking verdict stands unreviewed."
           elif [ "$fenced" -gt 0 ]; then
             note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$adjudicable" -eq 0 ]; then
@@ -1280,7 +1282,7 @@ jobs:
               # never from the adjudication prose.
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"; verdict="✅ no blocking findings (all downgraded on adjudication)"
-                note="Opus 4.8 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                note="Opus 5 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"; verdict="🔴 changes requested (blocking)"
                 note="${ADJ_NOTE:-}"
@@ -1386,7 +1388,7 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Opus 5) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo

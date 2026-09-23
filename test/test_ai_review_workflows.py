@@ -234,7 +234,7 @@ def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.
 ADJ_EXTRACT = "Extract blocking findings for adjudication"
-ADJ_MODEL = "Opus 4.8 adjudication (blocking findings only)"
+ADJ_MODEL = "Opus 5 adjudication (blocking findings only)"
 ADJ_GATE = "Adjudicate the blocking verdict (script arithmetic, fail closed)"
 
 
@@ -511,7 +511,7 @@ class TestLineReviewHumanOverrides:
         assert '.user.login == "github-actions[bot]"' in workflow
         assert "steps.human_override.outputs.active != 'true'" in workflow
         assert "✅ human override accepted" in workflow
-        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8" in workflow
+        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 5" in workflow
         assert "/ai-review override fable $HEAD:" in workflow
 
     @pytest.mark.parametrize(
@@ -911,7 +911,7 @@ class TestPrReadiness:
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
-            "claude-review.yml|Opus 4.8 Review",
+            "claude-review.yml|Opus 5 Review",
             "codex-review.yml|GPT 5.6 Review",
             "design-review.yml|Design Review",
         ):
@@ -952,7 +952,7 @@ class TestPrReadiness:
         # to THIS PR and attempt: the third field is the external_id prefix and
         # the fourth is the triggering workflow (Fast Gate) whose newest run +
         # attempt defines "current".
-        assert '"checkrun:Opus 4.8 Review|Opus 4.8 Review|opus-pr-|fast-gate.yml"' in workflow
+        assert '"checkrun:Opus 5 Review|Opus 5 Review|opus-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"' in workflow
@@ -963,7 +963,7 @@ class TestPrReadiness:
         assert "AI reviews could not run" not in workflow
         # Stage-2 fork reviewers re-trigger readiness on completion so the
         # green verdict actually lands.
-        assert "Fork Opus 4.8 Review" in workflow
+        assert "Fork Opus 5 Review" in workflow
         assert "Fork GPT 5.6 Review" in workflow
         assert "github.event.workflow_run.event == 'workflow_run'" in workflow
 
@@ -3571,7 +3571,7 @@ FORK_SWEEP_LANES = (
         "Finalize check-run (advisory)",
     ),
     ("fork-gpt-review.yml", "GPT 5.6 Review", "gpt", "Finalize check-run (fail closed)"),
-    ("fork-opus-review.yml", "Opus 4.8 Review", "opus", "Finalize check-run (fail closed)"),
+    ("fork-opus-review.yml", "Opus 5 Review", "opus", "Finalize check-run (fail closed)"),
     ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
 )
 
@@ -3749,7 +3749,7 @@ class TestClaudeReviewCodeOnlyScope:
         assert "exit 1" in script  # an empty diff is a real signal, not a pass
         assert "${{ runner.temp }}/pr.diff" in same
         # The prefetch must precede the first agentic step.
-        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 4.8 discovery")
+        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 5 discovery")
         # The shared prompts must NOT hardcode a diff source: each lane names its
         # own, so the acquisition step belongs to the caller.
         for stage in ("opus-discovery", "opus-validate"):
@@ -3793,8 +3793,8 @@ class TestOpusTwoStageArchitecture:
     def test_both_lanes_run_discovery_then_validation(self) -> None:
         for lane in self.LANES:
             workflow = _workflow(lane)
-            discover_at = workflow.index("- name: Opus 4.8 discovery")
-            validate_at = workflow.index("- name: Opus 4.8 validation")
+            discover_at = workflow.index("- name: Opus 5 discovery")
+            validate_at = workflow.index("- name: Opus 5 validation")
             assert discover_at < validate_at, lane
             # The gate, the transcript capture and the posted comment all read
             # `steps.review`, so VALIDATION must own that id -- if discovery took
@@ -3807,7 +3807,7 @@ class TestOpusTwoStageArchitecture:
         for lane in self.LANES:
             workflow = _workflow(lane)
             assert ".review-candidates.md" in workflow, lane
-            validate_at = workflow.index("- name: Opus 4.8 validation")
+            validate_at = workflow.index("- name: Opus 5 validation")
             shim = workflow[validate_at:]
             assert "UNTRUSTED EVIDENCE" in shim, lane
             # No interpolation of the discovery transcript into the next prompt.
@@ -5378,7 +5378,7 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
     # (same-repo workflow, protected check name, Stage-2 fork workflow)
     PAIRS = (
         ("codex-review.yml", "GPT 5.6 Review", "fork-gpt-review.yml"),
-        ("claude-review.yml", "Opus 4.8 Review", "fork-opus-review.yml"),
+        ("claude-review.yml", "Opus 5 Review", "fork-opus-review.yml"),
         ("design-review.yml", "Design Review", "fork-design-review.yml"),
         (
             "first-principles-review.yml",
@@ -5957,7 +5957,7 @@ class TestBlockAdjudicationContract:
             # Read-only tools, and no `gh`: this stage must not be able to post
             # its own verdict anywhere, only return text the script parses.
             assert '--allowedTools "Read,Grep,Glob"' in with_["claude_args"], lane
-            assert "us.anthropic.claude-opus-4-8" in with_["claude_args"], lane
+            assert "--model us.anthropic.claude-opus-5" in with_["claude_args"], lane
             assert "Bash" not in with_["claude_args"], lane
 
     def test_the_fork_lane_tells_the_adjudicator_the_head_is_not_on_disk(self) -> None:
@@ -6005,7 +6005,7 @@ class TestBlockAdjudicationContract:
             assert "all downgraded on adjudication" in comment, lane
             # Downgraded findings are still SHOWN. The signal was real; only its
             # authority to block the merge was removed.
-            assert "Adjudication (Opus 4.8)" in comment, lane
+            assert "Adjudication (Opus 5)" in comment, lane
             assert "codex-adjudication.md" in comment, lane
 
     def test_the_adjudication_step_never_fails_the_job_open(self) -> None:

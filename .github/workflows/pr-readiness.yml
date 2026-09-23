@@ -25,7 +25,7 @@ on:
       - Fast Gate
       - Build
       - Code Review
-      - Opus 4.8 Review
+      - Opus 5 Review
       - GPT 5.6 Review
       - Design Review
       - UX Review
@@ -38,7 +38,7 @@ on:
       # `workflow_run` (on CI's completion), so their own completion must
       # re-trigger this job to publish the fork PR's real verdict once the
       # reviews land -- otherwise the fork verdict freezes at `checking`.
-      - Fork Opus 4.8 Review
+      - Fork Opus 5 Review
       - Fork GPT 5.6 Review
       - Fork Design Review
       - Fork UX Review
@@ -563,7 +563,7 @@ jobs:
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
             # on forks: the privileged Stage-2 fork-*-review.yml pipeline fires
             # on CI completion from the default branch and posts a check-run
-            # named exactly like the same-repo lane ("Opus 4.8 Review", etc.).
+            # named exactly like the same-repo lane ("Opus 5 Review", etc.).
             # Read those results from the head SHA's check-runs (checkrun:
             # specs) so a fully-reviewed green fork can reach "passed" instead
             # of being forced to a maintainer-review verdict.
@@ -589,7 +589,7 @@ jobs:
               # triggers the lane -- its newest run + attempt is what "current"
               # means here.
               "checkrun:Internal Content Scan|Internal Content Scan|internal-content-scan-pr-|fast-gate.yml"
-              "checkrun:Opus 4.8 Review|Opus 4.8 Review|opus-pr-|fast-gate.yml"
+              "checkrun:Opus 5 Review|Opus 5 Review|opus-pr-|fast-gate.yml"
               "checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"
               "checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"
               "checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"
@@ -609,7 +609,7 @@ jobs:
               workflow_specs+=("internal-content-scan-gate.yml|Internal Content Scan")
             fi
             workflow_specs+=(
-              "claude-review.yml|Opus 4.8 Review"
+              "claude-review.yml|Opus 5 Review"
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"
