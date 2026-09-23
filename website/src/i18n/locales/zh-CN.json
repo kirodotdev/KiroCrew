@@ -7449,14 +7449,16 @@
       "updated": "已更新"
     },
     "questionCard": {
-      "collapse_all": "全部折叠",
       "custom_answer": "自定义回答",
       "dismiss": "忽略",
       "dismiss_hint": "忽略问题后，智能体将不再等待回答。",
       "dismiss_question_without_answering": "忽略问题而不回答",
-      "expand_all": "全部展开",
-      "not_answered_yet": "尚未回答",
+      "n_still_unanswered": "{{count}} 个未回答",
+      "next": "下一步",
+      "next_question": "下一个问题",
       "or_type_a_custom_answer": "或输入自定义回答…",
+      "previous_question": "上一个问题",
+      "question_x_of_y": "问题 {{current}} / {{total}}",
       "submit": "提交"
     },
     "queueStack": {
@@ -8561,7 +8563,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "无法发送你的回答。智能体仍在等待，请重试。",
-      "dismiss_failed": "无法关闭此问题。请重试。"
+      "dismiss_failed": "无法关闭此问题。请重试。",
+      "qa_pair": "问：{{question}}\n答：{{answer}}"
     },
     "sketchDialog": {
       "title": "草图板",

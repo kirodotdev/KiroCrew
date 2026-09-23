@@ -7560,14 +7560,16 @@
       "updated": "Aktualisiert"
     },
     "questionCard": {
-      "collapse_all": "Alle einklappen",
       "custom_answer": "Benutzerdefinierte Antwort",
       "dismiss": "Schließen",
       "dismiss_hint": "Das Verwerfen der Frage beendet das Warten des Agenten auf eine Antwort.",
       "dismiss_question_without_answering": "Frage ohne Antwort schließen",
-      "expand_all": "Alle ausklappen",
-      "not_answered_yet": "Noch nicht beantwortet",
+      "n_still_unanswered": "{{count}} noch unbeantwortet",
+      "next": "Weiter",
+      "next_question": "Nächste Frage",
       "or_type_a_custom_answer": "Oder geben Sie eine eigene Antwort ein…",
+      "previous_question": "Vorherige Frage",
+      "question_x_of_y": "Frage {{current}} von {{total}}",
       "submit": "Absenden"
     },
     "queueStack": {
@@ -8679,7 +8681,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Ihre Antwort konnte nicht gesendet werden. Der Agent wartet noch; bitte erneut versuchen.",
-      "dismiss_failed": "Diese Frage konnte nicht verworfen werden. Bitte erneut versuchen."
+      "dismiss_failed": "Diese Frage konnte nicht verworfen werden. Bitte erneut versuchen.",
+      "qa_pair": "F. {{question}}\nA. {{answer}}"
     },
     "sketchDialog": {
       "title": "Skizzenblock",

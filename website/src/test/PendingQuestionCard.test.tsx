@@ -10,7 +10,7 @@ vi.mock('framer-motion', async () => {
   const React = await import('react')
   const FRAMER_PROPS = new Set([
     'layout', 'layoutId', 'initial', 'animate', 'exit', 'transition',
-    'variants', 'whileHover', 'whileTap', 'onAnimationComplete',
+    'variants', 'custom', 'whileHover', 'whileTap', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
     React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
@@ -59,7 +59,7 @@ const QUESTIONS = [
   { question: 'Pick a trust model', options: [{ label: 'Carve-out' }, { label: 'Public only' }] },
 ]
 
-const withCard = (askId?: string) =>
+const withCard = (askId?: string, questions: typeof QUESTIONS = QUESTIONS) =>
   createTestStore({
     chat: {
       activeSlot: 'chat-1',
@@ -72,7 +72,7 @@ const withCard = (askId?: string) =>
             // (what the dismiss route retires) and this delivery's own id (what
             // the store's identity-guarded retire compares against).
             : { serverCardId: 'card-1', cardId: 'delivery-1' }),
-          questions: QUESTIONS,
+          questions,
         },
       },
     },
@@ -423,7 +423,9 @@ describe('PendingQuestionCard — ask_id round-trip', () => {
     pick('Public only')
     submit()
 
-    await waitFor(() => expect(onFallbackSend).toHaveBeenCalledWith('Public only'))
+    await waitFor(() =>
+      expect(onFallbackSend).toHaveBeenCalledWith('Public only'),
+    )
     expect(pendingOf(store)).toBeUndefined()
   })
 
@@ -438,6 +440,41 @@ describe('PendingQuestionCard — ask_id round-trip', () => {
     expect(answer).not.toHaveBeenCalled()
     expect(onFallbackSend).toHaveBeenCalledWith('Carve-out')
     expect(pendingOf(store)).toBeUndefined()
+  })
+
+  it('sends a one-question card as the bare answer, not a Q/A pair', () => {
+    // The wrapper exists to keep N answers attached to the N questions they
+    // settled. One question needs none of that -- the agent asked a single thing,
+    // so the answer alone is already unambiguous, and wrapping it would quote the
+    // whole question back at the user in their own chat bubble.
+    const store = withCard()
+    const onFallbackSend = renderCard(store)
+
+    pick('Carve-out')
+    submit()
+
+    expect(onFallbackSend).toHaveBeenCalledWith('Carve-out')
+    expect(onFallbackSend.mock.calls[0][0]).not.toContain('Pick a trust model')
+  })
+
+  it('labels every answer with the question it settled', () => {
+    // A stateless card's text IS the agent's next message, so the pairing has to
+    // survive in the string itself. Two questions whose answers are both lists is
+    // the case bare answers cannot express: joined on newlines alone, "a, b" and
+    // "c" are four values in unknown slots.
+    const store = withCard(undefined, [
+      { question: 'Pick a trust model', options: [{ label: 'Carve-out' }, { label: 'Public only' }] },
+      { question: 'What should I do first', options: [{ label: 'Poke holes' }, { label: 'Prototype' }] },
+    ])
+    const onFallbackSend = renderCard(store)
+
+    pick('Carve-out')
+    pick('Prototype')
+    submit()
+
+    expect(onFallbackSend).toHaveBeenCalledWith(
+      'Q. Pick a trust model\nA. Carve-out\n\nQ. What should I do first\nA. Prototype',
+    )
   })
 
   it('renders nothing when the slot has no pending card', () => {
@@ -469,16 +506,20 @@ describe('QuestionCard — every question must be answered', () => {
     } as never)
     renderCard(store)
 
-    const button = screen.getByText('Submit').closest('button') as HTMLButtonElement
-    expect(button.disabled).toBe(true)
+    // Submit lives on the LAST question only, so the gate is asserted where the
+    // control actually is. On question 1 the primary action is Next, and it is
+    // held shut by the same missing answer.
+    expect(screen.queryByText('Submit')).not.toBeInTheDocument()
+    expect((screen.getByText('Next').closest('button') as HTMLButtonElement).disabled).toBe(true)
 
+    // Answering Q1 auto-advances to Q2, so its options are on screen without the
+    // user having to go looking for them.
+    pick('Carve-out')
+    const button = screen.getByText('Submit').closest('button') as HTMLButtonElement
     // One of two answered is still incomplete: submitting here would resume the
     // agent with a map missing an entry it asked for.
-    pick('Carve-out')
     expect(button.disabled).toBe(true)
 
-    // Answering Q1 folds it and opens Q2, so its options are in the DOM without
-    // the user having to go looking for them.
     pick('staging')
     expect(button.disabled).toBe(false)
   })

@@ -7782,14 +7782,16 @@
       "updated": "Обновлён"
     },
     "questionCard": {
-      "collapse_all": "Свернуть все",
       "custom_answer": "Свой ответ",
       "dismiss": "Скрыть",
       "dismiss_hint": "Если скрыть вопрос, агент перестанет ждать ответа.",
       "dismiss_question_without_answering": "Скрыть вопрос без ответа",
-      "expand_all": "Развернуть все",
-      "not_answered_yet": "Нет ответа",
+      "n_still_unanswered": "Без ответа: {{count}}",
+      "next": "Далее",
+      "next_question": "Следующий вопрос",
       "or_type_a_custom_answer": "Или введите свой ответ...",
+      "previous_question": "Предыдущий вопрос",
+      "question_x_of_y": "Вопрос {{current}} из {{total}}",
       "submit": "Отправить"
     },
     "queueStack": {
@@ -8915,7 +8917,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Не удалось отправить ваш ответ. Агент всё ещё ждёт, поэтому попробуйте ещё раз.",
-      "dismiss_failed": "Не удалось закрыть этот вопрос. Попробуйте ещё раз."
+      "dismiss_failed": "Не удалось закрыть этот вопрос. Попробуйте ещё раз.",
+      "qa_pair": "В. {{question}}\nО. {{answer}}"
     },
     "sketchDialog": {
       "title": "Блокнот для эскизов",

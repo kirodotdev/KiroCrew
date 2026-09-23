@@ -7671,14 +7671,16 @@
       "updated": "Atualizado"
     },
     "questionCard": {
-      "collapse_all": "Recolher tudo",
       "custom_answer": "Resposta personalizada",
       "dismiss": "Descartar",
       "dismiss_hint": "Descartar a pergunta faz o agente parar de esperar uma resposta.",
       "dismiss_question_without_answering": "Descartar pergunta sem responder",
-      "expand_all": "Expandir tudo",
-      "not_answered_yet": "Ainda sem resposta",
+      "n_still_unanswered": "{{count}} sem resposta",
+      "next": "Avançar",
+      "next_question": "Pergunta seguinte",
       "or_type_a_custom_answer": "Ou digite uma resposta personalizada...",
+      "previous_question": "Pergunta anterior",
+      "question_x_of_y": "Pergunta {{current}} de {{total}}",
       "submit": "Enviar"
     },
     "queueStack": {
@@ -8797,7 +8799,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Não foi possível enviar sua resposta. O agente ainda está aguardando, então tente novamente.",
-      "dismiss_failed": "Não foi possível descartar esta pergunta. Tente novamente."
+      "dismiss_failed": "Não foi possível descartar esta pergunta. Tente novamente.",
+      "qa_pair": "P. {{question}}\nR. {{answer}}"
     },
     "sketchDialog": {
       "title": "Bloco de esboços",

@@ -7449,14 +7449,16 @@
       "updated": "更新済み"
     },
     "questionCard": {
-      "collapse_all": "すべて折りたたむ",
       "custom_answer": "カスタム回答",
       "dismiss": "却下",
       "dismiss_hint": "質問を却下すると、エージェントは回答を待つのをやめます。",
       "dismiss_question_without_answering": "質問に答えずに却下",
-      "expand_all": "すべて展開",
-      "not_answered_yet": "まだ回答されていません",
+      "n_still_unanswered": "未回答 {{count}} 件",
+      "next": "次へ",
+      "next_question": "次の質問",
       "or_type_a_custom_answer": "またはカスタム回答を入力…",
+      "previous_question": "前の質問",
+      "question_x_of_y": "質問 {{current}} / {{total}}",
       "submit": "送信"
     },
     "queueStack": {
@@ -8561,7 +8563,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "回答を送信できませんでした。エージェントはまだ待機しているので、もう一度お試しください。",
-      "dismiss_failed": "この質問を閉じられませんでした。もう一度お試しください。"
+      "dismiss_failed": "この質問を閉じられませんでした。もう一度お試しください。",
+      "qa_pair": "問 {{question}}\n答 {{answer}}"
     },
     "sketchDialog": {
       "title": "スケッチパッド",

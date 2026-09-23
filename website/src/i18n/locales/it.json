@@ -7671,14 +7671,16 @@
       "updated": "Aggiornato"
     },
     "questionCard": {
-      "collapse_all": "Comprimi tutto",
       "custom_answer": "Risposta personalizzata",
       "dismiss": "Ignora",
       "dismiss_hint": "Ignorare la domanda fa sì che l’agente smetta di attendere una risposta.",
       "dismiss_question_without_answering": "Ignora la domanda senza rispondere",
-      "expand_all": "Espandi tutto",
-      "not_answered_yet": "Nessuna risposta",
+      "n_still_unanswered": "{{count}} senza risposta",
+      "next": "Avanti",
+      "next_question": "Domanda successiva",
       "or_type_a_custom_answer": "Oppure digita una risposta personalizzata...",
+      "previous_question": "Domanda precedente",
+      "question_x_of_y": "Domanda {{current}} di {{total}}",
       "submit": "Invia"
     },
     "queueStack": {
@@ -8797,7 +8799,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossibile inviare la tua risposta. L’agente è ancora in attesa, quindi riprova.",
-      "dismiss_failed": "Impossibile ignorare questa domanda. Riprova."
+      "dismiss_failed": "Impossibile ignorare questa domanda. Riprova.",
+      "qa_pair": "D. {{question}}\nR. {{answer}}"
     },
     "sketchDialog": {
       "title": "Blocco schizzi",
