@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import itertools
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1113,7 +1114,16 @@ class TestBatchCascadeAttribution:
         # flag is down, so only a source guard can hold that pairing).
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
-        state.approval_timeout_for = MagicMock(return_value=0.05)
+        # Only the FIRST prompt is meant to expire. The revised call must be
+        # answered by the approver below, which polls for its future; a 50 ms
+        # window on that second prompt races the poll on a slow runner (the
+        # runner declines tool_b as unanswered before the approver sees it),
+        # and a declined tool_b is the very outcome this test says never
+        # happens. So the shrunken bound applies to one prompt; the next gets
+        # a window the approver cannot miss.
+        state.approval_timeout_for = MagicMock(
+            side_effect=itertools.chain([0.05], itertools.repeat(_ANSWER_WAIT_SECS))
+        )
         timed_out = _permission_event(title="tool_a")
         timed_out.request_id = "req-1"
         timed_out.tool_call_id = "tc-1"
