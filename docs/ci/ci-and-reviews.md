@@ -1152,6 +1152,26 @@ Details worth knowing:
   otherwise count as a pass having run zero browser specs. Details:
   [e2e-gate.md](e2e-gate.md).
 
+### Expand a bash array the `+` way, not the quoted way
+
+In a workflow `run:` block, write an array's value expansion as
+`${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`. Bash only stopped treating an
+EMPTY array's expansion as an unset variable in 4.4, and macOS ships 3.2.57 as
+`/bin/bash`, so under `set -u` the quoted form aborts the whole step with
+`arr[@]: unbound variable` the moment the array happens to be empty. The `+` form
+expands to nothing when the array is unset or empty and to every element
+otherwise, on every bash, so it changes nothing about how Actions runs these
+scripts on Linux.
+
+That matters because these scripts do not only run on the Actions runner: about
+two dozen tests EXTRACT a `run:` block and execute it with the host `bash`
+(`test_pr_readiness_evaluate.py`, `test_fork_pr_description_workflow.py`,
+`test_release_macos_fail_closed.py`, and others), so the macOS suite above runs
+this shell under 3.2. A count guard is not a substitute: the array that cost a
+nightly HAD one, and was emptied again after it, which is why
+`test_workflow_array_expansion_bash32.py` asks for the local form at the
+expansion instead of reasoning about reachability.
+
 ## `build.yml`: the artifacts still build
 
 PR-time proof only, no publishing.

@@ -737,9 +737,9 @@ jobs:
             GATES=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
             CHANGED=()
-            for target in "${TARGETS[@]}"; do
+            for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
               keep=1
-              for gate in "${GATES[@]}"; do
+              for gate in ${GATES[@]+"${GATES[@]}"}; do
                 if [ "$target" = "$gate" ]; then keep=0; break; fi
               done
               if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
@@ -750,24 +750,24 @@ jobs:
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest "${PROGRESS[@]}" -q -n auto --timeout=120 --no-cov -m "not ipv6_required" "${GATES[@]}"
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              pytest "${PROGRESS[@]}" -q -n auto --timeout=120 --no-cov -m "not ipv6_required" "${CHANGED[@]}"
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${CHANGED[@]+"${CHANGED[@]}"}
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            python -m pytest "${PROGRESS[@]}" -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
-              "${TARGETS[@]}"
+              ${TARGETS[@]+"${TARGETS[@]}"}
             exit 0
           fi
-          python -m pytest "${PROGRESS[@]}" -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
@@ -982,7 +982,7 @@ jobs:
           if [ "$LEAF_TESTS" = "true" ]; then REPEAT=3; fi
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
-              "${COVERAGE[@]}" --junitxml="$RUNNER_TEMP/ipv6.xml" \
+              ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
               test/test_meetings_providers.py test/test_platform_compat.py
             python - <<'PY'
           import os
@@ -1065,7 +1065,7 @@ jobs:
           if [ "$LEAF_TESTS" = "true" ]; then REPEAT=3; fi
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 \
-              "${COVERAGE[@]}" --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
+              ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
               "test/test_gateway_lock.py::TestLockHolder::test_live_holder_is_named_and_alive" \
               "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan"
             python - <<'PY'
@@ -2727,7 +2727,7 @@ jobs:
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
             npx vitest run --reporter=blob --reporter=default --passWithNoTests \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT" "${TARGETS[@]}"
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"}
           else
             # --reporter=blob stores results + per-shard coverage under
             # website/.vitest-reports/; the frontend-coverage-merge job stitches

@@ -237,7 +237,7 @@ jobs:
             echo "No ${LINUX_EXT} found matching ${PATTERN} in build artifacts"; exit 1
           fi
           if [ "${#MATCHES[@]}" -gt 1 ]; then
-            echo "Expected exactly one ${LINUX_EXT} matching ${PATTERN}, found ${#MATCHES[@]}:"; printf '%s\n' "${MATCHES[@]}"; exit 1
+            echo "Expected exactly one ${LINUX_EXT} matching ${PATTERN}, found ${#MATCHES[@]}:"; printf '%s\n' ${MATCHES[@]+"${MATCHES[@]}"}; exit 1
           fi
           echo "ARTIFACT_PATH=${MATCHES[0]}" >> "$GITHUB_ENV"
           ls -la "${MATCHES[0]}"

@@ -1206,10 +1206,10 @@ jobs:
           blockers=()
           waiting=()
           if [ "${#failed[@]}" -gt 0 ]; then
-            blockers=("${failed[@]}")
+            blockers=(${failed[@]+"${failed[@]}"})
           fi
           if [ "${#pending[@]}" -gt 0 ]; then
-            waiting=("${pending[@]}")
+            waiting=(${pending[@]+"${pending[@]}"})
           fi
           if [ "$DRAFT" = "true" ]; then
             waiting+=("pull request is a draft")
@@ -1255,7 +1255,7 @@ jobs:
             names_budget=$(( 70 - ${#prefix} ))
             names=""
             shown=0
-            for item in "${waiting[@]}"; do
+            for item in ${waiting[@]+"${waiting[@]}"}; do
               candidate="$names"
               if [ -n "$candidate" ]; then
                 candidate="$candidate, $item"
@@ -1319,12 +1319,12 @@ jobs:
             if [ "${#skipped[@]}" -gt 0 ]; then
               echo
               echo "**Not eligible**"
-              printf -- "- %s\n" "${skipped[@]}"
+              printf -- "- %s\n" ${skipped[@]+"${skipped[@]}"}
             fi
             if [ "${#awaiting_approval[@]}" -gt 0 ]; then
               echo
               echo "**Awaiting maintainer approval**"
-              printf -- "- %s\n" "${awaiting_approval[@]}"
+              printf -- "- %s\n" ${awaiting_approval[@]+"${awaiting_approval[@]}"}
               echo
               echo "> GitHub created these fork runs but has not executed them."
               echo "> A maintainer must approve them; the contributor cannot"
@@ -1333,12 +1333,12 @@ jobs:
             if [ "${#blockers[@]}" -gt 0 ]; then
               echo
               echo "**Blocking**"
-              printf -- "- %s\n" "${blockers[@]}"
+              printf -- "- %s\n" ${blockers[@]+"${blockers[@]}"}
             fi
             if [ "${#waiting[@]}" -gt 0 ]; then
               echo
               echo "**Waiting**"
-              printf -- "- %s\n" "${waiting[@]}"
+              printf -- "- %s\n" ${waiting[@]+"${waiting[@]}"}
             fi
             # Reached with transport_failed=true only via the fall-through
             # above (an already-observed blocker dominates the pending
@@ -1461,7 +1461,7 @@ jobs:
             "readiness: passed|0E8A16|Eligible automated validation passed for the current revision"
           )
           existing_labels="$(gh_retry gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
-          for spec in "${label_specs[@]}"; do
+          for spec in ${label_specs[@]+"${label_specs[@]}"}; do
             name="${spec%%|*}"
             rest="${spec#*|}"
             color="${rest%%|*}"

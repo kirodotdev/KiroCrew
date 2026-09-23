@@ -890,7 +890,7 @@ jobs:
             fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Opus 5 Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
+              -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Opus 5 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true

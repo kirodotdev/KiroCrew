@@ -260,7 +260,7 @@ jobs:
           summary="$GUI_OUT/results/summary.json"
           summary_args=()
           [ -f "$summary" ] && summary_args=(--summary "$summary")
-          python test/gui_user/report.py --format features --run-url "$RUN_URL" "${summary_args[@]}" \
+          python test/gui_user/report.py --format features --run-url "$RUN_URL" ${summary_args[@]+"${summary_args[@]}"} \
             > "$GUI_OUT/results/features.md"
 
       # New-user friction: what confused the tester persona, carried across
@@ -334,7 +334,7 @@ jobs:
             echo "no scheduled run on $LEDGER_BRANCH holds a ledger artifact; starting one"
           fi
           if [ -f "$summary" ]; then
-            python test/gui_user/friction.py merge --summary "$summary" "${ledger_args[@]}" \
+            python test/gui_user/friction.py merge --summary "$summary" ${ledger_args[@]+"${ledger_args[@]}"} \
               --out "$GUI_OUT/results/friction.json" --out-ledger "$GUI_OUT/results/friction_ledger.json" \
               --date "$date" --run-url "$RUN_URL" --head-sha "$SHA"
             # The harness wrote verdict.md before the ledger existed; re-render it
@@ -410,7 +410,7 @@ jobs:
             {
               echo "## GUI user test — $verdict"
               echo
-              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}"
+              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" ${friction_args[@]+"${friction_args[@]}"}
             } >> "$GITHUB_STEP_SUMMARY"
           else
             verdict="ERROR"
@@ -449,7 +449,7 @@ jobs:
           if [ -f "$summary" ]; then
             python test/gui_user/report.py --summary "$summary" --format issue-title --head-sha "$SHA" > "$title_file"
             python test/gui_user/report.py --summary "$summary" --format issue-body --head-sha "$SHA" \
-              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}" > "$body_file"
+              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" ${friction_args[@]+"${friction_args[@]}"} > "$body_file"
           else
             echo "Nightly GUI user test ERROR: target did not boot" > "$title_file"
             printf 'The nightly agentic GUI user test produced no summary at `%s`: the target did not boot or the harness crashed.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$RUN_URL" > "$body_file"

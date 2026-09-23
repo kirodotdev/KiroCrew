@@ -191,7 +191,7 @@ jobs:
           # nothing. Keep the status separate from the output, and say which it was.
           rc=0
           touched="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
-            "${surface[@]}" 2>&1)" || rc=$?
+            ${surface[@]+"${surface[@]}"} 2>&1)" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::could not diff $BASE_SHA...$HEAD_SHA against the review surface, so whether this change touches it is unknown. Failing closed rather than answering \`false\`. git said: $touched"
             exit 1
@@ -991,7 +991,7 @@ jobs:
             args+=(--corpus "$base_corpus")
           fi
           rc=0
-          python "$HARNESS/scope_candidates.py" "${args[@]}" > validate.json 2> validate.err || rc=$?
+          python "$HARNESS/scope_candidates.py" ${args[@]+"${args[@]}"} > validate.json 2> validate.err || rc=$?
           # Scrub before either file is echoed to the job log or quoted into the step
           # summary, both public on a public repository. The report names the rows
           # it dropped, and the classifier's own loader quotes an offending row on
@@ -1546,7 +1546,7 @@ jobs:
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
           rc=0
-          python "$HARNESS/scope_candidates.py" verdict "${reports[@]}" \
+          python "$HARNESS/scope_candidates.py" verdict ${reports[@]+"${reports[@]}"} \
             --out-md verdict-body.md \
             --out-rows confirmed-rows.json > /dev/null 2> verdict.err || rc=$?
           # Outbound scrub, before the folded verdict reaches ANY public surface: this

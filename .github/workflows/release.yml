@@ -1029,7 +1029,7 @@ jobs:
             mapfile -t installers < <(find artifacts -type f -path '*build-windows-x64*' -name '*.exe')
             if [ "${#installers[@]}" -gt 1 ]; then
               echo "::error::expected at most one Windows installer, found ${#installers[@]}"
-              printf '%s\n' "${installers[@]}"
+              printf '%s\n' ${installers[@]+"${installers[@]}"}
               exit 1
             fi
             WINDOWS_INSTALLER="${installers[0]:-}"
@@ -1291,7 +1291,7 @@ jobs:
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -ne 1 ]; then
               echo "::error::expected exactly one ${label}, found ${#matches[@]}"
-              printf '%s\n' "${matches[@]}"
+              printf '%s\n' ${matches[@]+"${matches[@]}"}
               exit 1
             fi
             printf '%s' "${matches[0]}"
@@ -1304,7 +1304,7 @@ jobs:
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -gt 1 ]; then
               echo "::error::expected at most one ${label}, found ${#matches[@]}"
-              printf '%s\n' "${matches[@]}"
+              printf '%s\n' ${matches[@]+"${matches[@]}"}
               exit 1
             fi
             printf '%s' "${matches[0]:-}"

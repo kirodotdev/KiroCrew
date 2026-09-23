@@ -307,7 +307,7 @@ jobs:
           if [ "${#installers[@]}" -eq 0 ]; then
             fail "no installer produced: website/electron/dist contains no .exe"
           fi
-          for exe in "${installers[@]}"; do
+          for exe in ${installers[@]+"${installers[@]}"}; do
             if [ ! -f "${exe}.blockmap" ]; then
               fail "orphaned installer: ${exe} has no sibling ${exe##*/}.blockmap -- electron-updater would silently fall back to full downloads"
             fi

@@ -971,7 +971,7 @@ jobs:
             fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Design Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="neutral" "${ext_args[@]}" \
+              -f status="completed" -f conclusion="neutral" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Design Review — could not run (advisory)" \
               -f "output[summary]=The fork design review job failed before producing a verdict; re-run it. Advisory — does not block merge." >/dev/null || true

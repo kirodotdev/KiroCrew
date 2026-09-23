@@ -208,7 +208,7 @@ jobs:
               echo "Your PR description is missing these sections from the"
               echo "[PR template](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/PULL_REQUEST_TEMPLATE.md):"
               echo
-              for section in "${missing[@]}"; do
+              for section in ${missing[@]+"${missing[@]}"}; do
                 echo "- \`$section\`"
               done
               echo

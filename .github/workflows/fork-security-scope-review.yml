@@ -401,7 +401,7 @@ jobs:
           # and say which it was.
           rc=0
           touched="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
-            "${surface[@]}" 2>&1)" || rc=$?
+            ${surface[@]+"${surface[@]}"} 2>&1)" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::could not diff $BASE_SHA...$HEAD_SHA against the review surface, so whether this change touches it is unknown. Failing closed rather than answering \`false\`. git said: $touched"
             exit 1
@@ -1401,7 +1401,7 @@ jobs:
           done
           rc=0
           python3 scripts/scope_candidates.py verdict \
-            "${args[@]}" --out-md "$BODY" --out-rows "$ROWS" 2> "$ERR" || rc=$?
+            ${args[@]+"${args[@]}"} --out-md "$BODY" --out-rows "$ROWS" 2> "$ERR" || rc=$?
           echo "scope_candidates verdict rc=$rc"
           # Outbound scrub, before the folded verdict reaches ANY public surface:
           # the comment, the check-run summary and this job's own log all read the
@@ -1907,7 +1907,7 @@ jobs:
           for attempt in 1 2; do
             if gh api --method POST "repos/$REPO/check-runs" \
               -f name="Security Scope Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="$CONCLUSION" "${ext_args[@]}" \
+              -f status="completed" -f conclusion="$CONCLUSION" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=${scope_prefix}Security Scope Review — $TITLE" \
               -f "output[summary]=$summary" >/dev/null 2>&1; then

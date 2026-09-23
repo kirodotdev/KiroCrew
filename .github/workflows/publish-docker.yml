@@ -134,7 +134,7 @@ jobs:
           find dist -type f ! -name '*.whl' -delete
           mapfile -t WHEELS < <(find dist -type f -name '*.whl')
           if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel, found ${#WHEELS[@]}:"; printf '%s\n' "${WHEELS[@]}"; exit 1
+            echo "Expected exactly one wheel, found ${#WHEELS[@]}:"; printf '%s\n' ${WHEELS[@]+"${WHEELS[@]}"}; exit 1
           fi
           ls -la dist/
 

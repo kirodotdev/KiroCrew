@@ -397,7 +397,7 @@ jobs:
             fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Internal Content Scan" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
+              -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Internal Content Scan — could not run" \
               -f "output[summary]=$summary" >/dev/null 2>&1 || true
