@@ -22,6 +22,7 @@ import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import { FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import type { RootState } from '../store'
+import { setActiveSlot, selectSlotStreamState } from '../store/chatSlice'
 import App from '../App'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -146,6 +147,31 @@ describe('Request a Feature — the non-inference exit is wired (#13342)', () =>
     expect(bubble?.meta?.[FEATURE_REQUEST_ROW_META_KEY]).toBe(true)
     expect(chat.messages.some(m => m.role === 'error' && m.content === i18nT('pages.chatPage.send_failed_with_error', { error: 'slot agent mismatch' }))).toBe(true)
     expect(chat.slotRunning).toBe(false)
+  })
+
+  it('a switch away while the send is in flight parks the new slot idle, and a refusal after it leaves no busy pane behind', async () => {
+    // The optimistic running flag is an UNCONFIRMED local send: leaving the
+    // slot before the receipt lands must not hand a `streaming` entry to the
+    // background pane, because a refusal that arrives after the switch has no
+    // active mirror left to clear -- the pane would keep a locked composer and
+    // a live indicator for a turn that never started.
+    let settle!: (v: unknown) => void
+    sendChatMock.mockImplementation(() => new Promise(resolve => { settle = resolve }))
+    const { store } = await clickRequestFeature()
+    expect(store.getState().chat.activeSlot).toBe('fr-slot')
+    expect(store.getState().chat.slotRunning).toBe(true)
+    act(() => { store.dispatch(setActiveSlot('elsewhere')) })
+    expect(selectSlotStreamState(store.getState(), 'fr-slot')).toBe('idle')
+    await act(async () => {
+      settle({ ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
+      await new Promise(res => setTimeout(res, 0))
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+    })
+    const chat = store.getState().chat
+    expect(selectSlotStreamState(store.getState(), 'fr-slot')).toBe('idle')
+    expect(chat.pendingTurnSlot).toBeNull()
+    // The error row still lands where the request did, not on the active slot.
+    expect((chat.slotMessages['fr-slot'] ?? []).some(m => m.role === 'error')).toBe(true)
   })
 
   it('says on the button itself that the action starts a chat and spends the plan\'s monthly usage', async () => {

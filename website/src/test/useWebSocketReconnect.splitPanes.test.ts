@@ -24,7 +24,7 @@ import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
-import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, sseChatMessage } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { saveLayout } from '../hooks/splitLayoutStore'
 import type { GridNode } from '../hooks/useSessionGrid'
@@ -287,16 +287,15 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
     unmount()
   })
 
-  it('leaves the run entry absent when the server reports the turn live (no promotion)', async () => {
+  it('promotes a pane whose turn STARTED while the socket was down (server reports live, no frame yet)', async () => {
     vi.useFakeTimers()
     saveLayout(null, split('s', [sLeaf('a', 'chat-active'), sLeaf('b', 'chat-bg')]))
-    // The warm is a point-in-time snapshot racing the ordered live-frame
-    // writers, so it never writes the RUNNING direction: any promotion policy
-    // has a losing ordering (see the resurrect case below). A turn that
-    // started while the socket was down reads idle until its first
-    // post-reconnect frame — the same behavior as main, where reconnect never
-    // touches background run state; the ordering-token fix is tracked
-    // separately.
+    // The tab saw no frame of this turn (the entry is absent), and no ordered
+    // frame lands between the warm's dispatch and its fulfillment, so the
+    // snapshot is the newest view of the run state: the pane must read
+    // streaming (composer locked, indicator on) rather than idle until the
+    // turn's first post-reconnect frame, which in a quiet phase is minutes
+    // away (#5581).
     testStore = createTestStore({
       chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
     })
@@ -311,7 +310,7 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
 
     vi.useRealTimers()
     await act(async () => { await new Promise(r => setTimeout(r, 20)) })
-    expect(testStore.getState().chat.slotRun['chat-bg']).toBeUndefined()
+    expect(testStore.getState().chat.slotRun['chat-bg']?.state).toBe('streaming')
 
     unmount()
   })
@@ -319,29 +318,34 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
   it('does not resurrect a pane a _done frame already idled (late warm fulfillment)', async () => {
     vi.useFakeTimers()
     saveLayout(null, split('s', [sLeaf('a', 'chat-active'), sLeaf('b', 'chat-bg')]))
-    // Ordering pin: snapshot taken while the turn ran (running: true), the
-    // _done frame lands BEFORE the warm's fulfillment reduces (entry exists,
-    // idle). The snapshot must not overwrite the ordered live writer — an
-    // idle-to-streaming promotion here wedged the pane's composer locked with
-    // no healer (the turn is over, so no further chunk frame arrives, and the
-    // reconnect suppression window skips the turn-done warm).
+    // Ordering pin: the snapshot is taken while the turn runs (running: true),
+    // then the _done frame lands over the NEW socket -- after the warm's
+    // dispatch, before its fulfillment reduces. The ordered live writer is
+    // newer than the snapshot and must win: an idle-to-streaming promotion
+    // here wedges the pane's composer locked with no healer (the turn is over,
+    // so no further chunk frame arrives, and the reconnect suppression window
+    // skips the turn-done warm). The fetch is held open so the frame can be
+    // placed inside that window.
     testStore = createTestStore({
       chat: {
         ...chatReducer(undefined, { type: '@@INIT' }),
         activeSlot: 'chat-active',
-        // The _done frame's write: entry exists and reads idle.
-        slotRun: { 'chat-bg': { state: 'idle' } },
+        slotRun: { 'chat-bg': { state: 'streaming' } },
       },
     })
     ;(api.chatSlots as ReturnType<typeof vi.fn>).mockResolvedValue([
       { key: 'chat-active' }, { key: 'chat-bg' },
     ])
     // The snapshot predates the _done: it still claims the turn is running.
-    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [], running: true, has_more: false, total: 0, queue: [],
-    })
+    let release!: (v: unknown) => void
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise((resolve) => { release = resolve }))
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     connectDropReconnect()
+    // The turn ends while the fetch is in flight.
+    act(() => { testStore.dispatch(sseChatMessage({ slot: 'chat-bg', role: '_done', content: '' })) })
+    expect(testStore.getState().chat.slotRun['chat-bg']?.state).toBe('idle')
+    release({ messages: [], running: true, has_more: false, total: 0, queue: [] })
 
     vi.useRealTimers()
     await act(async () => { await new Promise(r => setTimeout(r, 20)) })
