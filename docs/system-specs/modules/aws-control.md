@@ -1808,7 +1808,7 @@ bind a forwarded conversation id to, and a binding written against an absent
 identity would fail open. What it does instead is refuse to serve customer turns at
 all unless the deployment has declared `SMC_SINGLE_PRINCIPAL`, which is the RFC's
 one-owner invariant made explicit and enforced at startup rather than assumed. The
-refusal is at startup for the reason `require_api_key` refuses at startup: a
+refusal is at startup for the reason `require_model_identity` refuses at startup: a
 container that answers its port while mixing two callers' conversations looks
 healthy and is not.
 
@@ -1840,7 +1840,7 @@ each wrong once in a way that produced no error:
   kind added later is dropped rather than relayed.
 - **Readiness proves less than it looks like.** A backend with no model credential
   answers its port and then returns `503 kiro_prerequisite_required` on every turn,
-  so a present `KIRO_API_KEY` is not a working one and only a real turn establishes
+  so a usable stored identity is not a working one and only a real turn establishes
   that it is.
 
 A restored transcript is bounded by SIZE as well as by shape. The bytes come from the
@@ -1883,9 +1883,10 @@ does not have, because that reads as coverage while doing nothing.
 (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` and its peers) and the front's
 `SMC_CONTROL_SECRET` are removed: the backend spawns the model subprocess with this
 environment, that subprocess auto-approves every tool, and a turn could otherwise
-read the task role from its own environment and act as it. `KIRO_API_KEY` cannot be
-removed, because kiro-cli re-injects it into the worker and it is the whole
-model-auth mechanism.
+read the task role from its own environment and act as it. The model credential is
+removed on the same grounds, in both of its shapes: the identity reaches the engine
+from the crew's vault through the host auth callback, so the worker needs none in its
+environment.
 
 **A reinstall replaces the bundle's own files and prunes nothing else.**
 `install_bundle` runs at every boot and the data home may be a persistent volume, so
@@ -2007,34 +2008,55 @@ looking for. The container's own writes into the data home already refuse a link
 the destination (`bundle._write_nofollow`); this is the same guard for a file
 another process writes.
 
-### Sandboxed-only, and why there is no opt-in
+### Sandboxed-only, and why removing the credential does not change that
 
 kiro-cli runs the model subprocess inside an unprivileged user namespace, and
-without one `wrap_argv` fails closed. This container runs SANDBOXED-ONLY: there is
-deliberately no config key or environment variable that opts into unsandboxed
-execution, and the supervisor refuses to start on a host that cannot provide the
-sandbox rather than running the worker exposed.
+without one `wrap_argv` fails closed. This container is sandboxed-only: the
+supervisor refuses to start on a host that cannot provide one, loudly, rather than
+answering its port and failing every turn.
 
-The refusal is positive. The probe returns an available verdict, a denied verdict,
-or an `undetermined: <why>` verdict, and only the first proceeds: undetermined
-refuses and names what could not be determined, and so does any verdict the guard
-does not recognise. Reading "could not determine" as "probably fine" fails open as
-new hosts appear, which is the same defect as reading the environment through a
-denylist.
+The credential is nevertheless kept out of the worker's environment, because that is
+worth doing on every host. `build_backend_env` withholds both shapes. The delivered
+identity arrives in the SUPERVISOR's environment as `KIRO_IDENTITY`, is written into
+the crew's encrypted vault by `seed_model_identity`, and is then popped along with
+`KIRO_API_KEY`, which nothing delivers. `acp_backend` is forced to `kas` for the same
+reason: the harness strips the key from the relay's environment and the relay asks the
+host for a token over `_kiro/auth/getAccessToken`, answered by
+`acp/kas_host_auth.answer_get_access_token` inside the backend process.
 
-Why no opt-in, and why the task boundary is not a substitute for one: the model
-subprocess auto-approves every tool and its environment carries `KIRO_API_KEY`, so
-an unsandboxed worker would run an auto-approved shell, driven by untrusted prompt
-content, with a live credential readable in its own environment. The ECS task
-boundary (one owner, one data home, no public endpoint, reached only by an
-authorised call in the owner's own account) does not close that path, because the
-attacker there is the caller's own prompt content, already inside the boundary.
-Offering an unsandboxed posture safely requires brokering the model credential out
-of the worker's environment, which is tracked separately; until then the worker is
-sandboxed or the container does not start. Unprivileged user namespaces are not
-available on Fargate today
+**That is defence in depth, not a licence to drop the sandbox.** What decides whether
+an auto-approved worker is safe is whether it can REACH a credential, not whether one
+is resident in its own environment, and the vault is a route the container cannot
+close. The backend answers the token request from the vault, so the backend's uid must
+be able to decrypt it, and the worker is a child of the backend under that same uid. A
+uid-1000 process reads and decrypts that vault directly. So
+`sandbox_allow_unsandboxed_exec` stays false, and the startup refusal has no
+credential-shaped escape hatch: a clean environment cannot be traded for it.
+
+`verify_sandbox` therefore does two separate things, and the split matters. It ASSERTS
+that the environment handed to the backend carries no credential, refusing on any
+verdict, because that withholding is an invariant this code maintains rather than a
+property of the host — and a value there means it was removed or defeated. It then
+DECIDES on the host's sandbox verdict alone. Taking the posture decision from the
+environment it was handed would be the builder confirming itself: the code that fills
+that dictionary is the code that empties it, so the check could never fail.
+
+The probe returns an available verdict, a denied verdict, or an `undetermined: <why>`
+verdict, and only the first proceeds. Undetermined refuses and names what could not be
+determined, and so does any verdict the guard does not recognise. Reading "could not
+determine" as "probably fine" fails open as new hosts appear, which is the same defect
+as reading the environment through a denylist.
+
+Consequence for Fargate: unprivileged user namespaces are not available there
 ([aws/containers-roadmap#2102](https://github.com/aws/containers-roadmap/issues/2102)),
-so the supported target is a host that permits them.
+Fargate offers no `privileged` flag and no custom seccomp profile, and
+`linuxParameters` admits only `CAP_SYS_PTRACE` — so no task-definition field can
+supply one. The crew container does not run on Fargate today. Closing the remaining
+route is not something this module can do: it needs a user namespace, a worker under a
+different uid from the BACKEND (the gateway's own spawn path, not this container's), or
+a credential not worth stealing — short-lived and narrowly scoped, issued to the task
+rather than to a process. Tracked in
+[#9355](https://github.com/kirodotdev/KiroCrew/issues/9355).
 
 ### Shutdown
 

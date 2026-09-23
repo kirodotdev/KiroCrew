@@ -253,7 +253,7 @@ ENV HOME=/var/lib/crew \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Supplied at run time, never baked in: KIRO_API_KEY, SMC_CONTROL_SECRET,
+# Supplied at run time, never baked in: KIRO_IDENTITY, SMC_CONTROL_SECRET,
 # SMC_ROUTE_PREFIX, SMC_CREW_NAME, SMC_BACKUP_BUCKET, SMC_BACKUP_PREFIX.
 USER crew
 

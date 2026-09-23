@@ -755,10 +755,10 @@ so the only way to put a credential in a `RunTask` request is `environment`, in
 plain text, where it is written to the CloudTrail record of the request and can
 be read back out of `DescribeTasks`. The value is a long-lived model credential.
 
-Nothing downstream can tell a wrong credential from a right one. The container's
-`require_api_key` proves a key was supplied, not that it is this crew's key, so a
-definition naming another crew's secret produces a task that starts, answers, and
-serves turns under the wrong identity, silently at both ends.
+Nothing downstream can tell a wrong identity from a right one. The container's
+`require_model_identity` proves an identity was stored in the crew's vault, not that
+it is this crew's, so a definition naming another crew's secret produces a task that
+starts, answers, and serves turns under the wrong identity, silently at both ends.
 
 **IAM is the primary control.** Each crew's execution role is derived per crew
 (`kirocrew-crew-<crew>-exec`), so it can be granted that crew's secret and no
@@ -800,8 +800,8 @@ The refusals, each stated as a property rather than as the case that prompted it
   decides **who may reach it**, which is the credential set and the trust-domain
   declaration, or it decides **what it may cost**, which is the lifetime the
   launcher also enforces. `SMC_CREW_NAME`, `SMC_SINGLE_PRINCIPAL` and
-  `SMC_TASK_TTL_SECONDS` are derived and written
-  here; `SMC_CONTROL_SECRET`, `KIRO_API_KEY`, `SMC_BUNDLE_DIR` and
+  `SMC_TASK_TTL_SECONDS` are derived and written here; `SMC_CONTROL_SECRET`,
+  `KIRO_IDENTITY`, `KIRO_API_KEY`, `SMC_BUNDLE_DIR` and
   `SMC_FRONT_PORT` are refused and never written. Everything else stays the
   caller's: a bucket cannot contradict the spec, because the spec says nothing
   about buckets.
@@ -844,8 +844,8 @@ than a claim about how the pattern backtracks.
 
 `parse_secret_arn` cannot be verified the same way, because Secrets Manager's
 six-character suffix is chosen by the service and nothing here can reproduce it. A
-secret named `.../KIRO_API_KEY-AbCdEf` has the complete ARN
-`.../KIRO_API_KEY-AbCdEf-XyZ123`, and the string `.../KIRO_API_KEY-AbCdEf` is both
+secret named `.../KIRO_IDENTITY-AbCdEf` has the complete ARN
+`.../KIRO_IDENTITY-AbCdEf-XyZ123`, and the string `.../KIRO_IDENTITY-AbCdEf` is both
 that secret's partial ARN and a well-formed complete ARN for a different secret.
 So the reader takes a `SecretRef` carrying the canonical name, verifies the ARN is
 that name plus exactly one suffix, and reads the destination from the verified
@@ -997,7 +997,7 @@ of the account at task-start time, not of the document, so no pure function
 decides it and a check would be a read that can go stale before the launch. More
 to the point, the two failures are not the same shape. A nonexistent secret fails
 the execution-role fetch before the container starts, so the task never runs,
-`require_api_key` never executes, no turn is served, and the operator sees
+`require_model_identity` never executes, no turn is served, and the operator sees
 `ResourceInitializationError`. A crew disagreement succeeds. Only the silent
 failure has to be unrepresentable; the loud one can be left to fail loudly.
 

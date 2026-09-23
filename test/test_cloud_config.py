@@ -23,8 +23,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 #: ``kirocrew/crew/<crew>/<ENV>`` and the ARN is that name plus one six-character
 #: service suffix. The account id is fictional.
 CREDENTIAL_SECRET = [
-    "kirocrew/crew/demo/KIRO_API_KEY",
-    "arn:aws:secretsmanager:us-east-1:123456789012:secret:kirocrew/crew/demo/KIRO_API_KEY-abcdef",
+    "kirocrew/crew/demo/KIRO_IDENTITY",
+    "arn:aws:secretsmanager:us-east-1:123456789012:secret:kirocrew/crew/demo/KIRO_IDENTITY-abcdef",
 ]
 
 #: A complete Fargate block. Every case below is this, minus or plus one thing, so
@@ -128,7 +128,7 @@ class TestFargateConfig:
             ("subnets not a list", {**COMPLETE_FARGATE, "subnets": "subnet-a"}),
             ("secrets not a list", {**COMPLETE_FARGATE, "secrets": "nope"}),
             ("secret entry is not a pair", {**COMPLETE_FARGATE, "secrets": [["only-one"]]}),
-            ("secret arn is empty", {**COMPLETE_FARGATE, "secrets": [["KIRO_API_KEY", ""]]}),
+            ("secret arn is empty", {**COMPLETE_FARGATE, "secrets": [["KIRO_IDENTITY", ""]]}),
             ("no secrets at all", {**COMPLETE_FARGATE, "secrets": []}),
             (
                 "secrets but none named for the model credential",
@@ -167,7 +167,7 @@ class TestFargateConfig:
                     **COMPLETE_FARGATE,
                     "secrets": [
                         [
-                            "x" * (cloud_config._MAX_STRING_LEN + 1) + "/KIRO_API_KEY",
+                            "x" * (cloud_config._MAX_STRING_LEN + 1) + "/KIRO_IDENTITY",
                             CREDENTIAL_SECRET[1],
                         ]
                     ],
@@ -1105,8 +1105,8 @@ class TestTheCredentialGateAgreesWithTheEngine:
     The gate exists so an incomplete block leaves the lane UNREGISTERED instead of
     registered-and-refusing. A gate that accepts a name the engine rejects recreates
     that exact state from inside the gate, which is what a tail-only check did: both a
-    bare ``KIRO_API_KEY`` and a wrong-prefix ``junk/KIRO_API_KEY`` passed here and were
-    refused by ``identity.secret_env_name``.
+    bare ``KIRO_IDENTITY`` and a wrong-prefix ``junk/KIRO_IDENTITY`` pass a tail-only
+    check and are refused by ``identity.secret_env_name``.
     """
 
     @staticmethod
@@ -1121,19 +1121,20 @@ class TestTheCredentialGateAgreesWithTheEngine:
     @pytest.mark.parametrize(
         "name",
         [
-            "KIRO_API_KEY",
-            "junk/KIRO_API_KEY",
-            "kirocrew/crew/KIRO_API_KEY",
-            "kirocrew/crew//KIRO_API_KEY",
-            "kirocrew/crew/a/b/KIRO_API_KEY",
+            "KIRO_IDENTITY",
+            "junk/KIRO_IDENTITY",
+            "kirocrew/crew/KIRO_IDENTITY",
+            "kirocrew/crew//KIRO_IDENTITY",
+            "kirocrew/crew/a/b/KIRO_IDENTITY",
             "kirocrew/crew/demo/OTHER_KEY",
+            "kirocrew/crew/demo/KIRO_API_KEY",
         ],
     )
     def test_a_name_the_engine_would_refuse_does_not_register_the_lane(self, name: str):
         assert FargateConfig.from_mapping(self._with_credential_named(name)) is None, name
 
     def test_a_conforming_name_is_accepted(self):
-        block = self._with_credential_named("kirocrew/crew/demo/KIRO_API_KEY")
+        block = self._with_credential_named("kirocrew/crew/demo/KIRO_IDENTITY")
         assert FargateConfig.from_mapping(block) is not None
 
     def test_every_name_this_gate_accepts_the_engine_also_accepts(self):
@@ -1167,7 +1168,7 @@ class TestTheCredentialGateAgreesWithTheEngine:
             "",
             "ab/cd",
         ]
-        keys = ["KIRO_API_KEY", "kiro_api_key", "OTHER"]
+        keys = ["KIRO_IDENTITY", "kiro_identity", "KIRO_API_KEY", "OTHER"]
 
         accepted = 0
         for prefix, crew, key in itertools.product(prefixes, crews, keys):
@@ -1185,10 +1186,10 @@ class TestTheCredentialGateAgreesWithTheEngine:
     )
     def test_a_crew_segment_the_engine_would_refuse_does_not_register(self, crew: str):
         """Each of these passed the earlier truthiness check and died in provisioning."""
-        name = f"kirocrew/crew/{crew}/KIRO_API_KEY"
+        name = f"kirocrew/crew/{crew}/KIRO_IDENTITY"
         assert FargateConfig.from_mapping(self._with_credential_named(name)) is None, crew
 
     @pytest.mark.parametrize("crew", ["demo", "a", "1", "a-b", "a--b", "d" * 32])
     def test_a_conforming_crew_segment_registers(self, crew: str):
-        name = f"kirocrew/crew/{crew}/KIRO_API_KEY"
+        name = f"kirocrew/crew/{crew}/KIRO_IDENTITY"
         assert FargateConfig.from_mapping(self._with_credential_named(name)) is not None, crew

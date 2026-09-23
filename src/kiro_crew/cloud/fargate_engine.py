@@ -473,17 +473,18 @@ class FargateSigninHandle:
     """The sign-in step, which for Fargate has nothing to wait for.
 
     The evidence is in the image rather than in an argument: ``runtime/Dockerfile:130``
-    states the credential is "Supplied at run time, never baked in",
-    ``supervisor/__main__.py:422`` calls ``require_api_key(env)`` before serving, and a
-    search of the whole runtime subtree for device-code, SSO, OAuth or interactive-login
-    strings returns zero hits. The container is handed a key and refuses to boot without
-    one; nobody ever signs it in.
+    states the credential is "Supplied at run time, never baked in", the supervisor
+    writes the delivered identity into the crew's vault and calls
+    ``require_model_identity`` before serving, and a search of the whole runtime
+    subtree for device-code, SSO, OAuth or interactive-login strings returns zero
+    hits. The container is handed an identity and refuses to boot without one; nobody
+    ever signs it in.
 
     So this handle completes immediately rather than polling. It reports success
-    because the credential's PRESENCE was already enforced at container start --
-    and only presence. ``require_api_key``'s own docstring is explicit that a
-    present key is not a working one and that validity "can only be established by
-    a real turn", so this handle must not be read as evidence the credential works.
+    because the identity's PRESENCE was already enforced at container start --
+    and only presence. ``require_model_identity``'s own docstring is explicit that a
+    usable identity is not a working one and that validity "can only be established
+    by a real turn", so this handle must not be read as evidence the credential works.
 
     ``run_launch`` reads ``error`` first and ``already_logged_in`` next, and with an
     empty ``error`` it takes the already-signed-in branch: that branch marks the step

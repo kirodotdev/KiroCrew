@@ -530,7 +530,7 @@ def install_bundle(settings: Settings, *, agents_dir: Path | None = None) -> dic
     """Verify the bundle, then lay it out where Kiro Crew reads it. Fail CLOSED.
 
     Called from ``run()`` before the backend starts, alongside ``verify_layout``
-    / ``require_api_key`` / ``verify_sandbox``. Every refusal names the
+    / ``require_model_identity`` / ``verify_sandbox``. Every refusal names the
     check that failed and both values, because a container that boots with the
     wrong crew is the exact failure this change exists to prevent.
 

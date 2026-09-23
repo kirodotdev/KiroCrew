@@ -42,14 +42,27 @@ def test_the_transport_list_is_not_empty() -> None:
     assert len(backend_mod.CHANNEL_SECTIONS) >= 10
 
 
-def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) -> None:
-    """The refusal to run unsandboxed must not be defeatable by a config file.
+def test_the_agent_posture_cannot_be_changed_by_an_existing_config(tmp_path: Path) -> None:
+    """The container's posture must not be defeatable by a config file.
 
-    ``verify_sandbox`` refuses to start where the model subprocess cannot be
-    sandboxed, and the container offers no unsandboxed posture. The gateway reads its
-    sandbox mode and two fallback flags from this same file, so a file arriving with
-    them relaxed would let the worker run with no backend while the supervisor's
-    refusal reported nothing wrong.
+    This file arrives in the task from outside the container's code, and the gateway
+    reads its sandbox mode, both fallback flags and its ACP backend from it. Each is a
+    decision the container makes rather than inherits:
+
+    * ``acp_backend`` must stay ``kas``, the half of the credential interlock that
+      lives in config. A file naming a backend that owns its own credential would be
+      starved by ``build_backend_env`` withholding it, and the identity's location
+      would become a property of whatever config the task was handed.
+    * ``sandbox`` must stay ``auto`` and ``sandbox_allow_no_isolation`` false, so a
+      sandbox is still used wherever the host offers one. A file setting ``off`` would
+      skip isolation on a host that could have provided it.
+    * ``sandbox_allow_unsandboxed_exec`` must stay false. A file turning it on would
+      let the worker run with no sandbox, and the model credential is reachable from
+      the worker's uid through the crew's vault whatever its environment holds.
+
+    ``__main__.verify_sandbox`` refuses at startup on a host that cannot sandbox the
+    worker, and that refusal is worth nothing if a supplied file can grant the fallback
+    underneath it.
     """
     settings = make_settings(tmp_path)
     settings.config_dir.mkdir(parents=True, exist_ok=True)
@@ -57,6 +70,7 @@ def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) 
         json.dumps(
             {
                 "agent": {
+                    "acp_backend": "somebody-elses-backend",
                     "sandbox": "off",
                     "sandbox_allow_no_isolation": True,
                     "sandbox_allow_unsandboxed_exec": True,
@@ -69,6 +83,7 @@ def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) 
 
     config = json.loads(backend_mod.write_backend_config(settings).read_text(encoding="utf-8"))
 
+    assert config["agent"]["acp_backend"] == "kas"
     assert config["agent"]["sandbox"] == "auto"
     assert config["agent"]["sandbox_allow_no_isolation"] is False
     assert config["agent"]["sandbox_allow_unsandboxed_exec"] is False
@@ -219,8 +234,9 @@ def test_the_config_is_written_before_the_backend_starts(tmp_path: Path, monkeyp
     monkeypatch.setattr(entry, "verify_layout", _record("layout"))
     monkeypatch.setattr(entry, "verify_sandbox", _record("sandbox"))
     monkeypatch.setattr(entry.bundle_mod, "install_bundle", _record("bundle"))
-    monkeypatch.setattr(entry.backend_mod, "build_backend_env", lambda s: {"KIRO_API_KEY": "k"})
-    monkeypatch.setattr(entry.backend_mod, "require_api_key", lambda env: None)
+    monkeypatch.setattr(entry.backend_mod, "build_backend_env", lambda s: {})
+    monkeypatch.setattr(entry.backend_mod, "seed_model_identity", lambda s, **kw: True)
+    monkeypatch.setattr(entry.backend_mod, "require_model_identity", lambda s: None)
     monkeypatch.setattr(
         entry.backend_mod, "write_backend_config", _record_returning("config", Path())
     )

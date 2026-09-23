@@ -1,12 +1,12 @@
 """Which crew a Fargate resource belongs to, recovered from its ARN.
 
-A crew's model credential reaches its container through the task definition's
+A crew's model identity reaches its container through the task definition's
 ``secrets[].valueFrom``, fetched by the **execution role** before the container
-starts. Nothing downstream can tell a wrong credential from a right one: the
-container's ``require_api_key`` proves a key was supplied, not that it is this
-crew's key. A document that names another crew's secret ARN therefore produces a
-task that starts, answers, and serves turns under the wrong identity, with no
-error at either end.
+starts. Nothing downstream can tell a wrong identity from a right one: the
+container's ``require_model_identity`` proves an identity was stored in the crew's
+vault, not that it is this crew's. A document that names another crew's secret ARN
+therefore produces a task that starts, answers, and serves turns under the wrong
+identity, with no error at either end.
 
 **IAM is the primary control.** Each crew's execution role is derived per crew
 (:func:`execution_role_arn`), so it can be granted that crew's secret and no
@@ -361,8 +361,8 @@ def secret_env_name(ref: SecretRef, *, source: str = "secret reference") -> str:
     Read from the name the reference states and the ARN was verified against, so a
     document cannot deliver one secret's value under another secret's variable.
     That mistake is the credential defect in its quietest form: the crew agrees,
-    the reference resolves, and ``require_api_key`` sees a key present, so the
-    task starts and every turn runs on the wrong value.
+    the reference resolves, and ``require_model_identity`` sees an identity in the
+    vault, so the task starts and every turn runs on the wrong value.
 
     Validation is :func:`parse_secret_arn`'s, by calling it rather than by
     repeating its checks. Two functions reading one reference to different

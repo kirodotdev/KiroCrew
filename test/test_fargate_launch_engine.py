@@ -1289,8 +1289,8 @@ def test_unconfirmed_teardown_after_failed_provision_reaches_the_user(tmp_path) 
 
 def _secret() -> SecretRef:
     return SecretRef(
-        name="kirocrew/crew/demo/KIRO_API_KEY",
-        arn="arn:aws:secretsmanager:us-west-2:111122223333:secret:kirocrew/crew/demo/KIRO_API_KEY-AbCdEf",
+        name="kirocrew/crew/demo/KIRO_IDENTITY",
+        arn="arn:aws:secretsmanager:us-west-2:111122223333:secret:kirocrew/crew/demo/KIRO_IDENTITY-AbCdEf",
     )
 
 

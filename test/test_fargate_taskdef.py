@@ -309,9 +309,10 @@ def test_a_log_configuration_region_is_refused_by_the_same_rule_as_an_arn_region
 
 
 def test_the_credential_env_name_matches_the_container_that_reads_it():
-    """A drift here delivers the secret under a name the backend does not read."""
+    """A drift here delivers the secret under a name the supervisor does not read."""
     constants = _env_constants(_container_module(_CREW_BACKEND_SOURCE))
-    assert td.MODEL_CREDENTIAL_ENV == constants["ENV_KIRO_API_KEY"]
+    assert td.MODEL_CREDENTIAL_ENV == constants["ENV_KIRO_IDENTITY"]
+    assert td.API_KEY_ENV == constants["ENV_KIRO_API_KEY"]
     assert td.CONTROL_SECRET_ENV == constants["ENV_CONTROL_SECRET"]
 
 
@@ -324,8 +325,10 @@ def _container_credential_env() -> set[str]:
     * ``build_backend_env`` POPS it from the model worker's environment. That
       worker auto-approves every tool it calls, so a name deliberately withheld
       from it is a name whose value must not be readable by prompt content.
-    * ``require_api_key`` refuses to start without it, which is the model
-      credential the task injects from Secrets Manager.
+    * ``seed_model_identity`` CONSUMES it from the supervisor's own environment, which
+      is how the model identity is delivered into the crew's vault. That name carries a
+      credential before it is withheld, so reading this function as well as the pop
+      keeps the DELIVERED name declared by the code that delivers it.
 
     Variables merely mentioned in ``build_backend_env`` do not qualify: it also
     sets the home, port, bind address and telemetry flag, none of which are
@@ -344,12 +347,12 @@ def _container_credential_env() -> set[str]:
         and isinstance(call.args[0], ast.Name)
         and call.args[0].id.startswith("ENV_")
     }
-    gated = {
+    delivered = {
         node.id
-        for node in ast.walk(_function(tree, "require_api_key"))
+        for node in ast.walk(_function(tree, "seed_model_identity"))
         if isinstance(node, ast.Name) and node.id.startswith("ENV_")
     }
-    return {constants[name] for name in popped | gated}
+    return {constants[name] for name in popped | delivered}
 
 
 def test_every_credential_the_container_reads_is_refused_here():
