@@ -1863,3 +1863,14 @@ class TestKeepVisibleMarkerRule:
 
         assert "<!-- keep-visible -->" in _CRITICAL_RULES
         assert "<!-- keep-visible -->" not in _CRITICAL_RULES_CHANNEL
+
+
+class TestAutonomousGoalSuggestionRule:
+    """Only the dashboard can turn a model marker into a Set-a-goal action."""
+
+    def test_goal_marker_is_documented_in_dashboard_rules_only(self):
+        from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL
+
+        assert "[GOAL: objective]" in _CRITICAL_RULES
+        assert "opens the existing Set-a-goal review flow" in _CRITICAL_RULES
+        assert "[GOAL: objective]" not in _CRITICAL_RULES_CHANNEL

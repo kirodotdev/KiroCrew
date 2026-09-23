@@ -1,7 +1,7 @@
 /**
  * The marker protocol has exactly one home, and that home renders nothing.
  *
- * `[OPTIONS: …]` and `[STEERING steer-<id>: …]` are a contract between the agent's text
+ * `[OPTIONS: …]`, `[GOAL: …]`, and `[STEERING steer-<id>: …]` are contracts between
  * and whatever draws it. When the parsers sit inside a message component, only surfaces
  * that render that component can honour the contract: a transcript assembled any other
  * way prints the raw marker, and a util that needs to read options ends up importing a
@@ -38,10 +38,10 @@ const read = (f: string) => readFileSync(f, 'utf-8')
 const isSource = (f: string) => /\.tsx?$/.test(f)
 const protocolFiles = walk(PROTOCOL).filter(isSource)
 
-/** Regex-shaped marker definitions — `\[OPTIONS`, `\[OPTION`, `\[STEERING`. A test
- *  fixture contains the literal `[OPTIONS: a|b]`, which is deliberately NOT matched:
+/** Regex-shaped marker definitions — `\[OPTIONS`, `\[OPTION`, `\[GOAL`, `\[STEERING`.
+ *  A test fixture contains the literal `[OPTIONS: a|b]`, which is deliberately NOT matched:
  *  only an escaped bracket means someone is defining the pattern rather than using it. */
-const MARKER_DEFINITION = /\\\[(?:OPTIONS?|STEERING)/
+const MARKER_DEFINITION = /\\\[(?:OPTIONS?|GOAL|STEERING)/
 
 describe('the marker protocol module', () => {
   it('exists as more than one file, so this test cannot pass vacuously', () => {
@@ -81,9 +81,24 @@ describe('the protocol surface apps import', () => {
       'deriveFollowUpOptions',
       'extractSteeringAcks',
       'stripPartialOptionMarker',
+      'stripPartialGoalMarker',
+      'goalSuggestionReplyFallback',
     ]) {
       expect(surface, `protocol must export ${name}`).toHaveProperty(name)
     }
+  })
+
+  it('keeps the goal sub-parser off the app surface', async () => {
+    // `parseOptions` is the one reader of `[GOAL: …]`: it returns `goalSuggestion`
+    // beside `options` and strips both from the same text. A public
+    // `parseGoalSuggestion` would be a second reader that leaves the option
+    // grammar un-applied, so the two could disagree about the visible prose.
+    // Pinned in BOTH places a name reaches an app: the barrel, and the vendor
+    // stub whose destructure would otherwise hand out `undefined` under that name.
+    const surface = await import('../app-sdk/protocol')
+    expect(surface).not.toHaveProperty('parseGoalSuggestion')
+    const stub = read(resolve(SRC, '..', 'public', 'vendor', 'kirocrew-app-sdk.mjs'))
+    expect(stub).not.toMatch(/\bparseGoalSuggestion\b/)
   })
 
   it('re-exports the types its own signatures use', () => {

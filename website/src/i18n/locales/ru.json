@@ -6731,6 +6731,11 @@
       "yes_move_it": "Переместить"
     },
     "followUpBar": {
+      "autonomous_goal": "Автономная цель",
+      "continues_across_turns_until_delivered_or_blocked": "Продолжает работу в нескольких циклах, пока результат не будет готов или работа не окажется заблокирована.",
+      "open_automation": "Открыть автоматизацию",
+      "review_and_start": "Проверить и запустить",
+      "session_already_has_automation": "В этом сеансе уже есть цель или монитор. Сначала измените или удалите эту автоматизацию.",
       "click_to_add_to_input_double_click_to_select_and": "Нажми, чтобы добавить в поле ввода (двойное нажатие — выбрать и отправить)",
       "click_to_add_to_input_editable_before_sending": "Нажми, чтобы добавить в поле ввода (можно изменить перед отправкой)",
       "tooltip_arrow_sends_now": "↑ отправляет сразу",

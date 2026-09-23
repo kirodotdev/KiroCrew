@@ -49,6 +49,8 @@ import ContextBar, { contextTip, contextColor, composeContextReadout, contextPct
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer, { type PasteHoverHandle } from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { goalSuggestionReplyFallback } from '../app-sdk/protocol'
+import { loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { dispatchLightbox } from './MarkdownRenderer'
 import { IMG_EXT, buildFileLabels } from '../utils/fileTokens'
 import type { ResizeInfo } from '../utils/resizeImage'
@@ -650,6 +652,8 @@ interface ChatInputProps {
   /** Send-key mode. Omitted means the user's stored Settings -> Chat ->
    *  Composer preference; pass it only to override that (e.g. mobile). */
   sendOnEnter?: SendMode
+  /** Autonomous multi-turn objective from an assistant `[GOAL: ...]` marker. */
+  followUpGoal?: string | null
   /** Follow-up options from assistant message */
   followUpOptions?: string[]
   /** Options the user has picked (visual highlight in FollowUpBar) */
@@ -987,6 +991,7 @@ function ChatInput({
   automationSnapshotFailed,
   sessionMode,
   sendOnEnter: sendOnEnterProp,
+  followUpGoal,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -1045,6 +1050,35 @@ function ChatInput({
   const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  const canReviewSuggestedGoal = !!onAutomationClick && !!slotId
+  const displayedFollowUpOptions = useMemo(
+    () => canReviewSuggestedGoal
+      ? (followUpOptions ?? [])
+      : goalSuggestionReplyFallback(followUpOptions ?? [], followUpGoal ?? null),
+    [followUpGoal, followUpOptions, canReviewSuggestedGoal],
+  )
+  const suggestedGoalDisabledReason = automation
+    ? i18nT('components.followUpBar.session_already_has_automation')
+    : sessionMode === 'crew' || sessionMode === 'member'
+      ? i18nT('components.sessionAutomationPopover.session_mode_unavailable')
+      : undefined
+  const reviewSuggestedGoal = useCallback((goal: string) => {
+    if (!slotId || !canReviewSuggestedGoal || suggestedGoalDisabledReason) return
+    const remembered = loadGoalDraft(slotId)
+    if (!saveGoalDraft(slotId, {
+      message: goal,
+      idleSecs: remembered?.idleSecs ?? 60,
+      maxCycles: remembered?.maxCycles ?? 0,
+    })) return
+    onAutomationClick?.(true)
+  }, [slotId, canReviewSuggestedGoal, onAutomationClick, suggestedGoalDisabledReason])
+  // The blocked card's route to the automation that blocks it. Deliberately
+  // NOT `reviewSuggestedGoal` minus the guard: this must never write the
+  // suggestion into the goal draft, because the popover opens on the live
+  // record and a draft written here would surface as that record's text the
+  // moment the user cleared it — the suggestion replacing the automation
+  // through the back door. It only opens the popover the trigger already owns.
+  const openExistingAutomation = useCallback(() => { onAutomationClick?.(true) }, [onAutomationClick])
   const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
@@ -3570,9 +3604,26 @@ function ChatInput({
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
 
-      {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} />
+      {/* Autonomous goal card plus ordinary follow-up replies. */}
+      {!showGhost && (
+        (displayedFollowUpOptions.length > 0 && onFollowUpSelect)
+        || (followUpGoal && canReviewSuggestedGoal)
+      ) && (
+        <FollowUpBar
+          options={displayedFollowUpOptions}
+          goal={canReviewSuggestedGoal ? followUpGoal : null}
+          onGoal={canReviewSuggestedGoal ? reviewSuggestedGoal : undefined}
+          goalDisabledReason={suggestedGoalDisabledReason}
+          // Keyed on the RECORD, not on the reason text: the crew/member reason
+          // has no automation behind it, so it gets no route and stays inert.
+          onOpenAutomation={canReviewSuggestedGoal && automation ? openExistingAutomation : undefined}
+          picked={followUpPicked ?? new Set()}
+          onSelect={onFollowUpSelect ?? (() => {})}
+          onSend={sendFollowUp}
+          quickSend={quickSend}
+          layout={followUpLayout}
+          sourceKey={followUpSourceKey}
+        />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

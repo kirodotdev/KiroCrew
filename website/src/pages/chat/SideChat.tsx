@@ -7,7 +7,7 @@ import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, 
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
-import { deriveFollowUpOptions } from '../../app-sdk/protocol'
+import { deriveFollowUpOptions, goalSuggestionReplyFallback } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -152,9 +152,13 @@ export default function SideChat({ slot }: { slot: string }) {
    *  - An unconditional dispatch (no mode gate) would let any plan-shaped side
    *    answer cancel or advance the parent's real plan.
    *  Pinned by src/test/SideChat.planExclusion.test.tsx. */
-  const { followUpOptions } = useMemo(
+  const { followUpOptions, followUpGoal } = useMemo(
     () => deriveFollowUpOptions(transcript, isStreaming),
     [transcript, isStreaming]
+  )
+  const followUpReplies = useMemo(
+    () => goalSuggestionReplyFallback(followUpOptions, followUpGoal),
+    [followUpOptions, followUpGoal],
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file: what a
@@ -176,7 +180,7 @@ export default function SideChat({ slot }: { slot: string }) {
   // when the panel came back.
   const { text: storedDraft, seedTick } = useSideChatDraft(slot)
   const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next) }, [slot])
-  const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
+  const composer = useComposerDraft({ followUpOptions: followUpReplies, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
   const {
     draft, setDraft,
     picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
@@ -692,10 +696,10 @@ export default function SideChat({ slot }: { slot: string }) {
           />
         </div>
       )}
-      {followUpOptions.length > 0 && (
+      {followUpReplies.length > 0 && (
         <div className="shrink-0 px-2 pb-1">
           <FollowUpBar
-            options={followUpOptions}
+            options={followUpReplies}
             picked={pickedOptions}
             onSelect={toggleOption}
             onSend={text => { void send(text) }}

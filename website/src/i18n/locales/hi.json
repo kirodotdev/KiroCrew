@@ -6531,6 +6531,11 @@
       "yes_move_it": "ले जाएँ"
     },
     "followUpBar": {
+      "autonomous_goal": "स्वायत्त लक्ष्य",
+      "continues_across_turns_until_delivered_or_blocked": "पूरा होने या रुकावट आने तक कई चरणों में काम जारी रखता है।",
+      "open_automation": "ऑटोमेशन खोलें",
+      "review_and_start": "समीक्षा करके शुरू करें",
+      "session_already_has_automation": "इस सत्र में पहले से कोई लक्ष्य या मॉनिटर है। पहले उस ऑटोमेशन को अपडेट करें या हटाएँ।",
       "click_to_add_to_input_double_click_to_select_and": "इनपुट में जोड़ने के लिए क्लिक करें (चुनने और भेजने के लिए डबल-क्लिक करें)",
       "click_to_add_to_input_editable_before_sending": "इनपुट में जोड़ने के लिए क्लिक करें (भेजने से पहले संपादन योग्य)",
       "tooltip_arrow_sends_now": "↑ अभी भेजता है",

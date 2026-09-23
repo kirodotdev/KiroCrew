@@ -21,7 +21,7 @@ import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList
 import ErrorNotice from '../components/ErrorNotice'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
-import { deriveFollowUpOptions } from './protocol'
+import { deriveFollowUpOptions, goalSuggestionReplyFallback } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
@@ -213,16 +213,20 @@ function ChatEmbed({
    *  need working plan chips, the parity option is wiring `usePlanActionMutation`
    *  plus a mode source into this file — a product decision, not an oversight.
    *  Pinned by the plan-exclusion test in src/test/ChatEmbed.test.tsx. */
-  const { followUpOptions } = useMemo(
+  const { followUpOptions, followUpGoal } = useMemo(
     () => deriveFollowUpOptions(messages, running),
     [messages, running]
+  )
+  const followUpReplies = useMemo(
+    () => goalSuggestionReplyFallback(followUpOptions, followUpGoal),
+    [followUpOptions, followUpGoal],
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
   const { draft, setDraft, textareaRef, picked, toggleOption, composition, submitOnEnter } =
-    useComposerDraft({ followUpOptions, maxHeight: composerMaxHeight })
+    useComposerDraft({ followUpOptions: followUpReplies, maxHeight: composerMaxHeight })
 
   // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
@@ -387,10 +391,10 @@ function ChatEmbed({
 
       {aboveComposer && <div className="shrink-0">{aboveComposer}</div>}
 
-      {followUpOptions.length > 0 && (
+      {followUpReplies.length > 0 && (
         <div className={`shrink-0 px-3 ${frameless ? '' : 'bg-bg-accent'}`}>
           <FollowUpBar
-            options={followUpOptions}
+            options={followUpReplies}
             picked={picked}
             onSelect={toggleOption}
             onSend={text => send(text)}

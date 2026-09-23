@@ -6531,6 +6531,11 @@
       "yes_move_it": "সরান"
     },
     "followUpBar": {
+      "autonomous_goal": "স্বয়ংক্রিয় লক্ষ্য",
+      "continues_across_turns_until_delivered_or_blocked": "কাজটি সম্পন্ন হওয়া বা বাধা না পাওয়া পর্যন্ত একাধিক ধাপ জুড়ে চলতে থাকে।",
+      "open_automation": "অটোমেশন খোলো",
+      "review_and_start": "পর্যালোচনা করে শুরু করো",
+      "session_already_has_automation": "এই সেশনে ইতিমধ্যেই একটি লক্ষ্য বা মনিটর আছে। আগে সেই অটোমেশনটি আপডেট বা মুছে ফেলুন।",
       "click_to_add_to_input_double_click_to_select_and": "ইনপুটে যোগ করতে ক্লিক করো (নির্বাচন করে পাঠাতে ডাবল-ক্লিক করো)",
       "click_to_add_to_input_editable_before_sending": "ইনপুটে যোগ করতে ক্লিক করো (পাঠানোর আগে সম্পাদনা করা যায়)",
       "tooltip_arrow_sends_now": "↑ এখনই পাঠায়",

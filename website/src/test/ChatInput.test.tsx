@@ -7,6 +7,8 @@ import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
 import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 
+import { loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
+import type { LegacyGoalLoop } from '../monitoring/automation'
 // The composer's own drag floor.
 const INPUT_DRAG_MIN_H = 93
 import { SlotProvider } from '../providers/SlotContext'
@@ -125,6 +127,113 @@ describe('ChatInput', () => {
         <ChatInput {...defaultProps} aboveComposer={<div data-testid="tip-band">tip</div>} />
       )
       expect(screen.getByTestId('tip-band')).toBeInTheDocument()
+    })
+
+    /** A composer that owns the automation popover's open state, the way the
+     *  page does, so a click on the goal card can be followed into the popover. */
+    function GoalSuggestionHarness({ automation = null, sessionMode }: {
+      automation?: LegacyGoalLoop | null
+      sessionMode?: string
+    }) {
+      const [open, setOpen] = React.useState(false)
+      return (
+        <SlotProvider slotId="chat-goal-card">
+          <ChatInput
+            {...defaultProps}
+            followUpGoal="Deliver the recommended next actions"
+            followUpOptions={['Show details']}
+            followUpPicked={new Set()}
+            onFollowUpSelect={() => {}}
+            onAutomationClick={setOpen}
+            automation={automation}
+            automationOpen={open}
+            onAutomationChange={() => {}}
+            sessionMode={sessionMode}
+            typedCommandMenus={false}
+            promptOptimizer={false}
+            slotApprovalChrome={false}
+          />
+        </SlotProvider>
+      )
+    }
+
+    const stubAutomationFetch = () => vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ loop: null }),
+    })) as unknown as typeof fetch)
+
+    it('opens the existing Set-a-goal flow with the autonomous objective prefilled', async () => {
+      stubAutomationFetch()
+      saveGoalDraft('chat-goal-card', { message: 'Older goal', idleSecs: 300, maxCycles: 8 })
+      try {
+        renderWithProviders(<GoalSuggestionHarness />)
+        fireEvent.click(screen.getByRole('button', { name: 'Review & start' }))
+        const goal = await screen.findByLabelText('Goal description') as HTMLTextAreaElement
+        await waitFor(() => expect(goal.value).toBe('Deliver the recommended next actions'))
+        const [idle, cycles] = screen.getAllByRole('spinbutton') as HTMLInputElement[]
+        expect(idle.value).toBe('300')
+        expect(cycles.value).toBe('8')
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('does not open the goal editor when the suggested objective cannot be persisted', () => {
+      const priorDraft = { message: 'Older goal', idleSecs: 300, maxCycles: 8 }
+      saveGoalDraft('chat-goal-card', priorDraft)
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('storage disabled', 'SecurityError')
+      })
+      try {
+        renderWithProviders(<GoalSuggestionHarness />)
+        fireEvent.click(screen.getByRole('button', { name: 'Review & start' }))
+
+        expect(screen.queryByLabelText('Goal description')).not.toBeInTheDocument()
+        expect(loadGoalDraft('chat-goal-card')).toEqual(priorDraft)
+      } finally {
+        setItem.mockRestore()
+      }
+    })
+
+    it('routes a suggestion blocked by a running automation to that automation, never to a start', async () => {
+      // The card says "update or clear that automation first"; the button under
+      // that sentence has to be the way there, and it must not be a start in
+      // disguise: the popover opens on the LIVE loop, and the suggestion must
+      // not reach the goal draft, or clearing the loop would surface it as the
+      // next goal — the suggestion replacing the automation through the back door.
+      stubAutomationFetch()
+      const running: LegacyGoalLoop = {
+        kind: 'legacy_goal_loop', id: 'loop-1', slotKey: 'chat-goal-card', message: 'Keep checking.',
+        idleSecs: 300, maxCycles: 24, cycleCount: 2, active: true, lastFireAt: 0, stoppedReason: '',
+      }
+      saveGoalDraft('chat-goal-card', { message: 'Older goal', idleSecs: 300, maxCycles: 8 })
+      try {
+        renderWithProviders(<GoalSuggestionHarness automation={running} />)
+        const card = screen.getByTestId('autonomous-goal-card')
+        expect(card).toHaveTextContent('This session already has a goal or monitor.')
+        expect(screen.queryByRole('button', { name: 'Review & start' })).not.toBeInTheDocument()
+        // The ordinary reply pill is untouched by the card's state.
+        expect(screen.getByRole('button', { name: 'Show details' })).toBeEnabled()
+
+        const open = screen.getByRole('button', { name: 'Open automation' })
+        expect(open).toBeEnabled()
+        fireEvent.click(open)
+
+        const goal = await screen.findByLabelText('Goal description') as HTMLTextAreaElement
+        await waitFor(() => expect(goal.value).toBe('Keep checking.'))
+        expect(screen.getByRole('button', { name: 'Stop loop' })).toBeInTheDocument()
+        expect(loadGoalDraft('chat-goal-card')).toEqual({ message: 'Older goal', idleSecs: 300, maxCycles: 8 })
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('keeps the card inert in a crew or member session, where there is nothing to open', () => {
+      renderWithProviders(<GoalSuggestionHarness sessionMode="crew" />)
+      const card = screen.getByTestId('autonomous-goal-card')
+      expect(card).toHaveTextContent("Automations aren't available in crew or member sessions")
+      expect(screen.getByRole('button', { name: 'Review & start' })).toBeDisabled()
+      expect(screen.queryByRole('button', { name: 'Open automation' })).not.toBeInTheDocument()
     })
   })
 

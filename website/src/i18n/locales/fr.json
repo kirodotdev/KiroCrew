@@ -6631,6 +6631,11 @@
       "yes_move_it": "Déplacer"
     },
     "followUpBar": {
+      "autonomous_goal": "Objectif autonome",
+      "continues_across_turns_until_delivered_or_blocked": "Se poursuit sur plusieurs tours jusqu’à la livraison du résultat ou au blocage du travail.",
+      "open_automation": "Ouvrir l’automatisation",
+      "review_and_start": "Vérifier et démarrer",
+      "session_already_has_automation": "Cette session possède déjà un objectif ou un moniteur. Modifiez ou effacez d’abord cette automatisation.",
       "click_to_add_to_input_double_click_to_select_and": "Clique pour ajouter à la saisie (double-clic pour sélectionner et envoyer)",
       "click_to_add_to_input_editable_before_sending": "Clique pour ajouter à la saisie (modifiable avant l’envoi)",
       "tooltip_arrow_sends_now": "↑ envoie maintenant",
