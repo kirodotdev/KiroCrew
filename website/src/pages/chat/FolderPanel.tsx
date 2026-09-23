@@ -12,6 +12,8 @@ import { fileIcon, colorForExt } from '../../utils/fileIcons'
 import { useFileMenuItems, visibleFileMenuItems, FolderRowActions } from '../../apps/fileMenuContributions'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState } from './FileBrowserRail'
+import { LISTING_FAILURE_KEYS, SEARCH_FAILURE_KEYS, searchErrorCause } from '../../lib/searchErrorCause'
+import { findReport } from '../../utils/errorReport'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
@@ -394,7 +396,14 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               // Read failure; the only editable field is the transient search
               // box, not a durable draft → hand-off on.
               <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')} askAgent />
+                <ErrorNotice
+                  variant="inline"
+                  message={t(SEARCH_FAILURE_KEYS[searchErrorCause(searchError)])}
+                  // Translated copy is not the journal key, so the raw message is what
+                  // still resolves the endpoint/status/code the hand-off needs.
+                  report={findReport((searchError as Error)?.message)}
+                  askAgent
+                />
               </div>
             )}
             {!isSearchError && isSearching && matches.length === 0 && (
@@ -465,7 +474,12 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             {isError && (
               // List failure in a side panel with nothing unsaved → hand-off on.
               <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')} askAgent />
+                <ErrorNotice
+                  variant="inline"
+                  message={t(LISTING_FAILURE_KEYS[searchErrorCause(error)])}
+                  report={findReport((error as Error)?.message)}
+                  askAgent
+                />
               </div>
             )}
             {!isLoading && !isError && isEmpty && (
