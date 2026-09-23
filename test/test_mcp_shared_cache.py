@@ -436,10 +436,10 @@ class TestLongCacheFailures:
     ):
         """A transport failure and an answered 4xx must not share one reason.
 
-        Both are currently permissive, so this pins the DISTINCTION rather than
-        either verdict: whoever revisits whether a gateway that cannot answer
-        should refuse needs a reason that means only that, and collapsing the two
-        again would remove the only handle for making that change safely.
+        They now get OPPOSITE verdicts at ``tools/call`` -- a gateway that could
+        not answer refuses, a gateway that answered and declined this caller does
+        not -- so collapsing the two reasons would decide one condition by the
+        other's rule. This pins the distinction itself.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=OSError("connection refused"))

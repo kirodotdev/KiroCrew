@@ -1112,15 +1112,16 @@ the caller block and the policy read sends it, so its calls do not land there. T
 for admitting a reason here is that it means ONE thing, because a refusal derived from an
 ambiguous reason is wrong for half the callers it hits.
 
-`resolution_failed` -- no usable answer, meaning nothing came back or a `5xx` said the
-gateway is broken -- passes that test and is still permissive, which is the one place
-this contract says something different from what the security argument alone would say.
-Refusing on it was implemented and measured, and the repository's real-MCP end-to-end
-lane will not run a legitimate first tool call under it: five heads with it refusing all
-fail that lane and the two with it permissive both pass. So in this deployment an
-ordinary call reaches that arm, and refusing there does not cost an attacker a tool call,
-it costs an ordinary caller every tool call. It stays permissive and audited until the
-gateway can say why a real call lands there, which is a gateway-side question.
+`resolution_failed` -- no usable answer, meaning nothing came back, a `5xx` said the
+gateway is broken, or the resolve itself raised -- passes that test and refuses. Every
+`4xx` returns before that arm, decided by status class, so the reason means the policy
+could not be READ and never that the gateway made a decision about this caller. An
+operator exclusion may exist while the process holding it cannot answer for it, so the
+empty set that arrives with this reason is unknown rather than permissive, and serving it
+as a permission is exactly how an excluded tool runs. The refusal is bounded at both
+ends: a session that resolves its policy once is served from the per-session cache and
+never reaches a failure path again, and for one that has not, the refusal lasts at most
+the 60s negative-cache window.
 
 The other reasons stay permissive, each because no operator exclusion is known to exist
 for that caller or because refusal would be permanent rather than a window that closes. `agent_not_resolved` is the `404`, returned both for a session still
