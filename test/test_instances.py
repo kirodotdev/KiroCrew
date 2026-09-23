@@ -1343,6 +1343,64 @@ class TestRegistry:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         assert InstancesRegistry().path == tmp_path / "instances.json"
 
+    def test_two_registries_over_one_file_share_a_lock(self, tmp_path):
+        """Objects over the same file hold one lock; different files hold two.
+
+        Callers construct a registry per request, so a lock owned by the object
+        serialises nothing between them.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        first = self._reg(tmp_path)
+        second = self._reg(tmp_path)
+        assert first._lock is second._lock
+
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        assert InstancesRegistry(other / "instances.json")._lock is not first._lock
+
+    def test_a_second_writer_cannot_read_between_a_read_and_its_write(self, tmp_path):
+        """An interleaved second registry must not drop the first's record.
+
+        The writing thread is held inside its own write and the second thread is
+        released to add a different instance. Both records have to survive: a
+        reader admitted before the first write lands sees the pre-add document
+        and persists it back without that record.
+
+        Both waits are bounded, so the serialised case simply times out and
+        proceeds rather than hanging.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        path = tmp_path / "instances.json"
+        writer = InstancesRegistry(path)
+        intruder = InstancesRegistry(path)
+
+        inside_write = threading.Event()
+        intruder_done = threading.Event()
+        real_write = type(writer)._write
+
+        def holding_write(self, doc):
+            inside_write.set()
+            intruder_done.wait(timeout=2.0)
+            real_write(self, doc)
+
+        writer._write = types.MethodType(holding_write, writer)
+
+        def add_intruder():
+            inside_write.wait(timeout=2.0)
+            intruder.add(name="Second", ssh_host="second-1", instance_id="second-1")
+            intruder_done.set()
+
+        thread = threading.Thread(target=add_intruder, daemon=True)
+        thread.start()
+        writer.add(name="First", ssh_host="first-1", instance_id="first-1")
+        thread.join(timeout=5.0)
+        assert not thread.is_alive(), "the second writer never finished"
+
+        ids = sorted(inst.id for inst in InstancesRegistry(path).list())
+        assert ids == ["first-1", "second-1"]
+
 
 # ── SshTunnelManager (mocked) ─────────────────────────────────────────────────
 

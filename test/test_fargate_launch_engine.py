@@ -51,6 +51,9 @@ from kiro_crew.cloud.fargate_engine import (
     plan_teardown,
 )
 from kiro_crew.cloud.launch_job import LaunchEngine, SigninHandle
+from kiro_crew.instances.validation import split_ecs_target
+from kiro_crew.platform.defaults import FARGATE_PROVISIONER_ID
+from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 TAG = "kc-a1b2c3"
 ARN = "arn:aws:ecs:us-west-2:111122223333:task/crews/1111111111111111"
@@ -61,6 +64,90 @@ STARTED_BY = "kirocrew-cloud/kc-a1b2c3"
 #: module refuses to spell this key itself because the module that writes the tag
 #: owns it, so every test hands it over the same way production code must.
 LAUNCH_TAG_KEY = "kirocrew:launch"
+
+#: A task id and ARN the REGISTRY can address, which ``ARN`` above deliberately is
+#: not: an ECS target's task id is 32 hex characters and the shared fixture's is
+#: sixteen, so a target built from it is refused by ``split_ecs_target``. Kept
+#: separate rather than widening ``ARN``, because that short id is what
+#: :meth:`~TestAwaitingTheRegistrationTarget.test_coordinates_that_do_not_form_a_target_are_refused_here`
+#: uses to show the refusal, and the two facts would otherwise cancel out.
+TASK_ID = "0123456789abcdef0123456789abcdef"
+RUNTIME_ID = f"{'a' * 32}-1234567890"
+REGISTRABLE_ARN = f"arn:aws:ecs:us-west-2:111122223333:task/crews/{TASK_ID}"
+EXPECTED_TARGET = f"ecs:crews_{TASK_ID}_{RUNTIME_ID}"
+
+
+def _task(last_status: str, *, task_arn: str = REGISTRABLE_ARN, **over: object) -> dict:
+    """One ``DescribeTasks`` entry, as the API shapes it."""
+    entry: dict = {"taskArn": task_arn, "lastStatus": last_status}
+    entry.update(over)
+    return entry
+
+
+def _running_task(*, task_arn: str = REGISTRABLE_ARN) -> dict:
+    return _task(
+        "RUNNING",
+        task_arn=task_arn,
+        containers=[{"name": "crew", "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _stopped_task(stopped_reason: str) -> dict:
+    return _task("STOPPED", stoppedReason=stopped_reason, containers=[])
+
+
+def _crashed_task(stopped_reason: str) -> dict:
+    """STOPPED, but its container ran long enough to be assigned a runtime id.
+
+    The startup-crash shape, and the one ``_stopped_task`` cannot express: ECS
+    keeps reporting ``runtimeId`` for a container that reached RUNNING and then
+    exited, so this is a task that answers every question needed to build a
+    target and is nonetheless unreachable.
+    """
+    return _task(
+        "STOPPED",
+        stoppedReason=stopped_reason,
+        containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _winding_down(last_status: str) -> dict:
+    """A task in one of the states between ``RUNNING`` and ``STOPPED``.
+
+    Billable, so a billing predicate calls it running; still carrying the
+    container's ``runtimeId``, so every field a target needs is readable; and
+    unreachable, because the ENI is being torn down. ``stoppedReason`` is set
+    because ECS records the cause once the stop begins, not once it completes.
+    """
+    return _task(
+        last_status,
+        desiredStatus="STOPPED",
+        stoppedReason="Task stopped by user",
+        containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _never_sleep(_seconds: object) -> None:
+    """A poll sleep that must not happen: these reads end on their first answer."""
+    raise AssertionError("the wait slept when the first read already settled it")
+
+
+def _patch_describe(monkeypatch, answers: list) -> None:
+    """Serve *answers* to successive ``describe_task`` calls, last one repeating.
+
+    Patched at the engine's own read rather than at the AWS chokepoint because
+    what is under test is the POLL -- how many reads it takes and when it stops --
+    and a scripted sequence is the only way to express a task that is
+    PROVISIONING and then RUNNING. ``None`` entries stand for the task ECS no
+    longer lists, which is what ``describe_task`` returns for it.
+    """
+    remaining = list(answers)
+
+    def _describe_task(self, *, task_arn: str, profile: str, region: str):
+        entry = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return None if entry is None else fargate_engine.sighting_from_task(entry)
+
+    monkeypatch.setattr(FargateLaunchEngine, "describe_task", _describe_task)
 
 
 def _marked(tag: str = TAG, **over: object) -> TaskSighting:
@@ -263,16 +350,493 @@ def test_signin_time_identity_center_target_is_a_programming_error_guard() -> No
     assert handle.error == ""
 
 
-def test_register_is_a_silent_no_op() -> None:
-    """``register`` carries no exit criteria; registry visibility is out of scope.
+def test_register_resolves_a_target_and_registers_the_fargate_crew(monkeypatch) -> None:
+    """A launched task lands in the registry, so the crew is switchable at once.
 
-    A raise would fail an otherwise-successful launch, because ``run_launch`` calls
-    the step unconditionally.
+    ``provision`` hands over a task ARN, which the registry cannot address. This
+    asserts the four things the record must carry -- the ECS target composed from
+    the DescribeTasks read, the ``fargate`` method, the port the task definition
+    publishes, and the Fargate provisioner id -- because each one wrong is its own
+    silent failure: a stale target connects to nothing, ``ssm`` is refused by the
+    registry, the EC2 lane's default port forwards to a port the container does
+    not listen on, and the EC2 provisioner id resolves the EC2 engine for a task.
     """
-    assert (
-        FargateLaunchEngine().register(instance_id=ARN, tag=TAG, profile="p", region="us-west-2")
-        is None
+    calls: list[dict] = []
+
+    def _register_instance(target, **kw):
+        calls.append({"target": target, **kw})
+        return "inst-1"
+
+    monkeypatch.setattr(fargate_engine.connect, "register_instance", _register_instance)
+    _patch_describe(monkeypatch, [_running_task()])
+
+    FargateLaunchEngine(_spec()).register(
+        instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
     )
+
+    assert len(calls) == 1, calls
+    assert calls[0]["target"] == EXPECTED_TARGET
+    assert calls[0]["connection_method"] == "fargate"
+    assert calls[0]["remote_port"] == fargate.FRONT_PORT
+    assert calls[0]["provisioner_id"] == FARGATE_PROVISIONER_ID
+    # The id the platform resolves an engine from, so the EC2 default here would
+    # hand a task to the EC2 engine and label it an EC2 stack in the dashboard.
+    assert calls[0]["provisioner_id"] != BUILTIN_PROVISIONER_ID
+    assert TAG in calls[0]["name"]
+    # split_ecs_target is the registry's own reader: a target it rejects would be
+    # refused at reg.add as a traceback about a string nobody typed.
+    assert split_ecs_target(calls[0]["target"]) == (
+        "crews",
+        TASK_ID,
+        RUNTIME_ID,
+    )
+
+
+def test_register_raises_registration_unavailable_when_the_registry_declines(
+    monkeypatch,
+) -> None:
+    """``register_instance`` returns None for BOTH "feature absent" and "write
+    raised". Ignoring it would report the crew as added while it is absent."""
+    monkeypatch.setattr(fargate_engine.connect, "register_instance", lambda *a, **k: None)
+    _patch_describe(monkeypatch, [_running_task()])
+
+    with pytest.raises(lj.RegistrationUnavailable) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    # The message has to carry what a human needs to finish by hand.
+    assert REGISTRABLE_ARN in str(caught.value)
+    assert EXPECTED_TARGET in str(caught.value)
+
+
+def test_register_fails_the_launch_when_the_task_is_not_running(monkeypatch) -> None:
+    """A task that stopped has nothing to register and nothing to tear down.
+
+    The raise is a plain error and NOT :class:`RegistrationUnavailable`, which
+    means "the launch stands, only the row is missing". A stopped task has no
+    running crew behind it, so reporting the launch as launched would leave the
+    job DONE for something unreachable and unbillable.
+    """
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+    _patch_describe(monkeypatch, [_stopped_task("CannotPullContainerError: manifest unknown")])
+
+    with pytest.raises(RuntimeError) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert not isinstance(caught.value, lj.RegistrationUnavailable)
+    assert "CannotPullContainerError" in str(caught.value)
+
+
+def test_register_fails_the_launch_for_a_task_that_crashed_after_starting(monkeypatch) -> None:
+    """The startup-crash path: a container that reached RUNNING keeps its runtime
+    id, so every field a target needs is readable for a task that is already
+    dead. This is the case a runtime-id-first read reports as a good launch."""
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+    _patch_describe(monkeypatch, [_crashed_task("Essential container in task exited")])
+
+    with pytest.raises(RuntimeError) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert not isinstance(caught.value, lj.RegistrationUnavailable)
+    assert "Essential container in task exited" in str(caught.value)
+
+
+def test_register_keeps_a_live_but_unregistered_task_non_fatal(monkeypatch) -> None:
+    """A read that failed says nothing about the task, so the launch stands.
+
+    The counterpart to the two above: the task may be running and billing, and a
+    red card over the launch would hide the crew whose remedy is to add it by
+    hand or tear it down.
+    """
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+
+    def _raise(**_kw):
+        raise AWSError("AccessDeniedException: denied", action="ecs:DescribeTasks")
+
+    monkeypatch.setattr(FargateLaunchEngine, "describe_task", lambda self, **kw: _raise(**kw))
+
+    with pytest.raises(lj.RegistrationUnavailable) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert "AccessDeniedException" in str(caught.value)
+
+
+class TestTheRuntimeIdIsReadFromTheCrewContainer:
+    """``runtimeId`` is the one ECS target field ``RunTask`` does not answer with."""
+
+    def test_it_is_matched_by_container_name_not_position(self) -> None:
+        """A sidecar added to the task definition must not move the crew's channel.
+
+        Position is not identity: ``containers[0]`` would point every registration
+        at the sidecar's runtime id, and the tunnel would forward to whatever that
+        container listens on.
+        """
+        sighting = fargate_engine.sighting_from_task(
+            {
+                "taskArn": REGISTRABLE_ARN,
+                "lastStatus": "RUNNING",
+                "containers": [
+                    {"name": "log-router", "runtimeId": "f" * 32 + "-99"},
+                    {"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID},
+                ],
+            }
+        )
+        assert sighting.runtime_id == RUNTIME_ID
+
+    def test_a_task_with_no_containers_yet_reports_no_runtime_id(self) -> None:
+        """PROVISIONING carries no containers, and absent is not an error."""
+        sighting = fargate_engine.sighting_from_task(
+            {"taskArn": REGISTRABLE_ARN, "lastStatus": "PROVISIONING"}
+        )
+        assert sighting.runtime_id == ""
+
+    def test_a_started_container_without_a_runtime_id_reports_none(self) -> None:
+        """Present-but-empty and absent are the same to the caller: no target."""
+        sighting = fargate_engine.sighting_from_task(
+            {
+                "taskArn": REGISTRABLE_ARN,
+                "lastStatus": "RUNNING",
+                "containers": [{"name": fargate.CREW_CONTAINER_NAME}],
+            }
+        )
+        assert sighting.runtime_id == ""
+
+
+class TestAwaitingTheRegistrationTarget:
+    """The bounded DescribeTasks poll, and a named reason for every way it ends."""
+
+    def test_it_polls_until_the_container_reports_a_runtime_id(self, monkeypatch) -> None:
+        """A Fargate task is PROVISIONING for tens of seconds. Reading once would
+        make registration fail for every launch that is not already warm."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(
+            monkeypatch,
+            [
+                _task("PROVISIONING", containers=[]),
+                _task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}]),
+                _running_task(),
+            ],
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+        # Two waits for three reads: it returns ON the answer, never after a
+        # further sleep, so a task that starts fast costs only the time it took.
+        assert slept == [
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+        ]
+
+    def test_a_container_that_started_then_died_yields_no_target(self, monkeypatch) -> None:
+        """``runtimeId`` outlives the container that had it, so a crashed task
+        still carries one. Composing a target from it would hand the registry a
+        well-formed address for something dead and call the launch connectable."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_crashed_task("Essential container in task exited")])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert "Essential container in task exited" in reason
+        # The runtime id was READ -- the guard is what refuses it, not its absence.
+        assert fargate_engine.sighting_from_task(_crashed_task("x")).runtime_id == RUNTIME_ID
+
+    @pytest.mark.parametrize("status", ["DEACTIVATING", "STOPPING", "DEPROVISIONING"])
+    def test_a_task_on_its_way_down_is_refused_not_registered(self, monkeypatch, status) -> None:
+        """The states between ``RUNNING`` and ``STOPPED`` are billable, keep the
+        container's runtime id, and cannot be connected to: the ENI is being torn
+        down. Asking whether the task is billable admits all three, so the poll has
+        to ask whether it is serving."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_winding_down(status)])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert status in reason
+        # Billable and carrying a runtime id: neither fact makes it reachable.
+        sighting = fargate_engine.sighting_from_task(_winding_down(status))
+        assert sighting.is_running is True
+        assert sighting.runtime_id == RUNTIME_ID
+        assert sighting.is_serving is False
+
+    def test_a_task_told_to_stop_is_refused_while_still_reporting_running(
+        self, monkeypatch
+    ) -> None:
+        """``desiredStatus`` moves first. A task ECS has been told to stop is on its
+        way down even while ``lastStatus`` still says ``RUNNING``, and that stop does
+        not get reversed."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        doomed = _task(
+            "RUNNING",
+            desiredStatus="STOPPED",
+            containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+        )
+        _patch_describe(monkeypatch, [doomed])
+
+        target, _reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+
+    @pytest.mark.parametrize("status", ["PROVISIONING", "PENDING", "ACTIVATING"])
+    def test_a_task_not_serving_yet_is_polled_rather_than_refused(
+        self, monkeypatch, status
+    ) -> None:
+        """The counterpart to the three above, and why one predicate cannot answer
+        both: these are also not serving, but they are worth waiting for. Refusing
+        them would fail a launch whose crew is seconds from coming up."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        # The state persists, so the poll can only end on the budget.
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_task(status, containers=[])),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is True
+        assert status in reason
+        assert sum(slept) == fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+
+    def test_a_stopped_task_ends_the_wait_and_quotes_ecs(self, monkeypatch) -> None:
+        """The cause lives in ``stoppedReason`` -- an image it could not pull, a
+        secret it could not read -- so it is carried, not summarised away."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_stopped_task("ResourceInitializationError: secret")])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert "ResourceInitializationError: secret" in reason
+
+    def test_a_stopped_task_with_no_reason_still_says_so(self, monkeypatch) -> None:
+        """ECS does not always give one, and an empty tail would read as truncated."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_stopped_task("")])
+
+        _target, reason, _alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert "ECS gave no reason" in reason
+
+    def test_a_task_seen_and_then_gone_is_not_rounded_to_a_state(self, monkeypatch) -> None:
+        """``describe_task`` answers None for a task ECS has dropped. Once a read
+        has SEEN the task, that absence is a disappearance: there is no crew left
+        to register, and guessing 'running' would write a dead target."""
+        slept: list[float] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(
+            monkeypatch,
+            [_task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}]), None],
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is False
+        assert "no longer lists" in reason
+        # One wait: the PENDING read was polled through, the absence ended it.
+        assert slept == [fargate_engine.REGISTER_TARGET_POLL_SECONDS]
+
+    def test_a_task_absent_from_the_first_reads_is_polled_not_called_gone(
+        self, monkeypatch
+    ) -> None:
+        """``RunTask`` and ``DescribeTasks`` are eventually consistent, so a task
+        accepted moments ago is legitimately missing from the first read. Calling
+        that gone fails the launch of a task that goes on to start and bill."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(monkeypatch, [None, None, _running_task()])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+        # Two absences were waited through, not returned on.
+        assert slept == [
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+        ]
+
+    def test_a_task_ecs_never_listed_expires_as_may_come_up(self, monkeypatch) -> None:
+        """A task no read ever saw is not a task that died. It ends on the budget,
+        with ``alive`` True, because the remedy is to look again rather than to
+        treat the launch as failed over a task that may be billing."""
+        slept: list[float] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(monkeypatch, [None])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is True
+        assert "did not list this task" in reason
+        # Not the phrasing used for a task that WAS listed and stayed starting.
+        assert "no longer lists" not in reason
+        # It polled the whole budget rather than returning on the first absence.
+        assert sum(slept) >= fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+
+    def test_the_last_sleep_is_cut_to_the_remaining_budget(self, monkeypatch) -> None:
+        """The ceiling is elapsed time, so each ``DescribeTasks`` round trip spends
+        it. Sleeping a full poll interval regardless would push the documented
+        180s past itself by one round trip per poll."""
+        slept: list[float] = []
+        clock = {"now": 0.0}
+        read_cost = 1.0
+
+        def _advance(seconds: float) -> None:
+            slept.append(seconds)
+            clock["now"] += seconds
+
+        def _slow_read(_self, *, task_arn: str, profile: str, region: str):
+            # The latency the old per-iteration counter could not see.
+            clock["now"] += read_cost
+            return fargate_engine.sighting_from_task(
+                _task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}])
+            )
+
+        monkeypatch.setattr(fargate_engine, "_sleep", _advance)
+        monkeypatch.setattr(fargate_engine, "_monotonic", lambda: clock["now"])
+        monkeypatch.setattr(FargateLaunchEngine, "describe_task", _slow_read)
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, alive) == ("", True)
+        assert str(fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS) in reason
+        # Waiting never overspends the budget, and the final wait is the remainder
+        # rather than another whole interval.
+        budget = fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+        assert sum(slept) <= budget
+        assert slept[-1] < fargate_engine.REGISTER_TARGET_POLL_SECONDS
+        # The only overshoot is the read in flight when the budget ran out. A
+        # per-iteration counter would instead have slept a full interval per poll
+        # and overshot by one read latency for EVERY poll.
+        assert clock["now"] <= budget + read_cost
+        assert len(slept) * read_cost > read_cost, "the poll must have taken several reads"
+
+    def test_a_denied_read_is_reported_as_itself(self, monkeypatch) -> None:
+        """An AccessDenied on ecs:DescribeTasks is a permission to fix, not a
+        task state. The AWS error names the caller ARN, so it is carried."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+
+        def _raise(**_kw):
+            raise AWSError(
+                "AccessDeniedException: user arn:aws:iam::1:user/x", action="ecs:DescribeTasks"
+            )
+
+        monkeypatch.setattr(FargateLaunchEngine, "describe_task", lambda self, **kw: _raise(**kw))
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert "AccessDeniedException" in reason
+        # A read that did not happen says nothing about the task. Calling it dead
+        # here would fail a launch whose crew is running and billing.
+        assert alive is True
+
+    def test_the_budget_is_a_ceiling_and_its_expiry_is_named(self, monkeypatch) -> None:
+        """A task still starting at the budget is the one case where looking again
+        later works, so the reason says that instead of implying the task failed."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        # Always PROVISIONING: the poll can only end on the budget.
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(
+                _task("PROVISIONING", containers=[])
+            ),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is True
+        assert str(fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS) in reason
+        assert "Remote crew" in reason
+        # Bounded, and bounded by the documented budget rather than by a count
+        # that happens to match it.
+        assert sum(slept) == fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+        assert set(slept) == {fargate_engine.REGISTER_TARGET_POLL_SECONDS}
+
+    def test_an_arn_naming_no_cluster_falls_back_to_the_spec(self, monkeypatch) -> None:
+        """The short ARN format carries no cluster. The spec's is the only other
+        source, and the read must still be attempted rather than refused."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        short = f"arn:aws:ecs:us-west-2:111122223333:task/{TASK_ID}"
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_running_task(task_arn=short)),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=short, profile="p", region="us-west-2"
+        )
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+
+    def test_coordinates_that_do_not_form_a_target_are_refused_here(self, monkeypatch) -> None:
+        """The registry requires a 32-hex task id. A cluster or id that cannot be
+        read back is refused where the reason can name the parts."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        # ARN with a SHORT task id: well-formed as an ARN, not as an ECS target.
+        stumpy = "arn:aws:ecs:us-west-2:111122223333:task/crews/1111111111111111"
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_running_task(task_arn=stumpy)),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=stumpy, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is True
+        assert "1111111111111111" in reason
 
 
 # ── Ownership: the marker gates, the identifier names ────────────────────────
@@ -1111,6 +1675,111 @@ def test_teardown_stops_our_task_and_confirms(monkeypatch) -> None:
     assert double.stops == [ARN]
 
 
+def _our_registrable_task(status: str = "RUNNING") -> dict:
+    """``_our_task`` on the ARN whose task id the REGISTRY can address.
+
+    The shared ``ARN`` fixture's id is sixteen hex characters, so no ECS target
+    built from it survives ``split_ecs_target`` and no registry row can name it.
+    """
+    return {
+        "taskArn": REGISTRABLE_ARN,
+        "startedBy": fargate_engine._started_by_for(TAG),
+        "lastStatus": status,
+        "tags": [
+            {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+            {"key": LAUNCH_TAG_KEY, "value": TAG},
+        ],
+    }
+
+
+def test_teardown_removes_the_stopped_tasks_registry_row(monkeypatch, tmp_path) -> None:
+    """``register`` is this lane's last launch step, so a cancel observed just
+    after it unwinds through teardown with the row already written. Stopping the
+    task and leaving the row offers a crew whose target resolves to nothing, and
+    nothing else removes it."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Kiro Crew Cloud (kc-a1b2c3)",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="doomed",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+
+    assert double.stops == [REGISTRABLE_ARN]
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == []
+
+
+def test_teardown_leaves_another_tasks_row_alone(monkeypatch, tmp_path) -> None:
+    """The removal is keyed on the task it stopped, so a sibling crew in the same
+    cluster keeps its record."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    other_task_id = "f" * 32
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Doomed",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="doomed",
+    )
+    reg.add(
+        name="Sibling",
+        ssm_target=f"ecs:crews_{other_task_id}_{RUNTIME_ID}",
+        connection_method="fargate",
+        instance_id="sibling",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == ["sibling"]
+
+
+def test_teardown_does_not_confirm_when_the_row_could_not_be_removed(monkeypatch, tmp_path) -> None:
+    """A confirmation says nothing of ours may remain, and a listed crew addressing
+    a stopped task is something of ours. The task did stop, so returning True would
+    tell the operator the cleanup is finished while a row they cannot see the cause
+    of is still there."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.cloud import connect as connect_mod
+
+    monkeypatch.setattr(
+        connect_mod, "unregister_ecs_task", lambda *_a, **_k: connect_mod.UNREGISTER_FAILED
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+
+    # The stop still happened -- this is a narrower miss than an unstopped task.
+    assert double.stops == [REGISTRABLE_ARN]
+    assert confirmed is False
+
+
+def test_teardown_confirms_when_there_was_no_row_to_remove(monkeypatch, tmp_path) -> None:
+    """An absent row is not a failure: a task registered by nothing, or already
+    removed by hand, leaves nothing behind, so the confirmation stands."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == [REGISTRABLE_ARN]
+
+
 def test_teardown_over_an_empty_cluster_confirms_and_stops_nothing(monkeypatch) -> None:
     double = _EcsDouble()
     _patch_aws(monkeypatch, double)
@@ -1709,6 +2378,32 @@ def _aged_task(
     if started_at is not None:
         task["startedAt"] = started_at
     return task
+
+
+def test_reap_removes_the_expired_tasks_registry_row(monkeypatch, tmp_path) -> None:
+    """This sweep is the path that reaches a REGISTERED task in ordinary operation:
+    it runs on every provision, so a crew that outlives the default TTL is stopped
+    by the next launch. Leaving its row puts a dead crew in the list, and the TTL
+    sweep is not a teardown, so nothing else comes along to prune it."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Expired",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="expired",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(REGISTRABLE_ARN)]
+    _patch_aws(monkeypatch, double)
+
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+
+    assert plan.stop == (REGISTRABLE_ARN,)
+    assert double.stops == [REGISTRABLE_ARN]
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == []
 
 
 def test_reap_stops_an_expired_task_through_the_stop_channel(monkeypatch) -> None:
