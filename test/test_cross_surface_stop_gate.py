@@ -65,6 +65,27 @@ def _provider_factory():
     return _factory
 
 
+async def _until_parked(mgr: SessionManager, key: str, *, deadline: float = 5.0) -> None:
+    """Yield until some task is blocked on *key*'s held lease.
+
+    ``asyncio.Semaphore`` keeps its blocked acquirers in ``_waiters`` (``None``
+    or an empty deque while nobody waits); polling it is the one observable
+    that says "the claimant has reached the semaphore", which is what the
+    replay-gap scenarios need to be true BEFORE the reset lands. A wall-clock
+    sleep cannot promise that on a slow runner. Bounded so a claimant that
+    never arrives fails the test loudly instead of hanging it.
+    """
+    loop = asyncio.get_running_loop()
+    stop = loop.time() + deadline
+    while loop.time() < stop:
+        session = mgr._sessions.get(mgr._fold_key(key))
+        waiters = getattr(getattr(session, "semaphore", None), "_waiters", None)
+        if waiters:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"no claimant parked on {key!r} within {deadline}s")
+
+
 class TestStopTurnRecordsASessionScopedStop:
     @pytest.mark.asyncio
     async def test_stop_turn_bumps_the_count_before_the_provider_cancel_is_awaited(self, cfg):
@@ -282,12 +303,22 @@ class TestStopTurnRecordsASessionScopedStop:
             mgr.release(LINKED_KEY)
 
         waiter = asyncio.create_task(waiting_message())
-        await asyncio.sleep(0.05)
+        # The scenario is "a claimant ALREADY parked on the held lease when the
+        # reset lands". A wall-clock sleep only approximates that: on a loaded
+        # Windows runner the task may not have reached the semaphore in 50 ms,
+        # and a claimant that has not parked yet is a different scenario with a
+        # different (and legitimate) outcome. Wait for the park itself.
+        await _until_parked(mgr, LINKED_KEY)
 
         mgr.open_replay_gap(LINKED_KEY)
         await mgr.reset(LINKED_KEY)
         await mgr.get_or_create(LINKED_KEY)  # the replay's successor, held
         order.append("replay")
+        # Give the woken waiter every chance to run: it must be blocked on the
+        # open gap, not merely slow. A few loop iterations plus a short sleep
+        # is an absence check, so it stays generous rather than tight.
+        for _ in range(20):
+            await asyncio.sleep(0)
         await asyncio.sleep(0.05)
         assert order == ["replay"], "the woken waiter waits behind the open gap"
         mgr.release(LINKED_KEY)
