@@ -391,6 +391,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.apps.event_bus": "build_broadcast_fn",
     "kiro_crew.apps.execution": "builtin_app_agents builtin_app_mcp_servers builtin_app_names",
     "kiro_crew.apps.spawn_sdk": "build_spawn_impl",
+    "kiro_crew.background_commands": "BackgroundCommandService",
     "kiro_crew.browser_harness.supervisor": "get_supervisor",
     "kiro_crew.config": "live",
     "kiro_crew.config.paths": "data_home",
@@ -410,6 +411,10 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.chat_utils_injected_rows": "WORKFLOW_FOLLOWUP_KIND",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",
+    "kiro_crew.dashboard.chat_utils": "BACKGROUND_COMMAND_KIND",
+    "kiro_crew.dashboard.chat_runner": (
+        "_parked_queue_drain_admitted _start_next_queued_turn idle_slot_admits_drain"
+    ),
     "kiro_crew.remote_control.guard": "_uninstall_guard install_for_relay",
     "kiro_crew.dashboard.lts_gate_middleware": (
         "lts_gate_middleware_for lts_login_source install_lts_gate"
@@ -438,7 +443,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
-        "api_workflow_author api_workflow_definition_get api_workflow_definition_remove "
+        "api_workflow_author api_workflow_background_run api_workflow_definition_get "
+        "api_workflow_definition_remove "
         "api_workflow_definition_run api_workflow_definition_update api_workflow_definitions "
         "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
@@ -448,8 +454,11 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
     "kiro_crew.dashboard.routes.system": "RELEASED_BUILTIN_PACKAGES",
     "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
+    "kiro_crew.dashboard.session_control": "containment_meta",
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
-    "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
+    "kiro_crew.dashboard.workflow_inject": (
+        "await_open_tabs deliver_command_outcome inject_bound_workflow_result"
+    ),
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
     "kiro_crew.decisions": "impl_systemone local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
@@ -494,7 +503,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 149
+    assert len(expected) == 158
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

@@ -59,9 +59,12 @@ class TestMerge:
         merged = _merged({"mcpServers": {"creds": {"disabled": True}}})
         assert merged["mcpServers"]["creds"] == {**CREDS, "disabled": True}
         assert "@creds/list" not in merged["allowedTools"]
-        # The other base servers are untouched.
+        # The other base servers are untouched. The base's whole-server cron grant is
+        # withheld by the never-auto-approve rule (it covers ``background_run``), not
+        # by the switch-off, so the cron server itself is still mounted as declared.
         assert merged["mcpServers"]["kirocrew-core"] == CORE
-        assert "@kirocrew-cron" in merged["allowedTools"]
+        assert merged["mcpServers"]["kirocrew-cron"] == CRON
+        assert "@kirocrew-cron" not in merged["allowedTools"]
 
     def test_the_switch_off_never_brings_the_files_transport(self):
         merged = _merged({"mcpServers": {"creds": {"command": "evil", "disabled": True}}})

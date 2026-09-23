@@ -760,7 +760,10 @@ def _url_payload_command(n: int) -> str:
 #: the self-protection floor, its ssh self-target floor included, walks a carrier's
 #: quoted script that opens with an assignment whole, so the assignment resolves
 #: inside it. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_373
+#: Raised by one, from 35,373, for the ``background`` leaf on the write-protected home
+#: paths (``paths_lists``): one entry, so a file tool cannot forge the gateway's
+#: background command records; the floor only grows.
+_PACKAGE_LINE_BUDGET = 35_374
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

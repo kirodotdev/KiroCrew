@@ -480,7 +480,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #: and no-follow like ``kas-mcp-launch`` so an agent cannot choose what a later
     #: bridge connects as. Each snapshot is written by a rename INSIDE it, so its own
     #: inode stays the same; at the data-home root, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 327, "cc": 334, "strict": 335}
+    #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    EXPECTED: dict[str, int] = {"standard": 330, "cc": 337, "strict": 338}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

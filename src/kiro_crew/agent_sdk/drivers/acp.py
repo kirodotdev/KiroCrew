@@ -42,6 +42,9 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# Defined beside their matcher; re-exported here for the writers that narrow.
+from kiro_crew.agent_sdk.mcp_refs import NEVER_AUTO_APPROVED, reaches_never_auto_approved
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
@@ -74,6 +77,9 @@ __all__ = [
     "kas_start_was_refused",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
+    "narrowed_grant",
+    "NEVER_AUTO_APPROVED",
+    "reaches_never_auto_approved",
     "provider_error_client",
     "provider_label",
     "provider_label_for_backend",
@@ -462,6 +468,41 @@ def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dic
 
     derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
     return derived if derived is not None else {"rules": []}
+
+
+def narrowed_grant(entry: str) -> list[str] | None:
+    """The grants that replace *entry*, or ``None`` when it covers no withheld ref.
+
+    A covering grant (``@kirocrew-cron``, ``@kirocrew-cron/*``, ``*``) becomes the
+    ``@server/verb`` grants it reaches among the server's own declared tools, minus
+    the withheld ones: the same auto-approve less ``background_run``. The verbs come
+    from the declaration ``tools/list`` serves (``managed_tool_names_for_policy``), so
+    a verb added later joins on the next build, as the covering grant would have let
+    it. An exact or verb-glob grant of a withheld ref reaches no other verb and is
+    dropped. An unreadable declaration substitutes nothing (fail closed): the
+    covering grant goes and any per-verb grants beside it stand.
+    """
+    if not reaches_never_auto_approved(entry):
+        return None
+    from kiro_crew import mcp_discovery_managed
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    out: list[str] = []
+    servers = dict.fromkeys(r[1:].partition("/")[0] for r in NEVER_AUTO_APPROVED)
+    for server in servers:
+        verbs = mcp_discovery_managed.managed_tool_names_for_policy(server)
+        if verbs is None:
+            logger.warning(
+                "cannot read @%s's tools; withholding %s whole rather than narrowing it",
+                server,
+                entry,
+            )
+            continue
+        for verb in verbs:
+            sub = f"@{server}/{verb}"
+            if entry_reaches(entry, sub) and not reaches_never_auto_approved(sub):
+                out.append(sub)
+    return list(dict.fromkeys(out))
 
 
 def _rule_label(rule: dict) -> str:

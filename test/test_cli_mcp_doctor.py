@@ -18,6 +18,13 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 
+def _cron_verbs() -> list[str]:
+    """The cron server's declared tools, in the order doctor mints them."""
+    from kiro_crew.mcp_discovery_managed import managed_tool_names_for_policy
+
+    return managed_tool_names_for_policy("kirocrew-cron") or []
+
+
 class TestDoctorMcpTools:
     """Tests for the `_doctor_mcp_tools` helper — the MCP section of doctor.
 
@@ -147,7 +154,9 @@ class TestDoctorMcpTools:
         assert "Auto-fixed agent config" in out
         updated = json.loads(agent_path.read_text(encoding="utf-8"))
         assert updated["tools"] == ["@kirocrew-cron", "@kirocrew-core"]
-        assert updated["allowedTools"] == ["@kirocrew-cron", "@kirocrew-core"]
+        # The cron grant is minted per verb: ``background_run`` is never auto-approved.
+        cron = [f"@kirocrew-cron/{v}" for v in _cron_verbs() if v != "background_run"]
+        assert updated["allowedTools"] == [*cron, "@kirocrew-core"]
 
     def test_auto_fix_skips_write_when_shared_home_declined(self, tmp_path, capsys):
         """An instance that must not own the shared agent home reports the
@@ -393,7 +402,10 @@ class TestDoctorMcpTools:
         assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-computer/")]
         # The other managed servers are unaffected — the carve-out is scoped.
         assert "@kirocrew-core" in updated["allowedTools"]
-        assert "@kirocrew-cron" in updated["allowedTools"]
+        assert "@kirocrew-cron/cron_list" in updated["allowedTools"]
+        # Narrowed, never whole: no minted entry may cover ``background_run``.
+        assert "@kirocrew-cron" not in updated["allowedTools"]
+        assert "@kirocrew-cron/background_run" not in updated["allowedTools"]
 
     def test_auto_fix_never_blanket_allows_mediated_secret(self, tmp_path, capsys):
         """Doctor never pre-approves ``@kirocrew-secrets``, even when it is granted.
