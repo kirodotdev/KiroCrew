@@ -167,7 +167,15 @@ export const CHUNK_BUDGETS = {
   // percent of headroom fails on the next feature's ordinary strings rather than
   // on the new library it exists to catch. Back to the 5% convention over the
   // measured size.
-  t: 951 * KB, // measured 905.8 KB on this branch (~5% headroom)
+  // The crew board adds to the same chunk and needs no further raise. Attribution
+  // measured the same way: reverting ONLY the 13 files under
+  // `website/src/i18n/locales/` to this branch's merge base and rebuilding moves
+  // the chunk between 929,350 B and 930,960 B, so this branch owns 1,610 B of it --
+  // 35 keys of product copy across the 12 shipped catalogs plus the generated
+  // `en-XA` pseudo-locale, which roughly doubles each string's byte cost. It adds
+  // no dependency, and the ceiling above still clears the combined size with room
+  // to spare.
+  t: 951 * KB, // ~5% headroom over the measured size
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

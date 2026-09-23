@@ -33,6 +33,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
 import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
 import type { TaskDetailResponse, TasksListResponse, TasksSummary } from './tasks'
+import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from './crewBoard'
 import { ApiError, friendlyErrText } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
@@ -3169,6 +3170,28 @@ export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
+  /**
+   * The Crew page's work-item board for ONE conductor.
+   *
+   * A MASKED projection over the work ledger, deliberately not the conductor's
+   * own `/api/work-ledger` route: that path is in the gateway's strict-internal
+   * list (MCP callers only) and its rows carry `worker_session_key`, which may
+   * not reach a browser. Spelled `/api/crew-board` rather than under
+   * `/api/work-ledger/` because that list matches by PREFIX, so a sub-path would
+   * silently inherit MCP-only auth and 403 every call from here.
+   */
+  crewBoard: (conductor: string) =>
+    get(`/api/crew-board?conductor=${encodeURIComponent(conductor)}`).then(j) as Promise<WorkBoardResponse>,
+  /**
+   * Act on one ORPHANED item. The worker session key is never sent and never
+   * returned: the server resolves it from the store, which is what lets this call
+   * stop a session the masked read deliberately does not name. A non-orphaned
+   * item answers 409, so a click made from a stale poll is refused rather than
+   * quietly doing nothing.
+   */
+  crewBoardAction: (conductor: string, itemId: string, action: CrewBoardAction) =>
+    post('/api/crew-board/action', { conductor, item_id: itemId, action })
+      .then(j) as Promise<CrewBoardActionResult>,
   sessionStorage: () => get('/api/system/session-storage').then(j) as Promise<SessionStorageReport>,
   sessionStorageCleanup: (olderThanDays: number, dryRun = false) =>
     post('/api/system/session-storage/cleanup', { older_than_days: olderThanDays, dry_run: dryRun })

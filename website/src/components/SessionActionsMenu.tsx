@@ -6,6 +6,7 @@ import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
 import ImportSessionItem from './ImportSessionItem'
+import CrewBoardMenuItem from './CrewBoardMenuItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
@@ -83,7 +84,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -181,6 +182,11 @@ export default function SessionActionsMenu({
           <PanelTop size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.open_in_new_tab')}
         </Item>
       ),
+      // This session's work-item board, when it conducts one. Sits with the
+      // other "show me this session somewhere" entries because that is what it
+      // is: the same session viewed as the items it dispatched. Self-hiding —
+      // a session that owns no work ledger gets no entry, which is most of them.
+      <CrewBoardMenuItem key="crew-board" slotKey={slotKey} Item={Item} />,
       // Pop out to a dedicated browser window — or, if already out, focus /
       // bring it back. Lets you keep typing to one session while looking at an
       // artifact or another view in the main window. Inside the popout window

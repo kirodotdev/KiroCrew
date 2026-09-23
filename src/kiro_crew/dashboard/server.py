@@ -1753,6 +1753,28 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
     )
+    # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
+    # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
+    # caller, so it stays on cookie auth — the same split the agent-panel surface
+    # draws between its MCP write and its browser read. Rows are masked of
+    # ``worker_session_key``; see the module.
+    #
+    # Spelled "/api/crew-board" and NOT "/api/work-ledger/board" on purpose. That
+    # list matches ``path == p or path.startswith(p + "/")`` and already holds
+    # "/api/work-ledger" to cover "/record", "/brief" and "/report" — so a path
+    # under that prefix would inherit MCP-only auth and 403 every browser call.
+    # Keeping it off the prefix means the strict list needs no exception, which is
+    # not a mechanism a security matcher should have to grow for a read route.
+    app.router.add_get("/api/crew-board", _deferred("work_ledger_board", "api_work_ledger_board"))
+    # The action half. Cookie-authed like the read above and for the same reason:
+    # its principal is the dashboard owner, who already stops any session from the
+    # Stop button. It resolves the worker session key from the store and never
+    # returns it, which is what lets the page offer an affordance whose target the
+    # masked read deliberately withholds.
+    app.router.add_post(
+        "/api/crew-board/action",
+        _deferred("work_ledger_board", "api_work_ledger_board_action"),
+    )
     # The write half of the agent panel surface -- MCP-only, like the ledger
     # above. The READ, "/api/members/{slug}/panel", is registered here too and
     # stays on cookie auth because a browser is its only caller.

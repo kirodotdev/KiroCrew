@@ -1,0 +1,123 @@
+{
+  "conductor": {
+    "schema": 1,
+    "slot_key": "chat-1888-orphan-conductor",
+    "goal": "Land the ledger wake hook before the freeze",
+    "round": 0,
+    "depth": 0,
+    "parent_item": null,
+    "created_at": "2026-09-23T03:00:35+00:00"
+  },
+  "conductor_alive": "closed",
+  "items": [
+    {
+      "schema": 1,
+      "item_id": "it_9755438f",
+      "title": "Rebase the wake hook onto the rewritten append path",
+      "acceptance": {
+        "kind": "human_approval"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "",
+      "round": 0,
+      "fails": 0,
+      "status": "question",
+      "summary": "Two call sites now append under the lock. Which one owns the wake?",
+      "artifacts": {
+        "branch": "feat/wake-hook-rebase"
+      },
+      "pr": null,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": true,
+      "stale": false,
+      "acceptance_concrete": true,
+      "events": [
+        {
+          "id": "4cc5cd5046f1c1c6",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_9755438f",
+          "kind": "create",
+          "status": null,
+          "text": "Rebase the wake hook onto the rewritten append path"
+        },
+        {
+          "id": "f91c7b2c066a08b3",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_9755438f",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "011648c5a1f34240",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_9755438f",
+          "kind": "report",
+          "status": "question",
+          "text": "Two call sites now append under the lock. Which one owns the wake?"
+        }
+      ],
+      "alive": "running",
+      "outstanding": true,
+      "terminal": false
+    },
+    {
+      "schema": 1,
+      "item_id": "it_bebb4c2c",
+      "title": "Retire the duplicated append helper",
+      "acceptance": {
+        "kind": "human_approval"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "",
+      "round": 0,
+      "fails": 0,
+      "status": "progress",
+      "summary": "Helper inlined at both call sites; the old one is unreferenced now.",
+      "artifacts": {
+        "branch": "feat/retire-append-helper"
+      },
+      "pr": null,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": true,
+      "stale": false,
+      "acceptance_concrete": true,
+      "events": [
+        {
+          "id": "2a230303d30b4eb4",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bebb4c2c",
+          "kind": "create",
+          "status": null,
+          "text": "Retire the duplicated append helper"
+        },
+        {
+          "id": "ee9857fcec8f557c",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bebb4c2c",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "ce7666a995a4a5b9",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bebb4c2c",
+          "kind": "report",
+          "status": "progress",
+          "text": "Helper inlined at both call sites; the old one is unreferenced now."
+        }
+      ],
+      "alive": "closed",
+      "outstanding": false,
+      "terminal": false
+    }
+  ],
+  "take_over_available": false
+}
