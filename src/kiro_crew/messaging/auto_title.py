@@ -281,12 +281,17 @@ class RecordPin(NamedTuple):
 async def pin_record(conv_log: Any, session_key: str) -> RecordPin:
     """Pin the record a naming turn is about to be started for.
 
-    Callers MUST call this BEFORE scheduling the turn, adjacent to
-    :func:`try_claim`. Reading it inside the scheduled task instead leaves one
-    event-loop scheduling tick between the claim and the pin, and a session key
-    is derived from the thread rather than from the record, so a deletion and a
-    re-message landing in that tick pin the REPLACEMENT -- after which the guard
-    matches and the replacement receives the deleted conversation's title.
+    Callers MUST call this BEFORE scheduling the turn, and a caller that holds a
+    per-session permit MUST call it before releasing that permit -- not merely
+    adjacent to :func:`try_claim`. Reading it inside the scheduled task leaves one
+    event-loop scheduling tick between the claim and the pin; reading it after the
+    permit is released leaves a far wider one, because a queued turn takes the
+    permit and can delete and re-mint the record while the released turn is still
+    finishing its I/O. A session key is derived from the thread rather than from
+    the record, so a deletion and a re-message landing in either window pin the
+    REPLACEMENT -- after which the guard matches and the replacement receives the
+    deleted conversation's title. Holding the permit is what makes the read
+    exclusive; being next to the claim is not.
 
     ``maybe_auto_title`` therefore takes the pin as a required argument and does
     not read it itself. There is deliberately no default: a default would let a

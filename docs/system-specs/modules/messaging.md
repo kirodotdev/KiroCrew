@@ -1830,20 +1830,32 @@ default install no Slack session was ever LLM-titled.
   channel import; a channel with no renameable conversation omits it and still
   gets the transcript title. `conv_log` may be `None`.
 - **`pin` is REQUIRED and comes from the CALLER**, which takes it with
-  `pin_record(conv_log, session_key)` adjacent to `try_claim`, before the naming
-  task is fired. It is a `RecordPin(state, identity)`: the record's existence —
+  `pin_record(conv_log, session_key)` before the naming task is fired and, when the
+  caller holds a per-session permit, before that permit is RELEASED. It is a `RecordPin(state, identity)`: the record's existence —
   `RECORD_PRESENT`, `RECORD_ABSENT` or `RECORD_UNKNOWN`, read through
   `get_metadata_status` so an unreadable record is not mistaken for a deleted one
   — paired with the record's creation stamp, because a state alone cannot tell
-  the record apart from a replacement. Reading the pin inside the scheduled task
-  instead leaves one event-loop tick between the claim and the pin, and a channel
+  the record apart from a replacement. A channel
   session key is derived from the THREAD rather than from the record, so a
-  deletion plus a re-message landing in that tick mints a NEW record under the
-  SAME key, pins the replacement, and writes the deleted conversation's title
-  onto it. There is deliberately no default, so a call site added later cannot
+  deletion plus a re-message landing in either window below mints a NEW record
+  under the SAME key, pins the replacement, and writes the deleted conversation's
+  title onto it. There is deliberately no default, so a call site added later cannot
   inherit that window silently. A `conv_log` of `None` has no record to pin and
   pins UNKNOWN. The persisted guard `_untitled_and_still_ours` re-checks both
   halves inside the write's own lock, where ABSENT and UNKNOWN both refuse.
+- **Two windows, not one.** Reading the pin inside the scheduled task leaves one
+  event-loop tick between the claim and the pin. Reading it after the permit is
+  released leaves a much wider one: a queued turn takes that permit and can delete
+  and re-mint the record while the released turn is still finishing its channel
+  I/O. Holding the permit is what makes the read exclusive; adjacency to
+  `try_claim` alone does not.
+- **An ABSENT permit-held pin is re-read once the turn's own row has landed.**
+  Slack's native path holds the permit until before it writes this turn's
+  transcript row, so a key whose record does not exist yet reads ABSENT under the
+  permit. An absent record has no replacement it could be confused with, so that
+  one state is re-pinned at the scheduling site, which is what keeps a brand-new
+  conversation nameable from its first exchange. PRESENT is never re-read: that is
+  the identity a replacement would overwrite.
 - **The claim is shared, and it is check-and-mark in ONE synchronous step.**
   `try_claim(session_key)` is called by the caller *before* it fires the task, so
   two turns racing — including two turns on two different channels that resolved

@@ -618,27 +618,26 @@ class TestDeletedDuringTheTurn:
             assert claim_at != -1, f"{relative}: no try_claim call found"
             assert pin_at < claim_at, f"{relative}: claims before it pins"
 
-    def test_every_scheduling_site_persists_before_it_pins(self):
+    def test_every_permitless_scheduling_site_persists_before_it_pins(self):
         """A pin taken before the turn's own write can only ever read ABSENT.
 
         The record the pin reads is the one this turn's persist mints, so pinning
         first makes a new conversation's first pin ABSENT, which the guard refuses
         -- costing the first exchange its generated name on every new thread. Both
-        Slack tails always persisted first; Telegram pinned first and was reordered
-        to match, so all three sites now agree and an unpinnable record means a
-        record that is genuinely gone.
+        dispatch tails persist first, so an unpinnable record there means a record
+        that is genuinely gone.
 
-        Asserted on the source for the same reason as the sibling above: the
-        ordering lives in three large streaming tails and no double reproduces it.
-        Each token below is the tail's OWN persist -- the last occurrence in the
-        file -- so a title block moved back above it reads as a pin that precedes
-        the write.
+        The Slack native tail is excluded because it holds a per-session permit
+        that it releases BEFORE this persist, so a pin placed after the write is
+        not exclusive: the sibling test below states the rule that site obeys
+        instead, and it keeps the first exchange nameable by re-reading ABSENT.
+
+        Asserted on the source because the ordering lives in large streaming tails
+        and no double reproduces it. Each token below is the tail's OWN persist --
+        the last occurrence in the file -- so a title block moved back above it
+        reads as a pin that precedes the write.
         """
         sites = {
-            "slack/handler.py": (
-                "_turn_row_ts = await save_conversation_turn_off_loop(",
-                "conversation_log, session_key",
-            ),
             "slack/transport_dispatch.py": (
                 "await save_conversation_turn_off_loop(",
                 "conversation_log, session_key",
@@ -660,6 +659,67 @@ class TestDeletedDuringTheTurn:
             assert persist_at != -1, f"{relative}: no persist call found"
             assert pin_at != -1, f"{relative}: no pin_record call found"
             assert persist_at < pin_at, f"{relative}: pins before it persists"
+
+    def test_the_slack_tail_pins_while_it_still_holds_the_permit(self):
+        """The Slack tail's pin must precede the permit release, not just the claim.
+
+        That tail releases the per-session permit and then spends several Slack
+        round-trips finishing the turn before it reaches the title block. A queued
+        turn takes the released permit inside that span, so a delete plus a
+        re-message can retire this key's record and mint a replacement under the
+        same thread-derived key. A pin read after the release captures the
+        REPLACEMENT, the guard matches it, and the title generated from this turn
+        names a conversation it never ran in. Only a read taken while the permit is
+        held is exclusive.
+
+        Asserted on the source: the release and the title block sit hundreds of
+        lines apart in one streaming tail, the window needs a real second turn
+        interleaving with released-permit I/O, and no double in this repository
+        reproduces that. The ordering is invisible to every behavioural test, which
+        is exactly why it needs a structural one.
+
+        The anchor is the verdict step rather than any ``_release_permit()`` text.
+        Earlier releases in the file belong to paths that return before the title
+        block, and the last one trails it, so neither bounds the window. The
+        verdict step is where the permit is released on the path that reaches the
+        title block -- and on the deferred-OPTIONS path the release is later still,
+        so a pin above the verdict step is held on both.
+        """
+        package_root = os.path.dirname(os.path.dirname(auto_title.__file__))
+        with open(os.path.join(package_root, "slack/handler.py"), encoding="utf-8") as handle:
+            body = handle.read()
+        code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+        pin_at = code.find("auto_title.pin_record(conversation_log, session_key)")
+        verdict_at = code.find("_options_verdict_deferred = bool(")
+        persist_at = code.rfind("_turn_row_ts = await save_conversation_turn_off_loop(")
+        assert pin_at != -1, "no pin_record call found"
+        assert verdict_at != -1, "no verdict step found"
+        assert persist_at != -1, "no persist call found"
+        assert pin_at < verdict_at, "the tail releases the permit before it pins"
+        assert pin_at < persist_at, "the permit-held pin must precede the turn's own write"
+
+    def test_the_slack_tail_rereads_only_an_absent_pin(self):
+        """Re-reading the pin is confined to the one state that cannot be confused.
+
+        Pinning under the permit means a key whose record has not been minted yet
+        reads ABSENT, because that tail persists this turn's row after the release.
+        Re-reading ABSENT once the row has landed is what keeps a brand-new
+        conversation nameable from its first exchange, and it is safe because a
+        record that does not exist has no replacement it could be mistaken for.
+
+        PRESENT must never be re-read: that identity is precisely what a
+        replacement would overwrite, so widening this condition reopens the window
+        the permit-held pin closes.
+        """
+        package_root = os.path.dirname(os.path.dirname(auto_title.__file__))
+        with open(os.path.join(package_root, "slack/handler.py"), encoding="utf-8") as handle:
+            body = handle.read()
+        code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+        reread_at = code.rfind("auto_title.pin_record(conversation_log, session_key)")
+        first_pin_at = code.find("auto_title.pin_record(conversation_log, session_key)")
+        assert reread_at > first_pin_at, "the tail has no second, post-write pin read"
+        guard = code[max(0, reread_at - 400) : reread_at]
+        assert "RECORD_ABSENT" in guard, "the re-read is not confined to an ABSENT pin"
 
     def test_every_scheduling_site_peeks_the_claim_before_the_pin(self):
         """The pin is a thread hop, so an already-named conversation must skip it.

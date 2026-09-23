@@ -4745,6 +4745,7 @@ async def handle_message(
         # yield is a landmine.
         _options_verdict_deferred = False  # set at the verdict step; read by both finallys
         _verdict_booked = not _turn_completed_ok  # model errors already booked
+        _title_pin_held: auto_title.RecordPin | None = None  # set under the permit
         # Bound before the first suspension point so the release finally can read
         # it on a cancellation landing at any await. Recomputed at the delivery
         # step below; the default False is correct for a cancellation BEFORE
@@ -5165,6 +5166,25 @@ async def handle_message(
         # returns — and books a failure if both fail. The permit stays held across
         # the intervening decorations (fast, best-effort) so the deferred verdict
         # is still written under it.
+        # Pin the record for the naming turn while the permit is still held. Every
+        # release below is followed by Slack round-trips before the auto-title block,
+        # and a queued turn that takes the released permit can delete this key's
+        # record and re-mint it in that span. A pin read down there reads the
+        # REPLACEMENT, the guard matches it, and the title generated from this turn
+        # names a conversation it never ran in. While the permit is held no other
+        # turn for this key runs, so the identity read here is the record this turn
+        # is about. The same cheap ``is_titled`` peek the block below uses gates it,
+        # so an already-named conversation pays no thread hop.
+        #
+        # A key whose record has not landed yet pins ABSENT here and is re-pinned
+        # below once this turn's own row is written: with no record there is nothing
+        # a replacement can be mistaken for, and the first exchange stays nameable.
+        if (
+            not _had_error
+            and not _is_slack_restricted(session_key)
+            and not auto_title.is_titled(session_key)
+        ):
+            _title_pin_held = await auto_title.pin_record(conversation_log, session_key)
         _options_verdict_deferred = bool(_turn_completed_ok and options and _answer_reached)
         if not _options_verdict_deferred:
             if _turn_completed_ok:
@@ -5555,7 +5575,17 @@ async def handle_message(
             # process-wide, so this key could not be auto-titled again until the
             # gateway restarts. The pin still precedes ``create_task``, which is
             # what closes the scheduling-tick window -- see ``pin_record``.
-            _title_pin = await auto_title.pin_record(conversation_log, session_key)
+            #
+            # The pin itself is the one taken under the permit, well above here:
+            # reading it at this point would sit after the release and after the
+            # Slack round-trips in between, which is the window a replacement
+            # record slips through. ABSENT is the one state worth re-reading, and
+            # only because a key with no record has no replacement to confuse:
+            # this turn's own row has landed by now, so the re-read is what makes a
+            # brand-new conversation nameable from its first exchange.
+            _title_pin = _title_pin_held
+            if _title_pin is None or _title_pin.state == auto_title.RECORD_ABSENT:
+                _title_pin = await auto_title.pin_record(conversation_log, session_key)
             if auto_title.try_claim(session_key):
                 track_background_task(
                     asyncio.create_task(
