@@ -500,6 +500,8 @@ export function useChatPageSessionController({
       const next = new URLSearchParams(searchParams)
       next.set('sid', target)
       next.delete('slot')
+      // Never re-write a credential the token effect already stripped.
+      next.delete('token')
       navigate(
         { pathname: locationPathname, search: `?${next}`, hash: locationHash },
         { replace: true },
@@ -709,6 +711,9 @@ export function useChatPageSessionController({
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
+    // Never re-write a credential the token effect already stripped
+    // (session deep links arrive as `/chat?sid=…&token=…`).
+    next.delete('token')
     // Push vs replace — see `shouldReplaceSessionUrl` for why mobile never
     // pushes. Kept as a named predicate rather than an inline boolean so the
     // reasoning has somewhere to live and a test can pin it.

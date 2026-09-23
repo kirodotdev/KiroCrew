@@ -54,6 +54,13 @@ SUBAGENT_ACK_ACTION_PREFIX = "subagent_ack_"
 # Action ID for link-to-dashboard button
 LINK_DASHBOARD_ACTION = "mc_link_dashboard"
 
+# Action ID on the send_message "Open session" deep-link button. A URL button
+# opens its link directly, so it needs no server work — but Slack still delivers
+# a block_actions event for it, so the interaction router (slack.interactions.
+# dispatch) declares this id and acks it as a no-op instead of routing the click
+# through the tool-approval fallthrough. Produced by dashboard.handlers.messaging.
+SESSION_LINK_ACTION = "open_session_link"
+
 
 def extract_options(text: str) -> tuple[str, list[str]]:
     """Extract OPTIONS choices and remove the marker span from the response.

@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.system_notices import is_system_notice
-from kiro_crew.dashboard.urls import dashboard_origin
+from kiro_crew.dashboard.urls import dashboard_link_origin
 
 logger = logging.getLogger(__name__)
 
@@ -209,17 +209,35 @@ def gap_summary(skipped: int) -> str:
     return f"{skipped} earlier turn{'' if skipped == 1 else 's'}"
 
 
-def session_deep_link(dashboard_url: str, slot_key: str) -> str:
+def session_deep_link(
+    dashboard_url: str, slot_key: str, *, tunnel_url: str = "", token: str = ""
+) -> str:
     """A browser link to *slot_key*'s dashboard tab, or ``""``.
 
     ``/chat?sid=<key>`` is the shape the SPA reads (``?slot=`` is a legacy
     alias). Returns ``""`` when no usable origin is configured -- the caller
-    omits the link rather than emitting a broken one. ``dashboard_origin``
+    omits the link rather than emitting a broken one. ``dashboard_link_origin``
     already yields ``""`` for an empty, malformed, or non-HTTP URL.
+
+    *tunnel_url*, when non-empty, is the origin instead of *dashboard_url*: the
+    caller opted into ``slack.use_tunnel_url`` and a tunnel is live, so the link
+    must point off-host to be reachable from a phone. The tunnel-vs-dashboard
+    choice lives in :func:`kiro_crew.dashboard.urls.dashboard_link_origin`, shared
+    with ``send_dashboard_link`` so the two cannot drift.
+
+    *token*, when non-empty, is appended as ``&token=<token>`` -- a presigned
+    ``token_auth`` click token so the link authenticates off-host instead of
+    landing on the sign-in wall. A token is an authentication credential, so a
+    caller supplies one ONLY for a link it is about to deliver to the owner's own
+    DM (see ``send_message``'s ``_resolve_session_link_url``); a link that may
+    reach a shared channel must be built without one.
     """
     if not slot_key:
         return ""
-    origin = dashboard_origin(dashboard_url or "")
+    origin = dashboard_link_origin(dashboard_url or "", tunnel_url)
     if not origin:
         return ""
-    return f"{origin}/chat?sid={quote(slot_key, safe='')}"
+    link = f"{origin}/chat?sid={quote(slot_key, safe='')}"
+    if token:
+        link += f"&token={quote(token, safe='')}"
+    return link

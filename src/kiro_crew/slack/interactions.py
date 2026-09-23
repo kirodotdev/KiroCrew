@@ -59,6 +59,7 @@ from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
+    SESSION_LINK_ACTION,
     build_options_selected_blocks,
     escape_mrkdwn,
     replace_options_blocks,
@@ -651,6 +652,14 @@ async def dispatch(payload: dict) -> None:
 
     # ── OPTIONS checkboxes toggle — no-op, wait for Send ──
     if action_id == OPTIONS_CHECKBOXES_ACTION:
+        return
+
+    # ── "Open session" deep-link button — no-op ──
+    # A URL button opens its link in the browser directly; Slack still POSTs a
+    # block_actions event for it, so ack it here as a no-op rather than letting it
+    # fall through to the tool-approval handler (which would look up a nonexistent
+    # approval). No server work, so no channels-governance gate is needed.
+    if action_id == SESSION_LINK_ACTION:
         return
 
     # ── OPTIONS Send / legacy choice buttons ──
@@ -1480,7 +1489,11 @@ def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
             return bid
     values = (payload.get("state") or {}).get("values") or {}
     for block_id, vals in values.items():
-        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+        if (
+            isinstance(vals, dict)
+            and OPTIONS_CHECKBOXES_ACTION in vals
+            and isinstance(block_id, str)
+        ):
             return block_id
     return None
 
@@ -1938,8 +1951,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     async with options_edit_lock(channel, msg_ts):
         if not claim_options_answer(channel, msg_ts):
             logger.debug(
-                "options click: control %s/%s was already answered; dropping the "
-                "duplicate",
+                "options click: control %s/%s was already answered; dropping the " "duplicate",
                 channel,
                 msg_ts,
             )
@@ -2120,9 +2132,7 @@ async def _handle_allowlist(
             return
         _orch._allowed_users.add(new_user_id)
         set_allowed_users(_orch._allowed_users)
-        await run_config_write(
-            persist_allowed_user, new_user_id, name=display_name
-        )
+        await run_config_write(persist_allowed_user, new_user_id, name=display_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.approve",
@@ -2200,9 +2210,7 @@ async def _handle_track_channel(
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
         _probe_tracked_channel_scope({target_channel_id})
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, name=channel_name
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, name=channel_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.approve",
@@ -2219,9 +2227,7 @@ async def _handle_track_channel(
         # Remove from in-memory set and persisted config
         _orch._tracking_channels.discard(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, remove=True
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.deny",
@@ -3269,7 +3275,9 @@ async def _handle_tool_approval(
 # ---------------------------------------------------------------------------
 
 # Shown when a non-authorized user clicks a review-mode button.
-_REVIEW_AUTH_DENIED_MSG = "⚠️ Only the bot owner or the user who requested this draft can act on it."
+_REVIEW_AUTH_DENIED_MSG = (
+    "⚠️ Only the bot owner or the user who requested this draft can act on it."
+)
 
 
 async def _delete_review_placeholder(channel: str, thread_ts: str) -> None:

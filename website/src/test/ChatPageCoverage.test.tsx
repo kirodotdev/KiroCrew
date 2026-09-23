@@ -1090,6 +1090,17 @@ describe('ChatPage URL prompt hand-off', () => {
     expect(prefillWrites()).toHaveLength(0)
     expect(createSpy).not.toHaveBeenCalled()
   })
+
+  it('strips only the token from a session deep link, preserving ?sid', async () => {
+    // The session-link button ships `/chat?sid=…&token=…`. The credential must
+    // leave the URL (history/referrer leak — PR #11112 GPT F1) but the sid must
+    // survive the strip, or the link stops naming its session.
+    const token = tokenFor({ channel: 'C123' })
+    renderChatPage([], { url: `/chat?sid=chat-1&token=${token}` })
+
+    await waitFor(() => expect(window.location.search).not.toContain('token'))
+    expect(window.location.search).toContain('sid=chat-1')
+  })
 })
 
 describe('ChatPage search scope disclosure', () => {

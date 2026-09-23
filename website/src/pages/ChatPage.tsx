@@ -1651,9 +1651,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (embedded) { tokenConsumingRef.current = false; return }
     const token = new URLSearchParams(window.location.search).get('token')
     if (!token) { tokenConsumingRef.current = false; return }
-    // Always strip token from URL to prevent leakage via referrer/history
-    // Preserves history.state for the same reason as the prefill strip above.
-    window.history.replaceState(window.history.state, '', window.location.pathname)
+    // Always strip token from URL to prevent leakage via referrer/history.
+    // Two layers, both required (PR #11112 review):
+    //  1. Raw replaceState scrubs the visible URL immediately — but ONLY the
+    //     `token` param, preserving `?sid` so a session deep link
+    //     (`/chat?sid=…&token=…`) still names its slot after the strip.
+    //     Preserves history.state for the same reason as the prefill strip.
+    //  2. setSearchParams scrubs the ROUTER's own searchParams state, which
+    //     raw replaceState never updates — the `?sid` sync effects
+    //     (useChatPageSessionController) copy router params back into the URL
+    //     on slot activation, and would otherwise restore the live credential
+    //     into browser history.
+    const scrubbed = new URLSearchParams(window.location.search)
+    scrubbed.delete('token')
+    const scrubbedQs = scrubbed.toString()
+    window.history.replaceState(
+      window.history.state, '', window.location.pathname + (scrubbedQs ? `?${scrubbedQs}` : ''))
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('token')
+      return next
+    }, { replace: true })
     const prompt = extractPromptFromToken(token)
     if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs } = extractSlackContextFromToken(token)
