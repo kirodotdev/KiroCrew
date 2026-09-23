@@ -422,6 +422,12 @@ def _read_state_for_update() -> dict[str, Any]:
 #   :func:`_state_lock`                     file lock, then ``_run_lock``
 #   :func:`_upload_lock`                    the file lock alone
 #   :func:`_delete_under_the_retention_gate`  ``_RETENTION_GATE``, then the file lock
+#   :func:`_locked_state_update`            :func:`_state_lock`, then
+#                                           ``_unpersisted_lock`` (via
+#                                           :func:`_merge_pending` and the release
+#                                           block on success, via the in-lock
+#                                           failure handoff BEFORE it releases on
+#                                           failure)
 #   :func:`_record_run_locked`              ``_run_lock`` alone, for the sequence
 #                                           bump, which cannot park
 #   :func:`_record_run`, :func:`_record_skip`  nothing; they reach the file lock
@@ -546,7 +552,7 @@ def _upload_lock():
             yield
 
 
-def _locked_state_update(mutate) -> Any:
+def _locked_state_update(mutate, on_in_lock_failure=None) -> Any:
     """Read-modify-write the state file under the sidecar lock.
 
     Two backup kinds can finish concurrently (a manual run racing the
@@ -557,12 +563,52 @@ def _locked_state_update(mutate) -> Any:
     Raises ``OSError`` when the existing state could not be read; see
     :func:`_read_state_for_update` for why that is not collapsed to an empty
     document here.
+
+    ``on_in_lock_failure`` -- when ANY step taken after the sidecar lock is
+    acquired raises ``OSError`` (the read, the pending merge, ``mutate``, or the
+    write) -- is called while the lock is STILL HELD, then the error propagates.
+    This is the in-lock failure handoff, and it MUST run inside the lock:
+    :func:`_record_run_locked` holds a completed upload's record in process memory
+    when a state update it drove fails, and if that hand-off happened after this
+    block released, a second run-record writer could take the sidecar lock in the
+    gap, :func:`_merge_pending` in nothing (the first run is not held yet), and
+    persist only its own record -- stranding the first upload in memory alone,
+    forgotten on restart, reopening the unattended re-upload.
+
+    Every one of these failures leaves that gap, not the write alone. The upload
+    happens BEFORE :func:`_record_run` is called, so the completed-upload record
+    exists whichever step then fails -- including a read failure, where the
+    document a second writer would persist is one this run is absent from just as
+    surely as after a failed write. Handing off inside the lock closes that gap at
+    its source without a second lock: the record is held before any other writer
+    can read the state it is missing from. It runs on any such failure and never on
+    success. The callback takes only ``_unpersisted_lock``, a leaf below the two
+    locks this block already holds, so the module's one acquisition order stands.
+
+    A failure to ACQUIRE :func:`_state_lock` never enters this block, so it cannot
+    fire the callback. The caller's handler still holds the record in process
+    memory, preventing another upload while this process lives. That path cannot
+    promise immediate disk convergence: a peer may already hold the sidecar lock
+    and commit state that does not include this run, and no callback can execute
+    under a lock this caller never acquired. A restart may therefore re-upload
+    that archive, which is the fallback for an unavailable state lock.
     """
     with _state_lock():
-        state = _read_state_for_update()
-        pending, uploads = _merge_pending(state)
-        result = mutate(state)
-        write_state(state)
+        try:
+            state = _read_state_for_update()
+            pending, uploads = _merge_pending(state)
+            result = mutate(state)
+            write_state(state)
+        except OSError:
+            # Hand the failed run off to recovery BEFORE releasing the lock, so no
+            # concurrent writer can read past this point without seeing it. This
+            # covers EVERY step after the lock was acquired -- read, merge, mutate,
+            # write -- because the upload precedes `_record_run`, so a completed
+            # upload's record exists no matter which one raised. See the
+            # ``on_in_lock_failure`` note above.
+            if on_in_lock_failure is not None:
+                on_in_lock_failure()
+            raise
         for account, kind, record in pending:
             _forget_unpersisted(account, kind, record)
         with _unpersisted_lock:
@@ -2079,8 +2125,38 @@ def _record_run_locked(
             _clear_nightly_failure(entry, kind)
         return record
 
+    # The in-lock failure handoff runs INSIDE the sidecar lock (see
+    # :func:`_locked_state_update`'s ``on_in_lock_failure``), so a second run-record
+    # writer cannot take the lock and persist past this run in the window between a
+    # failed state update and its recovery hand-off -- which would strand this upload
+    # in memory alone. It covers ANY step after the lock is acquired -- the read, the
+    # pending merge, ``mutate``, the write -- because the upload happens BEFORE this
+    # function is called, so a completed-upload record exists whichever step then
+    # raises, and a read failure leaves a second writer persisting a document this run
+    # is absent from just as surely as a failed write does. Only the UNCONDITIONAL
+    # write holds such a record: the conditional (``expected``) path re-uploads a full
+    # copy on failure and remembers nothing, so it passes no callback and its handler
+    # below still just returns.
+    #
+    # ``handed_off`` records whether that in-lock hand-off actually ran. The ONLY
+    # OSError that does not reach it is a failure to ACQUIRE :func:`_state_lock`
+    # itself: that never enters the locked block, so the callback cannot fire and the
+    # record is held from the handler below. This prevents another upload while the
+    # process lives but does not promise immediate disk convergence: a peer may
+    # already hold the sidecar lock and commit state without this run. A restart may
+    # therefore re-upload the archive, the fallback for an unavailable state
+    # lock. This keeps the original "any OSError holds the run" behaviour while
+    # moving every in-lock failure's hand-off under the lock.
+    handed_off = False
+
+    def _hand_off() -> None:
+        nonlocal handed_off
+        handed_off = True
+        _remember_unpersisted(account, kind, record)
+
+    on_in_lock_failure = _hand_off if expected is _UNCONDITIONAL_RUN_WRITE else None
     try:
-        recorded = _locked_state_update(mutate)
+        recorded = _locked_state_update(mutate, on_in_lock_failure=on_in_lock_failure)
     except OSError as exc:
         if expected is not _UNCONDITIONAL_RUN_WRITE:
             logger.info(
@@ -2113,7 +2189,15 @@ def _record_run_locked(
         # `write_state` failed (ENOSPC, EROFS, EIO). Reporting a full disk as
         # "could not be read" points at permissions instead.
         stage = "could not be read" if isinstance(exc, _StateUnreadable) else "could not be written"
-        _remember_unpersisted(account, kind, record)
+        if not handed_off:
+            # Reached ONLY when :func:`_state_lock` could not be ACQUIRED -- the
+            # sidecar file lock timed out, or opening its descriptor raised. The
+            # locked block never ran, so nothing reached disk and no concurrent
+            # writer can have lost a record that was never written; this hand-off
+            # has no gap to close and stays out here. Every failure that DID enter
+            # the lock (read, merge, mutate, write) already handed the record off
+            # INSIDE it (see `on_in_lock_failure`), so it is not repeated.
+            _remember_unpersisted(account, kind, record)
         logger.error(
             "aws-control: %s backup for %s %s, but its state file %s, so the run is "
             "not on disk; holding it in memory for this process so the nightly loop does "
