@@ -319,7 +319,12 @@ second private window into the masked scratch root and names as the child's
 directory (its replacement inherits and adopts it). Reclamation is keyed on
 process liveness rather than on file age — a directory is removed only once its
 recorded owner's process GROUP is dead **and** the whole tree has been idle past a
-grace window, and an ownerless directory is never deleted. The seams and the
+grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
+deny over the masked root re-opens `file-read-metadata` on the literal
+directories above each window (`sandbox._window_ancestors`) and nothing else:
+`realpath` of a window `lstat`s every component, so without it a harness that
+canonicalizes its `$TMPDIR` — the Copilot CLI's `session/new` — fails on its own
+directory. Siblings stay unlistable and unreadable. The seams and the
 ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scratch-per-session-tree).
 
 ## 4. Default agent vs other agents

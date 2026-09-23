@@ -129,8 +129,10 @@ class TestScratchConfidentiality:
                 and f'(require-not (subpath "{own}"))' in line
                 for line in rules
             ), op
-        # Nothing re-allows the root or a sibling.
-        assert not any(line.startswith("(allow") and root in line for line in rules)
+        # Nothing re-allows a sibling; the root is re-opened for stat only, so
+        # ``realpath`` of the own window resolves.
+        allows = [line for line in rules if line.startswith("(allow")]
+        assert allows == [f'(allow file-read-metadata (literal "{root}"))'], allows
 
     def test_the_spawn_sites_hand_their_scratch_back_as_a_private_window(self) -> None:
         import inspect
