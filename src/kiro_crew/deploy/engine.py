@@ -99,6 +99,21 @@ _AWS_BIN_DIRS = (
     "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
 )
 
+# ``(name, directory)`` pairs in :data:`_AWS_BIN_DIRS` whose candidate the
+# provenance chokepoint most recently REFUSED. Keyed by the pair, not the dir
+# alone, because :func:`resolve_aws_tool_bin` is generic over ``name``: ``aws``
+# and ``session-manager-plugin`` share one body and one install dir, so a dir can
+# hold a refused ``session-manager-plugin`` next to an accepted ``aws``. A
+# dir-only key would let the accepted ``aws`` clear the plugin's refusal and
+# re-expose the plugin to the credential-bearing child's by-name PATH lookup.
+# Written only by :func:`resolve_aws_tool_bin` (which re-runs the real validation
+# on every call and clears a pair the moment that name passes in that dir again,
+# so a fixed install is picked up without a gateway restart) and read only by
+# :func:`aws_spawn_env`, which drops a dir refused for ANY name — see that
+# function's fail-closed rule. Keeping it here is what lets ``aws_spawn_env`` stay
+# filesystem-free and event-loop safe.
+_REFUSED_AWS_BIN_DIRS: set[tuple[str, str]] = set()
+
 
 def resolve_aws_tool_bin(name: str) -> str:
     """Resolve an AWS-tooling binary to an absolute path, or the bare ``name``.
@@ -122,9 +137,23 @@ def resolve_aws_tool_bin(name: str) -> str:
     :func:`kiro_crew.github_runner.validate_provider_executable` — the repo's
     executable-provenance chokepoint — so an agent- or third-party-planted shim
     in a user-writable install dir is refused rather than executed inside the
-    credential-bearing sandbox. On refusal we fall back to the bare name,
-    preserving the prior not-found/execvp error rather than inventing a new
-    failure mode.
+    credential-bearing sandbox.
+
+    A refusal ends that DIR, not the search: the remaining dirs are tried in
+    order and only an exhausted list falls back to the bare name, preserving the
+    prior not-found/execvp error rather than inventing a new failure mode.
+    Refusing-and-stopping made one unrelated install shadow a legitimate one and
+    took the whole feature down with it: on a macOS host where Homebrew is
+    managed by a *second* unprivileged account (Workbrew installs as
+    ``workbrew``), ``/opt/homebrew/bin/aws`` is owned by another user and is
+    correctly refused — but it also sorts first, so the root-owned official-pkg
+    ``/usr/local/bin/aws`` was never reached and every SSM tunnel died at gateway
+    start with ``[Errno 2] No such file or directory: 'aws'``. Installing the
+    official pkg, the documented remedy, could not fix it. The refused
+    ``(name, dir)`` is recorded in :data:`_REFUSED_AWS_BIN_DIRS` so
+    :func:`aws_spawn_env` keeps that dir off the child's ``PATH`` while any name
+    there is refused; the pair is cleared when that name passes in that dir, so
+    repairing the install needs no restart.
     """
     env_path = os.environ.get("PATH", "")
     found = shutil.which(name, path=env_path) if env_path else None
@@ -132,15 +161,30 @@ def resolve_aws_tool_bin(name: str) -> str:
         # Same trust class as the pre-existing behaviour: execvp against the
         # inherited PATH already executed exactly this binary.
         return found
-    fallback = os.pathsep.join(p for p in _AWS_BIN_DIRS if p)
-    found = shutil.which(name, path=fallback) if fallback else None
-    if found:
+    for directory in _AWS_BIN_DIRS:
+        if not directory:
+            continue
+        found = shutil.which(name, path=directory)
+        if not found:
+            continue
         from kiro_crew.github_runner import validate_provider_executable
 
         try:
-            return validate_provider_executable(found)
+            resolved = validate_provider_executable(found)
         except ValueError:
-            logger.warning("refusing %s at %s: failed provenance validation", name, found)
+            # This (name, dir) is out — for the argv head AND for the child's
+            # PATH. Keyed by name too: a sibling name passing in this dir must not
+            # clear THIS name's refusal.
+            _REFUSED_AWS_BIN_DIRS.add((name, directory))
+            logger.warning(
+                "refusing %s at %s: failed provenance validation; trying the remaining "
+                "install dirs",
+                name,
+                found,
+            )
+            continue
+        _REFUSED_AWS_BIN_DIRS.discard((name, directory))
+        return resolved
     return name
 
 
@@ -204,8 +248,8 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
     **A non-absolute ``argv_head`` returns the env UNWIDENED.** This is the one case
     where "can only make an unresolvable lookup succeed" is not a safety argument
     but the hazard itself: :func:`resolve_aws_tool_bin` falls back to the bare name
-    precisely when it found a candidate in these dirs and
-    ``validate_provider_executable`` REFUSED it, and that refusal is enforced only
+    precisely when every install dir either held nothing or held a candidate
+    ``validate_provider_executable`` REFUSED, and that refusal is enforced only
     by the bare name failing ``execvp`` against a ``PATH`` those dirs are absent
     from. Widening the child's ``PATH`` would put the refused binary back on it and
     hand it AWS credentials — converting a fail-closed rejection into an execution.
@@ -216,6 +260,17 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
     searches only the inherited ``PATH`` (the trust class the bare ``"ssh"`` argv
     already had), so a bare head means no ``ssh`` there, and widening would hand
     execvp an ``ssh`` found only in these dirs that nothing vetted.
+
+    **Individually refused dirs are dropped even from a widened env.** A resolved
+    absolute head does not imply every dir was clean: the resolver walks past a
+    refused dir to a later good one, so a Workbrew-owned ``/opt/homebrew/bin``
+    coexists with an accepted ``/usr/local/bin``. Appending the refused dir would
+    re-expose exactly the shim that was just rejected to the CLI's onward
+    ``session-manager-plugin`` lookup, which is the same execution the refusal
+    exists to prevent. :data:`_REFUSED_AWS_BIN_DIRS` carries that decision here as
+    ``(name, dir)`` pairs; a dir is dropped while ANY name in it is refused, so an
+    accepted ``aws`` cannot re-admit a dir whose ``session-manager-plugin`` was
+    refused. This stays a set lookup and touches no filesystem.
 
     Dirs already on ``PATH`` are not repeated, so a terminal-launched gateway
     (whose ``PATH`` carries them) gets a byte-identical env and the fix is inert
@@ -232,7 +287,8 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
         return env
     current = env.get("PATH", "")
     have = {p for p in current.split(os.pathsep) if p}
-    extra = [d for d in _AWS_BIN_DIRS if d and d not in have]
+    refused_dirs = {directory for _name, directory in _REFUSED_AWS_BIN_DIRS}
+    extra = [d for d in _AWS_BIN_DIRS if d and d not in have and d not in refused_dirs]
     if extra:
         env["PATH"] = os.pathsep.join(([current] if current else []) + extra)
     return env
