@@ -347,3 +347,115 @@ class TestRecallSearchFallback:
         store.append_history("Terraform Quartzscope infrastructure decision rationale recorded")
         rows = store.search(question, match_any=True)
         assert len(rows) == 1 and "rationale recorded" in rows[0]["snippet"]
+
+
+class TestNonUtf8Tolerance:
+    """A stray non-UTF-8 byte in a memory file must not raise the reader.
+
+    The PURE readers (``read_recent_history``, ``rebuild_index``) skip a
+    corrupt file instead of raising ``UnicodeDecodeError`` — they never write
+    their result back, so dropping an undecodable file is safe. The
+    read-modify-write readers (``read_preferences``, ``read_projects``,
+    ``append_history``) keep a strict decode: their value feeds a whole-file
+    rewrite, so an undecodable file raises there and is left intact and
+    recoverable rather than round-tripped lossily. No existing read path
+    changes — only the decode failure is caught.
+    """
+
+    # An invalid UTF-8 lead byte (0xff never appears in valid UTF-8).
+    BAD = b"# Prefs\n\n- good line \xff bad byte\n"
+
+    def test_read_preferences_strict_leaves_corrupt_file_intact(self, tmp_path):
+        """read_preferences feeds RMW callers, so it decodes strictly."""
+        import pytest
+
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store._preferences_file.write_bytes(self.BAD)
+        with pytest.raises(UnicodeDecodeError):
+            store.read_preferences()
+        assert store._preferences_file.read_bytes() == self.BAD
+
+    def test_read_projects_strict_leaves_corrupt_file_intact(self, tmp_path):
+        """read_projects feeds RMW callers, so it decodes strictly."""
+        import pytest
+
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store._projects_file.write_bytes(self.BAD)
+        with pytest.raises(UnicodeDecodeError):
+            store.read_projects()
+        assert store._projects_file.read_bytes() == self.BAD
+
+    def test_read_recent_history_skips_corrupt_day(self, tmp_path):
+        """A corrupt day file is skipped; a clean day still reads."""
+        store = MemoryStore(workspace=tmp_path)
+        store.append_history("CLEAN_ENTRY")
+        from datetime import date, timedelta
+
+        corrupt_day = (date.today() - timedelta(days=1)).isoformat()
+        (store._history_dir / f"{corrupt_day}.md").write_bytes(b"# old \xff bad\n")
+        out = store.read_recent_history(days=2)  # must not raise
+        assert "CLEAN_ENTRY" in out
+
+    def test_rebuild_index_skips_corrupt_file(self, tmp_path):
+        """A corrupt history file is skipped; rebuild still succeeds.
+
+        Trade-off: the corrupt file is left out of the FTS index until it is
+        repaired. rebuild_index uses a single read with no reopen.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.append_history("CLEAN_ENTRY")
+        from datetime import date, timedelta
+
+        corrupt_day = (date.today() - timedelta(days=1)).isoformat()
+        (store._history_dir / f"{corrupt_day}.md").write_bytes(b"# old \xff bad\n")
+        count = store.rebuild_index()  # must not raise
+        assert count >= 1
+        # The clean entry is still indexed and searchable.
+        assert store.search("CLEAN_ENTRY")
+
+    def test_append_history_does_not_rewrite_corrupt_file_lossily(self, tmp_path):
+        """A corrupt today-file must not be rewritten from a lossy decode.
+
+        append_history is read-modify-write: a lossy read here would persist
+        U+FFFD over the original bytes. It keeps a strict decode, so an
+        undecodable today-file raises and is left intact and recoverable.
+        """
+        import pytest
+
+        store = MemoryStore(workspace=tmp_path)
+        store.append_history("first entry")
+        from datetime import date
+
+        day = store._history_dir / f"{date.today().isoformat()}.md"
+        corrupt = day.read_bytes() + b"\ncorrupt \xff marker\n"
+        day.write_bytes(corrupt)
+        with pytest.raises(UnicodeDecodeError):
+            store.append_history("second entry")
+        assert day.read_bytes() == corrupt
+
+    def test_get_context_survives_corrupt_preferences(self, tmp_path):
+        """The every-turn context build must not raise on a bad preferences byte."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.append_history("CLEAN_ENTRY")
+        store._preferences_file.write_bytes(self.BAD)
+        # Startup path (include_activity=False) reads preferences only; must not raise.
+        store.get_context(include_activity=False)
+        # Full path reads preferences + projects + history; skips the corrupt
+        # preferences section but still surfaces clean history.
+        out = store.get_context(include_activity=True)
+        assert "CLEAN_ENTRY" in out
+
+    def test_activity_index_survives_corrupt_projects(self, tmp_path):
+        """activity_index reads projects strictly-consumed; must not raise on a bad byte."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.append_history("CLEAN_ENTRY")
+        store._projects_file.write_bytes(b"# Active Projects\n\n- proj \xff bad\n")
+        out = store.activity_index()  # must not raise
+        assert "CLEAN_ENTRY" in out
+        assert "proj" not in out  # the corrupt projects section is skipped
+        assert "good line" not in out  # the corrupt preferences file is skipped

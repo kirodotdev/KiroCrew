@@ -75,6 +75,7 @@ PROJECTS_FILE = "projects.md"
 _DEFAULT_PREFERENCES = "# User Preferences\n\n<!-- Learned from conversations -->\n"
 _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 
+
 # Explicit history readers can stat and read many daily files. The assembled
 # string changes only when a day's history file is written
 # (append_history) or pruned, so a short TTL keeps it off the hot path while
@@ -376,6 +377,12 @@ class MemoryStore:
             return self._guarded_entry(self._preferences_file, require_readable=True)["content"]
         require_memory_ready(self._memory_store_name)
         if self._preferences_file.exists():
+            # Strict decode on purpose: this value feeds read-modify-write
+            # callers (the consolidator's CAS baseline, add_preference, the
+            # dashboard Save). A lossy errors="replace" read here would let a
+            # whole-file write persist U+FFFD over the original bytes with no
+            # backup on the V1 path. An undecodable file raises and is left
+            # intact and recoverable.
             return self._preferences_file.read_text(encoding="utf-8")
         return ""
 
@@ -438,6 +445,8 @@ class MemoryStore:
             return self._guarded_entry(self._projects_file, require_readable=True)["content"]
         require_memory_ready(self._memory_store_name)
         if self._projects_file.exists():
+            # Strict decode on purpose — see read_preferences: this value feeds
+            # read-modify-write callers, so a lossy read must not round-trip.
             return self._projects_file.read_text(encoding="utf-8")
         return ""
 
@@ -591,6 +600,11 @@ class MemoryStore:
                     )
                 content = ""
                 if path.exists():
+                    # Strict decode on this read-modify-write path: the block
+                    # below rewrites the whole file, so a lossy errors="replace"
+                    # read here would persist U+FFFD over the original bytes and
+                    # destroy them. An undecodable today-file raises and is left
+                    # intact and recoverable. Pure readers skip a corrupt file.
                     content = path.read_text(encoding="utf-8")
                 if not content:
                     date = datetime.now().strftime("%Y-%m-%d")
@@ -763,7 +777,13 @@ class MemoryStore:
             path = self._history_dir / f"{day.strftime('%Y-%m-%d')}.md"
             if not path.exists():
                 continue
-            content = path.read_text(encoding="utf-8").strip()
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+            except UnicodeDecodeError:
+                # A bad byte would otherwise raise up through the every-turn
+                # get_context; skip the day rather than fail the whole read.
+                logger.warning("memory file %s is not valid UTF-8; skipped", path)
+                continue
             if not content:
                 continue
 
@@ -1156,8 +1176,15 @@ class MemoryStore:
     def activity_index(self, cap: int = 1800, days: int = 3) -> str:
         """Small query-free navigation hints; full notebook bodies stay on demand."""
         entries = []
-        projects = self.read_projects()
-        if projects.strip() != _DEFAULT_PROJECTS.strip():
+        try:
+            projects = self.read_projects()
+        except UnicodeDecodeError:
+            # read_projects stays strict for the read-modify-write callers;
+            # this navigation hint must not crash context assembly on a bad
+            # byte, so skip the projects section.
+            logger.warning("memory file %s is not valid UTF-8; skipped", self._projects_file)
+            projects = ""
+        if projects.strip() and projects.strip() != _DEFAULT_PROJECTS.strip():
             entries.append(("Projects", projects))
         if self._memory_version == 1:
             history = self._read_recent_history_uncached(
@@ -1235,7 +1262,14 @@ class MemoryStore:
                 return text[:limit] + "\n…[truncated]"
             return text
 
-        prefs = self.read_preferences()
+        try:
+            prefs = self.read_preferences()
+        except UnicodeDecodeError:
+            # read_preferences stays strict for the read-modify-write callers,
+            # but the every-turn context build must not crash on a bad byte;
+            # skip the preferences section rather than raise.
+            logger.warning("memory file %s is not valid UTF-8; skipped", self._preferences_file)
+            prefs = ""
         if prefs.strip() and prefs.strip() != _DEFAULT_PREFERENCES.strip():
             parts.append(
                 f"## User Preferences\n"
@@ -1243,7 +1277,13 @@ class MemoryStore:
                 f"{_cap(prefs, prefs_cap) if include_activity else prefs}"
             )
 
-        projects = self.read_projects() if include_activity else ""
+        projects = ""
+        if include_activity:
+            try:
+                projects = self.read_projects()
+            except UnicodeDecodeError:
+                logger.warning("memory file %s is not valid UTF-8; skipped", self._projects_file)
+                projects = ""
         if projects.strip() and projects.strip() != _DEFAULT_PROJECTS.strip():
             parts.append(
                 f"## Active Projects\n"
@@ -1364,12 +1404,25 @@ class MemoryStore:
         if self._memory_version == 2:
             return self._member_store().rebuild_memory_index()
         files: list[tuple[str, str]] = []
+
+        def _indexable(path: Path) -> None:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # A single read, no reopen: skip a corrupt file rather than
+                # abort the whole rebuild on one bad byte. Trade-off: a corrupt
+                # history file is left out of the FTS index until it is
+                # repaired.
+                logger.warning("memory file %s is not valid UTF-8; skipped", path)
+                return
+            files.append((str(path), text))
+
         for path in (self._preferences_file, self._projects_file):
             if path.exists():
-                files.append((str(path), path.read_text(encoding="utf-8")))
+                _indexable(path)
         if self._history_dir.exists():
             for path in self._history_dir.glob("*.md"):
-                files.append((str(path), path.read_text(encoding="utf-8")))
+                _indexable(path)
         sources = iter(files)
 
         conn = None
