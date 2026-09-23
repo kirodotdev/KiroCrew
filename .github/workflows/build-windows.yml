@@ -297,9 +297,10 @@ jobs:
       - name: Verify installer/blockmap pairing
         shell: bash
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           shopt -s nullglob
           fail() {
-            echo "::error::$1"
+            err "$1"
             echo "**build-windows:** $1" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }

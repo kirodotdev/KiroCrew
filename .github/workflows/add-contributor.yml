@@ -215,6 +215,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           BRANCH=chore/add-contributors
           # Resolve the base from the repo itself, not the event payload -- the
@@ -279,7 +280,7 @@ jobs:
               case "$out" in
                 *"not permitted to create or approve pull requests"*)
                   compare="$GITHUB_SERVER_URL/$REPO/compare/$BASE...$BRANCH?expand=1"
-                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
+                  notice "Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
                   echo "handoff=$compare" >>"$GITHUB_OUTPUT"
                   exit 0
                   ;;

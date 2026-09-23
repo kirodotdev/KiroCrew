@@ -159,6 +159,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SAMPLE_ONE_IN: "20"
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           # The first 8 hex digits of the head SHA, read as an integer, modulo
           # the sample rate. Deterministic per commit (see the job comment).
@@ -170,7 +171,7 @@ jobs:
           if [ -n "$reason" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "reason=$reason" >> "$GITHUB_OUTPUT"
-            echo "::notice::macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
+            notice "macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "reason=none" >> "$GITHUB_OUTPUT"

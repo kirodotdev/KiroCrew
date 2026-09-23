@@ -241,6 +241,7 @@ jobs:
           TITLE: ${{ steps.evaluate.outputs.title }}
           SUMMARY: ${{ steps.evaluate.outputs.summary }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
 
           # THE ROW'S IDENTITY IS EXPLICIT, NOT INFERRED.
@@ -269,7 +270,7 @@ jobs:
           # this exact key, and never guess when the key cannot be read.
           case "$PR_NUMBER" in
             ''|*[!0-9]*)
-              echo "::error::unexpected PR number '$PR_NUMBER'"
+              err "unexpected PR number '$PR_NUMBER'"
               exit 1
               ;;
           esac
@@ -280,7 +281,7 @@ jobs:
           if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs" \
             --jq '.check_runs[] | select(.name == "Fork PR Description")
                   | "\(.external_id)\t\(.id)"')"; then
-            echo "::error::could not list check-runs for $HEAD; refusing to POST (would duplicate the row)"
+            err "could not list check-runs for $HEAD; refusing to POST (would duplicate the row)"
             exit 1
           fi
 

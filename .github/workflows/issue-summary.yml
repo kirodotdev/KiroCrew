@@ -152,12 +152,14 @@ jobs:
       - name: Collect issue and duplicate candidates
         id: collect
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
 
           # workflow_dispatch takes free text; keep it a bare number so it can
           # only ever address an issue.
           case "$ISSUE" in
-            ''|*[!0-9]*) echo "::error::issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
+            ''|*[!0-9]*) err "issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
           esac
 
           gh api "repos/$REPO/issues/$ISSUE" \
@@ -171,7 +173,7 @@ jobs:
           # `on: issues` never fires for pull requests, but workflow_dispatch
           # accepts any number and PRs share the issues namespace.
           if [ "$(jq -r '.is_pr' issue.json)" = "true" ]; then
-            echo "::notice::#$ISSUE is a pull request, not an issue; nothing to summarize."
+            notice "#$ISSUE is a pull request, not an issue; nothing to summarize."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -181,7 +183,7 @@ jobs:
           # of no new information and, on a high-volume automation, a comment
           # per run.
           if [ "$(jq -r '.is_bot' issue.json)" = "true" ]; then
-            echo "::notice::#$ISSUE was filed by a bot; nothing to summarize."
+            notice "#$ISSUE was filed by a bot; nothing to summarize."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -258,6 +260,7 @@ jobs:
           # issue without a comment.
           MODEL_IDS: ${{ vars.ISSUE_SUMMARY_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           # Bound the prompt: a 200KB stack-trace paste carries no more summary
@@ -347,7 +350,7 @@ jobs:
 
             if ! aws bedrock-runtime converse --cli-input-json file://req.json \
                  > resp.json 2> bedrock.err; then
-              echo "::warning::model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
+              warn "model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
               continue
             fi
             jq -j '[.output.message.content[]?.text // empty] | join("")' resp.json > raw.txt
@@ -364,7 +367,7 @@ jobs:
               GENERATED=1
               break
             fi
-            echo "::warning::model $MODEL did not return a JSON object; trying next"
+            warn "model $MODEL did not return a JSON object; trying next"
           done
           test -n "$GENERATED"
 
@@ -374,6 +377,8 @@ jobs:
         env:
           SUMMARIZED: ${{ steps.summarize.outcome }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
 
           if [ "$SUMMARIZED" != "success" ]; then
@@ -382,7 +387,7 @@ jobs:
             else
               REASON="the summarize step produced no verdict — see the warnings above"
             fi
-            echo "::warning::No summary posted on #$ISSUE: $REASON"
+            warn "No summary posted on #$ISSUE: $REASON"
             {
               echo "### Issue summary: skipped"
               echo
@@ -468,12 +473,12 @@ jobs:
           ' > final.json
 
           DROPPED="$(jq -r '.dropped | join(", ")' final.json)"
-          [ -z "$DROPPED" ] || echo "::warning::Dropped duplicate refs outside the candidate pool: $DROPPED"
+          [ -z "$DROPPED" ] || warn "Dropped duplicate refs outside the candidate pool: $DROPPED"
 
           # Nothing substantive survived validation. Posting an empty shell would
           # cost a notification and say nothing.
           if [ "$(jq -r '(.tldr | length) + (.missing | length) + (.duplicates | length)' final.json)" = "0" ]; then
-            echo "::notice::Verdict for #$ISSUE was empty after validation; nothing posted."
+            notice "Verdict for #$ISSUE was empty after validation; nothing posted."
             exit 0
           fi
 

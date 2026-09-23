@@ -220,11 +220,12 @@ jobs:
       # skips frontend-lint entirely.
       - name: Lint (eslint ceiling, read from ci.yml)
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           MW="$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml \
             | grep -oE '[0-9]+$' | head -n 1 || true)"
           if [ -z "$MW" ]; then
-            echo "::error::could not read the eslint ceiling out of .github/workflows/ci.yml;"\
+            err "could not read the eslint ceiling out of .github/workflows/ci.yml;"\
               "refusing to guess one" >&2
             exit 1
           fi
@@ -251,6 +252,7 @@ jobs:
           RATCHET_RESULT: ${{ needs.ratchet-gates.result }}
           FRONTEND_RESULT: ${{ needs.frontend-ceiling.result }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
 
           RUN_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
@@ -291,7 +293,7 @@ jobs:
           gh label create ratchet-audit --repo "$REPO" --force \
             --color BFD4F2 \
             --description "Main Ratchet Audit: tracking issue for ratchet/ceiling/baseline drift on main" \
-            || echo "::notice::Could not ensure the ratchet-audit label (continuing); it may already exist or label writes may be refused."
+            || notice "Could not ensure the ratchet-audit label (continuing); it may already exist or label writes may be refused."
 
           # Every open issue this workflow owns, lowest number first. The
           # concurrency group is per-SHA on purpose, so two drifting pushes CAN
@@ -313,7 +315,7 @@ jobs:
               --body "Duplicate of #$EXISTING, this workflow's single tracking issue. Closing; the drift record lives there." \
               || true
             gh issue close "$duplicate" --repo "$REPO" --reason "not planned" || true
-            echo "::notice::Closed duplicate tracking issue #$duplicate (canonical is #$EXISTING)."
+            notice "Closed duplicate tracking issue #$duplicate (canonical is #$EXISTING)."
           done
 
           # Is this run's commit still main's head? The concurrency group is
@@ -352,7 +354,7 @@ jobs:
 
           if [ -n "$FAILED" ]; then
             if [ -n "$SUPERSEDED" ]; then
-              echo "::notice::Main ratchet drift at $COMMIT_SHA, but main has moved to $HEAD_SHA; the audit for the current head owns the tracking issue. Failed lanes:$FAILED  Run: $RUN_URL"
+              notice "Main ratchet drift at $COMMIT_SHA, but main has moved to $HEAD_SHA; the audit for the current head owns the tracking issue. Failed lanes:$FAILED  Run: $RUN_URL"
               exit 1
             fi
             BODY="$(printf '%s\n\nMain ratchet/ceiling drift was detected on the integrated tree at `%s`.\n\nFailed lanes:%s\n\nRun: %s\n\nWhy this matters: these gates guard against drift that would otherwise surface on an UNRELATED pull request (a PR runs against merge(branch, main) and inherits main'\''s state). Fix the drift on main rather than raising the ceiling in someone else'\''s PR. See CONTRIBUTING.md for the ratchet/ceiling/baseline path.\n\nThis issue is maintained automatically by the Main Ratchet Audit workflow; it will be closed on the next all-green push.' \
@@ -361,16 +363,16 @@ jobs:
             if [ -n "$EXISTING" ]; then
               COMMENT="$(printf 'Still drifting at `%s`.%s\n\nRun: %s' "$COMMIT_SHA" "$FAILED" "$RUN_URL")"
               gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
-              echo "::notice::Updated tracking issue #$EXISTING with fresh drift at $COMMIT_SHA."
+              notice "Updated tracking issue #$EXISTING with fresh drift at $COMMIT_SHA."
               exit 1
             fi
 
             # No open issue yet -- create one. `gh issue create` is refused
             # outright when a repository disables Actions issue writes for the
             # GITHUB_TOKEN; treat ONLY that specific refusal as a soft failure,
-            # reported as a ::notice:: carrying the drift, so the reporter does
-            # not go red for a reason no maintainer can act on. Any OTHER failure
-            # is real and must fail loud on its own exit code. Same remedy shape
+            # reported as a notice annotation carrying the drift, so the reporter
+            # does not go red for a reason no maintainer can act on. Any OTHER
+            # failure is real and must fail loud on its own exit code. Same remedy shape
             # as test-durations.yml's "Open PR if durations changed".
             rc=0
             out="$(gh issue create --repo "$REPO" \
@@ -385,11 +387,11 @@ jobs:
               # reached here, so `gh issue create --label ratchet-audit` fails
               # for a missing/unaddable label rather than for issues being
               # disabled. That is the same class of write refusal, so treat it
-              # the same: emit ::notice:: and exit 1 so drift stays visible on
+              # the same: emit a notice annotation and exit 1 so drift stays visible on
               # the commit instead of the job reding on the raw rc.
               case "$out" in
                 *"not permitted"*|*"Resource not accessible by integration"*|*"issues are disabled"*|*"Issues has been disabled"*|*"could not add label"*|*"label"*"not found"*|*"not found"*"label"*)
-                  echo "::notice::Main ratchet drift detected at $COMMIT_SHA but this workflow may not open issues (or provision the ratchet-audit label) in this repository. Failed lanes:$FAILED  Run: $RUN_URL"
+                  notice "Main ratchet drift detected at $COMMIT_SHA but this workflow may not open issues (or provision the ratchet-audit label) in this repository. Failed lanes:$FAILED  Run: $RUN_URL"
                   # Still fail the run so the drift verdict is visible on the
                   # commit even when the durable issue cannot be created.
                   exit 1
@@ -408,7 +410,7 @@ jobs:
           # is still main's head, or a slow green audit closes the drift a newer
           # push recorded.
           if [ -z "$CONFIRMED_CURRENT" ]; then
-            echo "::notice::Main ratchet gates green at $COMMIT_SHA, but it is not confirmed to be main's head (head read as '$HEAD_SHA'); leaving the tracking issue alone, since any open drift may belong to a newer commit."
+            notice "Main ratchet gates green at $COMMIT_SHA, but it is not confirmed to be main's head (head read as '$HEAD_SHA'); leaving the tracking issue alone, since any open drift may belong to a newer commit."
             exit 0
           fi
 
@@ -417,7 +419,7 @@ jobs:
             gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
             gh issue close "$EXISTING" --repo "$REPO" \
               --reason completed
-            echo "::notice::Closed tracking issue #$EXISTING; main ratchet gates green at $COMMIT_SHA."
+            notice "Closed tracking issue #$EXISTING; main ratchet gates green at $COMMIT_SHA."
           else
             echo "Main ratchet/ceiling/baseline gates all green at $COMMIT_SHA; no tracking issue open."
           fi

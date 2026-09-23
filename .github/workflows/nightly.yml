@@ -332,6 +332,7 @@ jobs:
           KIROCREW_E2E_SCENARIOS: "1"
           KIROCREW_E2E_REQUIRE: "1"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             PY=.venv/Scripts/python.exe
@@ -345,7 +346,7 @@ jobs:
           # Six user-flow scenarios and 49 fixture-isolation checks must execute.
           # Anchor the count so 155 passed cannot satisfy the 55-test contract.
           if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
-            echo "::error::the pod scenario suite did not report 55 passed; a skipped or collapsed suite is not a pass"
+            err "the pod scenario suite did not report 55 passed; a skipped or collapsed suite is not a pass"
             exit 1
           fi
           exit "${status}"

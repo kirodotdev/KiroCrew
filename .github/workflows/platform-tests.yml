@@ -134,6 +134,7 @@ jobs:
       # whenever that shard died early.
       - name: Assert the macOS peer-identity canary runs (not skipped)
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -146,7 +147,7 @@ jobs:
           # "1 passed" matches "11 passed", "101 passed" and "231 passed", so the
           # pin held for almost any outcome. Measured.
           grep -qE '(^|[^0-9])1 passed' canary.log || {
-            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            err "macOS peer-identity canary did not PASS (skipped or not collected)"
             exit 1
           }
 
@@ -160,6 +161,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -o pipefail
           echo "::remove-matcher owner=python::"
           pytest -v -n0 --no-cov --timeout=90 -o faulthandler_timeout=75 \
@@ -176,7 +178,7 @@ jobs:
           passed=$(sed -n 's/.*[^0-9]\([0-9][0-9]*\) passed.*/\1/p' terminal.log | tail -1)
           echo "terminal handler suite: ${passed:-0} passed"
           if [ "${passed:-0}" -lt 200 ]; then
-            echo "::error::terminal handler suite reported only ${passed:-0} passes on macOS; expected ~277 (collection collapse, mass skip, or the file was not collected)"
+            err "terminal handler suite reported only ${passed:-0} passes on macOS; expected ~277 (collection collapse, mass skip, or the file was not collected)"
             exit 1
           fi
 

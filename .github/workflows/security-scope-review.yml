@@ -134,6 +134,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           FORCED: ${{ contains(github.event.pull_request.labels.*.name, 'security-scope-review') }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           if [ "$FORCED" = "true" ]; then
             echo "in_scope=true" >> "$GITHUB_OUTPUT"
@@ -154,7 +155,7 @@ jobs:
             # catch, because `false` is the honest answer it must honor. The fork
             # lane orders its own fetch ahead of this step for the same reason.
             if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
-              echo "::error::$sha is not present after fetching it, so this lane cannot tell whether the security surface was touched. Failing closed rather than resolving an unanswerable question as \`false\`."
+              err "$sha is not present after fetching it, so this lane cannot tell whether the security surface was touched. Failing closed rather than resolving an unanswerable question as \`false\`."
               exit 1
             fi
           done
@@ -193,7 +194,7 @@ jobs:
           touched="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
             "${surface[@]}" 2>&1)" || rc=$?
           if [ "$rc" -ne 0 ]; then
-            echo "::error::could not diff $BASE_SHA...$HEAD_SHA against the review surface, so whether this change touches it is unknown. Failing closed rather than answering \`false\`. git said: $touched"
+            err "could not diff $BASE_SHA...$HEAD_SHA against the review surface, so whether this change touches it is unknown. Failing closed rather than answering \`false\`. git said: $touched"
             exit 1
           fi
           if [ -n "$touched" ]; then
@@ -218,6 +219,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           exact="<!-- ai-review-human-override target=scope head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
           # A comments feed this step could not READ is not a PR with no
@@ -238,7 +240,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            err "Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
           fi
           record="$(printf '%s' "$comments" \
@@ -273,6 +275,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           # Remove before creating: `mkdir -p` alone leaves whatever is committed
           # at this path in place, and a tracked symlink there would redirect the
@@ -288,7 +292,7 @@ jobs:
             # introduces the contract. Use the head COMMIT and say so; a contract
             # absent EVERYWHERE fails closed rather than degrading into an
             # unspecified review that could look clean.
-            echo "::warning::.github/review-prompts/security-scope.md is missing or empty on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
+            warn ".github/review-prompts/security-scope.md is missing or empty on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
             # The HEAD BLOB, never the checkout. This job's workspace is the BASE
             # tree, so the head copy is not on disk to `cp` at all -- and committed
             # content is what `publish`'s own bootstraps already read, for the same
@@ -296,7 +300,7 @@ jobs:
             # the marker it demands.
             git show "$HEAD_SHA:.github/review-prompts/security-scope.md" > "$contract" 2>/dev/null || true
             if [ ! -s "$contract" ]; then
-              echo "::error::.github/review-prompts/security-scope.md is missing or empty at the head commit ($HEAD_SHA) too. Refusing to review against an unspecified contract."
+              err ".github/review-prompts/security-scope.md is missing or empty at the head commit ($HEAD_SHA) too. Refusing to review against an unspecified contract."
               exit 1
             fi
           fi
@@ -327,6 +331,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH: ${{ runner.temp }}/authentic.patch
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # `git diff` needs the OBJECTS. This workspace is the BASE checkout, so
           # fetch-depth: 0 supplies the base history and the head is fetched here.
@@ -336,7 +341,7 @@ jobs:
             fi
           done
           if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
-            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            err "head SHA $HEAD_SHA not present after fetch; failing closed."
             exit 1
           fi
           # Written under RUNNER_TEMP, never into the workspace: the reviewed tree
@@ -347,11 +352,11 @@ jobs:
           # The same 1 MB cap the fork lane fails closed on: a diff too large to
           # review must not read as a review that found nothing.
           if [ "$(wc -c < "$PATCH" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-            echo "::error::diff exceeds 1 MB; failing closed (split the PR)."
+            err "diff exceeds 1 MB; failing closed (split the PR)."
             exit 1
           fi
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            err "empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
           echo "Prefetched the diff ($(wc -c < "$PATCH") bytes) as a data file."
@@ -579,6 +584,7 @@ jobs:
         env:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           rm -f scope-review.md
           : > scope-review.md
@@ -590,7 +596,7 @@ jobs:
             printf '%s\n' "$summary" > scope-review.md
           fi
           if [ ! -s scope-review.md ]; then
-            echo "::warning::No review text in the execution_file; publish will fail this lane closed on the missing marker."
+            warn "No review text in the execution_file; publish will fail this lane closed on the missing marker."
           fi
 
       # The rows cross to `validate` UNPROBED, and the name says so. The probe is
@@ -728,6 +734,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           dir="${RUNNER_TEMP:-/tmp}/scope-redact"
           # Remove before creating: a tracked symlink the PR committed at this path
@@ -740,11 +748,11 @@ jobs:
             # Absent on the base -- the bootstrap window for the pull request that
             # introduces the redactor, and admissible in this job for the same reason
             # the harness bootstrap is: nothing here is worth reaching.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+            warn "scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
             cp scripts/scope_redact.py "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
+            err "scripts/scope_redact.py is missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -770,6 +778,7 @@ jobs:
         env:
           REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # `scrub_ok` is what the upload below reads, and it is written FALSE
           # first: that upload runs on `always()`, so a refusal here would
@@ -783,12 +792,12 @@ jobs:
             exit 0
           fi
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
-            echo "::error::the base-owned outbound redactor is unavailable, so the review text cannot be scrubbed before it is published. Refusing to publish it raw."
+            err "the base-owned outbound redactor is unavailable, so the review text cannot be scrubbed before it is published. Refusing to publish it raw."
             exit 0
           fi
           if [ -s scope-review.md ]; then
             python "$REDACTOR" --mode text scope-review.md || {
-              echo "::error::scrubbing scope-review.md failed, so it cannot be published safely."
+              err "scrubbing scope-review.md failed, so it cannot be published safely."
               exit 0
             }
           fi
@@ -828,6 +837,8 @@ jobs:
         env:
           REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           # Written FALSE first: the upload below reads it, and a refusal here must
           # not be followed by an upload of the very file it refused to publish.
@@ -840,7 +851,7 @@ jobs:
             exit 0
           fi
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
-            echo "::error::the base-owned outbound redactor is unavailable, so the candidate set cannot be checked for credential shapes. Refusing to upload it unchecked."
+            err "the base-owned outbound redactor is unavailable, so the candidate set cannot be checked for credential shapes. Refusing to upload it unchecked."
             exit 1
           fi
           rm -f scrub-probe-candidates.json
@@ -864,16 +875,16 @@ jobs:
           # invocation with no `--mode`, since every call in this lane declares the file
           # shape it is scrubbing.
           if ! grep -q -- "--drop-changed-fields" "$REDACTOR"; then
-            echo "::warning::the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. Refusing the run, which is the answer this redactor can give."
+            warn "the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. Refusing the run, which is the answer this redactor can give."
             # Exit 10 is the redactor's own answer to "did this change", which is the
             # whole question the probe asks. Reading it beats grepping the probe's text
             # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
             # spelling, so a `[REDACTED-` grep misses exactly the credential class the
             # candidate set most needs caught.
             if [ "$probe" = "10" ]; then
-              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+              err "a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
             else
-              echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+              err "the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
             fi
             exit 1
           fi
@@ -896,14 +907,14 @@ jobs:
               echo "The candidate set needed no field removed; the generic probe answered on text the prune places elsewhere."
               ;;
             10)
-              echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in a field the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report. The count is above."
+              warn "a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in a field the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report. The count is above."
               ;;
             11)
-              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential, or record a human override for this head with /ai-review override scope <sha>: <reason>, which skips this lane whole."
+              err "a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential, or record a human override for this head with /ai-review override scope <sha>: <reason>, which skips this lane whole."
               exit 1
               ;;
             *)
-              echo "::error::the candidate set could not be pruned of credential shapes, so the corpus that would reach the legs is not one anybody checked. Refusing to upload it."
+              err "the candidate set could not be pruned of credential shapes, so the corpus that would reach the legs is not one anybody checked. Refusing to upload it."
               exit 1
               ;;
           esac
@@ -920,10 +931,12 @@ jobs:
           # refusal reads identically to a genuinely absent scrubber.
           REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           if [ ! -s candidates.json ]; then
             echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-            echo "::error::The reviewer wrote no candidates.json, so nothing could be classified. An unmeasured scope review is not a pass."
+            err "The reviewer wrote no candidates.json, so nothing could be classified. An unmeasured scope review is not a pass."
             exit 1
           fi
           # THE VALIDATOR COMES FROM THE BASE REF whenever the base has one: a
@@ -951,13 +964,13 @@ jobs:
               # first commit. Use the checked-out copy and NAME the bootstrap; a
               # harness absent everywhere fails closed rather than degrading into an
               # unvalidated candidate file that could read as clean.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+              warn "scripts/$f is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
               cp "scripts/$f" "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
             if [ ! -s "$HARNESS/$f" ]; then
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
+              err "scripts/$f is missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
               exit 1
             fi
           done
@@ -984,7 +997,7 @@ jobs:
             # Absent at base: the corpus itself is being added, so there is no
             # committed row to dedupe against and nothing that could be withdrawn
             # to escape one. Adjudicate every candidate rather than failing.
-            echo "::warning::No golden-paths corpus at $corpus_path on the base commit; every candidate will be adjudicated."
+            warn "No golden-paths corpus at $corpus_path on the base commit; every candidate will be adjudicated."
           fi
           args=(validate --candidates candidates.json --out normalized.json)
           if [ -n "$base_corpus" ]; then
@@ -1006,20 +1019,20 @@ jobs:
           # JSON. `validate.err` is stderr prose with no structure to keep.
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
             echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-            echo "::error::the base-owned outbound redactor is unavailable, so the validator output cannot be scrubbed before it is published. Refusing to publish it raw."
+            err "the base-owned outbound redactor is unavailable, so the validator output cannot be scrubbed before it is published. Refusing to publish it raw."
             exit 1
           fi
           if [ -s validate.json ]; then
             python "$REDACTOR" --mode json validate.json || {
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::scrubbing validate.json failed, so it cannot be published safely."
+              err "scrubbing validate.json failed, so it cannot be published safely."
               exit 1
             }
           fi
           if [ -s validate.err ]; then
             python "$REDACTOR" --mode text validate.err || {
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::scrubbing validate.err failed, so it cannot be published safely."
+              err "scrubbing validate.err failed, so it cannot be published safely."
               exit 1
             }
           fi
@@ -1040,7 +1053,7 @@ jobs:
             rm -f scrub-probe.json
             if [ "$probe" != "0" ] && [ "$probe" != "10" ]; then
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::the normalized corpus could not be checked for credential shapes, and it travels to the legs as a public artifact. Refusing to upload it unchecked."
+              err "the normalized corpus could not be checked for credential shapes, and it travels to the legs as a public artifact. Refusing to upload it unchecked."
               exit 1
             fi
             # Exit 10 is the redactor's own answer to "did this change", which is
@@ -1050,7 +1063,7 @@ jobs:
             # exactly the credential class the corpus most needs refused.
             if [ "$probe" = "10" ]; then
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The corpus travels to the adjudication legs as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+              err "a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The corpus travels to the adjudication legs as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
               exit 1
             fi
             echo "adjudicate=true" >> "$GITHUB_OUTPUT"
@@ -1091,7 +1104,7 @@ jobs:
             cat validate.err
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::The candidate file could not be validated -- see the job summary. A corpus that cannot be trusted is not a pass."
+          err "The candidate file could not be validated -- see the job summary. A corpus that cannot be trusted is not a pass."
           exit 1
 
       - name: Upload the normalized corpus
@@ -1187,6 +1200,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LEG: ${{ matrix.os }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           # `git archive` needs the OBJECTS, not just the refs. fetch-depth: 0
           # normally supplies both, so fetch only what is genuinely absent.
@@ -1223,10 +1238,10 @@ jobs:
             mkdir -p "$BOOT"
             git show "$HEAD_SHA:scripts/$f" > "$BOOT/$f" 2>/dev/null || true
             if [ ! -s "$BOOT/$f" ]; then
-              echo "::error::scripts/$f is missing or empty at the base commit ($BASE_SHA) AND at the head commit ($HEAD_SHA). Refusing to adjudicate with a harness that exists nowhere."
+              err "scripts/$f is missing or empty at the base commit ($BASE_SHA) AND at the head commit ($HEAD_SHA). Refusing to adjudicate with a harness that exists nowhere."
               exit 1
             fi
-            echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            warn "scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
             bootstrap=1
             if [ "$f" = "deny_diff.py" ]; then
               DENY_DIFF="$BOOT/$f"
@@ -1268,13 +1283,13 @@ jobs:
           echo "scrub_ok=false" >> "$GITHUB_OUTPUT"
           if [ -s "report-$LEG.json" ]; then
             python "$REDACTOR" --mode json "report-$LEG.json" || {
-              echo "::error::scrubbing report-$LEG.json failed, so it cannot be published safely."
+              err "scrubbing report-$LEG.json failed, so it cannot be published safely."
               exit 1
             }
           fi
           if [ -s error.log ]; then
             python "$REDACTOR" --mode text error.log || {
-              echo "::error::scrubbing error.log failed, so it cannot be published safely."
+              err "scrubbing error.log failed, so it cannot be published safely."
               exit 1
             }
           fi
@@ -1293,11 +1308,11 @@ jobs:
             # A differential that could not run is not a pass. The report is
             # uploaded anyway if it exists, and publish reads a missing leg as a
             # missing verdict rather than as a clean one.
-            echo "::error::deny_diff could not run on $LEG (corpus or ref error) -- see the job log."
+            err "deny_diff could not run on $LEG (corpus or ref error) -- see the job log."
             exit 1
           fi
           if [ "$rc" != "0" ]; then
-            echo "::error::Newly-refused candidates on $LEG -- the verdict is folded in the publish job."
+            err "Newly-refused candidates on $LEG -- the verdict is folded in the publish job."
             exit 1
           fi
           echo "No candidate flipped from allowed to refused on $LEG."
@@ -1402,6 +1417,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           dir="${RUNNER_TEMP:-/tmp}/scope-redact"
           rm -rf "$dir"
@@ -1413,11 +1430,11 @@ jobs:
             # introduces the redactor. The HEAD BLOB, never the worktree file: this
             # job holds `pull-requests: write`, and a `cp` out of the merge-ref
             # checkout would execute a path any earlier step could have written.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            warn "scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
             git show "$HEAD_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
+            err "scripts/scope_redact.py is missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -1480,6 +1497,8 @@ jobs:
           # matrix.
           EXPECT_LEGS: "ubuntu-latest macos-latest windows-latest"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           reports=()
           found=0
@@ -1524,7 +1543,7 @@ jobs:
               # write-scoped job could have written, and committed content is the
               # weakest thing that closes that. Same source `adjudicate` bootstraps
               # from, for the same reason.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+              warn "scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
               git show "$HEAD_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
@@ -1532,7 +1551,7 @@ jobs:
               # No folder anywhere. `error` is the fail-closed verdict: a run that
               # could not fold has measured nothing, and the step below reds on it.
               echo "folded=error" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
+              err "scripts/$f is missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
               exit 0
             fi
           done
@@ -1565,14 +1584,14 @@ jobs:
           # turns on.
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
             echo "folded=error" >> "$GITHUB_OUTPUT"
-            echo "::error::the base-owned outbound redactor is unavailable, so the folded verdict cannot be scrubbed before it is published. Refusing to publish it raw."
+            err "the base-owned outbound redactor is unavailable, so the folded verdict cannot be scrubbed before it is published. Refusing to publish it raw."
             exit 0
           fi
           for f in verdict-body.md verdict.err; do
             [ -s "$f" ] || continue
             python "$REDACTOR" --mode text "$f" || {
               echo "folded=error" >> "$GITHUB_OUTPUT"
-              echo "::error::scrubbing $f failed, so it cannot be published safely."
+              err "scrubbing $f failed, so it cannot be published safely."
               exit 0
             }
           done
@@ -1581,7 +1600,7 @@ jobs:
             python "$REDACTOR" --mode json --fail-if-changed confirmed-rows.json || rows_redacted=$?
             if [ "$rows_redacted" != "0" ] && [ "$rows_redacted" != "10" ]; then
               echo "folded=error" >> "$GITHUB_OUTPUT"
-              echo "::error::scrubbing confirmed-rows.json failed, so it cannot be published safely."
+              err "scrubbing confirmed-rows.json failed, so it cannot be published safely."
               exit 0
             fi
           fi
@@ -1598,7 +1617,7 @@ jobs:
           if [ "$rows_redacted" = "10" ] \
             || { [ -s confirmed-rows.json ] && grep -q '\[REDACTED-' confirmed-rows.json; }; then
             echo "folded=rows-redacted" >> "$GITHUB_OUTPUT"
-            echo "::error::a confirmed row carried a credential shape and was redacted, so it no longer names the operation that was refused. Every surface this lane writes is scrubbed, so reproduce the rows with scripts/deny_diff.py against this head and narrow the rule at the tier they name -- or record a human override for this head."
+            err "a confirmed row carried a credential shape and was redacted, so it no longer names the operation that was refused. Every surface this lane writes is scrubbed, so reproduce the rows with scripts/deny_diff.py against this head and narrow the rule at the tier they name -- or record a human override for this head."
             exit 0
           fi
           case "$rc" in
@@ -1650,6 +1669,7 @@ jobs:
           # because this job holds the comment-write token.
           HARNESS: ${{ runner.temp }}/scope-harness-publish
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           MARKER="<!-- security-scope-review -->"
           OUT="${RUNNER_TEMP:-/tmp}/scope-comment.md"
@@ -1892,12 +1912,12 @@ jobs:
           # lane's most public surface, and the status step below reads a missing
           # comment as an unpublished verdict rather than as a pass.
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
-            echo "::error::the base-owned outbound redactor is unavailable, so the comment body cannot be scrubbed before it is posted. Refusing to post it raw."
+            err "the base-owned outbound redactor is unavailable, so the comment body cannot be scrubbed before it is posted. Refusing to post it raw."
             echo "verdict=UNPUBLISHED" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           python "$REDACTOR" --mode text "$OUT" || {
-            echo "::error::scrubbing the comment body failed, so it cannot be posted safely."
+            err "scrubbing the comment body failed, so it cannot be posted safely."
             echo "verdict=UNPUBLISHED" >> "$GITHUB_OUTPUT"
             exit 1
           }
@@ -2029,6 +2049,7 @@ jobs:
           HUMAN_OVERRIDE: ${{ needs.generate.outputs.override }}
           OVERRIDE_ACTOR: ${{ needs.generate.outputs.override_actor }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides Security Scope Review for $HEAD. Passing gate."
             exit 0
@@ -2051,7 +2072,7 @@ jobs:
               echo "No security-surface path touched and no \`security-scope-review\` label: nothing to scope for $HEAD."
               exit 0 ;;
             *)
-              echo "::error::\`generate\` never resolved this lane's review scope for $HEAD (in_scope=\"$IN_SCOPE\"), so nothing measured whether this change tightens the deny composite. This lane fails CLOSED on a change it did not measure: read the \`generate\` job logs and re-run, or record a human override."
+              err "\`generate\` never resolved this lane's review scope for $HEAD (in_scope=\"$IN_SCOPE\"), so nothing measured whether this change tightens the deny composite. This lane fails CLOSED on a change it did not measure: read the \`generate\` job logs and re-run, or record a human override."
               exit 1 ;;
           esac
           if [ "$ACTOR" = "dependabot[bot]" ]; then
@@ -2069,10 +2090,10 @@ jobs:
               echo "::warning title=Security Scope Review CONCERNS::$WHY -- read the Security Scope Review comment on this PR."
               exit 0 ;;
             BLOCK)
-              echo "::error::Security scope verdict for $HEAD: BLOCK -- $WHY. Narrow the rule at the tier named in the PR comment. Withdrawing a golden path is not the way to green: that is its own pull request, on its own merits."
+              err "Security scope verdict for $HEAD: BLOCK -- $WHY. Narrow the rule at the tier named in the PR comment. Withdrawing a golden path is not the way to green: that is its own pull request, on its own merits."
               exit 1 ;;
             *)
-              echo "::error::Security Scope Review produced no verdict for $HEAD ($WHY). This lane fails CLOSED -- an unmeasured tightening must not read as \"nothing newly refused\". See the job logs and re-run, or record a human override."
+              err "Security Scope Review produced no verdict for $HEAD ($WHY). This lane fails CLOSED -- an unmeasured tightening must not read as \"nothing newly refused\". See the job logs and re-run, or record a human override."
               exit 1 ;;
           esac
 
@@ -2102,6 +2123,7 @@ jobs:
           # merge-ref checkout, because this job holds the comment-write token.
           HARNESS: ${{ runner.temp }}/scope-harness-publish
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human override for $HEAD: the per-head floor is not applied."
@@ -2117,7 +2139,7 @@ jobs:
           fi
           SC="${HARNESS:-}/scope_candidates.py"
           if [ ! -s "$SC" ]; then
-            echo "::error::the trusted scope harness is absent at $SC, so the per-head floor cannot be settled for $HEAD. Failing closed."
+            err "the trusted scope harness is absent at $SC, so the per-head floor cannot be settled for $HEAD. Failing closed."
             exit 1
           fi
           enc="$(jq -rn '"Security Scope Review" | @uri')"
@@ -2161,11 +2183,11 @@ jobs:
           raised="$(printf '%s\n' "$floor" | sed -n 's/^conclusion=//p')"
           why="$(printf '%s\n' "$floor" | sed -n 's/^why=//p')"
           if [ -z "$floor_ok" ] || [ -z "$raised" ]; then
-            echo "::error::the per-head floor computation for $HEAD did not settle, so Security Scope Review fails closed rather than passing. Read this job's logs for the harness error, then re-run -- or record a human override for this head."
+            err "the per-head floor computation for $HEAD did not settle, so Security Scope Review fails closed rather than passing. Read this job's logs for the harness error, then re-run -- or record a human override for this head."
             exit 1
           fi
           if [ "$raised" != "success" ]; then
-            echo "::error::Security Scope Review for $HEAD is held at the harder verdict a prior run of this head published ($why). This run classified nothing that clears it. Re-measure and push, or record a human override for this head."
+            err "Security Scope Review for $HEAD is held at the harder verdict a prior run of this head published ($why). This run classified nothing that clears it. Re-measure and push, or record a human override for this head."
             exit 1
           fi
           echo "Per-head floor for $HEAD: $why."

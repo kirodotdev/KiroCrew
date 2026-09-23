@@ -106,10 +106,11 @@ jobs:
           REPO: ${{ github.repository }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # head_sha from the triggering run is set by GitHub and is authoritative.
           head_sha="$WR_HEAD_SHA"
-          if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
+          if [ -z "$head_sha" ]; then err "no workflow_run head_sha"; exit 1; fi
 
           # Bounded retry for the read-only resolver queries below. A single-shot
           # `gh api` aborts on a transient TLS / 5xx / rate-limit error, and this
@@ -153,21 +154,21 @@ jobs:
           # no verdict is withheld; what changes is that the log names the cause.
           if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
             --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            err "could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$pr" ]; then
-            echo "::error::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
+            err "no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
             exit 1
           fi
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            err "could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
-            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            err "PR #$pr reported an empty base.sha; failing closed"
             exit 1
           fi
 
@@ -241,6 +242,7 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PATCH: ${{ runner.temp }}/authentic.patch
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # COMPLETE diff via git, NOT the compare API: the compare endpoint
           # truncates very large diffs, which would let a big fork PR slip a defect
@@ -257,22 +259,22 @@ jobs:
           echo "::add-mask::$auth_b64"  # mask the derived header so it can never surface in logs
           git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
             fetch --no-tags --quiet origin "refs/pull/$PR/head" \
-            || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
+            || { err "could not fetch PR head history for #$PR"; exit 1; }
           # Pin to the exact CI-reviewed head SHA; fail closed if it is missing
           # (e.g. the fork rewrote history out from under the review).
           if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            err "head SHA $HEAD_SHA not present after fetch; failing closed."
             exit 1
           fi
           git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
           # git diff has no API size cap, so an oversized diff is a real signal —
           # fail CLOSED rather than review only a prefix.
           if [ "$(wc -c < "$PATCH" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-            echo "::error::authentic diff exceeds 1 MB; failing closed (split the PR)."
+            err "authentic diff exceeds 1 MB; failing closed (split the PR)."
             exit 1
           fi
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            err "empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
           # The patch is deliberately NOT applied to the working tree. The checkout
@@ -896,6 +898,7 @@ jobs:
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           VERDICT: ${{ steps.verdict.outputs.verdict }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           case "${VERDICT:-UNKNOWN}" in
             PASS)     conclusion="success"; title="PASS — sound design" ;;
@@ -951,7 +954,7 @@ jobs:
               fi
               sleep 5
             done
-            echo "::warning::could not complete check-run $1 for $HEAD"
+            warn "could not complete check-run $1 for $HEAD"
             return 1
           }
           if [ -n "${CHECK_ID:-}" ]; then

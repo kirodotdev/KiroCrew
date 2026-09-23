@@ -689,6 +689,8 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         id: feed
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           ZIP_SHA512=$(openssl dgst -sha512 -binary work/notarized.zip | base64 -w 0)
           ZIP_SIZE=$(stat -c%s work/notarized.zip)
@@ -711,10 +713,10 @@ jobs:
             local got
             got=$(curl -fsS --retry 3 --retry-delay 2 "$1" | openssl dgst -sha512 -binary | base64 -w 0)
             if [ "$got" != "$2" ]; then
-              echo "::error::$3 served by the CDN does not match the artifact this feed would advertise."
-              echo "::error::  expected sha512 (local build): $2"
-              echo "::error::  served   sha512 (published):   $got"
-              echo "::error::A versioned key was already published with different bytes. Do NOT republish it (edge divergence, #62) -- cut a new version instead."
+              err "$3 served by the CDN does not match the artifact this feed would advertise."
+              err "  expected sha512 (local build): $2"
+              err "  served   sha512 (published):   $got"
+              err "A versioned key was already published with different bytes. Do NOT republish it (edge divergence, #62) -- cut a new version instead."
               exit 1
             fi
             echo "Verified published $3 matches the feed digest."
@@ -736,11 +738,11 @@ jobs:
           FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
             -o /tmp/current-feed.yml -w '%{http_code}' \
             "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/latest-mac.yml") \
-            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+            || { err "channel feed fetch failed (transport)"; exit 1; }
           case "$FEED_HTTP" in
             200) ;;
             403|404) : > /tmp/current-feed.yml ;;
-            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+            *) err "channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
           # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
           # input, unlike grep -v); an ls-remote failure aborts via pipefail.
@@ -752,10 +754,10 @@ jobs:
             --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
           if [ "$VERDICT" = "hold" ]; then
             echo "advance=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::feed/${CHANNEL}/latest-mac.yml already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            notice "feed/${CHANNEL}/latest-mac.yml already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
             exit 0
           elif [ "$VERDICT" != "advance" ]; then
-            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            err "feed guard returned neither advance nor hold (got: '${VERDICT}')"
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
@@ -797,7 +799,7 @@ jobs:
           echo "Feed Cache-Control as served: ${FEED_CC:-<none>}"
           case "$FEED_CC" in
             *max-age=*) : ;;
-            *) echo "::error::feed served without a max-age Cache-Control (#709 regression)"; exit 1 ;;
+            *) err "feed served without a max-age Cache-Control (#709 regression)"; exit 1 ;;
           esac
 
       # TRANSITION BRIDGE -- do NOT delete without reading this.
@@ -823,6 +825,7 @@ jobs:
       - name: Write legacy update feed (pre-electron-updater clients)
         if: env.HAS_SIGNING_SECRETS && steps.feed.outputs.advance == 'true'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           cat > /tmp/latest-mac.json <<EOF
           {
@@ -853,7 +856,7 @@ jobs:
             -I "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/latest-mac.json" \
             | tr -d '\r' | sed -n 's/^[Cc]ache-[Cc]ontrol: //p' | head -1)
           if [ "${FEED_CC}" != "public, max-age=300" ]; then
-            echo "::error::feed Cache-Control is '${FEED_CC}', expected 'public, max-age=300' -- a feed served without explicit freshness lets clients heuristically cache a stale pointer"
+            err "feed Cache-Control is '${FEED_CC}', expected 'public, max-age=300' -- a feed served without explicit freshness lets clients heuristically cache a stale pointer"
             exit 1
           fi
           echo "Feed Cache-Control verified via CDN: ${FEED_CC}"

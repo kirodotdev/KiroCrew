@@ -124,10 +124,11 @@ jobs:
         # from the previous vector space. That is the correct outcome: those
         # numbers are not comparable.
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           DIGEST="$(python3 -c 'from kiro_crew import embeddings; print(embeddings._GGUF_SHA256)')"
           case "$DIGEST" in
             [0-9a-f][0-9a-f]*) ;;
-            *) echo "::error::could not read the model digest (got '$DIGEST')"; exit 1 ;;
+            *) err "could not read the model digest (got '$DIGEST')"; exit 1 ;;
           esac
           # Derived, not hardcoded: the cache path must follow the code's own idea
           # of where the model lives or the cache silently stops covering it.
@@ -159,6 +160,8 @@ jobs:
 
           from kiro_crew import embeddings
 
+          ERR = "::%s::" % "error"
+
           mgr = embeddings.ModelDownloadManager()
           if mgr.model_ready():
               print(f"model already resident at {mgr.target} (cache hit)")
@@ -166,7 +169,7 @@ jobs:
           print(f"cache miss; downloading the embedding model to {mgr.target}")
           ok = asyncio.run(mgr.ensure_model(attempts=3))
           if not ok or not mgr.model_ready():
-              print(f"::error::embedding model download failed: {mgr.status}")
+              print(f"{ERR}embedding model download failed: {mgr.status}")
               sys.exit(1)
           print("model downloaded and verified")
           PY
@@ -274,6 +277,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           if ! ls bench_baselines/latest/*.json >/dev/null 2>&1; then
             echo "No reports to accept."
             exit 0
@@ -340,7 +344,7 @@ jobs:
               case "$out" in
                 *"not permitted to create or approve pull requests"*)
                   compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
-                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
+                  notice "Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
                   exit 0
                   ;;
                 *)

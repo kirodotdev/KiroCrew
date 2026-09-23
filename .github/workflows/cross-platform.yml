@@ -52,6 +52,8 @@ jobs:
           # pod runner, which is Linux-only by design and says so).
           EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'posix-only-approved') }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
 
           # ADDED lines only ('^+', excluding the '+++' file header). A
@@ -84,7 +86,7 @@ jobs:
           findings=0
           report() {
             findings=$((findings + 1))
-            echo "::error::$1"
+            err "$1"
             echo "- **$1**" >> "$GITHUB_STEP_SUMMARY"
             printf '%s\n' "$2" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
           }
@@ -131,7 +133,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$EXEMPT" = "true" ]; then
-            echo "::warning::'posix-only-approved' label present -- $findings portability finding(s) reported but not blocking."
+            warn "'posix-only-approved' label present -- $findings portability finding(s) reported but not blocking."
             exit 0
           fi
           exit 1

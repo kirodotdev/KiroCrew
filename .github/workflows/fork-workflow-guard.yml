@@ -88,9 +88,11 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           OVERRIDE_LABEL: allow-fork-workflow-change
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -uo pipefail
           head_sha="${WR_HEAD_SHA:-$PR_HEAD_SHA}"
-          if [ -z "$head_sha" ]; then echo "::error::no head sha available"; exit 1; fi
+          if [ -z "$head_sha" ]; then err "no head sha available"; exit 1; fi
 
           # Resolve the PR by matching the open PR whose head SHA == head_sha
           # (workflow_run.pull_requests is empty for forks).
@@ -109,11 +111,11 @@ jobs:
           # stderr is no longer discarded, so a failing query now says why.
           if ! pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
             --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
+            err "could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
             exit 1
           fi
           if [ -z "$pr" ]; then
-            echo "::notice::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to evaluate"
+            notice "no open PR has head $head_sha - superseded or closed while CI was queued; nothing to evaluate"
             exit 0
           fi
 
@@ -127,7 +129,7 @@ jobs:
               -f name="Fork workflow-change guard" -f head_sha="$head_sha" \
               -f status="completed" -f conclusion="failure" \
               -f "output[title]=$1" -f "output[summary]=$2" >/dev/null || true
-            echo "::error::$1"
+            err "$1"
             exit 0
           }
           if ! files="$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename')"; then
@@ -197,6 +199,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           OVERRIDE_LABEL: allow-fork-workflow-change
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # Fail CLOSED: a *failed* removal must never be mistaken for "no label",
           # or a stale approval would carry into the new revision. Only an actual
@@ -216,13 +219,13 @@ jobs:
           elif printf '%s' "$err" | grep -qiE 'HTTP 404|Not Found'; then
             echo "No '$OVERRIDE_LABEL' label present; nothing to strip."
           else
-            echo "::error::could not remove '$OVERRIDE_LABEL' on new push: $err"
+            err "could not remove '$OVERRIDE_LABEL' on new push: $err"
             block_head "Failed to remove '$OVERRIDE_LABEL' on a new push; blocking so a prior maintainer approval cannot carry over to this unreviewed revision."
             exit 1
           fi
           # Confirm the label is really gone; otherwise block the new head.
           if gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' 2>/dev/null | grep -qx "$OVERRIDE_LABEL"; then
-            echo "::error::'$OVERRIDE_LABEL' still present after strip; failing closed."
+            err "'$OVERRIDE_LABEL' still present after strip; failing closed."
             block_head "The '$OVERRIDE_LABEL' label persists after a new push; blocking so a prior approval cannot carry over."
             exit 1
           fi

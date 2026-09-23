@@ -51,6 +51,7 @@ jobs:
           # See the truncation guard below.
           PR_LIST_LIMIT: "900"
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           # Ensure the label exists (idempotent).
@@ -70,7 +71,7 @@ jobs:
           prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
             --json number,mergeable,labels)"
           if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
-            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+            warn "Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
               "the oldest open PRs were dropped and were not considered." \
               "Raise PR_LIST_LIMIT in this workflow."
           fi

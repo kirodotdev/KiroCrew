@@ -250,6 +250,7 @@ jobs:
           RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
           case "$EVENT" in
@@ -301,7 +302,7 @@ jobs:
               fi
               ;;
             pull_request_target) PR="$EVENT_PR"; EXPECTED_SHA="$EVENT_SHA" ;;
-            *) echo "::error::unsupported event: $EVENT"; exit 1 ;;
+            *) err "unsupported event: $EVENT"; exit 1 ;;
           esac
 
           pr_json="$(gh_retry gh pr view "$PR" --repo "$REPO" \
@@ -1279,6 +1280,7 @@ jobs:
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
           DESCRIPTION: ${{ steps.verdict.outputs.description }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
           # A truncated evaluation that deferred to an existing terminal
@@ -1327,7 +1329,7 @@ jobs:
             }' > "$RUNNER_TEMP/readiness-status.json"
           if ! bounded gh api --method POST "repos/$REPO/statuses/$SHA" \
             --input "$RUNNER_TEMP/readiness-status.json" >/dev/null; then
-            echo "::error::Failed to publish the readiness status for $SHA." \
+            err "Failed to publish the readiness status for $SHA." \
               "The POST is not retried (a retry can overwrite a concurrent" \
               "run's newer verdict); re-run this workflow to re-evaluate" \
               "and republish."

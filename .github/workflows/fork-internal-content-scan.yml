@@ -88,9 +88,10 @@ jobs:
           WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           head_sha="$WR_HEAD_SHA"
-          if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
+          if [ -z "$head_sha" ]; then err "no workflow_run head_sha"; exit 1; fi
 
           # Bounded retry: a single-shot `gh api` aborts on a transient TLS/5xx
           # and this lane would then report "no such PR" -- the wrong cause, on a
@@ -129,7 +130,7 @@ jobs:
           # privileged.
           if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
                         --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
-            echo "::error::could not list open PRs; the query itself failed on all 3 attempts"
+            err "could not list open PRs; the query itself failed on all 3 attempts"
             exit 1
           fi
           matches=""
@@ -146,7 +147,7 @@ jobs:
           $rows
           ROWS
           if [ "$n" -eq 0 ]; then
-            echo "::error::no open PR matches head $head_sha on \
+            err "no open PR matches head $head_sha on \
           $WR_HEAD_REPO branch $WR_HEAD_BRANCH; failing closed"
             exit 1
           fi
@@ -165,11 +166,11 @@ jobs:
           fi
           pr="${matches# }"
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr"
+            err "could not read base.sha for PR #$pr"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
-            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            err "PR #$pr reported an empty base.sha; failing closed"
             exit 1
           fi
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
@@ -237,6 +238,7 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PATCH: ${{ runner.temp }}/authentic.patch
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # git, NOT the compare API: the compare endpoint truncates very large
           # diffs, which would let a big fork PR slip an added marker past the cap
@@ -246,11 +248,11 @@ jobs:
           echo "::add-mask::$auth_b64"
           git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
             fetch --no-tags --quiet origin "refs/pull/$PR/head" \
-            || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
+            || { err "could not fetch PR head history for #$PR"; exit 1; }
           # Pin to the exact head SHA Fast Gate vouched for; fail closed if the
           # fork rewrote history out from under it.
           if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            err "head SHA $HEAD_SHA not present after fetch; failing closed."
             exit 1
           fi
           # Assert the base commit is really in the object store. Without this the
@@ -260,16 +262,16 @@ jobs:
           # the default runner shell is `bash -eo pipefail`, so a bare failing
           # command would abort the step with no explanation at all.
           if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-            echo "::error::base SHA $BASE_SHA not present after checkout; failing closed."
+            err "base SHA $BASE_SHA not present after checkout; failing closed."
             exit 1
           fi
           # --unified=0 to match what the engine's added-line parser expects.
           if ! git diff --no-color --unified=0 "$BASE_SHA...$HEAD_SHA" > "$PATCH"; then
-            echo "::error::could not diff $BASE_SHA...$HEAD_SHA; failing closed."
+            err "could not diff $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            err "empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
 
@@ -357,6 +359,7 @@ jobs:
           WR_RUN_ID: ${{ github.event.workflow_run.id }}
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           # BLOCKING lane: anything that is not a clean scan is a failure. An
           # empty RC means the scan step never produced one -- the run died
@@ -378,7 +381,7 @@ jobs:
               fi
               sleep 5
             done
-            echo "::warning::could not complete check-run $1 for $HEAD"
+            warn "could not complete check-run $1 for $HEAD"
             return 1
           }
           if [ -n "${CHECK_ID:-}" ]; then

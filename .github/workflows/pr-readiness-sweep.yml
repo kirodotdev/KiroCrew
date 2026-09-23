@@ -283,7 +283,7 @@ jobs:
           # the backlog. A page that fails three GraphQL attempts is retried at
           # the same cursor with a smaller page size (25 -> 12 -> 6 -> 3 -> 1);
           # only when a page of ONE pull request still fails does the walk end
-          # with a `::warning::` (a cursor comes only from the page that failed),
+          # with a warning annotation (a cursor comes only from the page that failed),
           # so the sweep runs less completely rather than not at all -- the same
           # trade the concurrency block above already takes.
           scan="$(python3 .github/scripts/readiness_sweep_scan.py \

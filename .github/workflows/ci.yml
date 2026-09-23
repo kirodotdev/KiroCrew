@@ -348,6 +348,7 @@ jobs:
           BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           HEAD_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
 
           # Both workflows start from the same webhook, so Fast Gate's run may not
@@ -381,7 +382,7 @@ jobs:
 
             if [ "$latest" = "null" ] || [ -z "$latest" ]; then
               if [ "$elapsed" -ge "$APPEAR_BUDGET" ]; then
-                echo "::error::No Fast Gate run found for $SHA on $HEAD_REPO@$BRANCH" \
+                err "No Fast Gate run found for $SHA on $HEAD_REPO@$BRANCH" \
                      "($EVENT) after ${elapsed}s. The gates cannot be confirmed, so the" \
                      "matrix is not cleared to run."
                 exit 1
@@ -406,7 +407,7 @@ jobs:
                   exit 0
                   ;;
                 *)
-                  echo "::error::Fast Gate concluded '$conclusion' ($url)." \
+                  err "Fast Gate concluded '$conclusion' ($url)." \
                        "Fix the gate it reports; the heavy jobs are skipped on purpose."
                   exit 1
                   ;;
@@ -414,7 +415,7 @@ jobs:
             fi
 
             if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
-              echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
+              err "Fast Gate still '$status' after ${elapsed}s ($url)." \
                    "Failing closed rather than starting the matrix unverified."
               exit 1
             fi
@@ -639,6 +640,7 @@ jobs:
         # Every failure path here falls back to the FULL suite on purpose --
         # never trade a missed test for a faster run.
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           # Leaf-test verdict wins: it is the narrower and more specific reduction,
           # and it is computed once in the `changes` job. `reduced=true` rides along
           # so every existing coverage guard keyed on it keeps working unchanged --
@@ -651,7 +653,7 @@ jobs:
               echo "Leaf-test scope: $(wc -l < "$TARGETS_FILE") file(s), repeated."
               exit 0
             fi
-            echo "::warning::leaf targets arrived empty -- running the FULL backend suite."
+            warn "leaf targets arrived empty -- running the FULL backend suite."
           fi
           if [ "$ONLY_FRONTEND" != "true" ]; then
             echo "reduced=false" >> "$GITHUB_OUTPUT"
@@ -661,7 +663,7 @@ jobs:
           rc=0
           python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
           if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
-            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
+            warn "surface selector unusable (rc=$rc) -- running the FULL backend suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -691,6 +693,7 @@ jobs:
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress" --max-worker-restart=0)
@@ -738,7 +741,7 @@ jobs:
               if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
             done
             if [ "${#CHANGED[@]}" -eq 0 ]; then
-              echo "::error::leaf run resolved no changed files -- refusing to report green."
+              err "leaf run resolved no changed files -- refusing to report green."
               exit 1
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
@@ -788,8 +791,9 @@ jobs:
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           coverage combine 2>/dev/null || true
-          test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
+          test -f .coverage || { err "shard ${{ matrix.group }} produced no coverage data"; exit 1; }
           mv .coverage ".coverage.${{ matrix.group }}"
 
       - name: Upload shard coverage
@@ -996,7 +1000,8 @@ jobs:
       - name: Stage IPv6 coverage data
         if: runner.os == 'Linux' && needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
         run: |
-          test -f .coverage || { echo "::error::IPv6 lane produced no coverage data"; exit 1; }
+          err() { printf '::%s::%s\n' error "$*"; }
+          test -f .coverage || { err "IPv6 lane produced no coverage data"; exit 1; }
           mv .coverage .coverage.ipv6
       - name: Upload IPv6 coverage
         if: runner.os == 'Linux' && needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
@@ -1081,7 +1086,8 @@ jobs:
       - name: Stage kernel lock owner coverage data
         if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
         run: |
-          test -f .coverage || { echo "::error::kernel lock owner lane produced no coverage data"; exit 1; }
+          err() { printf '::%s::%s\n' error "$*"; }
+          test -f .coverage || { err "kernel lock owner lane produced no coverage data"; exit 1; }
           mv .coverage .coverage.kernel-lock-owner
       - name: Upload kernel lock owner coverage
         if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
@@ -1230,6 +1236,7 @@ jobs:
           # grep below turns that skip into a failure.
           KIROCREW_E2E_POD_WINDOWS: "1"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -1252,7 +1259,7 @@ jobs:
           # a count pin exists to catch. `^3 passed` cannot be used: pytest's
           # summary line starts with `=` padding.
           grep -qE '(^|[^0-9])3 passed' pod-boot.log || {
-            echo "::error::the Windows pod boot canary did not report 3 passed (skipped, not collected, or a test was added or renamed without updating this step)"
+            err "the Windows pod boot canary did not report 3 passed (skipped, not collected, or a test was added or renamed without updating this step)"
             exit 1
           }
 
@@ -1274,6 +1281,7 @@ jobs:
           KIROCREW_E2E_SCENARIOS: "1"
           KIROCREW_E2E_REQUIRE: "1"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           echo "::remove-matcher owner=python::"
           pytest -v -p no:cacheprovider -o addopts= -n0 --timeout=600 \
@@ -1285,7 +1293,7 @@ jobs:
           # Anchored so 155 passed cannot satisfy the 55-test contract; raise the
           # number here AND in nightly.yml when you add a scenario.
           if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
-            echo "::error::the pod scenario suite did not report 55 passed on windows-latest; a skipped or collapsed suite is not a pass"
+            err "the pod scenario suite did not report 55 passed on windows-latest; a skipped or collapsed suite is not a pass"
             exit 1
           fi
           exit "${status}"
@@ -1379,7 +1387,8 @@ jobs:
         run: |
           $settings = Join-Path $env:USERPROFILE ".kiro\settings\amazon-internal.json"
           if (Test-Path -LiteralPath $settings) {
-            Write-Host "::error::$settings exists on this runner; the fresh-install precondition this job pins cannot be observed"
+            $err = '::{0}::' -f 'error'
+            Write-Host "$err$settings exists on this runner; the fresh-install precondition this job pins cannot be observed"
             exit 1
           }
           Write-Host "no $settings on this host, as a fresh Windows install would be"
@@ -1387,6 +1396,7 @@ jobs:
       - name: Assert the Windows fail-closed contract runs (not skipped)
         shell: bash
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -1398,7 +1408,7 @@ jobs:
           # Anchored: an unanchored "7 passed" also matches "17 passed" / "27
           # passed". See the pod-boot canary above for the measurement.
           grep -qE '(^|[^0-9])7 passed' canary.log || {
-            echo "::error::the Windows fail-closed sandbox contract did not fully PASS (skipped, not collected, or a test was added/removed without updating this count)"
+            err "the Windows fail-closed sandbox contract did not fully PASS (skipped, not collected, or a test was added/removed without updating this count)"
             exit 1
           }
 
@@ -1612,13 +1622,14 @@ jobs:
           MEMBER_BENCHMARK_OUTPUT: ${{ runner.temp }}/member-memory-benchmark-evidence
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           mkdir -p "$MEMBER_BENCHMARK_OUTPUT"
           set -o pipefail
           if timeout --kill-after=15s 600s python scripts/ci-member-memory-benchmark.py \
               2>&1 | tee "$MEMBER_BENCHMARK_OUTPUT/run.log"; then
             echo "Member recall measurement completed; inspect the artifact's scores, bounds and provenance." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning::Member recall measurement did not finish cleanly; inspect the benchmark artifact and structural validation."
+            warn "Member recall measurement did not finish cleanly; inspect the benchmark artifact and structural validation."
             echo "Read provenance for availability versus completed structural failures; no cached report is substituted." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -1958,8 +1969,9 @@ jobs:
         # `coverage combine` merges them. -o pins the output path (setup.cfg's
         # [coverage:xml] otherwise redirects it under build/coverage/).
         run: |
-          test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
-          test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
+          err() { printf '::%s::%s\n' error "$*"; }
+          test -f .coverage.ipv6 || { err "required IPv6 coverage data missing"; exit 1; }
+          test -f .coverage.kernel-lock-owner || { err "required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
           coverage xml -o coverage.xml
           coverage report
@@ -2080,11 +2092,12 @@ jobs:
           ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND"
           # Empty flags mean the surface-detection job never reported (it failed
           # or was cancelled) -- its verdict can't be trusted, so fail closed.
           if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
-            echo "::error::surface detection (changes) never reported -- failing closed."
+            err "surface detection (changes) never reported -- failing closed."
             exit 1
           fi
           # Both test jobs always RUN (only their scope narrows), so both must
@@ -2093,7 +2106,7 @@ jobs:
           # coverage-combine is skipped by design and would otherwise be the only
           # signal, masking a failed reduced backend suite.
           if [ "$FE" != "success" ]; then
-            echo "::error::frontend-test=$FE -- failing closed."
+            err "frontend-test=$FE -- failing closed."
             exit 1
           fi
           # Frontend coverage lane: frontend-coverage-merge unions the shard
@@ -2104,26 +2117,26 @@ jobs:
           # happened when it shouldn't have) fails closed.
           if [ "$ONLY_BACKEND" = "true" ]; then
             if [ "$FCM" != "skipped" ]; then
-              echo "::error::frontend-coverage-merge=$FCM but this run was backend-only (expected exactly 'skipped') -- inconsistent."
+              err "frontend-coverage-merge=$FCM but this run was backend-only (expected exactly 'skipped') -- inconsistent."
               exit 1
             fi
           elif [ "$FCM" != "success" ]; then
-            echo "::error::frontend-coverage-merge=$FCM -- failing closed."
+            err "frontend-coverage-merge=$FCM -- failing closed."
             exit 1
           fi
           if [ "$IPV6" != "success" ]; then
-            echo "::error::backend-test-ipv6=$IPV6 -- failing closed."
+            err "backend-test-ipv6=$IPV6 -- failing closed."
             exit 1
           fi
           # The hosted strict lane is required in every scope, like the IPv6
           # lane: it always runs, so anything but success (failure, cancellation,
           # skip, or an empty result) fails closed.
           if [ "$KERNEL_LOCK_OWNER" != "success" ]; then
-            echo "::error::backend-test-kernel-lock-owner=$KERNEL_LOCK_OWNER -- failing closed."
+            err "backend-test-kernel-lock-owner=$KERNEL_LOCK_OWNER -- failing closed."
             exit 1
           fi
           if [ "$BE" != "success" ]; then
-            echo "::error::backend-test=$BE -- failing closed."
+            err "backend-test=$BE -- failing closed."
             exit 1
           fi
           # Backend coverage lane: required to succeed, EXCEPT on a frontend-only
@@ -2138,17 +2151,17 @@ jobs:
           # flags are independent and a leaf diff sets only this one.
           if [ "$LEAF_TESTS" = "true" ]; then
             if [ "$CC" != "skipped" ]; then
-              echo "::error::coverage-combine=$CC but this run was a leaf-test run (expected exactly 'skipped') -- inconsistent."
+              err "coverage-combine=$CC but this run was a leaf-test run (expected exactly 'skipped') -- inconsistent."
               exit 1
             fi
             echo "Leaf-test run: coverage-combine skipped by design; backend coverage not asserted."
           elif [ "$ONLY_FRONTEND" = "true" ]; then
             if [ "$CC" != "skipped" ]; then
-              echo "::error::coverage-combine=$CC but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
+              err "coverage-combine=$CC but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
               exit 1
             fi
           elif [ "$CC" != "success" ]; then
-            echo "::error::coverage-combine=$CC -- failing closed."
+            err "coverage-combine=$CC -- failing closed."
             exit 1
           fi
 
@@ -2195,32 +2208,36 @@ jobs:
       - name: Check backend coverage (min ${{ env.BACKEND_MIN }}%)
         if: needs.coverage-combine.result == 'success'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           F=backend-cov/coverage.xml
-          test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
+          test -f "$F" || { err "coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
           # display (a round-then-compare would let 89.95%..89.99% pass 90%).
           python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
+          ERR = "::%s::" % "error"
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
           print(f"{label} coverage: {rate:.2f}%")
           if rate < floor:
-              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              print(f"{ERR}{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
               sys.exit(1)
           PY
 
       - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
         if: needs.changes.outputs.only_backend != 'true'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
-          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          test -n "$F" || { err "cobertura report missing from coverage-frontend artifact"; exit 1; }
           python3 - "$F" "$FRONTEND_MIN" Frontend <<'PY'
           import sys, xml.etree.ElementTree as ET
+          ERR = "::%s::" % "error"
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
           print(f"{label} coverage: {rate:.2f}%")
           if rate < floor:
-              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              print(f"{ERR}{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
               sys.exit(1)
           PY
 
@@ -2238,8 +2255,9 @@ jobs:
       - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
         if: needs.changes.outputs.only_backend != 'true'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
-          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          test -n "$F" || { err "cobertura report missing from coverage-frontend artifact"; exit 1; }
           python3 scripts/check_per_file_coverage.py "$F" \
             --label Frontend --floor "$PER_FILE_MIN" \
             --baseline .github/coverage-baselines/frontend.txt
@@ -2498,8 +2516,9 @@ jobs:
         # naming the reproduction turns an opaque failure into a self-servicing
         # one.
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           npm ci --no-audit --no-fund || {
-            echo "::error::npm ci failed on Node $(node -v), the engines.node floor." \
+            err "npm ci failed on Node $(node -v), the engines.node floor." \
               "Every other job runs the .nvmrc toolchain (Node 24 / npm 11), so this can" \
               "fail while they pass: the two npm majors resolve optional peer dependencies" \
               "differently. Reproduce without installing Node 22:" \
@@ -2660,6 +2679,7 @@ jobs:
         # anything unclassified) still run. Any failure falls back to the FULL
         # suite rather than silently narrowing it.
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$ONLY_BACKEND" != "true" ]; then
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             echo "Full frontend suite (diff is not backend-only)."
@@ -2668,7 +2688,7 @@ jobs:
           rc=0
           python3 scripts/ci-surface-tests.py --surface frontend --summary > "$TARGETS_FILE.all" || rc=$?
           if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE.all" ]; then
-            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL frontend suite."
+            warn "surface selector unusable (rc=$rc) -- running the FULL frontend suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -2676,7 +2696,7 @@ jobs:
           # Electron shell specs belong to electron-test, which stays always-on.
           sed -n 's#^website/##p' "$TARGETS_FILE.all" | grep -v '^electron/' > "$TARGETS_FILE" || true
           if [ ! -s "$TARGETS_FILE" ]; then
-            echo "::warning::no in-scope cross-surface specs resolved -- running the FULL frontend suite."
+            warn "no in-scope cross-surface specs resolved -- running the FULL frontend suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -3089,13 +3109,15 @@ jobs:
         env:
           KIROCREW_SKILLFORM_PARITY_REQUIRE: "1"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -o pipefail
           # Order-safe: the harness file lands in a separate PR. Until it exists
           # this step is a no-op, so merging this workflow change first cannot red
           # the lane on a tree without the harness. Once the file is present the
           # REQUIRE variable above turns any skip into a failure.
           if [ ! -f test/test_skillform_frontmatter_parity.py ]; then
-            echo "::notice::SkillForm parity harness not present yet; step is a no-op until it lands."
+            notice "SkillForm parity harness not present yet; step is a no-op until it lands."
             exit 0
           fi
           echo "::remove-matcher owner=python::"
@@ -3107,7 +3129,7 @@ jobs:
           # transpile that skips, a renamed symbol) fails here instead of passing
           # green. Anchored so "1880 passed" cannot satisfy "880 passed".
           grep -qE '(^|[^0-9])880 passed' skillform-parity.log || {
-            echo "::error::the SkillForm frontmatter parity corpus did not report 880 passed (skipped, collapsed, or the corpus size changed without updating this canary)"
+            err "the SkillForm frontmatter parity corpus did not report 880 passed (skipped, collapsed, or the corpus size changed without updating this canary)"
             exit 1
           }
 
@@ -3316,6 +3338,7 @@ jobs:
           # the conditions #9172 addressed when a slow disk killed the gateway.
           KIROCREW_HARNESS_READY_TIMEOUT: ${{ matrix.os == 'windows-latest' && '180' || matrix.os == 'macos-15' && '90' || '60' }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -3335,7 +3358,7 @@ jobs:
           # honest; raise the number when you add a test here.
           # Anchored: see the pod-boot canary above.
           grep -qE '(^|[^0-9])7 passed' boot-matrix.log || {
-            echo "::error::gateway boot matrix did not report 7 passed (skipped, or a test was added without updating this canary)"
+            err "gateway boot matrix did not report 7 passed (skipped, or a test was added without updating this canary)"
             exit 1
           }
 

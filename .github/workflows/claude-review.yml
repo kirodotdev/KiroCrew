@@ -105,11 +105,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MAX_REVIEWABLE_LINES: "15000"
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           changed=$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . ':(exclude)src/kiro_crew/_vendor' 2>/dev/null \
             | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
           echo "reviewable changed lines (excluding src/kiro_crew/_vendor): ${changed}"
           if [ "${changed:-0}" -gt "$MAX_REVIEWABLE_LINES" ]; then
-            echo "::warning::This PR changes ${changed} reviewable lines (> ${MAX_REVIEWABLE_LINES}) — likely too large for one reliable review pass. Consider splitting it into smaller, self-contained PRs."
+            warn "This PR changes ${changed} reviewable lines (> ${MAX_REVIEWABLE_LINES}) — likely too large for one reliable review pass. Consider splitting it into smaller, self-contained PRs."
           fi
 
       # Load AUTOSDE rules from the BASE commit, not the PR HEAD, so a PR
@@ -122,6 +123,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # Remove before creating: `mkdir -p` alone leaves whatever the PR
           # committed at these paths in place, and a tracked symlink between the
           # two extraction targets would make the prompt write land on the rule
@@ -138,7 +140,7 @@ jobs:
           for p in opus-discovery opus-validate; do
             git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts/$p.md" 2>/dev/null || true
             if [ ! -s ".review-prompts/$p.md" ]; then
-              echo "::error::.github/review-prompts/$p.md is missing or empty on the base commit ($BASE_SHA). Refusing to review against an unspecified contract."
+              err ".github/review-prompts/$p.md is missing or empty on the base commit ($BASE_SHA). Refusing to review against an unspecified contract."
               exit 1
             fi
           done
@@ -152,6 +154,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           exact="<!-- ai-review-human-override target=fable head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
           # A comments feed this step could not READ is not a PR with no
@@ -177,7 +180,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            err "Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
           fi
           record="$(printf '%s' "$comments" \
@@ -227,9 +230,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH: ${{ runner.temp }}/pr.diff
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
           if [ ! -s "$PATCH" ]; then
-            echo "::error::Prefetched diff for $HEAD_SHA is empty; refusing to review nothing."
+            err "Prefetched diff for $HEAD_SHA is empty; refusing to review nothing."
             exit 1
           fi
           echo "Prefetched $(wc -c < "$PATCH") bytes of diff for review."
@@ -297,6 +301,8 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           MAX_CANDIDATE_BYTES: "200000"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           # Remove first: this path lives in the PR-HEAD workspace, so a tracked
           # symlink here would redirect the truncation below. Aimed at
           # .review-prompts/opus-validate.md it would blank the validation
@@ -313,7 +319,7 @@ jobs:
           fi
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' .review-candidates.md
           if ! grep -Fq "[OPUS-DISCOVERY] $HEAD" .review-candidates.md; then
-            echo "::error::Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
+            err "Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
             # PAYLOAD-FREE diagnostics for exactly this branch, printed AFTER the
             # error and BEFORE `exit 1` so nothing here can change the verdict.
             # The execution file dies with the runner and is deliberately never
@@ -390,7 +396,7 @@ jobs:
             # the blanks, then validate like every other count.
             captured="$(wc -c < .review-candidates.md)"
             captured="${captured//[[:space:]]/}"
-            echo "::notice::discovery-capture-diagnostics head=$HEAD exec_file=$diag_shape captured_bytes=$(diag_num "$captured") result_messages=$(diag_num "$d_results") extracted_chars=$(diag_num "$d_chars") marker_in_extracted=$(diag_bool "$d_marker") short_sha_marker_only=$(diag_bool "$d_short") placeholder_marker=$(diag_bool "$d_placeholder") marker_in_assistant=$(diag_bool "$d_amarker") compact_boundaries=$(diag_num "$d_compacts") permission_denials=$(diag_num "$d_denials") denied_read=$(diag_num "$d_read") denied_grep=$(diag_num "$d_grep") denied_glob=$(diag_num "$d_glob") denied_bash=$(diag_num "$d_bash") denied_other=$(diag_num "$d_other")"
+            notice "discovery-capture-diagnostics head=$HEAD exec_file=$diag_shape captured_bytes=$(diag_num "$captured") result_messages=$(diag_num "$d_results") extracted_chars=$(diag_num "$d_chars") marker_in_extracted=$(diag_bool "$d_marker") short_sha_marker_only=$(diag_bool "$d_short") placeholder_marker=$(diag_bool "$d_placeholder") marker_in_assistant=$(diag_bool "$d_amarker") compact_boundaries=$(diag_num "$d_compacts") permission_denials=$(diag_num "$d_denials") denied_read=$(diag_num "$d_read") denied_grep=$(diag_num "$d_grep") denied_glob=$(diag_num "$d_glob") denied_bash=$(diag_num "$d_bash") denied_other=$(diag_num "$d_other")"
             exit 1
           fi
           # Stage 1 has no cap on candidate count by design, so bound what stage
@@ -404,7 +410,7 @@ jobs:
           # it means the diff is genuinely too large for one honest pass.
           bytes=$(wc -c < .review-candidates.md)
           if [ "$bytes" -gt "$MAX_CANDIDATE_BYTES" ]; then
-            echo "::error::Discovery emitted ${bytes} bytes of candidates, over the ${MAX_CANDIDATE_BYTES} limit one validation pass can judge. Failing closed rather than validating a prefix, which would emit a clean verdict for candidates it never saw. Split this PR into smaller, self-contained changes."
+            err "Discovery emitted ${bytes} bytes of candidates, over the ${MAX_CANDIDATE_BYTES} limit one validation pass can judge. Failing closed rather than validating a prefix, which would emit a clean verdict for candidates it never saw. Split this PR into smaller, self-contained changes."
             exit 1
           fi
           echo "--- stage 1 candidates (never posted; kept here as tuning signal) ---"
@@ -604,6 +610,8 @@ jobs:
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8 for $HEAD. Passing gate."
             exit 0
@@ -613,29 +621,29 @@ jobs:
             exit 0
           fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
-            echo "::error::Opus 4.8 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
+            err "Opus 4.8 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
           if [ ! -s claude-review-output.md ]; then
-            echo "::error::Opus 4.8 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 4.8 review step logs."
+            err "Opus 4.8 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 4.8 review step logs."
             exit 1
           fi
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 4.8 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 4.8 review step logs."
+            err "Opus 4.8 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 4.8 review step logs."
             echo "--- review output ---"
             cat claude-review-output.md
             exit 1
           fi
           # Block ONLY on the contract-gated marker.
           if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 4.8 review flagged a blocking issue on $HEAD — see the posted review summary."
+            err "Opus 4.8 review flagged a blocking issue on $HEAD — see the posted review summary."
             exit 1
           fi
           # Advisory coherence signal (never fails the build): a BLOCKING-labelled
           # finding without the marker means the model's label and its verdict
           # disagree. Worth tuning the prompt over; not worth blocking a merge.
           if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' claude-review-output.md; then
-            echo "::warning::Opus 4.8 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
+            warn "Opus 4.8 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
           echo "Opus 4.8 review completed for $HEAD with no blocking findings."

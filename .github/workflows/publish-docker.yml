@@ -106,14 +106,15 @@ jobs:
 
       - name: Validate build or promotion mode
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           if [ "$PROMOTE" = "true" ]; then
             if ! [[ "$PROMOTE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::Promotion requires a recorded sha256:<64 lowercase hex> digest; refusing to build or retag."
+              err "Promotion requires a recorded sha256:<64 lowercase hex> digest; refusing to build or retag."
               exit 1
             fi
           elif [ -n "$PROMOTE_DIGEST" ]; then
-            echo "::error::promote_digest was supplied while promote=false; refusing ambiguous publication mode."
+            err "promote_digest was supplied while promote=false; refusing ambiguous publication mode."
             exit 1
           fi
 
@@ -170,6 +171,7 @@ jobs:
       - name: Check for existing version tag
         id: existing
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           set +e
@@ -179,7 +181,7 @@ jobs:
           if [ "$INSPECT_RC" -eq 0 ]; then
             DIGEST=$(echo "$INSPECT_OUT" | tr -d '"')
             if [ "$PROMOTE" = "true" ] && [ "$DIGEST" != "$PROMOTE_DIGEST" ]; then
-              echo "::error::Immutable version tag ${IMAGE}:${VERSION} already points to ${DIGEST}, not recorded candidate ${PROMOTE_DIGEST}. Refusing to repoint it."
+              err "Immutable version tag ${IMAGE}:${VERSION} already points to ${DIGEST}, not recorded candidate ${PROMOTE_DIGEST}. Refusing to repoint it."
               exit 1
             fi
             echo "Version tag already published (job re-run): ${IMAGE}:${VERSION}@${DIGEST}"
@@ -193,7 +195,7 @@ jobs:
             fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Could not determine whether ${IMAGE}:${VERSION} exists (transport/auth failure, NOT a clean not-found). Refusing to build: republishing an existing version tag would break digest-pinned deployments. Inspect output follows."
+            err "Could not determine whether ${IMAGE}:${VERSION} exists (transport/auth failure, NOT a clean not-found). Refusing to build: republishing an existing version tag would break digest-pinned deployments. Inspect output follows."
             echo "$INSPECT_OUT"
             exit 1
           fi
@@ -250,6 +252,7 @@ jobs:
       - name: Select published digest
         id: digest
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
             DIGEST="${{ steps.existing.outputs.digest }}"
@@ -259,7 +262,7 @@ jobs:
             DIGEST="${{ steps.build.outputs.digest }}"
           fi
           if [ -z "${DIGEST}" ]; then
-            echo "::error::No digest resolved (build skipped without an existing tag?)"; exit 1
+            err "No digest resolved (build skipped without an existing tag?)"; exit 1
           fi
           echo "value=${DIGEST}" >> "$GITHUB_OUTPUT"
 
@@ -304,6 +307,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           DIGEST="${{ steps.digest.outputs.value }}"
@@ -318,7 +322,7 @@ jobs:
           if ! gh attestation verify "oci://${IMAGE}@${DIGEST}" \
               --repo "${{ github.repository }}" \
               --signer-workflow "${{ github.repository }}/.github/workflows/publish-docker.yml"; then
-            echo "::error::${IMAGE}:${VERSION}@${DIGEST} exists but has no provenance attested by this repo's publish-docker workflow. Refusing to treat it as a valid prior publish. If a prior run died between its tag push and attest step, delete the ${VERSION} tag in the ghcr.io package settings and re-run this job to rebuild and attest cleanly."
+            err "${IMAGE}:${VERSION}@${DIGEST} exists but has no provenance attested by this repo's publish-docker workflow. Refusing to treat it as a valid prior publish. If a prior run died between its tag push and attest step, delete the ${VERSION} tag in the ghcr.io package settings and re-run this job to rebuild and attest cleanly."
             exit 1
           fi
           echo "Existing digest carries valid provenance from this workflow."
@@ -326,13 +330,14 @@ jobs:
       - name: Record promoted immutable version tag
         if: inputs.promote && steps.existing.outputs.exists == 'false'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           DIGEST="${{ steps.digest.outputs.value }}"
           docker buildx imagetools create -t "${IMAGE}:${VERSION}" "${IMAGE}@${DIGEST}"
           TAG_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
           if [ "$TAG_DIGEST" != "$DIGEST" ]; then
-            echo "::error::Promoted version tag resolved to ${TAG_DIGEST}, expected recorded digest ${DIGEST}."
+            err "Promoted version tag resolved to ${TAG_DIGEST}, expected recorded digest ${DIGEST}."
             exit 1
           fi
 
@@ -364,6 +369,7 @@ jobs:
       - name: Reconcile aliases (re-run)
         if: steps.existing.outputs.exists == 'true'
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           DIGEST="${{ steps.digest.outputs.value }}"
@@ -384,7 +390,7 @@ jobs:
               exit 0
             fi
           fi
-          echo "::notice::Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
+          notice "Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
 
       # Promotion is not complete until the mutable stable alias resolves to
       # the manifest-recorded digest. This final-state check also catches an
@@ -394,16 +400,17 @@ jobs:
       - name: Verify promoted stable alias reconciliation
         if: inputs.promote
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           EXPECTED_DIGEST="$PROMOTE_DIGEST"
           if ! INSPECT_OUT=$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{json .Manifest.Digest}}' 2>&1); then
-            echo "::error::Could not resolve promoted stable alias ${IMAGE}:stable: ${INSPECT_OUT}"
+            err "Could not resolve promoted stable alias ${IMAGE}:stable: ${INSPECT_OUT}"
             exit 1
           fi
           STABLE_DIGEST=$(echo "$INSPECT_OUT" | tr -d '"')
           if [ "$STABLE_DIGEST" != "$EXPECTED_DIGEST" ]; then
-            echo "::error::Promoted stable alias resolves to ${STABLE_DIGEST}, expected recorded digest ${EXPECTED_DIGEST}. The promotion is incomplete."
+            err "Promoted stable alias resolves to ${STABLE_DIGEST}, expected recorded digest ${EXPECTED_DIGEST}. The promotion is incomplete."
             exit 1
           fi
           echo "Promoted stable alias reconciled to recorded digest ${EXPECTED_DIGEST}."
@@ -418,11 +425,12 @@ jobs:
       - name: Verify anonymous pull (package visibility)
         if: github.repository_owner == 'kirodotdev' && inputs.require_public_access
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
           docker logout ghcr.io
           if ! docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
-            echo "::error::Anonymous pull of ${IMAGE}:${VERSION} FAILED — the GHCR package is not public. Open the package settings for 'kirocrew' (Danger Zone → Change visibility → Public); GHCR creates packages private and does NOT inherit visibility from the repo, so this is expected on a first-ever publish and otherwise means visibility regressed. No rebuild is needed: the image and alias are already published; visibility is the only gate. Note the flip is one-way — a package made public cannot be made private again."
+            err "Anonymous pull of ${IMAGE}:${VERSION} FAILED — the GHCR package is not public. Open the package settings for 'kirocrew' (Danger Zone → Change visibility → Public); GHCR creates packages private and does NOT inherit visibility from the repo, so this is expected on a first-ever publish and otherwise means visibility regressed. No rebuild is needed: the image and alias are already published; visibility is the only gate. Note the flip is one-way — a package made public cannot be made private again."
             exit 1
           fi
           echo "Anonymous pull OK — package is public."

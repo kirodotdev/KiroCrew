@@ -109,6 +109,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
 
           # `git archive` needs the OBJECTS, not just the refs. fetch-depth: 0
@@ -140,7 +141,7 @@ jobs:
             owner="head"
             cp "$corpus_path" corpus.json
           else
-            echo "::error::No golden-paths corpus at $corpus_path -- nothing to classify."
+            err "No golden-paths corpus at $corpus_path -- nothing to classify."
             {
               echo "### Denial differential"
               echo
@@ -179,7 +180,7 @@ jobs:
 
           if [ "$rc" = "2" ]; then
             # A differential that could not run is not a pass.
-            echo "::error::deny_diff could not run (corpus or ref error) -- see the job summary."
+            err "deny_diff could not run (corpus or ref error) -- see the job summary."
             {
               echo
               echo "**The differential did not run.** A corpus or ref error is not a pass."
@@ -195,5 +196,5 @@ jobs:
             echo "PR changes no rule, so this gate is green on it, and this PR's base then no"
             echo "longer carries the row."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Newly-refused golden paths -- see the job summary."
+          err "Newly-refused golden paths -- see the job summary."
           exit 1

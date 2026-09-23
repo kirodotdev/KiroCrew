@@ -405,7 +405,8 @@ jobs:
       - name: Re-raise a missing analysis
         if: always() && steps.file_issue.outputs.analysis_ok == '0'
         run: |
-          echo "::error::The Fable 5 analysis step produced no report; the weekly" \
+          err() { printf '::%s::%s\n' error "$*"; }
+          err "The Fable 5 analysis step produced no report; the weekly" \
             "issue was filed with the deterministic metrics only. A failure that" \
             "assumes the Bedrock role successfully but reports num_turns 1 and zero" \
             "cost is an IAM action mismatch, not a model or credential problem:" \

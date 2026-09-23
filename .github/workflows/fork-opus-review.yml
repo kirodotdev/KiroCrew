@@ -138,10 +138,11 @@ jobs:
           REPO: ${{ github.repository }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # head_sha from the triggering run is set by GitHub and is authoritative.
           head_sha="$WR_HEAD_SHA"
-          if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
+          if [ -z "$head_sha" ]; then err "no workflow_run head_sha"; exit 1; fi
 
           # Bounded retry for the read-only resolver queries below. A single-shot
           # `gh api` aborts on a transient TLS / 5xx / rate-limit error, and this
@@ -185,21 +186,21 @@ jobs:
           # no verdict is withheld; what changes is that the log names the cause.
           if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
             --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            err "could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$pr" ]; then
-            echo "::error::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
+            err "no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
             exit 1
           fi
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            err "could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
-            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            err "PR #$pr reported an empty base.sha; failing closed"
             exit 1
           fi
 
@@ -261,6 +262,7 @@ jobs:
 
       - name: Extract base-ref AUTOSDE rules and review prompts
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # Remove before creating: `mkdir -p` alone leaves whatever the PR
           # committed at these paths in place, and a tracked symlink between the
           # two extraction targets would make the prompt write land on the rule
@@ -279,7 +281,7 @@ jobs:
           for p in opus-discovery opus-validate; do
             cp ".github/review-prompts/$p.md" ".review-prompts/$p.md" 2>/dev/null || true
             if [ ! -s ".review-prompts/$p.md" ]; then
-              echo "::error::.github/review-prompts/$p.md is missing or empty in the trusted base tree. Refusing to review against an unspecified contract."
+              err ".github/review-prompts/$p.md is missing or empty in the trusted base tree. Refusing to review against an unspecified contract."
               exit 1
             fi
           done
@@ -297,6 +299,7 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PATCH: ${{ runner.temp }}/authentic.patch
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # COMPLETE diff via git, NOT the compare API: the compare endpoint
           # truncates very large diffs, which would let a big fork PR slip a defect
@@ -313,22 +316,22 @@ jobs:
           echo "::add-mask::$auth_b64"  # mask the derived header so it can never surface in logs
           git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
             fetch --no-tags --quiet origin "refs/pull/$PR/head" \
-            || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
+            || { err "could not fetch PR head history for #$PR"; exit 1; }
           # Pin to the exact CI-reviewed head SHA; fail closed if it is missing
           # (e.g. the fork rewrote history out from under the review).
           if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            err "head SHA $HEAD_SHA not present after fetch; failing closed."
             exit 1
           fi
           git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
           # git diff has no API size cap, so an oversized diff is a real signal —
           # fail CLOSED rather than review only a prefix.
           if [ "$(wc -c < "$PATCH" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-            echo "::error::authentic diff exceeds 1 MB; failing closed (split the PR)."
+            err "authentic diff exceeds 1 MB; failing closed (split the PR)."
             exit 1
           fi
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            err "empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
           # The patch is deliberately NOT applied to the working tree. The checkout
@@ -426,6 +429,8 @@ jobs:
           HEAD: ${{ steps.pr.outputs.head_sha }}
           MAX_CANDIDATE_BYTES: "200000"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           # Remove first: this path lives in the PR-HEAD workspace, so a tracked
           # symlink here would redirect the truncation below. Aimed at
           # .review-prompts/opus-validate.md it would blank the validation
@@ -442,7 +447,7 @@ jobs:
           fi
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' .review-candidates.md
           if ! grep -Fq "[OPUS-DISCOVERY] $HEAD" .review-candidates.md; then
-            echo "::error::Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
+            err "Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
             # PAYLOAD-FREE diagnostics for exactly this branch, printed AFTER the
             # error and BEFORE `exit 1` so nothing here can change the verdict.
             # The execution file dies with the runner and is deliberately never
@@ -520,7 +525,7 @@ jobs:
             # the blanks, then validate like every other count.
             captured="$(wc -c < .review-candidates.md)"
             captured="${captured//[[:space:]]/}"
-            echo "::notice::discovery-capture-diagnostics head=$HEAD exec_file=$diag_shape captured_bytes=$(diag_num "$captured") result_messages=$(diag_num "$d_results") extracted_chars=$(diag_num "$d_chars") marker_in_extracted=$(diag_bool "$d_marker") short_sha_marker_only=$(diag_bool "$d_short") placeholder_marker=$(diag_bool "$d_placeholder") marker_in_assistant=$(diag_bool "$d_amarker") compact_boundaries=$(diag_num "$d_compacts") permission_denials=$(diag_num "$d_denials") denied_read=$(diag_num "$d_read") denied_grep=$(diag_num "$d_grep") denied_glob=$(diag_num "$d_glob") denied_bash=$(diag_num "$d_bash") denied_other=$(diag_num "$d_other")"
+            notice "discovery-capture-diagnostics head=$HEAD exec_file=$diag_shape captured_bytes=$(diag_num "$captured") result_messages=$(diag_num "$d_results") extracted_chars=$(diag_num "$d_chars") marker_in_extracted=$(diag_bool "$d_marker") short_sha_marker_only=$(diag_bool "$d_short") placeholder_marker=$(diag_bool "$d_placeholder") marker_in_assistant=$(diag_bool "$d_amarker") compact_boundaries=$(diag_num "$d_compacts") permission_denials=$(diag_num "$d_denials") denied_read=$(diag_num "$d_read") denied_grep=$(diag_num "$d_grep") denied_glob=$(diag_num "$d_glob") denied_bash=$(diag_num "$d_bash") denied_other=$(diag_num "$d_other")"
             exit 1
           fi
           # Bound what stage 2 ingests by FAILING, never by truncating. Silently
@@ -533,7 +538,7 @@ jobs:
           # it means the diff is genuinely too large for one honest pass.
           bytes=$(wc -c < .review-candidates.md)
           if [ "$bytes" -gt "$MAX_CANDIDATE_BYTES" ]; then
-            echo "::error::Discovery emitted ${bytes} bytes of candidates, over the ${MAX_CANDIDATE_BYTES} limit one validation pass can judge. Failing closed rather than validating a prefix, which would emit a clean verdict for candidates it never saw. Split this PR into smaller, self-contained changes."
+            err "Discovery emitted ${bytes} bytes of candidates, over the ${MAX_CANDIDATE_BYTES} limit one validation pass can judge. Failing closed rather than validating a prefix, which would emit a clean verdict for candidates it never saw. Split this PR into smaller, self-contained changes."
             exit 1
           fi
           echo "--- stage 1 candidates (never posted; kept here as tuning signal) ---"
@@ -843,6 +848,7 @@ jobs:
           WR_RUN_ID: ${{ github.event.workflow_run.id }}
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           conclusion="failure"; title="review incomplete"
           if [ -s claude-review-output.md ] && grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
@@ -868,7 +874,7 @@ jobs:
               fi
               sleep 5
             done
-            echo "::warning::could not complete check-run $1 for $HEAD"
+            warn "could not complete check-run $1 for $HEAD"
             return 1
           }
           if [ -n "${CHECK_ID:-}" ]; then

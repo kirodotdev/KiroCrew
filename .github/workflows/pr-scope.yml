@@ -47,6 +47,7 @@ jobs:
           MAX_AREAS: "4"
           MAX_LINES: "400"
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
 
           # Vendored code and review screenshots are excluded: they inflate both
@@ -63,7 +64,7 @@ jobs:
           if ! files="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- . \
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)temp-screenshots/**')"; then
-            echo "::warning::Could not compute the diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            warn "Could not compute the diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
             echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -73,7 +74,7 @@ jobs:
           if ! numstat="$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . \
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)temp-screenshots/**')"; then
-            echo "::warning::Could not compute the line-count diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            warn "Could not compute the line-count diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
             echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -111,7 +112,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$area_count" -gt "$MAX_AREAS" ] && [ "${lines:-0}" -gt "$MAX_LINES" ]; then
-            echo "::warning::This PR changes $lines lines across $area_count areas. If these changes are independent, splitting them into separate PRs gets each one reviewed properly and keeps them individually revertable."
+            warn "This PR changes $lines lines across $area_count areas. If these changes are independent, splitting them into separate PRs gets each one reviewed properly and keeps them individually revertable."
             {
               echo
               echo "> **Consider splitting.** $lines lines across $area_count areas is wide"

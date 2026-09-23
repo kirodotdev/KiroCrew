@@ -134,12 +134,13 @@ jobs:
           START: ${{ steps.window.outputs.start }}
           END: ${{ steps.window.outputs.end }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
             --search "merged:>=$START" \
             --json number,title,author,mergedAt,url --limit 301 > raw.json
           if [ "$(jq length raw.json)" -gt 300 ]; then
-            echo "::error::window exceeds the supported 300-PR limit; failing so the window is not advanced"
+            err "window exceeds the supported 300-PR limit; failing so the window is not advanced"
             exit 1
           fi
           jq --arg s "$START" --arg e "$END" \
@@ -168,6 +169,7 @@ jobs:
           START: ${{ steps.window.outputs.start }}
           END: ${{ steps.window.outputs.end }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           # --state all: an issue filed and closed inside the window still
           # belongs in the inbound count.
@@ -185,7 +187,7 @@ jobs:
           # unadvanced, so a quiet inbound spike would suppress the shipping
           # half it has nothing to do with. The section truncates instead.
           if [ "$COUNT" -ge 100 ]; then
-            echo "::warning::100+ issues in this window; the section lists a subset"
+            warn "100+ issues in this window; the section lists a subset"
           fi
 
       # Gated on EITHER half having content, not on PRs alone. The issue
@@ -212,6 +214,7 @@ jobs:
           # drops to the deterministic template step.
           MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           if [ "$LINK_STYLE" = "plain" ]; then
             LINK_RULE="Reference a PR as #NUMBER right after the clause describing it. Never include URLs."
@@ -244,9 +247,9 @@ jobs:
                 GENERATED=1
                 break
               fi
-              echo "::warning::model $MODEL returned an empty body; trying next"
+              warn "model $MODEL returned an empty body; trying next"
             else
-              echo "::warning::model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
+              warn "model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
             fi
           done
           test -n "$GENERATED"
@@ -326,6 +329,7 @@ jobs:
         env:
           MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           jq -r '[ .bugs[] | "#\(.number) \(.title | .[0:200]) [\([.labels[]?.name] | join(", "))]" ] | join("\n")' \
             split.json > bugs.txt
@@ -386,7 +390,7 @@ jobs:
             }' > ireq.json
             if ! aws bedrock-runtime converse --cli-input-json file://ireq.json \
                  > iresp.json 2> ibedrock.err; then
-              echo "::warning::issue model $MODEL failed: $(head -c 200 ibedrock.err | tr '\n' ' ')"
+              warn "issue model $MODEL failed: $(head -c 200 ibedrock.err | tr '\n' ' ')"
               continue
             fi
             jq -j '[.output.message.content[]?.text // empty] | join("")' iresp.json > iraw.txt
@@ -398,7 +402,7 @@ jobs:
               GENERATED=1
               break
             fi
-            echo "::warning::issue model $MODEL did not return a JSON object; trying next"
+            warn "issue model $MODEL did not return a JSON object; trying next"
           done
           test -n "$GENERATED"
 
@@ -412,6 +416,7 @@ jobs:
       - name: Append issue sections
         if: steps.issues.outputs.count != '0'
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           touch body.txt
           if [ -s body.txt ]; then printf '\n' >> body.txt; fi
@@ -483,7 +488,7 @@ jobs:
                 + ( if ($other|tonumber) > 0 then "\n\nOther: \($other) (docs, questions, refactors)." else "" end )
             ' issue-verdict.json >> body.txt
           else
-            echo "::warning::no issue narrative; falling back to the deterministic list"
+            warn "no issue narrative; falling back to the deterministic list"
             # The security sub-list and the general list must PARTITION the bugs,
             # not overlap: listing a security issue in both wastes the reader's
             # attention on a re-read and makes the "+N more" count a lie.
@@ -526,6 +531,7 @@ jobs:
           ICOUNT: ${{ steps.issues.outputs.count }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || '' }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # Sanitize the body (Bedrock or template) at the delivery chokepoint:
           # PR titles and model output are untrusted for Slack rendering. Plain
@@ -555,7 +561,7 @@ jobs:
             exit 0
           fi
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "::error::SLACK_WEBHOOK_URL secret is not set; failing so this window is re-covered by the next run"
+            err "SLACK_WEBHOOK_URL secret is not set; failing so this window is re-covered by the next run"
             exit 1
           fi
           jq -n --rawfile text report.txt '{text: $text}' > payload.json

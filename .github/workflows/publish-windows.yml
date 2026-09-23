@@ -152,6 +152,9 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         id: probe
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           # Retried before failing. The listing is a network call to the Actions
           # API, and this step fails CLOSED on error -- correct, because an
@@ -169,16 +172,16 @@ jobs:
               break
             fi
             if [ "${attempt}" = "3" ]; then
-              echo "::error::could not list this run's artifacts after 3 attempts, so whether the installer exists is unknown. Refusing to treat an API failure as nothing to publish."
+              err "could not list this run's artifacts after 3 attempts, so whether the installer exists is unknown. Refusing to treat an API failure as nothing to publish."
               exit 1
             fi
-            echo "::warning::listing this run's artifacts failed (attempt ${attempt}/3); retrying."
+            warn "listing this run's artifacts failed (attempt ${attempt}/3); retrying."
             sleep $((attempt * 5))
           done
           if grep -qxF "${INSTALLER_ARTIFACT}" <<<"${NAMES}"; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::no ${INSTALLER_ARTIFACT} artifact in this run; the Windows build did not produce one, so there is nothing to publish."
+            notice "no ${INSTALLER_ARTIFACT} artifact in this run; the Windows build did not produce one, so there is nothing to publish."
             echo "present=" >> "$GITHUB_OUTPUT"
           fi
 
@@ -231,21 +234,23 @@ jobs:
           # the same way for the same reason.
           PROMOTE: ${{ inputs.promote }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           mapfile -t FOUND < <(find artifacts -type f -name '*.exe' | sort)
           if [ "${#FOUND[@]}" -eq 0 ] && [ "${PROMOTE}" = "true" ]; then
-            echo "::notice::this candidate carries no Windows installer, so there is nothing to promote. The other platforms still publish."
+            notice "this candidate carries no Windows installer, so there is nothing to promote. The other platforms still publish."
             echo "staged=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "${#FOUND[@]}" -ne 1 ]; then
-            echo "::error::expected exactly one .exe in the artifact, found ${#FOUND[@]}"
+            err "expected exactly one .exe in the artifact, found ${#FOUND[@]}"
             printf '%s\n' "${FOUND[@]:-<none>}"
             exit 1
           fi
           SRC="${FOUND[0]}"
           if [ ! -f "${SRC}.blockmap" ]; then
-            echo "::error::${SRC} has no .blockmap beside it; differential download would silently degrade to a full download for every client."
+            err "${SRC} has no .blockmap beside it; differential download would silently degrade to a full download for every client."
             exit 1
           fi
           mkdir -p staged
@@ -301,6 +306,8 @@ jobs:
       - name: Publish installer to distribution bucket
         if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           INSTALLER_KEY="desktop/${CHANNEL}/${VERSION}/${WINDOWS_BASENAME}.exe"
           set +e
@@ -320,10 +327,10 @@ jobs:
               LOCAL_SHA=$(sha256sum "${INSTALLER_PATH}" | cut -d' ' -f1)
               PUBLISHED_SHA=$(sha256sum /tmp/published.exe | cut -d' ' -f1)
               if [ "$LOCAL_SHA" != "$PUBLISHED_SHA" ]; then
-                echo "::error::${INSTALLER_KEY} already exists with different bytes; the version string is burned, cut a new version."
+                err "${INSTALLER_KEY} already exists with different bytes; the version string is burned, cut a new version."
                 exit 1
               fi
-              echo "::notice::${INSTALLER_KEY} already published with identical bytes; keeping it."
+              notice "${INSTALLER_KEY} already published with identical bytes; keeping it."
             else
               printf '%s\n' "$PUT_OUT"
               exit $RC
@@ -350,6 +357,8 @@ jobs:
         if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         id: feed
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           INSTALLER_SHA512=$(openssl dgst -sha512 -binary "${INSTALLER_PATH}" | base64 -w 0)
           INSTALLER_SIZE=$(stat -c%s "${INSTALLER_PATH}")
@@ -360,7 +369,7 @@ jobs:
           SERVED_SHA512=$(curl -fsS --retry 3 --retry-delay 2 \
             "${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
           if [ "$SERVED_SHA512" != "$INSTALLER_SHA512" ]; then
-            echo "::error::published installer does not match the artifact this feed would advertise."
+            err "published installer does not match the artifact this feed would advertise."
             exit 1
           fi
 
@@ -376,11 +385,11 @@ jobs:
           FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
             -o /tmp/current-feed.yml -w '%{http_code}' \
             "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/${FEED_FILE}") \
-            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+            || { err "channel feed fetch failed (transport)"; exit 1; }
           case "$FEED_HTTP" in
             200) ;;
             403|404) : > /tmp/current-feed.yml ;;
-            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+            *) err "channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
           # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
           # input, unlike grep -v); an ls-remote failure aborts via pipefail.
@@ -392,10 +401,10 @@ jobs:
             --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
           if [ "$VERDICT" = "hold" ]; then
             echo "advance=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::feed/${CHANNEL}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            notice "feed/${CHANNEL}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
             exit 0
           elif [ "$VERDICT" != "advance" ]; then
-            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            err "feed guard returned neither advance nor hold (got: '${VERDICT}')"
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"

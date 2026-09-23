@@ -299,6 +299,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # -e as well: every command here either resolves, downloads, merges or
           # re-renders the ledger, and a failure in any of them (the ledger write
           # after friction.json, say) must fail the step so nothing downstream
@@ -312,10 +313,10 @@ jobs:
           # fails this step, so the scheduled run uploads nothing and the canonical
           # ledger keeps its counts and issue numbers. Only a complete API answer
           # with NO eligible scheduled run holding a ledger starts a fresh one.
-          [ -n "$LEDGER_BRANCH" ] || { echo "::error::default branch unknown; refusing to pick a ledger"; exit 1; }
+          [ -n "$LEDGER_BRANCH" ] || { err "default branch unknown; refusing to pick a ledger"; exit 1; }
           if ! python test/gui_user/friction.py pick-ledger --repo "$REPO" \
                  --branch "$LEDGER_BRANCH" --self-run "$RUN_ID" --out "$RUNNER_TEMP/friction-pick.json"; then
-            echo "::error::could not resolve the previous friction ledger; refusing to start a fresh one"
+            err "could not resolve the previous friction ledger; refusing to start a fresh one"
             exit 1
           fi
           prev_run="$(jq -r '.run_id // empty' "$RUNNER_TEMP/friction-pick.json")"
@@ -323,11 +324,11 @@ jobs:
           if [ -n "$prev_run" ]; then
             if ! gh run download "$prev_run" --repo "$REPO" -n gui-user-test-friction-ledger \
                  -D "$RUNNER_TEMP/friction-prev"; then
-              echo "::error::could not download the friction ledger from run $prev_run"
+              err "could not download the friction ledger from run $prev_run"
               exit 1
             fi
             [ -f "$RUNNER_TEMP/friction-prev/friction_ledger.json" ] || {
-              echo "::error::ledger artifact from run $prev_run holds no friction_ledger.json"; exit 1; }
+              err "ledger artifact from run $prev_run holds no friction_ledger.json"; exit 1; }
             ledger_args=(--ledger "$RUNNER_TEMP/friction-prev/friction_ledger.json")
             echo "previous ledger from scheduled run $prev_run on $LEDGER_BRANCH"
           else
@@ -488,13 +489,14 @@ jobs:
           RUN_OUTCOME: ${{ steps.run.outcome }}
           BOOT_OUTCOME: ${{ steps.boot.outcome }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           if [ "$BOOT_OUTCOME" != "success" ]; then
-            echo "::error::the GUI test target did not boot (Xvfb / gateway / browser); see the boot step"
+            err "the GUI test target did not boot (Xvfb / gateway / browser); see the boot step"
             exit 1
           fi
           if [ "$VERDICT" = "PASS" ]; then
             echo "GUI user test PASS"
             exit 0
           fi
-          echo "::error::GUI user test $VERDICT (harness outcome: $RUN_OUTCOME); see the run summary and artifact"
+          err "GUI user test $VERDICT (harness outcome: $RUN_OUTCOME); see the run summary and artifact"
           exit 1

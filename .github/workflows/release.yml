@@ -55,6 +55,7 @@ jobs:
           # for every future stable tag.
           STABLE_PROMOTE_BYTES: ${{ vars.STABLE_PROMOTE_BYTES }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           case "$VERSION" in
@@ -81,7 +82,7 @@ jobs:
               ;;
           esac
           if ! [[ "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::release base must be exactly x.y.z with numeric components"
+            err "release base must be exactly x.y.z with numeric components"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -134,10 +135,11 @@ jobs:
 
       - name: Verify exact candidate SHA
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           ACTUAL_SHA="$(git rev-parse HEAD)"
           if [ "$ACTUAL_SHA" != "$GITHUB_SHA" ]; then
-            echo "::error::checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
+            err "checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
             exit 1
           fi
 
@@ -273,6 +275,8 @@ jobs:
           OVERRIDE: ${{ vars.STABLE_GATE_OVERRIDE }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           if [ "$CHANNEL" != "stable" ]; then
@@ -293,7 +297,7 @@ jobs:
                CHANGELOG.md; then
             echo "changelog: CHANGELOG.md documents $VERSION"
           else
-            echo "::error::CHANGELOG.md has no '## [$VERSION]' section. A stable release must be documented before it ships."
+            err "CHANGELOG.md has no '## [$VERSION]' section. A stable release must be documented before it ships."
             failures=$((failures + 1))
           fi
 
@@ -317,7 +321,7 @@ jobs:
           # the override path.
           STABLE_COMMIT=""
           if ! STABLE_COMMIT="$(git rev-list -n 1 "refs/tags/v$VERSION" 2>/dev/null)"; then
-            echo "::error::tag v$VERSION is not present in this checkout, so the promotion check cannot run. A deleted or unfetched tag fails closed."
+            err "tag v$VERSION is not present in this checkout, so the promotion check cannot run. A deleted or unfetched tag fails closed."
             failures=$((failures + 1))
           else
             # Exported so the jq program reads it through `env` instead of
@@ -333,12 +337,12 @@ jobs:
                        | select(.head_sha == env.STABLE_COMMIT)
                        | select(.head_branch | startswith("v" + env.VERSION + "-"))
                        | .head_branch' 2>&1)"; then
-              echo "::error::could not list successful release runs, so the promotion check could not run: $promoted"
+              err "could not list successful release runs, so the promotion check could not run: $promoted"
               failures=$((failures + 1))
             elif [ -n "$promoted" ]; then
               echo "promotion: $(printf '%s' "$promoted" | head -n 1) published $STABLE_COMMIT in a successful release run"
             else
-              echo "::error::no SUCCESSFUL release run for a v$VERSION-* tag at $STABLE_COMMIT. Stable must promote a commit that already shipped to insider -- a prerelease tag whose run was cancelled or failed does not count."
+              err "no SUCCESSFUL release run for a v$VERSION-* tag at $STABLE_COMMIT. Stable must promote a commit that already shipped to insider -- a prerelease tag whose run was cancelled or failed does not count."
               failures=$((failures + 1))
             fi
           fi
@@ -366,7 +370,7 @@ jobs:
             # the script on sed's own error, skipping both the failure summary
             # and the override path -- the same trap the tag lookup above avoids.
             if [ ! -f "$file" ]; then
-              echo "::error::$file is missing from the tagged tree, so its version declaration cannot be verified."
+              err "$file is missing from the tagged tree, so its version declaration cannot be verified."
               failures=$((failures + 1))
               continue
             fi
@@ -374,7 +378,7 @@ jobs:
             if [ "$declared" = "$VERSION" ]; then
               echo "version stamp: $file declares $VERSION"
             else
-              echo "::error::$file declares '${declared:-<no version line matched>}', not the bare '$VERSION' this stable tag names. Land the drop-RC-suffix PR on the release branch before tagging."
+              err "$file declares '${declared:-<no version line matched>}', not the bare '$VERSION' this stable tag names. Land the drop-RC-suffix PR on the release branch before tagging."
               failures=$((failures + 1))
             fi
           done
@@ -383,7 +387,7 @@ jobs:
           # promotion republishes the candidate's bytes, so a promoted stable
           # advertises that candidate's RC-stamped version to stable users.
           if [ "$PROMOTE_MODE" = "true" ]; then
-            echo "::warning::STABLE_PROMOTE_BYTES names $VERSION, so this release republishes the candidate's bytes and will ship an RC-stamped version (wheel name, feed, pip show, kirocrew --version). Unset the variable to rebuild and ship a bare $VERSION instead."
+            warn "STABLE_PROMOTE_BYTES names $VERSION, so this release republishes the candidate's bytes and will ship an RC-stamped version (wheel name, feed, pip show, kirocrew --version). Unset the variable to rebuild and ship a bare $VERSION instead."
           else
             echo "mode: rebuilding from source so the shipped bytes carry the bare $VERSION"
           fi
@@ -394,11 +398,11 @@ jobs:
           fi
 
           if [ "${OVERRIDE:-}" = "$VERSION" ]; then
-            echo "::warning::stable gate overridden for $VERSION by vars.STABLE_GATE_OVERRIDE ($failures unmet precondition(s))."
+            warn "stable gate overridden for $VERSION by vars.STABLE_GATE_OVERRIDE ($failures unmet precondition(s))."
             exit 0
           fi
 
-          echo "::error::stable publication of $VERSION blocked by $failures unmet precondition(s). Fix them, or set the repository variable STABLE_GATE_OVERRIDE to exactly '$VERSION' to release anyway."
+          err "stable publication of $VERSION blocked by $failures unmet precondition(s). Fix them, or set the repository variable STABLE_GATE_OVERRIDE to exactly '$VERSION' to release anyway."
           exit 1
 
   dependency-vulnerability-gate:
@@ -896,6 +900,8 @@ jobs:
           CHANNEL: ${{ needs.version.outputs.channel }}
           REBUILD: ${{ needs.version.outputs.rebuild }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           mkdir -p release
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -exec cp {} release/ \;
@@ -945,7 +951,7 @@ jobs:
           # expectation keyed off which legs ran, a bigger change than the loss it
           # prevents; the count still catches the emit step breaking outright.
           if { [ "$CHANNEL" = "insider" ] || [ "$REBUILD" = "true" ]; } && [ "$manifests" -eq 0 ]; then
-            echo "::error::No symbols-manifest.json found in any build artifact;" \
+            err "No symbols-manifest.json found in any build artifact;" \
                  "see the 'Record symbols manifest' step in build-desktop.yml."
             exit 1
           fi
@@ -954,11 +960,11 @@ jobs:
           NOTARIZED_ZIP="${NOTARIZED_DIR}/notarized.zip"
           NOTARIZED_DMG="${NOTARIZED_DIR}/KiroCrew.dmg"
           [ -s "$NOTARIZED_ZIP" ] || {
-            echo "::error::Required gated macOS ZIP is missing or empty: ${NOTARIZED_ZIP}"
+            err "Required gated macOS ZIP is missing or empty: ${NOTARIZED_ZIP}"
             exit 1
           }
           [ -s "$NOTARIZED_DMG" ] || {
-            echo "::error::Required gated macOS DMG is missing or empty: ${NOTARIZED_DMG}"
+            err "Required gated macOS DMG is missing or empty: ${NOTARIZED_DMG}"
             exit 1
           }
 
@@ -971,6 +977,8 @@ jobs:
           import sys
           import zipfile
 
+          ERR = "::%s::" % "error"
+
           zip_path = Path(sys.argv[1])
           dmg_path = Path(sys.argv[2])
 
@@ -979,11 +987,11 @@ jobs:
                   corrupt_member = archive.testzip()
                   names = archive.namelist()
           except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
-              raise SystemExit(f"::error::{zip_path} is not a valid ZIP archive: {exc}")
+              raise SystemExit(f"{ERR}{zip_path} is not a valid ZIP archive: {exc}")
 
           if corrupt_member is not None:
               raise SystemExit(
-                  f"::error::{zip_path} failed its CRC check at {corrupt_member}"
+                  f"{ERR}{zip_path} failed its CRC check at {corrupt_member}"
               )
           app_roots = {
               parts[0]
@@ -992,7 +1000,7 @@ jobs:
           }
           if len(app_roots) != 1:
               raise SystemExit(
-                  f"::error::{zip_path} must contain exactly one top-level .app; "
+                  f"{ERR}{zip_path} must contain exactly one top-level .app; "
                   f"found {sorted(app_roots)}"
               )
 
@@ -1005,7 +1013,7 @@ jobs:
               if signature != b"koly":
                   raise ValueError("UDIF trailer signature is missing")
           except (OSError, ValueError) as exc:
-              raise SystemExit(f"::error::{dmg_path} is not a valid UDIF DMG: {exc}")
+              raise SystemExit(f"{ERR}{dmg_path} is not a valid UDIF DMG: {exc}")
           PY_VALIDATE
 
           cp "$NOTARIZED_ZIP" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
@@ -1028,7 +1036,7 @@ jobs:
             # Mirrors record-promotion's at_most_one selector.
             mapfile -t installers < <(find artifacts -type f -path '*build-windows-x64*' -name '*.exe')
             if [ "${#installers[@]}" -gt 1 ]; then
-              echo "::error::expected at most one Windows installer, found ${#installers[@]}"
+              err "expected at most one Windows installer, found ${#installers[@]}"
               printf '%s\n' "${installers[@]}"
               exit 1
             fi
@@ -1041,7 +1049,7 @@ jobs:
           if [ -n "$WINDOWS_INSTALLER" ]; then
             cp "$WINDOWS_INSTALLER" "release/KiroCrew-${{ needs.version.outputs.version }}-Setup-x64.exe"
           else
-            echo "::notice::no Windows installer available to this run; the release page will offer none."
+            notice "no Windows installer available to this run; the release page will offer none."
           fi
           ls -la release/
 
@@ -1078,6 +1086,8 @@ jobs:
           import sys
           sys.path.insert(0, "src")
           from kiro_crew.changelog import parse_sections
+
+          ERR = "::%s::" % "error"
 
           FENCE = re.compile(r"^\s*(```|~~~)")
           HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -1144,7 +1154,7 @@ jobs:
               sections = [body for version, _date, body in parse_sections(markdown) if version == base_version]
               if not sections:
                   raise SystemExit(
-                      f"::error::CHANGELOG.md has no '## [{base_version}]' section; "
+                      f"{ERR}CHANGELOG.md has no '## [{base_version}]' section; "
                       "the stable gate should have caught this earlier."
                   )
               notes = unwrap(drop_contributors(sections[0]))
@@ -1174,6 +1184,9 @@ jobs:
           TAG: ${{ github.ref_name }}
           CHANNEL: ${{ needs.version.outputs.channel }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           # Insider is untouched. Those pages are prereleases whose audience opted
           # into partial states, and record-promotion is already the completion
@@ -1198,21 +1211,21 @@ jobs:
             marked=false
           else
             cat probe-error.log >&2
-            echo "::error::cannot read the release state for $TAG, so this run will not touch the release page: a wrong guess writes to a page users can already see. Re-run once the API answers."
+            err "cannot read the release state for $TAG, so this run will not touch the release page: a wrong guess writes to a page users can already see. Re-run once the API answers."
             exit 1
           fi
           if [ "$drafted" = "false" ]; then
             echo "action=skip" >> "$GITHUB_OUTPUT"
             echo "draft=false" >> "$GITHUB_OUTPUT"
             if [ "$marked" = "true" ]; then
-              echo "::notice::$TAG is already published and carries its completion marker; this run uploads nothing to it."
+              notice "$TAG is already published and carries its completion marker; this run uploads nothing to it."
             else
               # An anomaly, not a state this workflow produces: a draft published
               # by hand, or a release from before the marker existed. Named here
               # and refused in record-stable-promotion, because repairing it means
               # writing to a live page and certifying it means vouching for an
               # asset set this run did not upload.
-              echo "::warning::$TAG is published with no completion marker. This run will not modify a live release; see docs/build/release.md."
+              warn "$TAG is published with no completion marker. This run will not modify a live release; see docs/build/release.md."
             fi
           else
             echo "action=create" >> "$GITHUB_OUTPUT"
@@ -1284,13 +1297,15 @@ jobs:
         env:
           DOCKER_DIGEST: ${{ needs.publish-docker.outputs.digest }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           mkdir promotion-bundle
           one() {
             label="$1"; shift
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -ne 1 ]; then
-              echo "::error::expected exactly one ${label}, found ${#matches[@]}"
+              err "expected exactly one ${label}, found ${#matches[@]}"
               printf '%s\n' "${matches[@]}"
               exit 1
             fi
@@ -1303,7 +1318,7 @@ jobs:
             label="$1"; shift
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -gt 1 ]; then
-              echo "::error::expected at most one ${label}, found ${#matches[@]}"
+              err "expected at most one ${label}, found ${#matches[@]}"
               printf '%s\n' "${matches[@]}"
               exit 1
             fi
@@ -1344,19 +1359,19 @@ jobs:
           # Failing would make a Windows artifact anomaly block the candidate
           # recording for mac, Linux and the CLI -- the exact coupling the role
           # was made optional to avoid, reintroduced at the one step that had
-          # not been thought through. The annotation is an ::error:: so it is
+          # not been thought through. The annotation is an error so it is
           # loud in the run summary even though the job succeeds; the outcome is
           # identical to a Windows build that produced nothing, which is a state
           # the whole design already handles.
           if [ -n "$INSTALLER" ] && [ ! -f "${INSTALLER}.blockmap" ]; then
-            echo "::error::${INSTALLER} has no .blockmap beside it, so the Windows pair is being DROPPED from this candidate. Stable will publish no Windows installer for this version; the other platforms are unaffected."
+            err "${INSTALLER} has no .blockmap beside it, so the Windows pair is being DROPPED from this candidate. Stable will publish no Windows installer for this version; the other platforms are unaffected."
             INSTALLER=""
           fi
           if [ -n "$INSTALLER" ]; then
             cp "$INSTALLER" promotion-bundle/KiroCrew-Setup.exe
             cp "${INSTALLER}.blockmap" promotion-bundle/KiroCrew-Setup.exe.blockmap
           else
-            echo "::notice::no Windows installer in this run; recording a candidate without the optional Windows role."
+            notice "no Windows installer in this run; recording a candidate without the optional Windows role."
           fi
           OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           python3 scripts/release_promotion.py create \
@@ -1451,12 +1466,14 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           release=$(gh release view "$TAG" -R "$REPO" --json isDraft,assets)
           drafted=$(printf '%s' "$release" | jq -r '.isDraft')
           marked=$(printf '%s' "$release" | jq -r '[.assets[].name] | index("stable-publication.json") != null')
           if [ "$drafted" = "false" ] && [ "$marked" = "true" ]; then
-            echo "::notice::$TAG is already published and carries its completion marker; this run has nothing to complete."
+            notice "$TAG is already published and carries its completion marker; this run has nothing to complete."
             echo "already_published=true" >> "$GITHUB_OUTPUT"
           elif [ "$drafted" = "false" ]; then
             # Visible but uncertified, and NOT a state this workflow produces: a
@@ -1465,7 +1482,7 @@ jobs:
             # page users can already see, and it is not certified either, because
             # the marker would vouch for an asset set this run never uploaded. A
             # human decides which of the two it is.
-            echo "::error::$TAG is published but carries no completion marker. Marking it would certify an asset set this run did not upload, and rebuilding it would rewrite a release users can already see; neither happens automatically. Either delete the release page (keeping the tag) and re-run this tag, or accept the version as one published before the marker existed. See docs/build/release.md."
+            err "$TAG is published but carries no completion marker. Marking it would certify an asset set this run did not upload, and rebuilding it would rewrite a release users can already see; neither happens automatically. Either delete the release page (keeping the tag) and re-run this tag, or accept the version as one published before the marker existed. See docs/build/release.md."
             exit 1
           else
             echo "already_published=false" >> "$GITHUB_OUTPUT"

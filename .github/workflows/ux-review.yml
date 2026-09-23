@@ -138,6 +138,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           exact="<!-- ai-review-human-override target=ux head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
           # A comments feed this step could not READ is not a PR with no
@@ -163,7 +164,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            err "Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
           fi
           record="$(printf '%s' "$comments" \
@@ -227,6 +228,8 @@ jobs:
           # cap only bounds the downloads; past it the list says so too.
           MAX_CLIPS: "4"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           changed="$(git diff --name-only --diff-filter=AM "$BASE_SHA"...HEAD)"
           rm -rf "$BLIND_DIR" "$FETCH_DIR"
@@ -260,7 +263,7 @@ jobs:
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             if [ ! -f "$f" ] || [ -L "$f" ]; then
-              echo "::warning::skipping $f: not a regular file"
+              warn "skipping $f: not a regular file"
               continue
             fi
             case "$f" in
@@ -312,7 +315,7 @@ jobs:
           # re-run; a definite 404 is not transport and stays the author's.
           if [ "${failed:-0}" -gt 0 ]; then
             echo "unfetched=true" >> "$GITHUB_OUTPUT"
-            echo "::error::$failed of $fetched attachment download(s) from the PR description failed for a transport reason, so the blind reader cannot see everything the author supplied; this lane cannot evaluate the change on partial evidence and fails rather than read as advisory. Re-run this workflow; if the same downloads fail again, the attachment URLs themselves are the problem -- re-attach the images to the description."
+            err "$failed of $fetched attachment download(s) from the PR description failed for a transport reason, so the blind reader cannot see everything the author supplied; this lane cannot evaluate the change on partial evidence and fails rather than read as advisory. Re-run this workflow; if the same downloads fail again, the attachment URLs themselves are the problem -- re-attach the images to the description."
             exit 1
           fi
           echo "unfetched=false" >> "$GITHUB_OUTPUT"
@@ -455,6 +458,7 @@ jobs:
           SCREENS: ${{ steps.evidence.outputs.screens }}
           REPORT: ${{ runner.temp }}/ux-blind-read.md
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           report=""
           if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
@@ -482,7 +486,7 @@ jobs:
             echo "No screenshots in the PR description or the commit; blind read not performed."
           else
             printf '%s\n' "BLIND READ UNAVAILABLE: the blind-read step ended with outcome '${BLIND_OUTCOME:-none}' and produced no report. Treat every user-visible control the diff adds or changes as an evidence gap; do not infer what a first-time user would understand." > "$REPORT"
-            echo "::warning::blind-read step produced no report (outcome: ${BLIND_OUTCOME:-none}); pass 2 will treat the screenshots as unread."
+            warn "blind-read step produced no report (outcome: ${BLIND_OUTCOME:-none}); pass 2 will treat the screenshots as unread."
           fi
 
       # Fresh Bedrock session for pass 2 (see the note on the first assume).
@@ -1483,6 +1487,8 @@ jobs:
           CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
           UNFETCHED: ${{ steps.evidence.outputs.unfetched }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides UX Review for $HEAD. Passing gate."
             exit 0
@@ -1491,7 +1497,7 @@ jobs:
           # step says why in the gate's own words instead of the verdict-less
           # "NOT blocking" warning below, which would contradict the red.
           if [ "${UNFETCHED:-}" = "true" ]; then
-            echo "::error::UX review for $HEAD could not evaluate the change: one or more attachment downloads from the PR description failed for a transport reason, so the blind reader could not see everything the author supplied. Re-run this workflow; if the same downloads fail again, re-attach the images to the description."
+            err "UX review for $HEAD could not evaluate the change: one or more attachment downloads from the PR description failed for a transport reason, so the blind reader could not see everything the author supplied. Re-run this workflow; if the same downloads fail again, re-attach the images to the description."
             exit 1
           fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
@@ -1524,9 +1530,9 @@ jobs:
               echo "UX review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)
-              echo "::error::UX review verdict for $HEAD: BLOCK — the UX gate failed. Read the UX concern in the PR comment and fix the experience, or have a human override the concern before merging."
+              err "UX review verdict for $HEAD: BLOCK — the UX gate failed. Read the UX concern in the PR comment and fix the experience, or have a human override the concern before merging."
               exit 1 ;;
             *)
-              echo "::warning::UX review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the UX review job logs / re-run."
+              warn "UX review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the UX review job logs / re-run."
               exit 0 ;;
           esac

@@ -72,6 +72,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           exact="<!-- ai-review-human-override target=design head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
           # A comments feed this step could not READ is not a PR with no
@@ -97,7 +98,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            err "Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
           fi
           record="$(printf '%s' "$comments" \
@@ -865,6 +866,8 @@ jobs:
           CONCERNS_PUNCHLINE: ${{ steps.post.outputs.concerns_punchline }}
           CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides Design Review for $HEAD. Passing gate."
             exit 0
@@ -896,9 +899,9 @@ jobs:
               echo "Design review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)
-              echo "::error::Design review verdict for $HEAD: BLOCK — the design gate failed. Read the design concern in the PR comment and fix the design, or have a human override the concern before merging."
+              err "Design review verdict for $HEAD: BLOCK — the design gate failed. Read the design concern in the PR comment and fix the design, or have a human override the concern before merging."
               exit 1 ;;
             *)
-              echo "::warning::Design review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the Design review job logs / re-run."
+              warn "Design review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the Design review job logs / re-run."
               exit 0 ;;
           esac

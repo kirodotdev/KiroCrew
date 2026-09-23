@@ -136,6 +136,7 @@ jobs:
       # updater that 404s forever.
       - name: Resolve arch-dependent names
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           case "${ARCH}" in
             x64)
@@ -153,7 +154,7 @@ jobs:
               echo "EXPECT_RPM_ARCH=aarch64" >> "$GITHUB_ENV"
               ;;
             *)
-              echo "::error::unsupported arch '${ARCH}' (expected x64 or arm64)"
+              err "unsupported arch '${ARCH}' (expected x64 or arm64)"
               exit 1
               ;;
           esac
@@ -171,6 +172,7 @@ jobs:
       # subdirectory via buildFeedBase()'s `variant`.
       - name: Resolve format-dependent names
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           case "${FORMAT}" in
             appimage)
@@ -186,7 +188,7 @@ jobs:
               echo "FEED_PREFIX=feed/${CHANNEL}/rpm" >> "$GITHUB_ENV"
               ;;
             *)
-              echo "::error::unsupported format '${FORMAT}' (expected appimage, deb or rpm)"
+              err "unsupported format '${FORMAT}' (expected appimage, deb or rpm)"
               exit 1
               ;;
           esac
@@ -256,6 +258,7 @@ jobs:
           # this one only ever appears in a diagnostic string.
           BUILD_ARTIFACT: ${{ inputs.build_artifact }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # An AppImage is an ELF, so its own header carries the machine. A deb and
           # an rpm are archives whose ELF payload is compressed inside, so the
@@ -277,7 +280,7 @@ jobs:
           if [ -n "${EXPECT}" ]; then
             echo "${FORMAT} architecture: ${PKG_ARCH}"
             if [ "${PKG_ARCH}" != "${EXPECT}" ]; then
-              echo "::error::artifact ${BUILD_ARTIFACT} declares architecture '${PKG_ARCH}', expected '${EXPECT}' for ${ARCH}"
+              err "artifact ${BUILD_ARTIFACT} declares architecture '${PKG_ARCH}', expected '${EXPECT}' for ${ARCH}"
               exit 1
             fi
             echo "Architecture verified: ${ARCH} (${EXPECT})"
@@ -285,7 +288,7 @@ jobs:
             FILE_OUT="$(file -b "${ARTIFACT_PATH}")"
             echo "${FILE_OUT}"
             if ! printf '%s' "${FILE_OUT}" | grep -qi -- "${EXPECT_ELF_MACHINE}"; then
-              echo "::error::artifact ${BUILD_ARTIFACT} is not ${ARCH} (expected ELF machine '${EXPECT_ELF_MACHINE}'): ${FILE_OUT}"
+              err "artifact ${BUILD_ARTIFACT} is not ${ARCH} (expected ELF machine '${EXPECT_ELF_MACHINE}'): ${FILE_OUT}"
               exit 1
             fi
             echo "Architecture verified: ${ARCH} (${EXPECT_ELF_MACHINE})"
@@ -321,6 +324,7 @@ jobs:
       - name: Publish artifact to distribution bucket
         if: env.HAS_SIGNING_SECRETS
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           ARTIFACT_KEY="desktop/${CHANNEL}/${VERSION}/${LINUX_BASENAME}.${LINUX_EXT}"
           set +e
@@ -349,7 +353,7 @@ jobs:
               LOCAL_SHA=$(sha256sum "${ARTIFACT_PATH}" | awk '{print $1}')
               rm -f /tmp/published.artifact
               if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
-                echo "::error::Immutable key ${ARTIFACT_KEY} already holds DIFFERENT bytes (published ${PUBLISHED_SHA}, this build ${LOCAL_SHA}). The version string is burned -- cut a new version instead of re-running. Refusing to repoint the latest alias."
+                err "Immutable key ${ARTIFACT_KEY} already holds DIFFERENT bytes (published ${PUBLISHED_SHA}, this build ${LOCAL_SHA}). The version string is burned -- cut a new version instead of re-running. Refusing to repoint the latest alias."
                 exit 1
               fi
               echo "Published bytes identical -- keeping existing object and continuing."
@@ -391,6 +395,8 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         id: feed
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           ARTIFACT_SHA512=$(openssl dgst -sha512 -binary "${ARTIFACT_PATH}" | base64 -w 0)
           ARTIFACT_SIZE=$(stat -c%s "${ARTIFACT_PATH}")
@@ -406,9 +412,9 @@ jobs:
           SERVED_SHA512=$(curl -fsS --retry 3 --retry-delay 2 \
             "${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
           if [ "$SERVED_SHA512" != "$ARTIFACT_SHA512" ]; then
-            echo "::error::published artifact does not match the bytes this feed would advertise."
-            echo "::error::  expected sha512 (local build): $ARTIFACT_SHA512"
-            echo "::error::  served   sha512 (published):   $SERVED_SHA512"
+            err "published artifact does not match the bytes this feed would advertise."
+            err "  expected sha512 (local build): $ARTIFACT_SHA512"
+            err "  served   sha512 (published):   $SERVED_SHA512"
             exit 1
           fi
           echo "Verified published artifact matches the feed digest."
@@ -425,11 +431,11 @@ jobs:
           FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
             -o /tmp/current-feed.yml -w '%{http_code}' \
             "${{ vars.CLI_CDN_BASE }}/${FEED_PREFIX}/${FEED_FILE}") \
-            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+            || { err "channel feed fetch failed (transport)"; exit 1; }
           case "$FEED_HTTP" in
             200) ;;
             403|404) : > /tmp/current-feed.yml ;;
-            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+            *) err "channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
           # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
           # input, unlike grep -v); an ls-remote failure aborts via pipefail.
@@ -441,10 +447,10 @@ jobs:
             --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
           if [ "$VERDICT" = "hold" ]; then
             echo "advance=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${FEED_PREFIX}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            notice "${FEED_PREFIX}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
             exit 0
           elif [ "$VERDICT" != "advance" ]; then
-            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            err "feed guard returned neither advance nor hold (got: '${VERDICT}')"
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"

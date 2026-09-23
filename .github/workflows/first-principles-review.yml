@@ -143,6 +143,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RFC_STATUS: ${{ runner.temp }}/rfc-status.txt
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           # Delete first: a tracked symlink at this path would make the redirect
           # below land on another file's inode.
@@ -152,7 +153,7 @@ jobs:
             > .review-prompts/first-principles.md 2>/dev/null || true
           if [ ! -s .review-prompts/first-principles.md ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::.github/review-prompts/first-principles.md is absent or empty on the base commit ($BASE_SHA); this revision cannot be reviewed against a trusted contract. Not blocking."
+            warn ".github/review-prompts/first-principles.md is absent or empty on the base commit ($BASE_SHA); this revision cannot be reviewed against a trusted contract. Not blocking."
             exit 0
           fi
           echo "available=true" >> "$GITHUB_OUTPUT"
@@ -193,10 +194,11 @@ jobs:
           PATCH: ${{ runner.temp }}/authentic.patch
           INTENT: ${{ runner.temp }}/pr-intent.txt
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           git diff --no-color "$BASE_SHA"...HEAD > "$PATCH"
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...HEAD; failing closed."
+            err "empty diff for $BASE_SHA...HEAD; failing closed."
             exit 1
           fi
           # A title/description this step could not READ is not a PR without
@@ -223,7 +225,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's title and description from the API after 3 attempts, so the review would judge a PR that appears to state no intent. This is a read failure, not a missing description -- re-run this job."
+            err "Could not read this PR's title and description from the API after 3 attempts, so the review would judge a PR that appears to state no intent. This is a read failure, not a missing description -- re-run this job."
             exit 1
           fi
           # Strip embedded media: a screenshot-heavy body is pure cost to a
@@ -265,6 +267,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           exact="<!-- ai-review-human-override target=first-principles head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
           # A comments feed this step could not READ is not a PR with no
@@ -290,7 +293,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            err "Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
           fi
           record="$(printf '%s' "$comments" \
@@ -421,6 +424,7 @@ jobs:
           CONTRACT: ${{ steps.contract.outputs.available }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             OV_MARKER="<!-- first-principles-review -->"
             {
@@ -596,7 +600,7 @@ jobs:
           # token has no distinctive prefix); a false positive costs one advisory
           # comment, and the check stays green either way.
           if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' "${RUNNER_TEMP:-/tmp}/fp-comment.md"; then
-            echo "::warning::the first-principles review output matched a credential shape after redaction; the body was withheld and no verdict is reported for $HEAD."
+            warn "the first-principles review output matched a credential shape after redaction; the body was withheld and no verdict is reported for $HEAD."
             echo "verdict=UNKNOWN" >> "$GITHUB_OUTPUT"
             {
               echo "$MARKER"
@@ -783,6 +787,8 @@ jobs:
           CONCERNS_PUNCHLINE: ${{ steps.post.outputs.concerns_punchline }}
           CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides First Principles Review for $HEAD. Passing gate."
             exit 0
@@ -796,7 +802,7 @@ jobs:
               echo "First-principles review skipped for $HEAD (no reviewable surface — non-blocking)."
               exit 0 ;;
             NO_CONTRACT)
-              echo "::warning::First-principles review could not run for $HEAD: .github/review-prompts/first-principles.md is absent from the base commit, so there is no trusted contract to review against (this is expected on the PR that introduces or moves it). NOT blocking."
+              warn "First-principles review could not run for $HEAD: .github/review-prompts/first-principles.md is absent from the base commit, so there is no trusted contract to review against (this is expected on the PR that introduces or moves it). NOT blocking."
               exit 0 ;;
             PASS|CONCERNS)
               # The exit contract is untouched: CONCERNS still exits 0. What
@@ -820,9 +826,9 @@ jobs:
               echo "First-principles review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)
-              echo "::error::First-principles review verdict for $HEAD: BLOCK — the premise gate failed. Read the concern in the PR comment and either remove the unjustified surface or have a human override it before merging."
+              err "First-principles review verdict for $HEAD: BLOCK — the premise gate failed. Read the concern in the PR comment and either remove the unjustified surface or have a human override it before merging."
               exit 1 ;;
             *)
-              echo "::warning::First-principles review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the First Principles Review job logs / re-run."
+              warn "First-principles review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the First Principles Review job logs / re-run."
               exit 0 ;;
           esac

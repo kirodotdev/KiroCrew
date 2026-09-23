@@ -53,6 +53,7 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENT_URL: ${{ github.event.comment.html_url }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           problems=""
 
@@ -97,7 +98,7 @@ jobs:
                 fi
               done
               if [ -z "$read_ok" ]; then
-                echo "::error::Could not read issue #$n from the API after 3 attempts, so this check cannot tell whether the deferral is tracked. This is a read failure, not an untracked deferral -- re-run this job."
+                err "Could not read issue #$n from the API after 3 attempts, so this check cannot tell whether the deferral is tracked. This is a read failure, not an untracked deferral -- re-run this job."
                 # This lane is advisory by design (an issue_comment run has no
                 # PR-visible check row), so a silent red run in the Actions tab
                 # is a signal nobody sees. Leave the unverified state where the
