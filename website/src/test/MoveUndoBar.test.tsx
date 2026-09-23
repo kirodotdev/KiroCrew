@@ -87,6 +87,24 @@ describe('MoveUndoBar', () => {
     expect(onHoldChange).toHaveBeenLastCalledWith(true)
   })
 
+  it('reports the UNION of pointer and focus, so one leaving never releases the other', () => {
+    const onHoldChange = vi.fn()
+    const { container } = render(
+      <MoveUndoBar moved={moved} onUndo={vi.fn()} onHoldChange={onHoldChange} />,
+    )
+    const bar = container.querySelector('[data-testid="session-move-undo"]')!
+    const undo = screen.getByTestId('session-move-undo-button')
+    fireEvent.focus(undo)
+    fireEvent.mouseEnter(bar)
+    fireEvent.mouseLeave(bar)
+    expect(onHoldChange).toHaveBeenLastCalledWith(true)
+    fireEvent.mouseEnter(bar)
+    fireEvent.blur(undo)
+    expect(onHoldChange).toHaveBeenLastCalledWith(true)
+    fireEvent.mouseLeave(bar)
+    expect(onHoldChange).toHaveBeenLastCalledWith(false)
+  })
+
   it('carries the session title as the row tooltip, since the row has no width for it', () => {
     const { container } = renderBar()
     expect(container.querySelector(`[title*="${moved.itemTitle}"]`)).toBeTruthy()
