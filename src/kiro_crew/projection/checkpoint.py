@@ -24,8 +24,9 @@ before a payload is used:
   different bookkeeping must not resume the old build's state onto new logic --
   that serves pre-change numbers for the life of the store. A mismatch discards.
 * the payload FORMAT changed. ``v`` is this module's own envelope version,
-  independent of any definition's ``state_version``, so a field added here retires
-  old files without every definition having to bump.
+  independent of any definition's ``state_version``, so a bump here retires old
+  files without every definition having to bump. A field ADDED with a stated
+  meaning for its absence needs no bump -- see :data:`PAYLOAD_VERSION`.
 * the savepoint describes a DIFFERENT LOG than the one being folded. That is what
   the identity block is for, below.
 
@@ -42,8 +43,21 @@ state folded from an unrelated log.
 
 Equality covers a fact known before the fold and fixed afterwards. It cannot cover a
 condition that must be evaluated against live log state, so :meth:`load` takes an
-optional ``admit`` predicate for those. It is called with the stored identity block
-only after every equality check has passed, and returning ``False`` discards.
+optional ``admit`` predicate for those. It runs only after every equality check has
+passed, and returning ``False`` discards.
+
+THE WITNESS, and why it is separate from the identity block. A live-state condition
+needs a value the savepoint recorded to compare the live log against -- a digest of
+the bytes its state was folded from. That value cannot live in the identity block,
+because the block is compared VERBATIM and a caller cannot state the digest before
+loading the file that holds it: equality would refuse every savepoint it appeared in.
+So :class:`Savepoint` carries a second opaque mapping, the ``witness``, which is
+stored beside the identity, excluded from the equality compare, and handed to
+``admit`` next to the stored block -- ``admit(identity, witness)``. The kernel
+interprets neither mapping. A payload carrying no witness loads with an empty one,
+which is what lets a client treat "no evidence" as a reason of its own to refuse; a
+payload whose witness is not a mapping is refused here, like every other field this
+module cannot read.
 
 HOW THIS MAPS ONTO THE CREW LOG (read this before re-hosting that client -- it is
 why the shape above is what it is, and it is recorded here so the mapping is not
@@ -57,7 +71,7 @@ rediscovered):
     | watermark        | ``last_seq``                    | ``observed_seq``|
     | state            | ``state``                       | cell state      |
     | identity block   | ``origin``, ``first_seq``       | (client's own)  |
-    | ``admit``        | ``prefix_sha``/``prefix_records`` | (see below)   |
+    | ``witness``      | ``prefix_sha``/``prefix_records`` | (see below) |
 
 ``crew_log.checkpoint`` enforces four admission conditions beyond the three-field
 key, and they split cleanly along that line. ``origin`` (a unit recreated under the
@@ -65,9 +79,10 @@ same id restarts its seqs) and ``first_seq`` (retention dropped whole segments o
 the front) are both known before the fold and are pure equality, so they are
 identity-block entries. The prefix digest is not: it is recomputed against the live
 file, because a line damaged AFTER it was folded is skipped by a cold fold while a
-savepoint keeps the value that line contributed -- so it is an ``admit`` predicate.
-Its fourth, ``seq > handle.last_seq`` (the log is shorter than the savepoint), is
-also live state and also belongs in ``admit``.
+savepoint keeps the value that line contributed -- so the digest it was written with
+travels in the ``witness`` and ``admit`` hashes the file again to compare. Its
+fourth, ``seq > handle.last_seq`` (the log is shorter than the savepoint), reads live
+state and needs nothing stored, so it is ``admit`` alone.
 
 The member log needs the prefix condition too, for the same reason and not a
 borrowed one: ``MemberLog.last_seq`` documents that a damaged committed line is
@@ -87,7 +102,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -96,9 +111,14 @@ from kiro_crew.atomic_write import atomic_write
 logger = logging.getLogger(__name__)
 
 #: Envelope version this module writes and is willing to read. THE RULE: any change
-#: to what this file STORES bumps it, including one that keeps the same keys. It is
+#: that makes an existing payload MEAN something else bumps it, including one that
+#: keeps the same keys -- a field whose absence is undefined, a field whose value is
+#: reinterpreted, a check removed. An ADDED field whose absence has a stated meaning
+#: does not, because an old payload is still read correctly: ``witness`` is absent
+#: from one written before it existed, and absent means "carries no evidence", which
+#: is a value a client can act on rather than a gap it has to guess at. It is
 #: independent of a definition's ``state_version``, which describes that fold's own
-#: state, so a field added here retires stale files without every definition moving.
+#: state, so a bump here retires stale files without every definition moving.
 PAYLOAD_VERSION: Final[int] = 1
 
 #: Largest savepoint file this module reads or writes. Every fold's state is already
@@ -112,10 +132,12 @@ MAX_PAYLOAD_BYTES: Final[int] = 2 * 1024 * 1024
 #: empty-cell value so a restored cell and a fresh one are the same kind of thing.
 EMPTY_WATERMARK: Final[int] = -1
 
-#: Called with the STORED identity block once every equality check has passed.
-#: Returning False discards the savepoint. For conditions that must be evaluated
-#: against live log state rather than compared to a stored constant.
-Admit = Callable[[Mapping[str, Any]], bool]
+#: Called with the STORED identity block and the STORED witness, once every equality
+#: check has passed. Returning False discards the savepoint. For conditions that must
+#: be evaluated against live log state rather than compared to a stored constant: the
+#: identity carries what equality already covered, and the witness carries what the
+#: condition needs and equality cannot hold (see the module docstring).
+Admit = Callable[[Mapping[str, Any], Mapping[str, Any]], bool]
 
 
 @dataclass(frozen=True)
@@ -133,6 +155,13 @@ class Savepoint:
     watermark: int
     state: Any
     identity: Mapping[str, Any]
+    #: Opaque evidence about the log this state was folded from, stored beside the
+    #: identity and EXCLUDED from the equality compare, so it can hold a value a
+    #: caller cannot state before loading the file -- a digest of the consumed bytes.
+    #: It reaches the client through ``admit``, which is the only thing that reads it;
+    #: the kernel never interprets a key. Empty means the savepoint carries no
+    #: evidence, and what that is worth is the client's call.
+    witness: Mapping[str, Any] = field(default_factory=dict)
 
 
 class CheckpointStore(Protocol):
@@ -252,7 +281,15 @@ class DirectoryCheckpointStore:
             return None
         if "state" not in raw:
             return None
-        if admit is not None and not admit(stored_identity):
+        # The witness is deliberately NOT part of the comparison above. It holds what
+        # the caller cannot state in advance, so comparing it would refuse every
+        # savepoint carrying one. Absent reads as empty, which a client may treat as
+        # its own reason to refuse; a non-mapping is refused here, because this module
+        # cannot hand ``admit`` a shape its client's predicate is not written for.
+        stored_witness = raw.get("witness", {})
+        if not isinstance(stored_witness, dict):
+            return None
+        if admit is not None and not admit(stored_identity, stored_witness):
             return None
         return Savepoint(
             key=key,
@@ -260,6 +297,7 @@ class DirectoryCheckpointStore:
             watermark=watermark,
             state=raw["state"],
             identity=stored_identity,
+            witness=stored_witness,
         )
 
     # ---- write ------------------------------------------------------------
@@ -283,6 +321,7 @@ class DirectoryCheckpointStore:
             "state_version": savepoint.state_version,
             "watermark": savepoint.watermark,
             "identity": dict(savepoint.identity),
+            "witness": dict(savepoint.witness),
             "state": savepoint.state,
         }
         try:

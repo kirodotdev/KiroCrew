@@ -739,6 +739,7 @@
           "approve": "승인",
           "approve_is_unavailable_because_this_base_branch_": "이 풀 리퀘스트의 베이스 브랜치가 새 커밋이 푸시될 때 승인을 취소하지 않기 때문에(또는 여기에서 보호 설정을 읽을 수 없기 때문에) 승인할 수 없습니다. 그렇지 않으면 승인이 리뷰한 커밋보다 오래 남을 수 있습니다. 대신 GitHub에서 승인하세요.",
           "approve_is_unavailable_while_auto_merge_is_armed": "자동 병합이 설정된 동안에는 승인할 수 없습니다. 오래된 헤드 검사가 되돌리기 전에 승인이 이 풀 리퀘스트를 병합할 수 있습니다. 자동 병합을 해제하거나 GitHub에서 승인하세요.",
+          "ask_agent_about_this_failure": "이 오류에 대해 에이전트에게 물어보기",
           "cancel": "취소",
           "confirm_approve": "이 풀 리퀘스트를 승인하시겠습니까?",
           "confirm_request_changes": "변경 요청 리뷰를 게시하시겠습니까?",
@@ -5865,6 +5866,7 @@
       "approve_all": "모두 승인",
       "approve_sub_agent": "하위 에이전트 승인: {{name}}",
       "attach_files": "파일 첨부",
+      "cancel_upload": "업로드 취소",
       "editor_unavailable_standard_input": "향상된 편집기를 불러올 수 없어 표준 입력이 활성화되었습니다. 초안은 변경되지 않았습니다.",
       "branch": "브랜치: {{branch}}",
       "click_again_to_force_stop": "강제 중지하려면 다시 클릭하세요",
@@ -7311,8 +7313,6 @@
       "no_commits_were_returned": "커밋이 반환되지 않았습니다.",
       "no_description_was_provided": "설명이 제공되지 않았습니다.",
       "open_pull_request": "풀 리퀘스트 열기",
-      "open_slack_settings": "Slack 설정 열기",
-      "owner_not_configured_guidance": "이 작업에는 구성된 소유자가 필요하며, {{productName}}은(는) 소유자를 Slack 멤버 ID로 식별합니다. 설정 → 채팅 플랫폼 → Slack에서 \"Owner Slack member ID\"를 설정하고 게이트웨이를 재시작한 뒤 다시 로그인하세요.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}에 대한 공급자 결과가 일부일 수 있습니다. 전체를 보려면 머지 리퀘스트를 여세요.",
       "provider_results_may_be_partial_pull_request": "{{sections}}에 대한 공급자 결과가 일부일 수 있습니다. 전체를 보려면 풀 리퀘스트를 여세요.",
@@ -8080,7 +8080,8 @@
       "time_to_live": "유지 시간",
       "views": "조회수",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "가상 트래픽 시나리오 — 실제 사용량에 대해서만 비용을 지불합니다 ·",
-      "will_provision": "프로비저닝될 항목"
+      "will_provision": "프로비저닝될 항목",
+      "deployment_available_under_feature_previews": "배포는 설정 → 개발자 → 기능 미리 보기에서 사용할 수 있습니다."
     },
     "webPreviewPanel": {
       "back": "뒤로",
@@ -8127,7 +8128,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "게이트웨이가 이 페이지에 대한 브라우저를 열 수 없습니다.",
       "the_server_at": "서버:",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "보기는 게이트웨이 호스트의 루프백 주소에서 제공되며, 이 브라우저는 여기에 연결할 수 없었습니다. SSH 터널을 통해 대시보드에 접속한다면 아래 설정으로 보기의 포트를 고정하고 그 포트도 함께 포워딩하세요.",
-      "this_chat_s_browser_session": "이 채팅의 브라우저",
+      "opened_from_this_chat": "이 채팅에서 연 페이지",
       "this_dashboard_is_served_over_https_so_the_brows": "이 대시보드는 HTTPS로 제공되므로 브라우저가 다음 삽입을 차단합니다:",
       "this_url_is_the_dashboard_s_own_server_which_ref": "이 URL은 대시보드 자체의 서버이며 삽입이 허용되지 않습니다. 대신 개발 서버 URL을 입력하세요.",
       "web_preview": "웹 미리 보기",
@@ -8606,6 +8607,18 @@
       "label": "변경 시 다시 시작 필요",
       "tooltip": "이 설정은 {{productName}}이(가) 실행 중인 동안에는 변경할 수 없습니다. 저장된 값은 유지되며 {{productName}}을(를) 다음에 다시 시작할 때 적용됩니다(설정 → 정보, 또는 실행한 터미널에서).",
       "schema_unavailable": "이 설정에 다시 시작이 필요한지 확인할 수 없습니다."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "에이전트로 배포",
+      "deploy_as_permanent": "영구 배포",
+      "ttl_permanent": "영구 (만료 없음)",
+      "ttl_expires_in_hours": "{{hours}}시간 후 만료",
+      "deploys_from_here_confirm_gated": "여기서 배포합니다 — 먼저 확인합니다",
+      "propagating_note": "첫 배포는 모든 곳에서 열리기까지 5~15분이 걸릴 수 있습니다.",
+      "deployed": "배포 완료!",
+      "unexpected_response": "예기치 않은 응답",
+      "deploy_failed": "배포에 실패했습니다",
+      "stale_preview_retry": "확인 후 앱이 변경되었습니다 — 다시 시도하세요."
     }
   },
   "hooks": {
@@ -9038,7 +9051,6 @@
       "deploy": "배포",
       "deploy_anyway": "그래도 배포",
       "deploy_artifact": "{{name}} 배포",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "배포하면 선택한 프로필로 artifact-deploy 스킬을 실행하는 새 채팅 세션이 열립니다.",
       "deploy_profile_for_slug": "{{slug}}의 배포 프로필",
       "deploy_recall_destroy_each_require_explicit_conf": "배포 / 회수 / 파기는 각각 명시적인 확인이 필요하며(자동 승인되지 않습니다)\n SEL 감사 이벤트를 발생시킵니다.",
       "deployments_count": "배포 ({{count}})",
@@ -9150,7 +9162,16 @@
       "remove_profile_title": "프로필을 제거하시겠습니까?",
       "remove_profile_button": "프로필 제거",
       "retry": "다시 시도",
-      "profile_errors_title": "일부 프로필을 나열할 수 없습니다"
+      "profile_errors_title": "일부 프로필을 나열할 수 없습니다",
+      "4_optional_install_auto_cleanup": "4. 선택: 자동 정리 설치",
+      "auto_cleanup_explainer": "스스로 만료되게 하려는 배포에만 필요합니다.",
+      "deploy_publishes_directly_from_this_page": "Deploy는 확인 후 이 페이지에서 배포합니다.",
+      "deployments_read_live_from_tags": "이 목록은 AWS 리소스 태그에서 실시간으로 읽습니다. 방금 만든 배포는 여기 표시되기까지 몇 분 걸릴 수 있습니다.",
+      "col_name": "이름",
+      "col_status": "상태",
+      "col_est_cost": "예상 비용",
+      "col_profile": "프로필",
+      "col_expiry": "만료"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 원격 사본에 더 새로운 버전이 있습니다",
@@ -11242,7 +11263,10 @@
         "decisions_api_key_remove": "키 삭제",
         "decisions_api_key_remove_confirm": "키 삭제는 되돌릴 수 없습니다. 보관함은 값을 돌려주지 않으니 새로 붙여 넣어야 합니다.",
         "decisions_api_key_remove_cancel": "그대로 두기",
-        "decisions_api_key_delete": "키 영구 삭제"
+        "decisions_api_key_delete": "키 영구 삭제",
+        "artifact_deploy": "아티팩트 배포",
+        "artifact_deploy_desc": "아티팩트를 내 AWS 계정의 공개 HTTPS URL로 배포합니다. 기본값은 꺼짐입니다. 배포마다 계정에 비용이 발생하고 콘텐츠가 공개 인터넷에 제공됩니다.",
+        "open_artifact_deploy": "아티팩트 배포 열기"
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",
@@ -12491,6 +12515,10 @@
         "cache_creation": "캐시 생성",
         "cache_read": "캐시 읽기",
         "credits": "크레딧",
+        "credits_used": "사용한 크레딧",
+        "credits_used_compact": "사용한 크레딧: {{credits}} · {{pct}}",
+        "credits_used_pct": "사용한 크레딧 (%)",
+        "credits_used_pct_title": "현재 청구 기간의 플랜 할당량 대비 비율입니다. 하루에 100%를 넘을 수 있습니다.",
         "daily_history": "일별 기록",
         "daily_token_usage": "일별 토큰 사용량",
         "date": "날짜",

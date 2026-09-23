@@ -1887,9 +1887,7 @@ class TestTokenMintIsOwnerOnly:
         assert (await _payload(resp))["entry"]["label"] == "CI runner"
 
     @pytest.mark.asyncio
-    async def test_the_probe_route_still_mints_its_throwaway_credential(
-        self, wired, monkeypatch
-    ):
+    async def test_the_probe_route_still_mints_its_throwaway_credential(self, wired, monkeypatch):
         """POSITIVE CONTROL: the owner's own probe keeps working.
 
         ``POST /api/webhooks/test`` mints a throwaway credential and drives a real

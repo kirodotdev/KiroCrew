@@ -90,6 +90,7 @@ from typing import Any
 
 from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
+from kiro_crew.decisions.points import as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
 
 logger = logging.getLogger(__name__)
@@ -241,7 +242,7 @@ def scrubbed(text: object, limit: int) -> str:
     Clipped AFTER redaction, never before: clipping first can cut a secret in
     half, and a half is a fragment neither redactor matches.
     """
-    raw = text if isinstance(text, str) else ("" if text is None else str(text))
+    raw = as_text(text)
     if not raw:
         return ""
     try:

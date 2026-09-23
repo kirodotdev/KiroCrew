@@ -950,14 +950,16 @@ describe('query-string builders', () => {
     expect(call(1).url).toBe('/api/sessions?limit=10&offset=20&preview=1')
     await api.sessions(30, 0, false, true)
     expect(call(2).url).toBe('/api/sessions?limit=30&offset=0&exclude_open=1')
+    await api.sessions(30, 0, false, true, true)
+    expect(call(3).url).toBe('/api/sessions?limit=30&offset=0&exclude_open=1&user_only=1')
     await api.sessionsSearch('a b', 5)
-    expect(call(3).url).toBe('/api/sessions/search?q=a%20b&limit=5')
+    expect(call(4).url).toBe('/api/sessions/search?q=a%20b&limit=5')
     await api.vectorEpisodic(10, 5, 'promo,l6')
-    expect(call(4).url).toBe('/api/memory/episodic?limit=10&offset=5&tags=promo%2Cl6')
+    expect(call(5).url).toBe('/api/memory/episodic?limit=10&offset=5&tags=promo%2Cl6')
     await api.vectorEpisodic()
-    expect(call(5).url).toBe('/api/memory/episodic?limit=50&offset=0')
+    expect(call(6).url).toBe('/api/memory/episodic?limit=50&offset=0')
     await api.vectorEpisodicSearch('q', 'tag')
-    expect(call(6).url).toBe('/api/memory/episodic/search?q=q&tags=tag')
+    expect(call(7).url).toBe('/api/memory/episodic/search?q=q&tags=tag')
   })
 
   it('discovery endpoints append provider and limit only when set', async () => {
@@ -1579,6 +1581,21 @@ describe('uploadFiles', () => {
     } as unknown as Response)
     const out = await api.uploadFiles([png('a.png')])
     expect(out).toMatchObject({ paths: [], error: 'Internal Server Error' })
+  })
+
+  it("hands the caller's AbortSignal to the request, so an upload can be cancelled", async () => {
+    const ac = new AbortController()
+    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
+    await api.uploadFiles([png('a.png')], ac.signal)
+    // Without this the composer's cancel control has nothing to abort: the
+    // request runs to completion whatever the user does.
+    expect(call().init?.signal).toBe(ac.signal)
+  })
+
+  it('omits signal entirely when the caller passes none', async () => {
+    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
+    await api.uploadFiles([png('a.png')])
+    expect(call().init?.signal).toBeUndefined()
   })
 
   it('refuses to trust a 200 whose paths field is not an array', async () => {

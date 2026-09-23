@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
@@ -890,6 +891,9 @@ describe('ArtifactsPage', () => {
   })
 
   it('renders Artifact Deploy button that navigates to /deploy', async () => {
+    // Artifact Deploy is a Feature Preview, so the door is only offered to an
+    // operator who opted in. The flag is a plain localStorage key.
+    localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1')
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
     renderWithProviders(<ArtifactsPage />, { route: '/artifacts' })
     await waitFor(() => expect(screen.getByText('Artifact Deploy')).toBeInTheDocument())
@@ -900,6 +904,18 @@ describe('ArtifactsPage', () => {
     // matching Route defined in the test wrapper, we verify the button exists
     // and is clickable (navigation intent is covered by the navigate call).
     expect(btn).toBeInTheDocument()
+    localStorage.removeItem(PREVIEW_ARTIFACT_DEPLOY)
+  })
+
+  it('does not offer the Artifact Deploy door until the preview is on', async () => {
+    // Default OFF is the point: every door behind this flag leads to spending in
+    // a real AWS account and to content on the open internet.
+    localStorage.removeItem(PREVIEW_ARTIFACT_DEPLOY)
+    const artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+    vi.mocked(api).artifacts = artifacts
+    renderWithProviders(<ArtifactsPage />, { route: '/artifacts' })
+    await waitFor(() => expect(artifacts).toHaveBeenCalled())
+    expect(screen.queryByText('Artifact Deploy')).toBeNull()
   })
 })
 

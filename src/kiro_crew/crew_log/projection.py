@@ -85,11 +85,13 @@ from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import (
     CrewLog,
+    log_exception_text,
     segment_paths,
     session_units_by_slot,
     session_units_for_slot,
     unit_header_created_at,
 )
+from kiro_crew.projection import ProjectionRegistry, Savepoint, attribute_seq
 
 if TYPE_CHECKING:
     # Type-only: the savepoint module imports this one, so a runtime import here
@@ -138,6 +140,13 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
 #: otherwise name a projection with no reader.
 INTERNAL_PROJECTION_NAMES: Final[tuple[str, ...]] = ("class",)
 
+#: Folds keyed by one SESSION, which are the ones the projection kernel drives
+#: (:func:`_session_registry`). The advertised panel set plus the internal ``class``:
+#: all of them fold a single crew log, so one pass over one file serves them and a
+#: savepoint beside that file resumes them. The slot-keyed folds are the complement
+#: and are driven by :func:`fold_slot_checkpoint`, which joins several files.
+SESSION_FOLD_NAMES: Final[tuple[str, ...]] = PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES
+
 #: Projections keyed by a SLOT instead of by one crew log. A slot owns one ACP
 #: session id at a time, so a fact that belongs to the slot for its whole life --
 #: its work ledger -- is spread over a unit per id it ran under, and answering for
@@ -158,6 +167,25 @@ OWNER_SERVED_SLOT_PROJECTION: Final[str] = "radar"
 FOLD_NAMES: Final[tuple[str, ...]] = (
     PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES + SLOT_PROJECTION_NAMES
 )
+
+#: The SHAPE of what these folds store, which is what a savepoint holds. It lives
+#: here because it describes ``start`` and ``step``, and those are here: the
+#: projection kernel reads it off each definition
+#: (:class:`~kiro_crew.projection.ProjectionDefinition`) and refuses a payload
+#: written under another number, so a stored state cannot resume onto logic that
+#: keeps different bookkeeping. ``crew_log.checkpoint`` re-exports it as
+#: ``CHECKPOINT_VERSION``, the name its files and its own docs use.
+#:
+#: THE RULE: any change to what a fold's ``start`` or ``step`` STORES moves it,
+#: including one that keeps the same keys. Shape is all this number and
+#: ``_state_matches_fold`` can check, so a counting fix that leaves the keys alone
+#: would resume the old build's state onto the new logic -- and the long sessions a
+#: savepoint speeds up are the ones that then serve pre-fix numbers for the life of
+#: the unit. Moving it retires every savepoint to a cold fold, which costs one refold
+#: each and is the only in-product way to retire them, since the tree is fenced from
+#: the agent. ``test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move``
+#: pins each fold's stored state, so forgetting the move fails CI rather than shipping.
+FOLD_STATE_VERSION: Final[int] = 3
 
 #: The types these folds can interpret, handed to ``iter_from(known=...)`` so an
 #: entry from a newer writer stops the fold instead of skewing it. The set is the
@@ -214,14 +242,6 @@ TEXT_LIMIT: Final[int] = 200
 #: different call's frame. Past this length an id identifies NOTHING, exactly like
 #: an absent one, and is counted and left unpaired.
 ID_LIMIT: Final[int] = 200
-
-#: Entries folded per pass over a log. Five folds consume the same entries, so a
-#: single generator would be exhausted by the first one and the span has to be
-#: materialized -- but materializing the WHOLE span puts an entire cold-folded
-#: log in memory at once, and a cold fold is the ordinary first read for any
-#: session. Folding in chunks keeps one pass over the file while bounding what is
-#: held to this many entries.
-FOLD_CHUNK_ENTRIES: Final[int] = 1024
 
 #: The token dimensions ``turn/completed`` bills, in the order it declares them.
 TOKEN_DIMENSIONS: Final[tuple[str, ...]] = ("input", "output", "cache_read", "cache_write")
@@ -350,6 +370,25 @@ class _Fold:
     ``bind_slot`` is the fourth piece a SLOT-keyed fold has: the reader knows
     which slot it is folding and says so before the first entry, so the fold
     never has to infer its board from whichever entry happens to come first.
+
+    ``affects`` and ``copy_state`` are what let a MUTATING ``step`` serve as the
+    projection kernel's pure ``apply`` (:class:`_SessionFold`). ``step`` edits the
+    dict it is handed, and the kernel requires a new object on a real change and the
+    SAME object on none -- so ``apply`` copies first and steps the copy, and skips
+    both when the entry cannot touch this fold.
+
+    ``affects`` is the set of entry types whose ``step`` can change this fold's
+    state, or ``None`` for a fold every entry moves. It may be WIDER than the truth
+    and must never be narrower: a type wrongly included costs a copy and, for a
+    client watching the change feed, one frame for an entry that changed nothing,
+    while a type wrongly left out drops a real change and serves a stale value with
+    nothing raised.
+
+    ``copy_state`` must copy every container ``step`` can reach, transitively --
+    ``None`` falls back to a deep copy, which is always correct and pays for the
+    whole state. A shallower copy is what makes the per-entry cost bounded, and
+    ``test_a_fold_never_reaches_into_the_state_it_was_handed`` is what keeps it
+    honest: a nested container left shared shows up there as the prior state moving.
     """
 
     name: str
@@ -357,6 +396,18 @@ class _Fold:
     step: Callable[[dict[str, Any], Entry], None]
     render: Callable[[dict[str, Any]], dict[str, Any]]
     bind_slot: Callable[[dict[str, Any], str], None] | None = None
+    affects: frozenset[str] | None = None
+    copy_state: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+    def touched_by(self, entry: Entry) -> bool:
+        """Whether *entry* can move this fold, so a copy is worth making."""
+        return self.affects is None or entry.type in self.affects
+
+    def copied(self, state: dict[str, Any]) -> dict[str, Any]:
+        """*state* copied deeply enough that :attr:`step` cannot reach the original."""
+        if self.copy_state is None:
+            return copy.deepcopy(state)
+        return self.copy_state(state)
 
 
 def require_name(name: str) -> str:
@@ -831,24 +882,7 @@ def _fold_attempt(
             handle,
             prefix_seen,
         )
-    # ONE pass over the file, in bounded chunks. Five folds consume the same
-    # entries, so a bare generator would be exhausted by the first of them and
-    # some materialization is required -- but materializing the whole span holds
-    # an entire cold-folded log in memory, and a cold fold (no reusable bundle,
-    # so ``from_seq`` is 1) is the ordinary first read for any session. Chunking
-    # keeps the single pass and bounds what is held to ``FOLD_CHUNK_ENTRIES``.
-    # Folding a span in pieces is the same value as folding it whole: ``advance``
-    # is seq-anchored and each chunk is strictly after the last, which is the
-    # property the incremental-equals-from-scratch test pins at every split.
-    grown = dict(base)
-    chunk: list[Entry] = []
-    for entry in handle.iter_from(from_seq, known=KNOWN_TYPES):
-        chunk.append(entry)
-        if len(chunk) >= FOLD_CHUNK_ENTRIES:
-            grown = _advance_all(grown, chunk)
-            chunk.clear()
-    if chunk:
-        grown = _advance_all(grown, chunk)
+    grown = _drive_session(_session_registry(wanted), session_id, base, handle)
     reached = max((cp.last_seq for cp in grown.values()), default=last_seq)
     return (
         SessionProjections(
@@ -901,19 +935,176 @@ def _persisted(
     return savepoints.save(handle, bundle, prefix=prefix)
 
 
-def _advance_all(
-    checkpoints: dict[str, Checkpoint], chunk: Sequence[Entry]
-) -> dict[str, Checkpoint]:
-    """Every checkpoint advanced over the part of *chunk* it has not consumed.
+# --------------------------------------------------------------------------- #
+# The folds as projection-kernel units
+# --------------------------------------------------------------------------- #
 
-    The per-checkpoint filter is what lets one chunk serve every fold that may sit
-    at DIFFERENT seqs: a reused bundle can hold a status checkpoint further along
-    than its tools one, and ``advance`` refuses an entry at or below the seq it
-    already reached rather than silently double-counting it.
+
+class _SessionFold:
+    """One crew-log fold as a :mod:`kiro_crew.projection` unit.
+
+    The kernel drives a pure ``apply`` and decides "something changed" by comparing
+    the returned object's IDENTITY with the one it handed over. These folds are
+    written the other way round -- ``step`` edits the dict it is given and returns
+    nothing -- so this wrapper supplies the difference rather than the folds being
+    rewritten: an entry the fold cannot be moved by returns the state UNTOUCHED, and
+    any other entry is stepped onto a copy.
+
+    Keeping ``step`` as it is, byte for byte, is the point. The folds are where this
+    module's meaning lives, and a rewrite of every mutation site into a functional
+    form would put a hundred chances to change a number between the old behaviour and
+    the new one, in the one place that must not move.
     """
+
+    def __init__(self, fold: _Fold) -> None:
+        self._fold = fold
+        self.key = fold.name
+        self.state_version = FOLD_STATE_VERSION
+
+    def init(self) -> dict[str, Any]:
+        return self._fold.start()
+
+    def apply(self, state: dict[str, Any], entry: Entry) -> dict[str, Any]:
+        if not self._fold.touched_by(entry):
+            return state
+        grown = self._fold.copied(state)
+        self._fold.step(grown, entry)
+        return grown
+
+    def view(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._fold.render(state)
+
+
+class _HeldCheckpoints:
+    """The checkpoints a read already holds, offered as the kernel's savepoint source.
+
+    ``prime_checkpointed`` installs each unit's state at its watermark and then folds
+    only the tail past the lowest of them, which is exactly what a read resuming from
+    a cached bundle or from disk wants -- so both arrive through this one seam rather
+    than through a second seeding path the tail fold would have to agree with.
+
+    The identity is not checked here and no equality is compared, because the caller
+    has already decided these checkpoints describe the log it is about to fold: a
+    cached bundle passes the reuse test in :func:`_fold_attempt`, and a savepoint read
+    from disk passed every admission condition in
+    :mod:`kiro_crew.crew_log.checkpoint`. Re-deciding it on weaker evidence is how the
+    two answers would get the chance to disagree.
+
+    A name this holds nothing for answers ``None``, which drops the kernel's floor to
+    the start and refolds the whole log -- the cold fold, which reaches the same value.
+    """
+
+    def __init__(self, held: Mapping[str, Checkpoint]) -> None:
+        self._held = held
+
+    def load(
+        self,
+        store: str,
+        key: str,
+        *,
+        state_version: int,
+        identity: Mapping[str, Any],
+        admit: Any = None,
+    ) -> Savepoint | None:
+        checkpoint = self._held.get(key)
+        if checkpoint is None:
+            return None
+        return Savepoint(
+            key=key,
+            state_version=state_version,
+            watermark=checkpoint.last_seq,
+            state=checkpoint.state,
+            identity=identity,
+        )
+
+    def save(self, store: str, savepoint: Savepoint) -> bool:
+        """Never written to. Persisting is :mod:`kiro_crew.crew_log.checkpoint`'s."""
+        return False
+
+    def discard(self, store: str, key: str) -> None:
+        return None
+
+
+def _session_registry(names: Sequence[str]) -> ProjectionRegistry:
+    """A registry holding exactly *names*, for one read.
+
+    Per READ, not one shared instance, and that is a behaviour requirement rather
+    than a preference. A registry folds every unit registered in it, so a shared one
+    would make ``fold_session(("status",))`` fold all six session folds and write all
+    six savepoints -- and it would compute the persisted floor across folds the caller
+    never asked for. What this module caches between reads is the bundle a caller
+    hands back as ``since=``, so the registry's own cells have nothing to carry.
+    """
+    registry = ProjectionRegistry(seq_of=attribute_seq)
+    for name in names:
+        registry.register(_SessionFold(_FOLDS[name]))
+    return registry
+
+
+def _drive_session(
+    registry: ProjectionRegistry,
+    session_id: str,
+    base: Mapping[str, Checkpoint],
+    handle: CrewLog,
+) -> dict[str, Checkpoint]:
+    """*base* carried forward over every entry of *handle* above it.
+
+    One pass over the file for every fold, and NOTHING is materialized: the kernel
+    takes the tail as a stream and folds each entry through every unit as it arrives,
+    so a cold fold of a long log holds one entry at a time. Each unit drops an entry
+    at or below its own watermark inside the kernel's own fold step -- the same step a
+    live event takes -- which is what lets one pass serve folds sitting at different
+    seqs: a resumed bundle can hold ``status`` further along than ``tools``.
+
+    A fold that RAISES over resumed state retires the state instead of the read. The
+    shape checks a savepoint passes read a state's top level, so a value malformed
+    below it -- a tool row holding a number where a list belongs -- is admitted and
+    fails in the fold, and nothing above catches that: the routes answer only to
+    ``CrewLogError``, so the read 500s and does so on every later read, because the
+    file that caused it is still there. Any exception therefore discards the savepoints
+    and folds the whole log from empty, which is the module's standing answer to doubt.
+    A cold fold that raises is NOT swallowed -- that is a fold defect on real entries,
+    and serving a value past it would hide it.
+    """
+    try:
+        registry.prime_checkpointed(session_id, _HeldCheckpoints(base), {}, _tail_reader(handle))
+        return _cells_as_checkpoints(registry, session_id)
+    except Exception:
+        log_exception_text(
+            logger,
+            logging.DEBUG,
+            "crew log %s could not fold its resumed state; discarding and folding cold",
+            session_id,
+        )
+
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    wanted = tuple(base)
+    savepoints.discard(handle, wanted)
+    # A FRESH registry: the one above holds cells the failed pass half-folded, and
+    # priming over them would carry that half into the cold answer. An empty source
+    # drops the kernel's floor to the start, which is the cold fold.
+    cold = _session_registry(wanted)
+    cold.prime_checkpointed(session_id, _HeldCheckpoints({}), {}, _tail_reader(handle))
+    return _cells_as_checkpoints(cold, session_id)
+
+
+def _tail_reader(handle: CrewLog) -> Callable[[int], Iterable[Entry]]:
+    """The kernel's tail source for *handle*: the entries strictly above a watermark."""
+
+    def tail_from(watermark: int) -> Iterable[Entry]:
+        # The kernel's empty watermark is -1 and a checkpoint's is 0; both mean
+        # nothing consumed, and the log's own first seq is 1.
+        return handle.iter_from(max(watermark, 0) + 1, known=KNOWN_TYPES)
+
+    return tail_from
+
+
+def _cells_as_checkpoints(registry: ProjectionRegistry, session_id: str) -> dict[str, Checkpoint]:
+    """Every registered fold's cell as the checkpoint this module's callers carry."""
     return {
-        name: advance(cp, tuple(entry for entry in chunk if entry.seq > cp.last_seq))
-        for name, cp in checkpoints.items()
+        name: Checkpoint(name=name, last_seq=max(watermark, 0), state=state)
+        for name, (state, watermark) in registry.cells(session_id).items()
     }
 
 
@@ -3164,13 +3355,134 @@ def _as_id(value: Any) -> str:
     return value
 
 
+# --------------------------------------------------------------------------- #
+# What each fold touches, and what its copy has to cover
+# --------------------------------------------------------------------------- #
+#
+# A session fold's ``step`` mutates the dict it is handed, and the projection kernel
+# drives a pure ``apply`` (:class:`_SessionFold`), so each fold declares two things
+# the wrapper needs. They are declared TOGETHER rather than beside their own folds
+# because they are read against each other: the question a reviewer asks is whether
+# one fold's copier covers every container its step reaches, and the answer is easier
+# to see with the six side by side than scattered through two thousand lines.
+#
+# A copier covers the containers a step MUTATES, not every container in the state. A
+# value the step only ever REPLACES whole -- ``status``'s ``open_turn``, ``approvals``'
+# ``last``, a frame put into ``open`` or ``pending`` -- needs no copy of its own: the
+# old object is dropped rather than edited, so the state it came from keeps it intact.
+
+
+#: Entry types ``usage`` bills. A turn's cost, the context composed for it,
+#: compaction, and step time.
+USAGE_TYPES: Final[frozenset[str]] = frozenset(
+    {"turn/completed", "context/composed", "compaction/applied", "step/completed"}
+)
+
+#: Entry types ``tools`` pairs: a call and the completion that closes it.
+TOOL_TYPES: Final[frozenset[str]] = frozenset({"tool/called", "tool/completed"})
+
+#: Entry types ``approvals`` pairs: a request and the decision that answers it.
+APPROVAL_TYPES: Final[frozenset[str]] = frozenset({"approval/requested", "approval/decided"})
+
+
+def _flat_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A copy for a fold whose step writes only top-level keys.
+
+    ``status`` and ``class``. Every nested value either is a scalar or is replaced
+    whole, so nothing under the top level is ever edited in place.
+    """
+    return dict(state)
+
+
+def _timeline_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """``moments`` is appended to and trimmed from the front; a moment is never edited."""
+    grown = dict(state)
+    grown["moments"] = list(state["moments"])
+    return grown
+
+
+def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """Per-dimension, per-model and per-source rows are all incremented in place."""
+    grown = dict(state)
+    grown["tokens"] = dict(state["tokens"])
+    grown["by_model"] = {model: dict(row) for model, row in state["by_model"].items()}
+    grown["context_by_source"] = {
+        source: dict(row) for source, row in state["context_by_source"].items()
+    }
+    grown["omitted_models"] = list(state["omitted_models"])
+    return grown
+
+
+def _tools_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A per-name row is incremented, and its two server lists are appended to.
+
+    The deepest copy of the six, and still bounded: ``TOOL_NAME_LIMIT`` rows each
+    holding at most ``SERVERS_PER_TOOL_LIMIT`` names, plus ``OPEN_RETAIN_LIMIT``
+    frames whose dict is rebuilt but whose frames are only ever added and removed.
+    """
+    grown = dict(state)
+    grown["by_name"] = {
+        name: {
+            **row,
+            "servers": list(row["servers"]),
+            "servers_over": list(row["servers_over"]),
+        }
+        for name, row in state["by_name"].items()
+    }
+    grown["open"] = dict(state["open"])
+    grown["omitted_names"] = list(state["omitted_names"])
+    return grown
+
+
+def _approvals_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """``pending`` gains and loses frames, and ``by_decision`` counts per decision."""
+    grown = dict(state)
+    grown["pending"] = dict(state["pending"])
+    grown["by_decision"] = dict(state["by_decision"])
+    return grown
+
+
 _FOLDS: Final[dict[str, _Fold]] = {
-    "status": _Fold("status", _status_start, _status_step, _status_render),
-    "usage": _Fold("usage", _usage_start, _usage_step, _usage_render),
-    "timeline": _Fold("timeline", _timeline_start, _timeline_step, _timeline_render),
-    "tools": _Fold("tools", _tools_start, _tools_step, _tools_render),
-    "approvals": _Fold("approvals", _approvals_start, _approvals_step, _approvals_render),
-    "class": _Fold("class", _class_start, _class_step, _class_render),
+    # ``affects=None``: every entry moves these two. ``status`` counts entries and
+    # keeps the newest time, and ``class`` records the seq it saw so a gap in the
+    # history reads as damage.
+    "status": _Fold("status", _status_start, _status_step, _status_render, copy_state=_flat_copy),
+    "usage": _Fold(
+        "usage",
+        _usage_start,
+        _usage_step,
+        _usage_render,
+        affects=USAGE_TYPES,
+        copy_state=_usage_copy,
+    ),
+    "timeline": _Fold(
+        "timeline",
+        _timeline_start,
+        _timeline_step,
+        _timeline_render,
+        affects=TIMELINE_TYPES,
+        copy_state=_timeline_copy,
+    ),
+    "tools": _Fold(
+        "tools",
+        _tools_start,
+        _tools_step,
+        _tools_render,
+        affects=TOOL_TYPES,
+        copy_state=_tools_copy,
+    ),
+    "approvals": _Fold(
+        "approvals",
+        _approvals_start,
+        _approvals_step,
+        _approvals_render,
+        affects=APPROVAL_TYPES,
+        copy_state=_approvals_copy,
+    ),
+    "class": _Fold("class", _class_start, _class_step, _class_render, copy_state=_flat_copy),
+    # The SLOT-keyed folds are driven by ``advance`` and ``fold_slot_checkpoint``, not
+    # by the kernel registry, so they declare neither piece and fall back to the deep
+    # copy ``advance`` already makes.
     "ledger": _Fold("ledger", _ledger_start, _ledger_step, _ledger_render),
     "radar": _Fold("radar", _radar_start, _radar_step, _radar_render),
     "work": _Fold("work", _work_start, _work_step, _work_render, bind_slot=_work_bind_slot),

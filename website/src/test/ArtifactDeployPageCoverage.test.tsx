@@ -35,6 +35,8 @@ interface FetchCfg {
   /** answer for the SECOND (confirm: true) call */
   commit?: { status: number; body: Json }
   confirmPending?: { status: number; body: Json }
+  /** answer for POST /api/deploy/deploy (the direct-deploy preview/confirm) */
+  deploy?: { status: number; body: Json }
   dismissPending?: { status: number; body: Json }
 }
 
@@ -78,6 +80,10 @@ function installFetch(cfg: FetchCfg = {}): Call[] {
       return reply(200, cfg.verify ?? {
         reachable: true, profile: 'ship-prod', account: '123456789012', note: 'sts + s3 + cloudfront reachable',
       })
+    }
+    // POST /api/deploy/deploy — the direct-deploy flow's preview/confirm pair.
+    if (u.endsWith('/deploy/deploy')) {
+      return reply(cfg.deploy?.status ?? 200, cfg.deploy?.body ?? { requires_confirm: true })
     }
     if (u.endsWith('/recall') || u.endsWith('/destroy')) {
       return body?.confirm
@@ -189,7 +195,9 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     const writeText = installClipboard()
     renderPage()
     const copyButtons = await screen.findAllByRole('button', { name: 'Copy' })
-    expect(copyButtons).toHaveLength(2)
+    // Three now: the two authentication commands plus step 4's optional
+    // auto-cleanup install command.
+    expect(copyButtons).toHaveLength(3)
     fireEvent.click(copyButtons[0])
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('aws configure sso'))
   })
@@ -601,13 +609,40 @@ describe('ArtifactDeployPage — deployment rows', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2)
   })
 
-  it('omits the profile clause from the deploy handoff when nothing is registered', async () => {
-    installFetch({ profiles: [], defaultProfile: '', webapps: [webapp('kanban-draft')] })
+  it('falls back to a labelled agent handoff when the app has no built root', async () => {
+    // The chat handoff is no longer what Deploy does — it is what happens when
+    // the backend says this app has nothing publishable yet
+    // (`webapp_root_unavailable`). The button then SAYS so, which is the whole
+    // point: a button labelled "Deploy" that opens a chat is the loop #12816 was
+    // reported for.
+    installFetch({
+      profiles: [], defaultProfile: '', webapps: [webapp('kanban-draft')],
+      deploy: {
+        status: 400,
+        body: {
+          error: 'This app has not been built yet, so there is no finished page to publish.',
+          code: 'webapp_root_unavailable',
+          details: 'no public/ directory under /w/kanban — the deploy contract\'s static root is app_dir/public',
+        },
+      },
+    })
     renderPage()
     await screen.findByText(/Ready to deploy \(1\)/)
     // With no registered profile there is nothing to pick from, so no selector.
     expect(screen.queryByRole('combobox', { name: /Deploy profile/ })).toBeNull()
     fireEvent.click(screen.getByLabelText('Deploy kanban-draft'))
+
+    // The refusal swaps the button and explains itself in plain words, with the
+    // directory names behind Details rather than in the banner.
+    const viaAgent = await screen.findByRole('button', { name: 'Deploy via agent' })
+    expect(screen.getByText(/has not been built yet/)).toBeInTheDocument()
+    expect(screen.queryByText(/app_dir\/public/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    expect(await screen.findByText(/app_dir\/public/)).toBeInTheDocument()
+
+    // Only now does the chat handoff happen, and it still omits the profile
+    // clause when nothing is registered.
+    fireEvent.click(viaAgent)
     const launch = (window as unknown as { __mc_chat_launch?: { message: string } }).__mc_chat_launch
     expect(launch?.message).toContain('kanban-draft')
     expect(launch?.message).not.toContain('Use the AWS profile')

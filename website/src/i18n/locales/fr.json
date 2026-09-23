@@ -761,6 +761,7 @@
           "approve": "Approuver",
           "approve_is_unavailable_because_this_base_branch_": "Approuver est indisponible car la branche de base de cette pull request ne retire pas les approbations lorsque de nouveaux commits sont poussés (ou sa protection n’est pas lisible ici). Sans cela, une approbation pourrait survivre au commit qu’elle a relu. Approuvez sur GitHub.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Approuver est indisponible tant que la fusion automatique est armée : une approbation pourrait fusionner cette pull request avant qu’une vérification du head puisse la retirer. Désarmez la fusion automatique, ou approuvez sur GitHub.",
+          "ask_agent_about_this_failure": "Interroger l'agent sur cet échec",
           "cancel": "Annuler",
           "confirm_approve": "Approuver cette pull request ?",
           "confirm_request_changes": "Publier cette revue en demandant des modifications ?",
@@ -6053,6 +6054,7 @@
       "approve_all": "Tout approuver",
       "approve_sub_agent": "Approuver le sous-agent : {{name}}",
       "attach_files": "Joindre des fichiers",
+      "cancel_upload": "Annuler l'envoi",
       "editor_unavailable_standard_input": "L'éditeur amélioré n'a pas pu se charger, la saisie standard est donc active. Votre brouillon reste inchangé.",
       "branch": "Branche : {{branch}}",
       "click_again_to_force_stop": "Cliquer à nouveau pour forcer l’arrêt",
@@ -7529,8 +7531,6 @@
       "no_commits_were_returned": "Aucun commit n'a été renvoyé.",
       "no_description_was_provided": "Aucune description n'a été fournie.",
       "open_pull_request": "Ouvrir la pull request",
-      "open_slack_settings": "Ouvrir les paramètres Slack",
-      "owner_not_configured_guidance": "Cette action nécessite un propriétaire configuré, que {{productName}} identifie par l'ID de membre Slack. Définissez « Owner Slack member ID » dans Paramètres → Plateformes de chat → Slack, redémarrez la passerelle, puis reconnectez-vous.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Les résultats du fournisseur peuvent être partiels pour {{sections}}. Ouvrez la merge request pour l’ensemble complet.",
       "provider_results_may_be_partial_pull_request": "Les résultats du fournisseur peuvent être partiels pour {{sections}}. Ouvrez la pull request pour l’ensemble complet.",
@@ -8306,7 +8306,8 @@
       "time_to_live": "Durée de vie",
       "views": "vues",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "Scénarios de trafic hypothétiques — vous ne payez que l'usage réel ·",
-      "will_provision": "Va provisionner"
+      "will_provision": "Va provisionner",
+      "deployment_available_under_feature_previews": "Le déploiement est disponible dans Paramètres → Développeur → Aperçus de fonctionnalités."
     },
     "webPreviewPanel": {
       "back": "Retour",
@@ -8353,7 +8354,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "La passerelle n'a pas pu ouvrir de navigateur pour cette page.",
       "the_server_at": "Le serveur à l'adresse",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vue est servie sur l'adresse de bouclage de l'hôte de la passerelle, et ce navigateur n'a pas pu s'y connecter. Si tu accèdes au tableau de bord via un tunnel SSH, fixe le port de la vue avec le réglage ci-dessous et transfère aussi ce port.",
-      "this_chat_s_browser_session": "Navigateur de cette discussion",
+      "opened_from_this_chat": "Ouvert depuis cette discussion",
       "this_dashboard_is_served_over_https_so_the_brows": "Ce tableau de bord est servi via HTTPS, donc le navigateur bloque l'intégration d'une page",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement.",
       "web_preview": "Aperçu web",
@@ -8840,6 +8841,18 @@
       "label": "modifications : redémarrage requis",
       "tooltip": "Ce réglage ne peut pas changer pendant que {{productName}} est en cours d'exécution. La valeur enregistrée est conservée et s'applique au prochain redémarrage de {{productName}} (Réglages → À propos, ou le terminal depuis lequel vous l'avez lancé).",
       "schema_unavailable": "Impossible de vérifier si ce réglage nécessite un redémarrage."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Déployer via l'agent",
+      "deploy_as_permanent": "Déployer en permanent",
+      "ttl_permanent": "Permanent (sans expiration)",
+      "ttl_expires_in_hours": "Expire dans {{hours}} heures",
+      "deploys_from_here_confirm_gated": "déploie depuis ici — tu confirmes d’abord",
+      "propagating_note": "Un premier deploiement peut prendre 5 a 15 minutes avant de s'ouvrir partout.",
+      "deployed": "Déployé !",
+      "unexpected_response": "Réponse inattendue",
+      "deploy_failed": "Échec du déploiement",
+      "stale_preview_retry": "L’application a changé depuis la vérification — réessaie."
     }
   },
   "hooks": {
@@ -9290,7 +9303,6 @@
       "deploy": "Déployer",
       "deploy_anyway": "Déployer quand même",
       "deploy_artifact": "Déployer {{name}}",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "Déployer ouvre une nouvelle session de chat qui exécute la compétence artifact-deploy avec le profil choisi.",
       "deploy_profile_for_slug": "Profil de déploiement pour {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Déployer / Retirer / Détruire nécessitent chacun une confirmation explicite\n              (jamais approuvée automatiquement) et émettent un événement d'audit SEL.",
       "deployments_count": "Déploiements ({{count}})",
@@ -9406,7 +9418,16 @@
       "remove_profile_title": "Retirer le profil ?",
       "remove_profile_button": "Retirer le profil",
       "retry": "Réessayer",
-      "profile_errors_title": "Certains profils n'ont pas pu être listés"
+      "profile_errors_title": "Certains profils n'ont pas pu être listés",
+      "4_optional_install_auto_cleanup": "4. Facultatif : installer le nettoyage automatique",
+      "auto_cleanup_explainer": "Nécessaire uniquement pour les déploiements censés expirer d'eux-mêmes.",
+      "deploy_publishes_directly_from_this_page": "Deploy publie depuis cette page après ta confirmation.",
+      "deployments_read_live_from_tags": "Cette liste est lue en direct depuis les tags de ressources AWS : un deploiement tout juste effectue peut mettre quelques minutes a apparaitre ici.",
+      "col_name": "Nom",
+      "col_status": "Statut",
+      "col_est_cost": "Coût est.",
+      "col_profile": "Profil",
+      "col_expiry": "Expiration"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· une version plus récente est disponible dans la copie distante",
@@ -10886,7 +10907,7 @@
       "collapse_sessions_this_one_opened": "Replier les sessions ouvertes par celle-ci",
       "expand_sessions_this_one_opened": "Déplier les sessions ouvertes par celle-ci",
       "sessions_this_one_opened": "Sessions ouvertes par celle-ci",
-      "nesting_depth": "Profondeur d'imbrication\u202f: {{depth}}",
+      "nesting_depth": "Profondeur d'imbrication : {{depth}}",
       "opened_by_session": "Ouverte par {{slot}}",
       "opened_by_closed_session": "Ouverte par {{slot}} (fermée)",
       "no_conductor_sessions_yet": "Aucune session chef d'orchestre pour l'instant",
@@ -11562,7 +11583,10 @@
         "decisions_api_key_remove": "Retirer la clé",
         "decisions_api_key_remove_confirm": "Retirer la clé est irréversible : le coffre ne rend aucune valeur, il faudrait donc en coller une nouvelle.",
         "decisions_api_key_remove_cancel": "La garder",
-        "decisions_api_key_delete": "Supprimer la clé"
+        "decisions_api_key_delete": "Supprimer la clé",
+        "artifact_deploy": "Déploiement d'artefacts",
+        "artifact_deploy_desc": "Publie un artefact sur une URL HTTPS publique dans ton propre compte AWS. Désactivé par défaut : chaque déploiement engage des frais sur ton compte et expose le contenu sur l’internet ouvert.",
+        "open_artifact_deploy": "Ouvrir Déploiement d'artefacts"
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",
@@ -12837,6 +12861,10 @@
         "cache_creation": "Création de cache",
         "cache_read": "Lecture de cache",
         "credits": "Crédits",
+        "credits_used": "Crédits utilisés",
+        "credits_used_compact": "Crédits utilisés : {{credits}} · {{pct}}",
+        "credits_used_pct": "Crédits utilisés (%)",
+        "credits_used_pct_title": "Part de l'allocation du forfait pour la période de facturation en cours. Une journée peut dépasser 100 %.",
         "daily_history": "Historique quotidien",
         "daily_token_usage": "Utilisation quotidienne des tokens",
         "date": "Date",

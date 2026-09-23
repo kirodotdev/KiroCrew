@@ -480,18 +480,7 @@ class SlackRenderer(Renderer):
 
     async def _ensure_stream(self) -> str | None:
         if self._stream_ts is None:
-            # Best-effort: MUST NOT raise. The real client swallows and
-            # returns None, but a raising client/transport would escape into
-            # the transport catch-all and post a terminal error on a live
-            # turn. A raise is the same event as a None return — streaming
-            # unavailable — so map it onto the fallback below.
-            try:
-                ts = await self.slack.start_stream(
-                    self.channel, self.thread_ts or "", user_id=self._user_id or None
-                )
-            except Exception:
-                logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
-                ts = None
+            ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
                 self._use_slack_stream = True
@@ -513,6 +502,33 @@ class SlackRenderer(Renderer):
                     self._stream_ts = None
         return self._stream_ts
 
+    async def _start_stream_if_threaded(self, *, initial_text: str | None = None) -> str | None:
+        """Start a Slack stream, unless this reply has no thread to stream into.
+
+        ``chat.startStream`` streams into a thread. A flat reply (``thread_ts``
+        None, as a single-session DM posts at channel root) has none, so calling
+        it would fail and log a warning on every turn for no gain. Returning None
+        routes the caller to the chat.update fallback, which still renders the
+        answer progressively.
+
+        Best-effort: MUST NOT raise. The real client swallows and returns None,
+        but a raising client/transport would escape into the transport catch-all
+        and post a terminal error on a live turn. A raise is the same event as a
+        None return — streaming unavailable — so map it onto the fallback.
+        """
+        if not self.thread_ts:
+            return None
+        try:
+            return await self.slack.start_stream(
+                self.channel,
+                self.thread_ts,
+                initial_text=initial_text,
+                user_id=self._user_id or None,
+            )
+        except Exception:
+            logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
+            return None
+
     async def _rotate_stream(self) -> str | None:
         """Stop the dead stream and start a fresh one (native ``_rotate_stream``).
 
@@ -528,16 +544,7 @@ class SlackRenderer(Renderer):
                     "Slack stop_stream failed during rotation — abandoning old stream",
                     exc_info=True,
                 )
-        try:
-            new_ts = await self.slack.start_stream(
-                self.channel,
-                self.thread_ts or "",
-                initial_text=_STREAM_CONTINUED,
-                user_id=self._user_id or None,
-            )
-        except Exception:
-            logger.warning("Slack start_stream failed during rotation", exc_info=True)
-            new_ts = None
+        new_ts = await self._start_stream_if_threaded(initial_text=_STREAM_CONTINUED)
         if new_ts:
             self._stream_ts = new_ts
         else:

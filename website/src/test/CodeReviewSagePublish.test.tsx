@@ -316,23 +316,6 @@ it('surfaces a rejected publish instead of claiming success', async () => {
   expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
 })
 
-it('explains what to configure when publishing is refused for a missing owner', async () => {
-  // A standalone local install: the draft reads fine, so the buttons render
-  // live, and the backend refuses the mutation with the coded 403. The refusal
-  // must name the remedy and link the settings pane, not dead-end on
-  // "forbidden".
-  mockApi.submitPullRequestReview.mockRejectedValue(Object.assign(
-    new Error('forbidden'),
-    { body: JSON.stringify({ error: 'forbidden', code: 'owner_not_configured' }) },
-  ))
-  openReviewedPr()
-  fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
-  fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
-  expect(await screen.findByText(/Set .Owner Slack member ID. in Settings/)).toBeTruthy()
-  const link = screen.getByRole('link', { name: /Slack settings/i })
-  expect(link.getAttribute('href')).toBe('/settings/channels/slack')
-})
-
 it('reads the draft for the pull request it was given, and only that one', () => {
   // The bar is mounted per pull request, so the URL it receives is the whole of
   // its scope -- it must never resolve "whatever draft exists". Where it mounts

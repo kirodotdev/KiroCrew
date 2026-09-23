@@ -9,6 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
@@ -21,7 +22,6 @@ from kiro_crew.kiro_prerequisite import (
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
-_LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 
 def _not_ready_snapshot(
@@ -71,15 +71,14 @@ def _caller(request: web.Request) -> str:
 
 
 def _is_dashboard_owner(request: web.Request) -> bool:
-    """Return whether a signed dashboard identity may operate host setup."""
+    """Return whether a signed dashboard identity may operate host setup.
 
-    state = request.app["state"]
-    owner_id = str(getattr(state, "owner_id", "") or "")
-    caller = str(request.get("user") or "")
-    return request.get("app") == "" and (
-        (owner_id and caller == owner_id)
-        or (not owner_id and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS)
-    )
+    Delegates to the shared predicate rather than re-deriving it: the rule (a
+    configured owner matched exactly, or a signed machine-local bootstrap subject
+    when none is configured) belongs in one place, and a second copy is how the
+    two drift apart.
+    """
+    return is_owner_dashboard_request(request)
 
 
 async def _dashboard_owner_only(request: web.Request) -> web.Response | None:

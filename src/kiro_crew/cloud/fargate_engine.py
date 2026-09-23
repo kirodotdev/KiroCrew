@@ -51,15 +51,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
-from kiro_crew.cloud import aws, sizes
+from kiro_crew.cloud import aws, connect, sizes
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
 from kiro_crew.cloud.fargate import (
     CPU_ARCHITECTURES,
+    CREW_CONTAINER_NAME,
     CREW_TAG_KEY,
     EPHEMERAL_STORAGE_MAX_GIB,
     EPHEMERAL_STORAGE_MIN_GIB,
     FARGATE_MEMORY_FOR_CPU,
     FINGERPRINT_TAG_KEY,
+    FRONT_PORT,
     LAUNCH_TAG_KEY,
     MANAGED_TAG_VALUE,
     STARTED_BY_MAX,
@@ -77,6 +79,8 @@ from kiro_crew.cloud.fargate import (
     validated_region,
 )
 from kiro_crew.cloud.login_target import KiroLoginTarget
+from kiro_crew.instances.validation import split_ecs_target
+from kiro_crew.platform.defaults import FARGATE_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +139,14 @@ class Ownership(enum.Enum):
     UNMARKED = "unmarked"
 
 
+#: The ECS ``lastStatus`` values a task passes through AFTER ``RUNNING``. All three
+#: are billable, so :attr:`TaskSighting.is_running` admits them; none of them can
+#: be connected to, because the ENI is being torn down. A task keeps its container's
+#: ``runtimeId`` through every one, which is why reachability has to be decided from
+#: the status rather than from the presence of a runtime id.
+_PAST_RUNNING_STATUSES = frozenset({"DEACTIVATING", "STOPPING", "DEPROVISIONING", "STOPPED"})
+
+
 @dataclass(frozen=True)
 class TaskSighting:
     """One task as a read returned it.
@@ -168,6 +180,20 @@ class TaskSighting:
     stopped_at: Optional[float] = None
     stopped_reason: str = ""
 
+    #: The crew container's ``runtimeId``, or ``""`` when the read did not carry
+    #: one. It is the third field of an SSM ECS target
+    #: (``ecs:<cluster>_<task-id>_<runtime-id>``) and so the one coordinate a
+    #: registry record for this task cannot be composed without. ECS assigns it
+    #: when the container starts, so a task that has not reached ``RUNNING``
+    #: reports no container and this stays empty --
+    #: which is why :meth:`FargateLaunchEngine.await_registration_target` polls
+    #: rather than reading once. Read from the container named
+    #: :data:`~kiro_crew.cloud.fargate.CREW_CONTAINER_NAME` rather than from
+    #: ``containers[0]``: position is not identity, and a sidecar added to the
+    #: task definition later would silently move the crew off index zero and
+    #: point every registration at the wrong container's channel.
+    runtime_id: str = ""
+
     @property
     def is_running(self) -> bool:
         """Whether this task is still consuming money.
@@ -176,6 +202,39 @@ class TaskSighting:
         everything else counts as running for the purpose of warning a human.
         """
         return (self.last_status or "").upper() != "STOPPED"
+
+    @property
+    def is_serving(self) -> bool:
+        """Whether this task can actually be connected to right now.
+
+        A narrower question than :attr:`is_running`, which answers a BILLING one
+        and admits every state but ``STOPPED``. ECS runs a task through
+        ``PROVISIONING``, ``PENDING``, ``ACTIVATING``, ``RUNNING``,
+        ``DEACTIVATING``, ``STOPPING``, ``DEPROVISIONING``, ``STOPPED``, and the
+        three states after ``RUNNING`` are billable while nothing is listening:
+        ENI teardown takes tens of seconds, and the container keeps its
+        ``runtimeId`` throughout. Only ``RUNNING`` answers True, so a caller that
+        needs reachability cannot get a yes from a task on its way down.
+
+        ``desiredStatus`` is read too: a task ECS has been told to stop is on that
+        path even while ``lastStatus`` still says ``RUNNING``.
+        """
+        if (self.desired_status or "").upper() == "STOPPED":
+            return False
+        return (self.last_status or "").upper() == "RUNNING"
+
+    @property
+    def is_past_running(self) -> bool:
+        """Whether this task has left ``RUNNING`` for good.
+
+        The difference between "not serving yet" and "never serving again", which
+        :attr:`is_serving` alone cannot express: ``PENDING`` and ``STOPPING`` are
+        both not-serving, but one is worth waiting for and the other is not. A
+        task ECS has been told to stop counts, since the stop is not reversible.
+        """
+        if (self.desired_status or "").upper() == "STOPPED":
+            return True
+        return (self.last_status or "").upper() in _PAST_RUNNING_STATUSES
 
 
 def sighting_from_task(task: Mapping[str, Any]) -> TaskSighting:
@@ -199,7 +258,23 @@ def sighting_from_task(task: Mapping[str, Any]) -> TaskSighting:
         desired_status=str(task.get("desiredStatus") or ""),
         stopped_at=_first_moment(task.get("stoppedAt")),
         stopped_reason=str(task.get("stoppedReason") or ""),
+        runtime_id=_crew_runtime_id(task),
     )
+
+
+def _crew_runtime_id(task: Mapping[str, Any]) -> str:
+    """The crew container's ``runtimeId`` in *task*, or ``""``.
+
+    Matched by container NAME, so the value belongs to the container the front
+    port is published on and not to whichever container ECS listed first. A task
+    whose containers ECS has not created yet, and one whose crew container has no
+    runtime id yet, both answer ``""``: absent and not-yet-assigned are the same
+    thing to the caller, which is that no target can be composed.
+    """
+    for container in task.get("containers") or []:
+        if str(container.get("name") or "") == CREW_CONTAINER_NAME:
+            return str(container.get("runtimeId") or "")
+    return ""
 
 
 def split_task_arn(task_arn: str) -> tuple[str, str]:
@@ -486,6 +561,39 @@ def _started_by_for(tag: str) -> str:
 #: ``DescribeTasks`` call fail, and with it every launch, on exactly the busy or
 #: leaking cluster a lifetime sweep exists for.
 DESCRIBE_TASKS_MAX = 100
+
+
+#: How long :meth:`FargateLaunchEngine.await_registration_target` waits for the
+#: crew container to report a ``runtimeId``, and how often it re-reads, in seconds.
+#:
+#: Both numbers are READ from the sibling lane rather than chosen. ``cloud/wizard.py``
+#: waits ``_SSM_READY_TIMEOUT_SECS = 180`` at ``_SSM_READY_POLL_SECS = 6`` for a
+#: freshly started EC2 instance's SSM agent to come online, which is the same
+#: question asked of the other lane: a launch has created compute and is waiting
+#: for the channel the dashboard reaches it through. A Fargate task reaches
+#: ``RUNNING`` in well under that once the image is pulled, and a pull from a cold
+#: cache is the case the margin is for.
+#:
+#: The budget is a CEILING, not a delay: the poll returns on the first read that
+#: carries a runtime id, so a task that starts in twenty seconds costs twenty.
+#: Spending it inside ``register`` is consistent with the step it belongs to --
+#: ``run_launch`` is documented blocking on a worker thread, and the EC2 lane's
+#: ``provision`` already blocks for minutes on CloudFormation.
+REGISTER_TARGET_TIMEOUT_SECONDS = 180
+REGISTER_TARGET_POLL_SECONDS = 6
+
+# Indirection so tests can patch out the poll sleep, as ``cloud.ssm`` and
+# ``cloud.wizard`` do for theirs.
+_sleep = time.sleep
+
+# The budget is spent against this clock, not against a count of polls, so the
+# ceiling above is the real elapsed one: each ``DescribeTasks`` round trip costs
+# wall time that a per-iteration counter does not see, and thirty of them push a
+# nominal 180s past its documented number. A monotonic read cannot go backwards
+# over an NTP step, which a wall-clock read can. The poll count is kept as a
+# second bound so a sleep that returns early -- a seam in a test, a signal --
+# cannot turn the budget into a tight spin on ECS.
+_monotonic = time.monotonic
 
 
 #: How long a task may run before this launcher stops it, in seconds.
@@ -1189,17 +1297,223 @@ class FargateLaunchEngine:
             )
         return FargateSigninHandle(task_arn=instance_id)
 
-    def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
-        """Do nothing, deliberately.
+    def await_registration_target(
+        self, *, task_arn: str, profile: str, region: str
+    ) -> tuple[str, str, bool]:
+        """``(ssm_target, "", True)`` once the crew container reports a runtime id,
+        else ``("", reason, alive)``.
 
-        ``instances/registry.py`` closes its transport set to ``("ssh", "ssm")``
-        and raises for anything outside it, so a Fargate crew cannot be registered
-        without changing registry code. Registry visibility is out of scope for
-        this phase and ``register`` carries no exit criteria, so a no-op is the
-        specified behaviour rather than a gap --
-        and it is a no-op rather than a raise because ``run_launch`` calls this step
-        unconditionally and a raise would fail a launch that otherwise succeeded.
+        The new AWS read this lane needs. ``RunTask`` answers with a task ARN and
+        nothing else, so the launcher holds two of an SSM ECS target's three
+        fields; the third, the container's ``runtimeId``, exists only once ECS has
+        started the container, and ``DescribeTasks`` is the only place it is
+        readable. This polls that read on :data:`REGISTER_TARGET_POLL_SECONDS` up
+        to :data:`REGISTER_TARGET_TIMEOUT_SECONDS` of ELAPSED time -- the last
+        sleep is shortened to whatever the budget has left, so the ceiling is the
+        documented number and not that number plus one round trip per poll -- and
+        returns on the first answer that carries one.
+
+        Never raises, and returns a REASON rather than a bare failure, because
+        every way this ends badly is a different thing for its owner to do:
+
+        * the task has left ``RUNNING`` -- ECS's own ``stoppedReason`` is quoted,
+          since that is where the cause is (an image it could not pull, a secret
+          it could not read). There is no crew to add and none to tear down;
+        * ECS does not list the task -- :meth:`describe_task` answers ``None``.
+          This counts as gone only AFTER some read has seen the task, because
+          ``RunTask`` and ``DescribeTasks`` are eventually consistent: a task
+          accepted moments ago is legitimately absent from the first read, and
+          treating that as gone would fail the launch of a task that is starting
+          normally and going on to bill. So an absence before any sighting is
+          polled like any other not-ready answer, and only a DISAPPEARANCE -- an
+          absence after a sighting -- ends it;
+        * the read is denied or otherwise fails -- the ``ecs:DescribeTasks``
+          error, which names the caller ARN on an AccessDenied;
+        * the budget ran out -- the honest answer, and the one case where simply
+          looking again later works. Its wording separates a task ECS never
+          listed from one that was listed and stayed pre-``RUNNING``, because
+          those are different things to go and look at.
+
+        The third element separates those: ``alive`` is False only when this read
+        SAW a task that is gone or past running, and True whenever the task may
+        still come up -- including when the read itself failed, so a denied
+        ``DescribeTasks`` never reports a live crew as dead, and including a task
+        no read has managed to see yet. :meth:`register` is what turns that into a
+        fatal or non-fatal failure; the distinction is a fact about the task, so it
+        is established here, where the task was read.
+
+        A target is composed only from a task that is
+        :attr:`~TaskSighting.is_serving`, and every state after ``RUNNING`` is
+        refused before that point. ``runtimeId`` outlives the container that had
+        it: a container that reached ``RUNNING`` and then began stopping still
+        carries one through ``DEACTIVATING``, ``STOPPING`` and ``DEPROVISIONING``,
+        so a check that reads the runtime id -- or that asks
+        :attr:`~TaskSighting.is_running`, which answers a billing question and
+        admits every state but ``STOPPED`` -- would compose a well-formed target
+        for a task whose ENI is being torn down and report the launch as
+        connectable. A task not serving YET is a different case and is polled, not
+        refused.
+
+        The composed target goes through :func:`split_ecs_target`, the registry's
+        own reader, before being returned. A cluster or id that cannot be read
+        back is refused HERE, where the reason can name the parts, rather than at
+        ``reg.add``, whose refusal would arrive as a launch-time traceback about a
+        string the operator never typed.
         """
+        cluster, task_id = split_task_arn(task_arn)
+        if not cluster and self._spec is not None:
+            cluster = self._spec.placement.cluster
+        if not cluster or not task_id:
+            return (
+                "",
+                f"{task_arn!r} names no cluster and task id to build an ECS target from",
+                True,
+            )
+        deadline = _monotonic() + REGISTER_TARGET_TIMEOUT_SECONDS
+        waited = 0
+        observed = False
+        last_status = ""
+        while True:
+            try:
+                sighting = self.describe_task(task_arn=task_arn, profile=profile, region=region)
+            except aws.AWSError as exc:
+                return "", f"could not read the task to register it: {exc}", True
+            if sighting is None:
+                if observed:
+                    return (
+                        "",
+                        "ECS no longer lists this task, so there is no running crew to add",
+                        False,
+                    )
+            else:
+                observed = True
+                last_status = sighting.last_status
+                if sighting.is_past_running:
+                    detail = sighting.stopped_reason.strip() or "ECS gave no reason"
+                    return (
+                        "",
+                        f"the task is {sighting.last_status or 'STOPPED'} and has no "
+                        f"connection target: {detail}",
+                        False,
+                    )
+                if sighting.is_serving and sighting.runtime_id:
+                    target = f"ecs:{cluster}_{task_id}_{sighting.runtime_id}"
+                    if split_ecs_target(target) is None:
+                        return (
+                            "",
+                            (
+                                f"the task's own coordinates do not form an ECS target "
+                                f"(cluster {cluster!r}, task {task_id!r}, "
+                                f"runtime {sighting.runtime_id!r})"
+                            ),
+                            True,
+                        )
+                    return target, "", True
+            remaining = deadline - _monotonic()
+            if waited >= REGISTER_TARGET_TIMEOUT_SECONDS or remaining <= 0:
+                if not observed:
+                    return (
+                        "",
+                        (
+                            f"ECS did not list this task within "
+                            f"{REGISTER_TARGET_TIMEOUT_SECONDS}s, so it has no connection "
+                            f"target yet. It may still come up -- add it under Remote crew "
+                            f"once `kirocrew cloud status` shows it running."
+                        ),
+                        True,
+                    )
+                return (
+                    "",
+                    (
+                        f"the task was still {last_status or 'starting'} after "
+                        f"{REGISTER_TARGET_TIMEOUT_SECONDS}s, so its container had no runtime "
+                        f"id to connect to yet. It may still come up -- add it under Remote "
+                        f"crew once `kirocrew cloud status` shows it running."
+                    ),
+                    True,
+                )
+            _sleep(min(REGISTER_TARGET_POLL_SECONDS, remaining))
+            waited += REGISTER_TARGET_POLL_SECONDS
+
+    def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
+        """Add the launched task to the Instances registry, so the crew is switchable.
+
+        *instance_id* is the task ARN ``provision`` returned. The registry
+        addresses a Fargate crew by ECS target instead, so this resolves one from
+        the other through :meth:`await_registration_target` and registers THAT as
+        the record's ``ssm_target``, with ``connection_method="fargate"`` and
+        ``remote_port`` the port the task definition publishes
+        (:data:`~kiro_crew.cloud.fargate.FRONT_PORT`) -- not
+        ``register_instance``'s default, which is the EC2 lane's remote dashboard
+        port and would forward the tunnel to a port nothing in the container
+        listens on.
+
+        Idempotency is ``register_instance``'s own and is not re-implemented here:
+        it matches an existing record by ``ssm_target``, so registering the same
+        task twice (a retried launch job on one task) updates that record in place
+        and preserves its id, allocated local port and sticky connect intent.
+
+        The record is stamped ``provisioner_id=FARGATE_PROVISIONER_ID``, not
+        ``register_instance``'s default, which is the EC2 lane's. The field is
+        persisted source metadata: the engine that drives a launch is resolved from
+        the launch job's own provisioner id, never from a registry record, so this
+        stamp selects nothing. What reads it is the dashboard's crew list, which
+        captions a row by it and chooses the lifecycle guidance and Remove warning
+        it shows -- so a Fargate task left with the EC2 default is presented as an
+        EC2 instance and its owner is pointed at the wrong console.
+
+        Which failure is fatal follows the task, not the lane.
+        :class:`~kiro_crew.cloud.launch_job.RegistrationUnavailable` says the
+        launch stands and only the registry row is missing, so it is raised while
+        the task may still be running: there is a billing task, and the remedy --
+        add it under Remote crew, or tear it down -- needs the launch reported as
+        launched rather than under a red card. A task that has been SEEN and is
+        now gone or terminal has neither, so that case raises ``RuntimeError`` and
+        fails the launch, which is what ``RegistrationUnavailable`` documents as
+        the meaning of raising anything else. A task no read has seen yet is not
+        that case: ECS is eventually consistent, so it is polled. Reporting a dead
+        task as launched would leave the job DONE for a crew nothing can reach,
+        and failing the launch of a task that is merely slow to appear would
+        report a billing crew as absent.
+        """
+        # Deferred: ``launch_job`` is the orchestration contract this exception
+        # belongs to and it reaches this module's graph through ``cloud.config``,
+        # so a module-scope import here would close a cycle. The engine is
+        # constructed lazily anyway (``platform.defaults.engine_for``).
+        from kiro_crew.cloud.launch_job import RegistrationUnavailable
+
+        target, reason, alive = self.await_registration_target(
+            task_arn=instance_id, profile=profile, region=region
+        )
+        if not target:
+            if not alive:
+                raise RuntimeError(
+                    f"The crew's task ({instance_id}) is not running, so it was not added "
+                    f"to your crews: {reason}"
+                )
+            raise RegistrationUnavailable(
+                f"The crew is running (task {instance_id}) but could not be added to your "
+                f"crews: {reason}"
+            )
+        registered = connect.register_instance(
+            target,
+            name=f"Kiro Crew Cloud ({tag})",
+            profile=profile,
+            region=region,
+            remote_port=FRONT_PORT,
+            connection_method="fargate",
+            provisioner_id=FARGATE_PROVISIONER_ID,
+        )
+        if registered is None:
+            # ``register_instance`` is best-effort BY CONTRACT: None means both
+            # "the Instances feature is absent" and "the registry write raised",
+            # logged rather than propagated. Ignoring it would report the crew as
+            # added while it is absent from the list.
+            raise RegistrationUnavailable(
+                f"The crew is running (task {instance_id}, target {target}) but could not be "
+                f"added to your crews. It is billing -- add it under Remote crew with the "
+                f"fargate connection method, or tear it down, so it does not sit idle."
+            )
 
     def _sightings(
         self,
@@ -1279,11 +1593,13 @@ class FargateLaunchEngine:
     def describe_task(self, *, task_arn: str, profile: str, region: str) -> Optional[TaskSighting]:
         """Read ONE task by ARN: the lane's own answer to "is this crew still up".
 
-        This is the read the dashboard's cloud panel shows for a Fargate launch.
-        The EC2 lane's panel keys liveness on the Instances registry, which a
-        teardown updates; this lane registers nothing (see :meth:`register`), so
-        the registry cannot speak for its task and ECS is the only source that
-        can. ``DescribeTasks`` is that source, through the same
+        This is the read the dashboard's cloud panel shows for a Fargate launch,
+        and the read :meth:`await_registration_target` polls to compose the crew's
+        ECS target. The EC2 lane's panel keys liveness on the Instances registry,
+        which a teardown updates. A registry record addresses this lane's crew by
+        a target naming ONE task, so it identifies the task a launch started and
+        cannot report that task's current state; ECS is the only source that can.
+        ``DescribeTasks`` is that source, through the same
         :func:`sighting_from_task` mapping the cluster walk uses.
 
         The cluster is taken from the ARN when the ARN carries it (the long
@@ -1373,6 +1689,21 @@ class FargateLaunchEngine:
                 region,
                 action="ecs:StopTask",
             )
+            # Same obligation as teardown's, and this is the path that reaches a
+            # registered task in ordinary operation: this sweep runs on every
+            # provision, and a crew that outlives the default TTL is stopped by
+            # the NEXT launch. Leaving its row would put a dead crew in the list
+            # that nothing prunes.
+            task_cluster, task_id = split_task_arn(arn)
+            if connect.unregister_ecs_task(task_cluster or cluster, task_id) == (
+                connect.UNREGISTER_FAILED
+            ):
+                # The sweep answers with a plan, not a confirmation, so there is
+                # nothing here to withhold -- but the row is still listed and the
+                # operator is the one who can remove it.
+                logger.warning(
+                    "fargate bound sweep stopped %s but could not remove its crew record", arn
+                )
         if plan.warning:
             logger.warning("fargate bound sweep: %s", plan.warning)
         return plan
@@ -1391,6 +1722,12 @@ class FargateLaunchEngine:
         turns into the user-visible "requested but did NOT confirm" warning. A
         partial teardown is a ``False``, never a ``True``.
 
+        Each stopped task's Instances record goes with it, after ECS accepted the
+        stop. ``register`` is this lane's last launch step, so by the time a cancel
+        or a failure unwinds through here the row may already exist, and a stopped
+        task that keeps its row leaves the crew list offering a target that
+        resolves to nothing.
+
         Without a spec there is no cluster to discover in, so teardown reports it
         did not confirm rather than claiming success it cannot stand behind.
         """
@@ -1408,6 +1745,7 @@ class FargateLaunchEngine:
             launch_tag=tag,
             started_by=started_by,
         )
+        rows_left_behind: list[str] = []
         for arn in plan.delete:
             aws.checked(
                 ["ecs", "stop-task", "--cluster", cluster, "--task", arn],
@@ -1415,6 +1753,19 @@ class FargateLaunchEngine:
                 region,
                 action="ecs:StopTask",
             )
+            # The row goes only after ECS accepted the stop, and for every task
+            # this lane stops rather than only a cancelled one. ``register`` is
+            # the last launch step, so a cancel observed just after it -- the
+            # check in ``run_launch`` that catches a cancel pressed during the
+            # registration poll -- unwinds through here with the record already
+            # written, and stopping the task alone would leave the crew list
+            # offering a target that resolves to nothing. Keyed on the task, so a
+            # sibling task's record in the same cluster is untouched.
+            task_cluster, task_id = split_task_arn(arn)
+            if connect.unregister_ecs_task(task_cluster or cluster, task_id) == (
+                connect.UNREGISTER_FAILED
+            ):
+                rows_left_behind.append(arn)
         if plan.warning:
             # The Protocol returns a bool, so this is the only channel the named
             # refusal has. ``launch_job`` turns False into "it may still be running
@@ -1422,6 +1773,17 @@ class FargateLaunchEngine:
             # names the ARNs and says which are unclaimable and which are theirs
             # and wrongly tagged, and those two need different next steps.
             logger.warning("fargate teardown %s: %s", tag, plan.warning)
+        if rows_left_behind:
+            # A confirmation says nothing of ours may remain, and a listed crew
+            # addressing a stopped task is something of ours. The task itself did
+            # stop, so this is a narrower miss than an unstopped task -- which is
+            # why it is named here rather than folded into the plan's warning.
+            logger.warning(
+                "fargate teardown %s stopped %s but could not remove their crew records",
+                tag,
+                ", ".join(rows_left_behind),
+            )
+            return False
         return plan.confirmed
 
 

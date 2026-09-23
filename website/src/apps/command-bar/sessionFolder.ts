@@ -26,13 +26,16 @@
  */
 
 import { api } from '../../api/client'
+import {
+  SERVER_NAME_LIMIT,
+  type ChatFolderRow,
+  ensureChatFolder,
+  fnv1a8,
+  folderRows,
+  storedName,
+} from '../../utils/ensureChatFolder'
 
-/** The subset of a `GET /api/chat/folders` row this module reads. */
-export interface ChatFolderRow {
-  id?: string
-  name?: string
-  parent_id?: string
-}
+export type { ChatFolderRow } from '../../utils/ensureChatFolder'
 
 /**
  * Parent folder every contributed-command session is filed under.
@@ -46,36 +49,18 @@ export interface ChatFolderRow {
  */
 export const COMMAND_SESSION_FOLDER = 'Command Bar Sessions'
 
-/**
- * Longest folder name the server keeps, mirroring `chat_folders.py`, which stores
- * `name.strip()[:100]` on both create and rename.
- *
- * Matching has to be done against the name the server STORED, not the one we asked
- * for. Without this, a command title longer than the limit is silently shortened on
- * create, the next run's lookup for the full title misses, and every single run makes
- * another folder — the one failure here that compounds instead of staying cosmetic.
- * A manifest title may be up to 120 characters, so the gap is reachable rather than
- * theoretical.
- */
-const SERVER_NAME_LIMIT = 100
+// Every folder name below is matched against the name the server STORED (`storedName`
+// from the shared helper), not the one we asked for. Without this, a command title
+// longer than `SERVER_NAME_LIMIT` is silently shortened on create, the next run's
+// lookup for the full title misses, and every single run makes another folder — the
+// one failure here that compounds instead of staying cosmetic. A manifest title may be
+// up to 120 characters, so the gap is reachable rather than theoretical. The helper
+// cuts such a title to fit and ends it with a collision-resistant fingerprint, so two
+// long titles that agree on their first 100 characters still get two leaves without any discriminator here.
 
-/** The name the server will actually store for `raw`. */
-function storedName(raw: string): string {
-  // Truncated by CODE POINT, not by UTF-16 unit. `slice` counts units, so a title whose
-  // 100th unit falls inside a surrogate pair loses half a character and the name carries
-  // a lone surrogate -- an invalid string, persisted. It also happens to be what the
-  // server means: Python slices its own strings by code point.
-  return [...raw.trim()].slice(0, SERVER_NAME_LIMIT).join('')
-}
-
-/** Same rule, for the bounded tag. */
+/** Same rule as `storedName`, for the bounded tag. */
 function boundedTag(raw: string): string {
   return [...raw].slice(0, LABEL_ROOM).join('')
-}
-
-/** Rows only; a non-array response (an error envelope) yields nothing to match. */
-function rows(value: unknown): ChatFolderRow[] {
-  return Array.isArray(value) ? (value as ChatFolderRow[]) : []
 }
 
 /** The fields of a contributed row that decide what its folder is called. */
@@ -105,12 +90,7 @@ const LABEL_ROOM = 32
  * folder name.
  */
 function idTag(id: string): string {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < id.length; i++) {
-    hash ^= id.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash.toString(16).padStart(8, '0')
+  return fnv1a8(id)
 }
 
 /**
@@ -188,17 +168,6 @@ export function commandFolderName(commands: ReadonlyMap<string, NamedCommand>, i
 }
 
 /**
- * A folder with this exact name under this exact parent.
- *
- * The parent is compared as well as the name, so a leaf the reader happens to have
- * named `Approve and merge all PRs` somewhere else in their tree is not mistaken for
- * ours. An absent `parent_id` is the top level, which is how the backend spells it.
- */
-function folderAt(list: ChatFolderRow[], name: string, parentId: string): ChatFolderRow | undefined {
-  return list.find(f => f?.name === name && String(f?.parent_id ?? '') === parentId)
-}
-
-/**
  * File `slotKey` under `Command Bar Sessions / <commandTitle>`, creating whichever of
  * the two folders does not exist yet.
  *
@@ -214,7 +183,8 @@ function folderAt(list: ChatFolderRow[], name: string, parentId: string): ChatFo
  * dropped WebSocket) would otherwise make a duplicate of it on every run. So the first
  * miss spends one authoritative read and re-checks before anything is created. The
  * common path still issues no request at all, and the cold-start path is the same one
- * read.
+ * read. Both levels of the tree share that single read: `ensureChatFolder` asks for
+ * a list at most once per call, and `listOnce` answers the second ask from memory.
  *
  * Returns the leaf folder id on success and `null` on every failure — a refused
  * create, a rate limit, a folder cap, an offline gateway. Nothing is rethrown: the
@@ -240,37 +210,31 @@ export async function fileSessionInCommandFolder(
   const leafName = storedName(commandTitle)
   if (!slotKey || !leafName) return null
   try {
-    let list = rows(cached)
+    let list = folderRows(cached)
     let read = false
-    if (list.length === 0) {
-      list = rows(await api.chatFolders())
-      read = true
+    /** The one authoritative read per run; every later ask is answered from memory. */
+    const listOnce = async (): Promise<ChatFolderRow[]> => {
+      if (!read) {
+        read = true
+        list = folderRows(await api.chatFolders())
+      }
+      return list
     }
     let madeOne = false
-
-    /** Existing folder, or a freshly created one; `null` when neither yields an id. */
-    const resolve = async (name: string, parentId: string): Promise<string | null> => {
-      const hit = folderAt(list, name, parentId)
-      if (hit?.id) return hit.id
-      if (!read) {
-        // The one re-read, spent on the first miss rather than on every run.
-        read = true
-        list = rows(await api.chatFolders())
-        const fresh = folderAt(list, name, parentId)
-        if (fresh?.id) return fresh.id
-      }
+    const create = async (name: string, parentId: string): Promise<unknown> => {
       const created = (await api.createChatFolder(name, parentId || undefined)) as ChatFolderRow | null
-      if (!created?.id) return null
-      madeOne = true
-      // Recorded so the leaf lookup below sees the parent this call just made, without
-      // a third read to learn about it.
-      list = [...list, { id: created.id, name, parent_id: parentId }]
-      return created.id
+      if (created?.id) {
+        madeOne = true
+        // Recorded so the leaf lookup sees the parent this call just made, without a
+        // third read to learn about it.
+        list = [...list, { id: created.id, name, parent_id: parentId }]
+      }
+      return created
     }
 
-    const parentId = await resolve(storedName(COMMAND_SESSION_FOLDER), '')
+    const parentId = await ensureChatFolder({ list: listOnce, create, name: COMMAND_SESSION_FOLDER, parentId: '', cached: list })
     if (!parentId) return null
-    const leafId = await resolve(leafName, parentId)
+    const leafId = await ensureChatFolder({ list: listOnce, create, name: leafName, parentId, cached: list })
     if (!leafId) return null
     await api.setSlotFolder(slotKey, leafId)
     // Told AFTER the write lands, and only when this run actually created something: the

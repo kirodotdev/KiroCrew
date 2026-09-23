@@ -55,6 +55,23 @@ export interface PreviewFlagChange {
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
 /**
+ * Artifact Deploy (`/deploy`): publishing an artifact to a public HTTPS URL in
+ * the operator's own AWS account.
+ *
+ * Gating the INGRESS only, like every flag here. `/deploy` stays routable, the
+ * deploy API is untouched, and an existing deployment keeps working — what the
+ * flag controls is whether the product OFFERS the surface to someone who has not
+ * asked for it. The doors are the Artifacts page's Artifact Deploy button and its
+ * dropdown twin, the webapp card's Deploy hero, and the "Publish to public web
+ * (your AWS)" row in the publish panel.
+ *
+ * Default OFF because every door leads to spending money in a real AWS account
+ * and to content served on the open internet. That is not a reasonable default
+ * for a surface still settling.
+ */
+export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
+
+/**
  * Crew Members: the Crew Members page (`/members`) and its rail item.
  *
  * This flag used to hold a second door too — the "New Crew Mode chat" entry in

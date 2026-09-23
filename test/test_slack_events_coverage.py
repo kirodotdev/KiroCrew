@@ -39,6 +39,7 @@ from kiro_crew.config.loader import (
     ChannelConfig,
     KiroCrewConfig,
     MessagingConfig,
+    SlackConfig,
 )
 from kiro_crew.slack import events as ev
 from kiro_crew.slack import files as slack_files
@@ -2013,6 +2014,56 @@ class TestRouteMessageGuards:
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.sessions.get_session_for_thread.assert_called_with("100.0")
         orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+
+    @pytest.mark.asyncio
+    async def test_flat_dm_stop_targets_a_dashboard_linked_thread_owner(self):
+        """With dm_single_session on, `!stop` typed inside a DM thread that a
+        dashboard send-to-Slack OWNS must stop that linked owner -- the running
+        turn lives under it, keyed by the thread ts -- not the channel-scoped
+        flat key. Stopping the flat key would leave the linked turn's provider
+        running while acking a session that was never busy. A self-derived owner
+        (``slack:<thread_ts>``) is not a real binding and does not win."""
+        orch = _make_orch(use_transport=True)
+        orch._cfg.slack = SlackConfig(dm_single_session=True)
+        orch.sessions.has_session = MagicMock(return_value=True)
+        # The thread ts (90.0) is owned by a dashboard session; the flat key
+        # (slack:D1) is not what the turn runs under.
+        orch.sessions.get_session_for_thread = MagicMock(
+            side_effect=lambda k: "dashboard:chat-7" if k == "90.0" else None
+        )
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock(return_value="stopped")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(
+                    orch, _event(text="!stop", thread_ts="90.0", ts="100.0"), ev.SeenCache()
+                )
+        # The linked owner is what gets stopped and cleared -- never the flat key.
+        orch.sessions.stop_turn.assert_awaited_once()
+        assert orch.sessions.stop_turn.await_args.args[0] == "dashboard:chat-7"
+        orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+
+    @pytest.mark.asyncio
+    async def test_flat_dm_stop_ignores_a_self_derived_thread_owner(self):
+        """A DM thread claimed only by its own per-thread session
+        (``slack:<thread_ts>`` -- the shape dm_single_session merges away) is
+        NOT a real binding, so `!stop` still targets the flat channel key."""
+        orch = _make_orch(use_transport=True)
+        orch._cfg.slack = SlackConfig(dm_single_session=True)
+        orch.sessions.has_session = MagicMock(return_value=True)
+        # Only a self-derived owner exists: slack:<thread_ts>.
+        orch.sessions.get_session_for_thread = MagicMock(
+            side_effect=lambda k: "slack:90.0" if k == "90.0" else None
+        )
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock(return_value="stopped")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(
+                    orch, _event(text="!stop", thread_ts="90.0", ts="100.0"), ev.SeenCache()
+                )
+        orch.sessions.stop_turn.assert_awaited_once()
+        assert orch.sessions.stop_turn.await_args.args[0] == "slack:D1"
 
     @pytest.mark.asyncio
     async def test_pure_stop_is_exempt_from_governance_denial(self):

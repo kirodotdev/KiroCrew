@@ -21,7 +21,7 @@ import pytest
 
 from kiro_crew import credential_patterns as _cred
 from kiro_crew import decisions as core
-from kiro_crew.decisions.points import MAX_KEY_CHARS
+from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.types import Answer
 
@@ -613,17 +613,17 @@ def test_the_budget_stops_the_walk_and_clips_the_last_turn_admitted():
     assert trace == {"history_chars": 60, "truncated": 1}, "one clip, and the budget spent exactly"
 
 
-def test_the_shipped_default_sends_no_prior_turns_at_all(monkeypatch):
-    """Consent was given for the message and the menu, so that is what ships.
+def test_an_install_with_no_consented_ceiling_sends_no_prior_turns(monkeypatch):
+    """The shipped config asks for a few turns; the keystone decides whether any go.
 
-    An owner who wants the conversation sent raises
-    ``decisions.history_budget_chars`` themselves; an upgrade does not raise it
-    for them.
+    An owner who reviewed only the message excerpt and the candidate descriptions
+    has a ceiling of 0, and the gate takes the smaller of the two, so this install
+    sends the current message alone.
     """
     from kiro_crew.config.sections import DECISION_HISTORY_BUDGET_DEFAULT, DecisionsConfig
 
-    assert DECISION_HISTORY_BUDGET_DEFAULT == 0
-    assert DecisionsConfig().history_budget_chars == 0
+    assert DECISION_HISTORY_BUDGET_DEFAULT == 2000
+    assert DecisionsConfig().history_budget_chars == 2000
     monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 0)
     trace = {}
     assert sel.build_history(_turns(("user", "prior")), "now", trace=trace) == []
@@ -683,6 +683,33 @@ def test_an_unusable_history_row_is_skipped_not_fatal():
         history_budget_chars=1000,
     )
     assert [row["text"] for row in rows] == ["ok"]
+
+
+def test_an_absent_payload_coerces_to_empty_rather_than_the_word_none():
+    """``None`` must not become the four characters ``None`` on the wire.
+
+    ``as_text`` is the coercion every untyped redaction entry point shares, so this
+    branch going missing would put those characters past all of their ``if not
+    raw`` early returns at once -- and the word would travel as a memory snippet or
+    a tool-argument field instead of the field being dropped.
+    """
+    assert as_text(None) == ""
+    assert as_text("") == ""
+    assert as_text(0) == "0", "a falsy non-string still coerces; only None is emptied"
+    assert as_text(False) == "False"
+    assert as_text({"a": 1}) == str({"a": 1})
+
+
+def test_a_string_payload_is_returned_as_itself():
+    """No re-stringification, so a ``str`` subclass survives the call unchanged."""
+
+    class _Tagged(str):
+        pass
+
+    tagged = _Tagged("kept")
+    assert as_text(tagged) is tagged
+    plain = "plain"
+    assert as_text(plain) is plain
 
 
 def test_the_history_reaches_the_state_the_oracle_is_sent():

@@ -1410,6 +1410,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
   },
   {
+    "id": "developer.artifact-deploy",
+    "label": "Artifact Deploy",
+    "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
+    "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",

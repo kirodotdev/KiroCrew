@@ -772,6 +772,7 @@
           "approve": "Одобрить",
           "approve_is_unavailable_because_this_base_branch_": "Одобрение недоступно: базовая ветка этого пул-реквеста не отзывает одобрения при новых коммитах (или её защита отсюда не читается). Иначе одобрение может пережить проверенный коммит. Одобрите на GitHub.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Одобрение недоступно, пока включено автослияние: одобрение может влить этот пул-реквест до того, как проверка head успеет его отозвать. Отключите автослияние или одобрите на GitHub.",
+          "ask_agent_about_this_failure": "Спросить агента об этой ошибке",
           "cancel": "Отмена",
           "confirm_approve": "Одобрить этот пул-реквест?",
           "confirm_request_changes": "Опубликовать эту проверку с запросом изменений?",
@@ -6147,6 +6148,7 @@
       "approve_all": "Разрешить все",
       "approve_sub_agent": "Одобрить субагента: {{name}}",
       "attach_files": "Прикрепить файлы",
+      "cancel_upload": "Отменить загрузку",
       "editor_unavailable_standard_input": "Не удалось загрузить улучшенный редактор, поэтому активен стандартный ввод. Ваш черновик не изменён.",
       "branch": "Ветка: {{branch}}",
       "click_again_to_force_stop": "Нажмите снова для принудительной остановки",
@@ -7638,8 +7640,6 @@
       "no_commits_were_returned": "Коммиты не получены.",
       "no_description_was_provided": "Описание не указано.",
       "open_pull_request": "Открыть пул-реквест",
-      "open_slack_settings": "Открыть настройки Slack",
-      "owner_not_configured_guidance": "Для этого действия нужен настроенный владелец, которого {{productName}} определяет по Slack member ID. Укажите \"Owner Slack member ID\" в разделе Настройки → Чат-платформы → Slack, перезапустите шлюз, затем войдите снова.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой мерж-реквест, чтобы увидеть полный набор.",
       "provider_results_may_be_partial_pull_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой пул-реквест, чтобы увидеть полный набор.",
@@ -8419,7 +8419,8 @@
       "time_to_live": "Время жизни",
       "views": "просмотров",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "Сценарии трафика «что если» — вы платите только за фактическое использование ·",
-      "will_provision": "Будет создано"
+      "will_provision": "Будет создано",
+      "deployment_available_under_feature_previews": "Развёртывание доступно в разделе «Настройки → Разработчик → Предпросмотр функций»."
     },
     "webPreviewPanel": {
       "back": "Назад",
@@ -8466,7 +8467,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Шлюз не смог открыть браузер для этой страницы.",
       "the_server_at": "Сервер",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "Представление обслуживается на loopback-адресе хоста шлюза, и этот браузер не смог к нему подключиться. Если ты открываешь панель через SSH-туннель, закрепи порт представления в настройке ниже и пробрось этот порт тоже.",
-      "this_chat_s_browser_session": "Браузер этого чата",
+      "opened_from_this_chat": "Открыто из этого чата",
       "this_dashboard_is_served_over_https_so_the_brows": "Эта панель работает по HTTPS, поэтому браузер блокирует встраивание",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Этот URL — сервер самой панели, который запрещает встраивание. Введите вместо него URL dev-сервера.",
       "web_preview": "Веб-предпросмотр",
@@ -8957,6 +8958,18 @@
       "label": "изменения требуют перезапуска",
       "tooltip": "Этот параметр нельзя изменить, пока {{productName}} работает. Сохранённое значение остаётся и применится при следующем перезапуске {{productName}} (Настройки → О программе или терминал, из которого вы его запустили).",
       "schema_unavailable": "Не удалось проверить, требует ли этот параметр перезапуска."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Развернуть через агента",
+      "deploy_as_permanent": "Развернуть навсегда",
+      "ttl_permanent": "Постоянно (без срока)",
+      "ttl_expires_in_hours": "Истекает через {{hours}} ч",
+      "deploys_from_here_confirm_gated": "разворачивается отсюда — сначала подтверди",
+      "propagating_note": "Первое развёртывание может открываться везде через 5-15 минут.",
+      "deployed": "Развёрнуто!",
+      "unexpected_response": "Неожиданный ответ",
+      "deploy_failed": "Не удалось развернуть",
+      "stale_preview_retry": "Приложение изменилось после проверки — повтори попытку."
     }
   },
   "hooks": {
@@ -9416,7 +9429,6 @@
       "deploy": "Развернуть",
       "deploy_anyway": "Развернуть всё равно",
       "deploy_artifact": "Развернуть {{name}}",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "«Развернуть» открывает новую сессию чата, в которой навык artifact-deploy запускается с выбранным профилем.",
       "deploy_profile_for_slug": "Профиль развёртывания для {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "«Развернуть», «Отозвать» и «Уничтожить» требуют явного подтверждения\n              (никогда не разрешаются автоматически) и создают событие аудита SEL.",
       "deployments_count": "Развёртывания ({{count}})",
@@ -9534,7 +9546,16 @@
       "remove_profile_title": "Удалить профиль?",
       "remove_profile_button": "Удалить профиль",
       "retry": "Повторить",
-      "profile_errors_title": "Некоторые профили не удалось получить"
+      "profile_errors_title": "Некоторые профили не удалось получить",
+      "4_optional_install_auto_cleanup": "4. Необязательно: установить автоочистку",
+      "auto_cleanup_explainer": "Нужна только для развёртываний, которые должны истекать сами.",
+      "deploy_publishes_directly_from_this_page": "Deploy публикует прямо с этой страницы после подтверждения.",
+      "deployments_read_live_from_tags": "Этот список читается напрямую из тегов ресурсов AWS, поэтому только что созданное развёртывание может появиться здесь через пару минут.",
+      "col_name": "Название",
+      "col_status": "Статус",
+      "col_est_cost": "Прибл. стоимость",
+      "col_profile": "Профиль",
+      "col_expiry": "Срок"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",
@@ -11722,7 +11743,10 @@
         "decisions_api_key_remove": "Удалить ключ",
         "decisions_api_key_remove_confirm": "Удаление ключа нельзя отменить: хранилище не возвращает значение, поэтому придётся вставить новый.",
         "decisions_api_key_remove_cancel": "Оставить",
-        "decisions_api_key_delete": "Удалить ключ навсегда"
+        "decisions_api_key_delete": "Удалить ключ навсегда",
+        "artifact_deploy": "Развёртывание артефактов",
+        "artifact_deploy_desc": "Публикует артефакт по публичному HTTPS-адресу в твоём аккаунте AWS. По умолчанию выключено: каждое развёртывание тратит средства твоего аккаунта и отдаёт контент в открытый интернет.",
+        "open_artifact_deploy": "Открыть Развёртывание артефактов"
       },
       "kiroSignInCard": {
         "title": "Вход в Kiro",
@@ -13010,6 +13034,10 @@
         "cache_creation": "Создание кэша",
         "cache_read": "Чтение кэша",
         "credits": "Кредиты",
+        "credits_used": "Использовано кредитов",
+        "credits_used_compact": "Использовано кредитов: {{credits}} · {{pct}}",
+        "credits_used_pct": "Использовано кредитов (%)",
+        "credits_used_pct_title": "Доля от лимита плана за текущий расчётный период. За день может превысить 100%.",
         "daily_history": "История по дням",
         "daily_token_usage": "Расход токенов по дням",
         "date": "Дата",

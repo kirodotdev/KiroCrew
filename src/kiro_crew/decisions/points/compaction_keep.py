@@ -120,6 +120,7 @@ from typing import Any, Mapping, Sequence
 
 from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
+from kiro_crew.decisions.points import as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
 
 logger = logging.getLogger(__name__)
@@ -355,7 +356,7 @@ def redacted(text: object, limit: int | None) -> str:
     -- a scan that did not complete cannot clear text for the wire, and the
     alternative is sending bytes a companion would have redacted.
     """
-    raw = text if isinstance(text, str) else ("" if text is None else str(text))
+    raw = as_text(text)
     if not raw or (limit is not None and limit <= 0):
         return ""
     try:

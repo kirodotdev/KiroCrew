@@ -761,6 +761,7 @@
           "approve": "Aprovar",
           "approve_is_unavailable_because_this_base_branch_": "Aprovar não está disponível porque o branch base deste pull request não descarta aprovações quando novos commits são enviados (ou sua proteção não é legível aqui). Sem isso, uma aprovação poderia sobreviver ao commit que revisou. Aprove no GitHub.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Aprovar não está disponível enquanto o merge automático está armado: uma aprovação poderia mesclar este pull request antes que uma verificação do head pudesse retirá-la. Desative o merge automático ou aprove no GitHub.",
+          "ask_agent_about_this_failure": "Perguntar ao agente sobre esta falha",
           "cancel": "Cancelar",
           "confirm_approve": "Aprovar este pull request?",
           "confirm_request_changes": "Publicar esta revisão solicitando alterações?",
@@ -6053,6 +6054,7 @@
       "approve_all": "Aprovar tudo",
       "approve_sub_agent": "Aprovar subagente: {{name}}",
       "attach_files": "Anexar arquivos",
+      "cancel_upload": "Cancelar envio",
       "editor_unavailable_standard_input": "O editor aprimorado não pôde ser carregado, então a entrada padrão está ativa. Seu rascunho permanece inalterado.",
       "branch": "Branch: {{branch}}",
       "click_again_to_force_stop": "Clique novamente para forçar a parada",
@@ -7529,8 +7531,6 @@
       "no_commits_were_returned": "Nenhum commit foi retornado.",
       "no_description_was_provided": "Nenhuma descrição foi fornecida.",
       "open_pull_request": "Abrir pull request",
-      "open_slack_settings": "Abrir configurações do Slack",
-      "owner_not_configured_guidance": "Esta ação precisa de um proprietário configurado, que o {{productName}} identifica pelo ID de membro do Slack. Defina \"Owner Slack member ID\" em Configurações → Plataformas de chat → Slack, reinicie o gateway e entre novamente.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Os resultados do provedor podem estar incompletos em {{sections}}. Abra o merge request para ver o conjunto completo.",
       "provider_results_may_be_partial_pull_request": "Os resultados do provedor podem estar incompletos em {{sections}}. Abra o pull request para ver o conjunto completo.",
@@ -8306,7 +8306,8 @@
       "time_to_live": "Tempo de vida",
       "views": "visualizações",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "Cenários hipotéticos de tráfego — você paga apenas pelo uso real ·",
-      "will_provision": "Vai provisionar"
+      "will_provision": "Vai provisionar",
+      "deployment_available_under_feature_previews": "A implantação está disponível em Configurações → Desenvolvedor → Prévias de recursos."
     },
     "webPreviewPanel": {
       "back": "Voltar",
@@ -8353,7 +8354,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "O gateway não conseguiu abrir um navegador para esta página.",
       "the_server_at": "O servidor em",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "A vista é servida no endereço de loopback do host do gateway, e este navegador não conseguiu se conectar a ela. Se você acessa o painel por um túnel SSH, fixe a porta da vista com a configuração abaixo e encaminhe essa porta também.",
-      "this_chat_s_browser_session": "Navegador deste chat",
+      "opened_from_this_chat": "Aberto deste chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Este painel é servido por HTTPS, então o navegador bloqueia a incorporação de uma página",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL é o próprio servidor do painel, que não permite ser incorporado. Informe a URL de um servidor de desenvolvimento.",
       "web_preview": "Prévia web",
@@ -8840,6 +8841,18 @@
       "label": "alterações exigem reinício",
       "tooltip": "Esta configuração não pode mudar enquanto o {{productName}} está em execução. O valor salvo é mantido e aplicado na próxima vez que o {{productName}} reiniciar (Configurações → Sobre, ou o terminal de onde você o iniciou).",
       "schema_unavailable": "Não foi possível verificar se esta configuração exige reinicialização."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Implantar via agente",
+      "deploy_as_permanent": "Implantar como permanente",
+      "ttl_permanent": "Permanente (sem expiração)",
+      "ttl_expires_in_hours": "Expira em {{hours}} horas",
+      "deploys_from_here_confirm_gated": "implanta daqui — você confirma primeiro",
+      "propagating_note": "Uma primeira implantacao pode levar 5-15 minutos para abrir em todos os lugares.",
+      "deployed": "Implantado!",
+      "unexpected_response": "Resposta inesperada",
+      "deploy_failed": "Falha ao implantar",
+      "stale_preview_retry": "O app mudou desde a verificação — tente novamente."
     }
   },
   "hooks": {
@@ -9290,7 +9303,6 @@
       "deploy": "Implantar",
       "deploy_anyway": "Implantar mesmo assim",
       "deploy_artifact": "Implantar {{name}}",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "Implantar abre uma nova sessão de chat que executa a habilidade artifact-deploy com o perfil escolhido.",
       "deploy_profile_for_slug": "Perfil de implantação para {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Implantar / Retirar / Destruir exigem confirmação explícita\n              (nunca são aprovados automaticamente) e emitem um evento de auditoria SEL.",
       "deployments_count": "Implantações ({{count}})",
@@ -9406,7 +9418,16 @@
       "remove_profile_title": "Remover o perfil?",
       "remove_profile_button": "Remover o perfil",
       "retry": "Tentar novamente",
-      "profile_errors_title": "Alguns perfis não puderam ser listados"
+      "profile_errors_title": "Alguns perfis não puderam ser listados",
+      "4_optional_install_auto_cleanup": "4. Opcional: instalar a limpeza automática",
+      "auto_cleanup_explainer": "Só é necessária para implantações que você queira que expirem sozinhas.",
+      "deploy_publishes_directly_from_this_page": "Deploy publica desta página após a sua confirmação.",
+      "deployments_read_live_from_tags": "Esta lista e lida ao vivo das tags de recursos da AWS, portanto uma implantacao recem-feita pode levar alguns minutos para aparecer aqui.",
+      "col_name": "Nome",
+      "col_status": "Status",
+      "col_est_cost": "Custo est.",
+      "col_profile": "Perfil",
+      "col_expiry": "Expiração"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· uma versão mais recente está disponível na cópia remota",
@@ -11562,7 +11583,10 @@
         "decisions_api_key_remove": "Remover a chave",
         "decisions_api_key_remove_confirm": "Remover a chave não pode ser desfeito: o cofre não devolve nenhum valor, então você teria de colar uma nova.",
         "decisions_api_key_remove_cancel": "Manter",
-        "decisions_api_key_delete": "Excluir a chave"
+        "decisions_api_key_delete": "Excluir a chave",
+        "artifact_deploy": "Implantação de artefatos",
+        "artifact_deploy_desc": "Publica um artefato em uma URL HTTPS publica na sua propria conta AWS. Desativado por padrao: cada implantacao gasta dinheiro na sua conta e serve o conteudo na internet aberta.",
+        "open_artifact_deploy": "Abrir Implantação de artefatos"
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",
@@ -12837,6 +12861,10 @@
         "cache_creation": "Criação de cache",
         "cache_read": "Leitura de cache",
         "credits": "Créditos",
+        "credits_used": "Créditos usados",
+        "credits_used_compact": "Créditos usados: {{credits}} · {{pct}}",
+        "credits_used_pct": "Créditos usados (%)",
+        "credits_used_pct_title": "Parcela da franquia do plano no período de cobrança atual. Um dia pode ultrapassar 100%.",
         "daily_history": "Histórico diário",
         "daily_token_usage": "Uso diário de tokens",
         "date": "Data",

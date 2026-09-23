@@ -2512,6 +2512,7 @@ class _ChatSlot:
         "_mcp_report_session_id",
         "_on_message",
         "_on_question_retired",
+        "_coordinator_approvals",
         "_has_reader_flag",
         "_stop_state_raw",
         "_stop_generation",
@@ -2970,6 +2971,12 @@ class _ChatSlot:
         # is invisible to a second window, and to a /pending response already in
         # flight — either would re-render a card whose answer has been sent.
         self._on_question_retired: object | None = None
+        # Live ApprovalCoordinator records owned by this slot, wired by
+        # DashboardState like _on_message. A sub-agent spawn gate or a tool
+        # approval inside a running sub-agent parks its future on the STATE
+        # registry, never on _approval_futures, so the projection has to ask
+        # the state to learn that this slot is waiting.
+        self._coordinator_approvals: Callable[[str], list[dict]] | None = None
         self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
@@ -4600,10 +4607,15 @@ class _ChatSlot:
 
     def to_dict(self, *, include_check_status: bool = False, dashboard_user: bool = False) -> dict:
         source_links = self._summary_source_links()
+        coordinator_approvals = self._coordinator_approvals
+        coordinator_pending: list[dict] = (
+            coordinator_approvals(self.key) if coordinator_approvals is not None else []
+        )
         return self._projection.to_dict(
             self,
             include_check_status=include_check_status,
             source_links=source_links,
+            coordinator_pending=coordinator_pending,
             prompt_roles=_PROMPT_ROLES,
             redact=_redact,
             parse_options=_parse_options,
@@ -6031,6 +6043,28 @@ class DashboardState:
             redact_secret=redact_credentials,
         )
 
+    def pending_coordinator_approvals(self, slot_key: str) -> list[dict]:
+        """Live coordinator approvals owned by *slot_key*, oldest first.
+
+        A record counts only while its state-level future is still open: a
+        resolved or expired approval whose ``finally`` has not yet popped the
+        record must not keep the slot in the Needs Approval lane. An approval
+        with no owning slot belongs to no slot and is never returned.
+        """
+        if not slot_key:
+            return []
+        records = getattr(self, "_pending_approvals", None) or {}
+        futures = getattr(self, "_approval_futures", None) or {}
+        pending: list[dict] = []
+        for approval_id, record in records.items():
+            if record.get("slot") != slot_key:
+                continue
+            future = futures.get(approval_id)
+            if future is None or future.done():
+                continue
+            pending.append(record)
+        return pending
+
     def _audit_and_broadcast_approval(
         self,
         session_key: str,
@@ -6484,6 +6518,7 @@ class DashboardState:
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
         slot._on_question_retired = self._broadcast_question_retired
+        slot._coordinator_approvals = self.pending_coordinator_approvals
         slot._app = app
         # ``origin`` must be declared by the layer that actually knows it, and
         # an undeclared non-app slot stays UNTAGGED ("") rather than being

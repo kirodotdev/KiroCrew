@@ -23,6 +23,14 @@ def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> st
     return value
 
 
+def _push_slots(state: Any) -> None:
+    """Recompute the slot lane flags; a failed push never breaks the approval."""
+    try:
+        state.push_slots_update()
+    except Exception:
+        state._log.debug("push_slots_update failed after approval status change", exc_info=True)
+
+
 class ApprovalCoordinator:
     """Own registration, waiting, auditing, and resolution of approvals."""
 
@@ -53,6 +61,12 @@ class ApprovalCoordinator:
             "ts": time.time(),
         }
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
+        # The record names its owning slot, and the slot projection reads the
+        # live records through ``pending_coordinator_approvals``: this push is
+        # what moves the parent slot into the Needs Approval lane. Without it
+        # the lane, the command palette and Crew Companion's session watch all
+        # keep reading the slot as idle until some unrelated push happens.
+        _push_slots(state)
         timeout = (
             state._BACKGROUND_APPROVAL_TIMEOUT_SECS if is_background else state._APPROVAL_TIMEOUT
         )
@@ -71,6 +85,9 @@ class ApprovalCoordinator:
                 ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
             state._pending_approvals.pop(approval_id, None)
             state._approval_futures.pop(approval_id, None)
+            # Every exit -- decided, expired, cancelled -- leaves the record
+            # gone, so one push here takes the slot back out of the lane.
+            _push_slots(state)
 
     @staticmethod
     def _retire_unresolved(state: Any, approval_id: str, slot_key: str) -> None:

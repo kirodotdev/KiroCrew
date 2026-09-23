@@ -39,7 +39,6 @@ SOURCE_ROOT = Path(kiro_crew.__file__).parent
 # CrewLog.open(...)``) fails it too; the list is not the only guard.
 VETTED: frozenset[tuple[str, str]] = frozenset(
     {
-        ("checkpoint.py", "_save_one"),
         ("emit.py", "_reap_child_origin"),
         ("holders.py", "holders"),
         ("read.py", "dispatch_view"),

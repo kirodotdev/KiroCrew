@@ -2566,6 +2566,18 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    dm_single_session: bool = field(
+        default=False,
+        metadata=_meta(
+            "DM Single Session",
+            "Treat each 1:1 DM as one continuous conversation instead of starting "
+            "a new session per top-level message. Replies post at channel root "
+            "rather than in a thread. Threaded replies, group channels and group "
+            "DMs are unaffected. Off by default: turning it on routes the next DM "
+            "to a different session than the previous one.",
+            tags=["slack"],
+        ),
+    )
     home_tab_sessions_per_kind: int = field(
         default=5,
         metadata=_meta(
@@ -5793,12 +5805,13 @@ DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
 # a message count, because what it bounds is the size of the request that leaves
 # the machine -- a count bounds neither.
 #
-# The default is 0, and that is the whole point: consent is recorded against what
-# the owner reviewed, and the text they reviewed says the message excerpt and the
-# candidate descriptions leave the machine. Shipping prior turns under that
-# standing grant would widen egress with no new choice, so an owner who wants the
-# conversation sent raises this themselves.
-DECISION_HISTORY_BUDGET_DEFAULT = 0
+# The default covers the last two or three turns, which is what a request like "do
+# the B comparison drawer" needs for the oracle to know what "B" names. It widens
+# nothing on its own: the gate sends ``min(this, the consent keystone's ceiling)``,
+# and that ceiling is 0 until the owner reviews a prior-turn number, so an install
+# whose consent names only the message excerpt and the candidate descriptions
+# carries the current message alone.
+DECISION_HISTORY_BUDGET_DEFAULT = 2000
 
 # The tiers ``model.route`` may answer with, and the model each maps to by default.
 # The keys are the point's CLOSED answer domain
@@ -6013,11 +6026,11 @@ class DecisionsConfig:
             "How many characters of PRIOR conversation one decision may carry, on "
             "top of the current message. Earlier user and assistant turns are added "
             "newest-first until this many characters are spent and the last one is "
-            "clipped to fit; tool output is never sent. The default is 0 -- no prior "
-            "turns -- because consent is recorded against the text the owner "
-            "reviewed, which names the message excerpt and the candidate "
-            "descriptions; raising this widens what leaves the machine, so it is a "
-            "choice rather than an upgrade. A negative value reads as 0.",
+            "clipped to fit; tool output is never sent. The default is 2000, about "
+            "the last two or three turns, and the consent keystone caps it: the gate "
+            "sends the smaller of the two, so an install whose owner reviewed no "
+            "prior-turn ceiling sends no prior turns at all. A negative value reads "
+            "as 0.",
         ),
     )
     model_route: dict[str, str] = field(
@@ -6121,10 +6134,11 @@ class DecisionsConfig:
                 DECISION_BUCKET_MIN,
                 DECISION_BUCKET_MAX,
             ),
-            # Unreadable reads as the DEFAULT, which for this key is 0 -- the same
-            # direction a malformed bucket takes, because both decide how much
-            # conversation leaves the machine and neither may fail open. Floored at
-            # 0 so a negative number cannot read as unbounded.
+            # Unreadable reads as the DEFAULT, the same direction a malformed
+            # bucket takes. That cannot fail open for this key: the gate holds the
+            # configured number against the consent keystone's ceiling, so an
+            # unreadable value still sends at most what the owner reviewed. Floored
+            # at 0 so a negative number cannot read as unbounded.
             history_budget_chars=_safe_int(
                 section.get("history_budget_chars", DECISION_HISTORY_BUDGET_DEFAULT),
                 DECISION_HISTORY_BUDGET_DEFAULT,

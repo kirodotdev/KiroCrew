@@ -257,16 +257,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "debug_processes",
             "description": (
                 "THE PROCESS TREE — every process in the gateway's family, including "
-                "the ones reparented to pid 1, which are the orphans. Per node: pid, "
-                "ppid, kind (gateway / chat / subagent / cron / mcp-server / pod / "
-                "browser / test), owning session, age, cpu %, run-queue wait, rss, "
-                "thread states, fds, cwd. The orphan verdict is computed by the SAME "
+                "the ones reparented to pid 1, which are the orphans. One snapshot, so "
+                "per node: pid, ppid, kind (gateway / gatewayd / chat / cron / "
+                "mcp-server / pod / browser / test), owner label, age, state, rss, "
+                "thread states, fds, cwd. Every kind but one is read from argv; "
+                "'subagent' is told from 'chat' only by an owner label this read has "
+                "no source for, so a subagent runtime appears here as 'chat'. "
+                "The orphan verdict is computed by the SAME "
                 "function the reaper uses, so this view and the reaper never "
-                "disagree. A process pinned near one core with several threads in "
-                "futex wait is flagged 'gil_saturated_hint' — a kernel-level hint, "
-                "labelled as one. Use it to find what is eating the host when "
-                "everything is slow. READ-ONLY: there is no kill here, and killing "
-                "stays with the reaper."
+                "disagree. It carries no CPU rate: 'cpu_pct' and 'runq_wait_pct' are "
+                "deltas between two rosters and this read keeps none, so both are "
+                "null and 'gil_saturated_hint' stays false whatever the load — ask "
+                "debug_threads mode='now' about contention. Use this to see who "
+                "exists, who owns them, which are orphaned, and how much memory each "
+                "holds. READ-ONLY: there is no kill here, and killing stays with the "
+                "reaper."
             ),
             "inputSchema": {
                 "type": "object",
@@ -279,7 +284,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "kind": {"type": "string", "description": "Keep only this kind of process."},
                     "owner": {
                         "type": "string",
-                        "description": "Keep only processes owned by this session.",
+                        "description": (
+                            "Keep only processes carrying this owner label, as the "
+                            "result spells it."
+                        ),
                     },
                     "orphan_only": {
                         "type": "boolean",

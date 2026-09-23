@@ -5258,9 +5258,7 @@ def _provider_error_response(
 
 async def api_pull_request_source(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/pull-request`` with ``{url, refresh?}``."""
-    denied = _authorize_owner_request(
-        request, "source.pull_request.read", allow_local_no_owner=True
-    )
+    denied = _authorize_owner_request(request, "source.pull_request.read")
     if denied is not None:
         return denied
     try:
@@ -5295,7 +5293,7 @@ async def api_issue_source(request: web.Request) -> web.Response:
     :func:`api_pull_request_source` -- an issue read is credential-backed
     provider data too, so it is gated on the dashboard owner identically.
     """
-    denied = _authorize_owner_request(request, "source.issue.read", allow_local_no_owner=True)
+    denied = _authorize_owner_request(request, "source.issue.read")
     if denied is not None:
         return denied
     try:
@@ -5335,9 +5333,7 @@ async def api_app_contributors(request: web.Request) -> web.Response:
     :func:`api_pull_request_source`: contributor data is credential-backed
     provider data, so it is gated on the dashboard owner identically.
     """
-    denied = _authorize_owner_request(
-        request, "source.contributors.read", allow_local_no_owner=True
-    )
+    denied = _authorize_owner_request(request, "source.contributors.read")
     if denied is not None:
         return denied
     try:
@@ -5367,9 +5363,7 @@ async def api_app_contributors(request: web.Request) -> web.Response:
 
 async def api_pull_request_checks(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/pull-request/checks`` with ``{url}``."""
-    denied = _authorize_owner_request(
-        request, "source.pull_request.checks", allow_local_no_owner=True
-    )
+    denied = _authorize_owner_request(request, "source.pull_request.checks")
     if denied is not None:
         return denied
     try:
@@ -5409,9 +5403,7 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
     sidebar chips use. Never blocks on a provider call: unknown URLs simply come
     back absent and appear on a later poll.
     """
-    denied = _authorize_owner_request(
-        request, "source.pull_request.status", allow_local_no_owner=True
-    )
+    denied = _authorize_owner_request(request, "source.pull_request.status")
     if denied is not None:
         return denied
     try:
@@ -6553,12 +6545,6 @@ _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 # way to tell "sign in again" apart from any other authorization failure.
 STALE_OWNER_SESSION_CODE = "stale_session_reauth"
 
-# The no-owner mutation denial, labeled only for signed machine-local dashboard
-# sessions (see ``_authorize_owner_request``). Reads pass for those subjects, so
-# the panel renders live mutation buttons whose clicks would otherwise dead-end
-# in a generic 403; the code lets the client say what to configure instead.
-OWNER_NOT_CONFIGURED_CODE = "owner_not_configured"
-
 
 def stale_owner_session_response(request: web.Request) -> web.Response | None:
     """The distinct denial label for a signed pre-owner bootstrap session.
@@ -6629,44 +6615,34 @@ def _audit_source_api(
         logger.debug("SEL source API audit failed", exc_info=True)
 
 
-def _authorize_owner_request(
-    request: web.Request, operation: str, *, allow_local_no_owner: bool = False
-) -> web.Response | None:
+def _authorize_owner_request(request: web.Request, operation: str) -> web.Response | None:
     """Require an explicit dashboard-user claim matching the configured owner.
 
-    When no owner is configured, read-only operations may allow either signed
-    standalone-local bootstrap identity. Mutations remain owner-only. Once an
-    owner is configured, every operation requires an exact owner match.
+    When no owner is configured, a signed machine-local bootstrap identity
+    (``local-app`` / ``local-startup``) IS the owner, for reads and mutations
+    alike. The allow branch delegates to :func:`is_owner_dashboard_request`
+    rather than re-deriving it, so this gate cannot drift from the rule every
+    other owner-gated dashboard surface follows, the secrets vault among them.
+    Scoping the allowance to reads here made an install with no Slack credential
+    render live mutation buttons it then refused, and pointed the user at a Slack
+    setting that has nothing to do with the action: ``owner_id`` is only ever
+    populated from ``KIROCREW_OWNER_ID``, so an install that never configures
+    Slack could not act on a pull request at all.
+
+    Once an owner is configured, every operation requires an exact owner match.
+    App tokens, unsigned callers, and a mismatched subject always fail closed,
+    which is what keeps a non-owner on a shared or network-exposed deployment
+    from riding the owner's provider credentials. The per-case audit labels below
+    are why the whole gate is not the predicate: a denial has to name which class
+    it hit, which one boolean cannot.
     """
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
     if not owner_id:
-        is_local_dashboard = request.get("app") == "" and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
-        if allow_local_no_owner and is_local_dashboard:
+        if is_owner_dashboard_request(request):
             return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
-        if is_local_dashboard:
-            # The one caller class that could legitimately reach this refusal
-            # from the UI: a signed machine-local dashboard session whose reads
-            # already succeeded, clicking a mutation button. A generic
-            # ``forbidden`` reads as a dead end, so name the remedy with a
-            # machine-readable code the client can translate into guidance.
-            # The discriminator stays reserved for signed local subjects — an
-            # unsigned, absent, or app-token caller must not learn which
-            # denial class it hit (same rule as ``stale_owner_session_response``).
-            return web.json_response(
-                {
-                    "error": (
-                        "this action needs a configured owner, which Kiro Crew"
-                        " identifies by Slack member ID; set 'Owner Slack member"
-                        " ID' in Settings → Messaging Channels → Slack, restart the"
-                        " gateway, then sign in again"
-                    ),
-                    "code": OWNER_NOT_CONFIGURED_CODE,
-                },
-                status=403,
-            )
         return web.json_response({"error": "forbidden"}, status=403)
     if "app" not in request or request["app"] != "":
         _audit_source_api(request, operation, "denied", "app_token_not_allowed")
@@ -6843,13 +6819,12 @@ async def api_pull_request_ready(request: web.Request) -> web.Response:
 async def api_pull_request_pending_review(request: web.Request) -> web.Response:
     """POST ``/api/source/pull-request/pending-review`` with ``{url}``.
 
-    A read, gated like :func:`api_pull_request_source` rather than like the
-    mutations: it returns the same class of credential-backed provider data, so a
-    stricter gate here would hide the draft on installations that can already read
-    the pull request itself.
+    A read of the same class of credential-backed provider data every other
+    source route returns, gated on the shared dashboard-owner rule in
+    :func:`_authorize_owner_request`.
     """
     operation = "source.pull_request.pending_review"
-    denied = _authorize_owner_request(request, operation, allow_local_no_owner=True)
+    denied = _authorize_owner_request(request, operation)
     if denied is not None:
         return denied
     try:

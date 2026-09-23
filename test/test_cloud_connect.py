@@ -467,6 +467,121 @@ def _pid_alive(pid: int) -> bool:
 
 
 class TestRegistryIntegration:
+    def test_unregister_ecs_task_removes_the_matching_record(self, monkeypatch, tmp_path):
+        """Teardown holds a task ARN, which carries the cluster and the task id but
+        never the runtime id, so the row cannot be found by its whole target."""
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        runtime = f"{'a' * 32}-1234567890"
+        task_id = "0" * 32
+        reg.add(
+            name="Cloud",
+            ssm_target=f"ecs:crews_{task_id}_{runtime}",
+            connection_method="fargate",
+            instance_id="cloud",
+        )
+
+        assert connect.unregister_ecs_task("crews", task_id) == connect.UNREGISTER_REMOVED
+        assert reg.list() == []
+
+    def test_unregister_ecs_task_does_not_match_a_look_alike_cluster(self, monkeypatch, tmp_path):
+        """A cluster name may contain an underscore, so a
+        ``f"ecs:{cluster}_{task}_"`` prefix test would let cluster ``crews`` remove
+        a row belonging to cluster ``crews_eu``. Splitting with the registry's own
+        reader compares the cluster as a whole."""
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        runtime = f"{'a' * 32}-1234567890"
+        task_id = "0" * 32
+        reg.add(
+            name="Other region",
+            ssm_target=f"ecs:crews_eu_{task_id}_{runtime}",
+            connection_method="fargate",
+            instance_id="eu",
+        )
+
+        assert connect.unregister_ecs_task("crews", task_id) == connect.UNREGISTER_ABSENT
+        assert [i.id for i in reg.list()] == ["eu"]
+
+    def test_unregister_ecs_task_ignores_an_ec2_record(self, monkeypatch, tmp_path):
+        """An SSM target is not an ECS target, so it must not be parsed as one."""
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        reg.add(name="EC2", ssm_target="i-0abc1234", connection_method="ssm", instance_id="ec2")
+
+        assert connect.unregister_ecs_task("crews", "0" * 32) == connect.UNREGISTER_ABSENT
+        assert [i.id for i in reg.list()] == ["ec2"]
+
+    def test_unregister_ecs_task_removes_every_duplicate_row(self, monkeypatch, tmp_path):
+        """Two rows can name one task under distinct ids. Returning on the first
+        leaves the other addressing a stopped task, and no sweep prunes it because
+        a stopped task is not listed for teardown at all."""
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        task_id = "0" * 32
+        reg.add(
+            name="Launched",
+            ssm_target=f"ecs:crews_{task_id}_{'a' * 32}-1234567890",
+            connection_method="fargate",
+            instance_id="launched",
+        )
+        # A hand-added Remote crew row naming the same task with a different
+        # runtime id: the launcher's own writer cannot produce this pair.
+        reg.add(
+            name="Hand added",
+            ssm_target=f"ecs:crews_{task_id}_{'b' * 32}-9876543210",
+            connection_method="fargate",
+            instance_id="handadded",
+        )
+
+        assert connect.unregister_ecs_task("crews", task_id) == connect.UNREGISTER_REMOVED
+        assert reg.list() == []
+
+    def test_unregister_ecs_task_reports_a_failure_apart_from_an_absence(
+        self, monkeypatch, tmp_path
+    ):
+        """ "No row" and "could not remove the row" are both falsy, and a caller
+        that reports a teardown as complete has to tell them apart: the first means
+        nothing is left behind, the second means something is."""
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        runtime = f"{'a' * 32}-1234567890"
+        task_id = "0" * 32
+        reg.add(
+            name="Cloud",
+            ssm_target=f"ecs:crews_{task_id}_{runtime}",
+            connection_method="fargate",
+            instance_id="cloud",
+        )
+
+        def _boom(_instance_id):
+            raise OSError("registry is read-only")
+
+        monkeypatch.setattr(reg, "remove", _boom)
+        assert connect.unregister_ecs_task("crews", task_id) == connect.UNREGISTER_FAILED
+        # The row is still there, which is exactly why the answer is not "absent".
+        assert [i.id for i in reg.list()] == ["cloud"]
+
     def test_register_instance(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
 
@@ -515,6 +630,41 @@ class TestRegistryIntegration:
         assert rec.local_port == 5599
         assert rec.was_connected is True
         assert rec.provisioner_id == "aws_ec2"
+
+    def test_register_instance_carries_the_callers_provisioner_id(self, monkeypatch, tmp_path):
+        """A non-EC2 lane must be able to stamp its own id, on BOTH writes.
+
+        The registry record's ``provisioner_id`` is what resolves an engine and
+        the lifecycle guidance shown for the box, so a Fargate task left with the
+        EC2 default is handed to the EC2 engine. The update path is asserted too:
+        a re-launch that reset the id to the default would reintroduce the same
+        mislabelling on exactly the boxes that had been registered correctly.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+
+        target = "ecs:crews_0123456789abcdef0123456789abcdef_" + "a" * 32 + "-1234567890"
+        first = connect.register_instance(
+            target,
+            name="Kiro Crew Cloud (t)",
+            connection_method="fargate",
+            provisioner_id="aws_fargate",
+        )
+        assert first is not None
+        assert next(i for i in reg.list() if i.id == first).provisioner_id == "aws_fargate"
+
+        second = connect.register_instance(
+            target,
+            name="Kiro Crew Cloud (t)",
+            connection_method="fargate",
+            provisioner_id="aws_fargate",
+        )
+        assert second == first
+        assert next(i for i in reg.list() if i.id == first).provisioner_id == "aws_fargate"
 
     def test_unregister_instance_empty_arg_is_noop(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry

@@ -14,9 +14,13 @@ import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Uploa
 import { api, type AppPublishProvider } from '../api/client'
 import { Card, Btn, ContentSkeleton } from './ui'
 import PublicPublishAckModal from './PublicPublishAckModal'
+import ErrorDetails from './ErrorDetails'
+import ErrorNotice from './ErrorNotice'
 import SimpleSelect from './SimpleSelect'
 import type { Artifact, PublishProviderDescriptor } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 
 import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
@@ -46,6 +50,20 @@ interface UnifiedProvider {
 const ICONS: Record<string, typeof Globe> = { Globe, Upload, Settings, ExternalLink }
 function iconFor(name: string): typeof Globe {
   return ICONS[name] ?? Upload
+}
+
+/**
+ * Whether a provider row is the Artifact Deploy destination (publish to a public
+ * HTTPS URL in the operator's own AWS account).
+ *
+ * Identified by its endpoint or id rather than by its display label, which is
+ * translated and would stop matching in every language but English. An app row
+ * declares the deploy endpoint; the core registry row carries the `deploy-web`
+ * id. A row that is neither is some other destination and is never filtered.
+ */
+export function isPublicWebDeploy(p: { id: string; app?: { endpoint?: string } }): boolean {
+  if (p.id === 'deploy-web') return true
+  return (p.app?.endpoint ?? '').startsWith('/api/deploy/')
 }
 
 /**
@@ -240,7 +258,14 @@ export function PublishHub({
     staleTime: 30_000,
   })
   const coreProviders = coreQuery.data?.providers ?? []
+  // Artifact Deploy is a Feature Preview, so its destination is not offered here
+  // until the operator opts in: publishing through it spends money in a real AWS
+  // account and puts the content on the open internet. Filtered at the ROW level
+  // rather than by hiding the panel, because an artifact's other destinations are
+  // unaffected by that choice.
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const unified = buildProviderList(appProviders, artifact.kind, coreProviders)
+    .filter(p => deployPreview || !isPublicWebDeploy(p))
 
   const [selectedId, setSelectedId] = useState<string>('')
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
@@ -251,7 +276,7 @@ export function PublishHub({
   // of an error rather than a non-empty `url`: a destination can publish
   // successfully and expose no browsable link, and conflating the two is what
   // rendered a succeeded publish as a blank error.
-  const [result, setResult] = useState<{ url?: string; error?: string; notice?: string; notice_code?: string } | null>(null)
+  const [result, setResult] = useState<{ url?: string; error?: string; notice?: string; notice_code?: string; details?: string; remediation?: string } | null>(null)
   const [busy, setBusy] = useState(false)
   // Non-null while the blocking public-exposure acknowledgment is on screen.
   // `overrideScan` remembers WHICH commit path opened it, so acknowledging
@@ -397,8 +422,15 @@ export function PublishHub({
         setPreview(null)
       } else if (data?.error) {
         // Checked BEFORE the outcome: an error response is authoritative even if
-        // it happens to carry other fields.
-        setResult({ error: data.error })
+        // it happens to carry other fields. `details` and `remediation` ride
+        // along so the banner can hold the plain sentence while the technical
+        // half goes behind the Details toggle.
+        setResult({
+          error: data.error,
+          ...(typeof data.details === 'string' && data.details ? { details: data.details } : {}),
+          ...(typeof data.remediation === 'string' && data.remediation
+            ? { remediation: data.remediation } : {}),
+        })
       } else if (outcome) {
         // `notice_code` travels with `notice` here for the same reason as the two
         // sibling sites above: the catalog selector keys the remedy copy off the code,
@@ -639,8 +671,14 @@ export function PublishHub({
       {result && (
         <div className="space-y-2">
           {result.error ? (
-            <div className="flex items-center gap-2 text-sm text-danger">
-              <AlertCircle size={14} /> {result.error}
+            <div className="space-y-1.5">
+              {/* Through ErrorNotice rather than a hand-written danger row: a
+                  failed publish is a dead end that needs the structured surface
+                  and the agent hand-off (errors-use-error-notice). */}
+              <ErrorNotice message={result.error} askAgent />
+              {/* Same split the deploy refusals use: the sentence stays in the
+                  banner, the stack and parameter names go one click away. */}
+              <ErrorDetails details={result.details} remediation={result.remediation} />
             </div>
           ) : (
             <div className="space-y-1.5">

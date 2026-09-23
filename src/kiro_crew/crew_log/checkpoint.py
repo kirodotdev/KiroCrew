@@ -38,41 +38,54 @@ WHAT MAKES A SAVEPOINT SAFE TO RESUME. An append-only prefix never invalidates
 one: the entries a checkpoint consumed cannot change, so folding the entries after
 it reaches what a cold fold reaches, which is the equality
 ``crew-log-projection.md`` states and the tests pin. FOUR things break that, and
-each is checked before a file is used -- the three below, plus the one that makes
-"cannot change" checkable rather than assumed: ``prefix_sha`` is a digest of the
-consumed prefix's raw record bytes, recomputed on resume, because a line damaged
-AFTER it was folded is skipped by a cold fold while a savepoint keeps the value it
-contributed, and none of the three below reads the prefix at all.
+each is checked before a file is used.
+
+The checking is the projection kernel's (:mod:`kiro_crew.projection.checkpoint`),
+and this module supplies the two things the kernel cannot know. The IDENTITY BLOCK
+holds the facts that must match verbatim, which is what the first two below are; the
+WITNESS holds the evidence a live check needs, which is what the last two read. The
+kernel compares the block, refuses a payload from another fold or another state
+shape, and hands the witness to :func:`_admits`.
 
 * the file describes a DIFFERENT log -- a unit removed and recreated under the
   same id restarts its seqs, and once the new file has grown past the stored seq a
-  seq check alone would pass. ``origin`` is the log's creation identity and is
-  compared first.
+  seq check alone would pass. ``origin`` is the log's creation identity. Identity
+  block, beside ``unit``, which catches a payload copied from another unit.
 * the log LOST its front -- retention deletes whole segments off the oldest end,
   so a cold fold folds a window while the savepoint still counts entries the file
   does not hold. The two answers differ, and the savepoint's is the one no
   reader can reproduce. ``first_seq`` is the oldest surviving segment's first seq,
-  and a change to it retires the file.
+  and a change to it retires the file. Identity block.
+* the prefix CHANGED after it was folded -- a line damaged afterwards is skipped by
+  a cold fold while a savepoint keeps the value that line contributed, and no
+  equality above reads the prefix at all. ``prefix_sha`` is a digest of the consumed
+  prefix's raw record bytes, recomputed on resume from ``prefix_records``. Witness,
+  because a reader cannot name that count before opening the file that states it.
 * the log is SHORTER than the savepoint -- most of its causes are caught above,
   but it is checked on its own because a fold resumed past the end of a file is
-  the one state no later read recovers from.
+  the one state no later read recovers from. Witness, against the live ``last_seq``.
+
+A savepoint written before the witness existed carries none, and :func:`_admits`
+refuses an empty one: it is a payload nothing can check, which this module holds to
+be worse than no payload at all. It is DISCARDED and cold-folded, never migrated --
+and because the file name is unchanged, the next write replaces it rather than
+leaving it on disk for a collector that does not exist.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
 from kiro_crew.crew_log.lease import release as release_lease
 from kiro_crew.crew_log.projection import (
+    FOLD_STATE_VERSION,
     Checkpoint,
     SessionProjections,
     log_origin,
@@ -86,35 +99,36 @@ from kiro_crew.crew_log.store import (
     segment_paths,
 )
 from kiro_crew.platform_compat import restrict_dir_to_owner
+from kiro_crew.projection import (
+    MAX_PAYLOAD_BYTES,
+    Admit,
+    DirectoryCheckpointStore,
+    Savepoint,
+)
 
 logger = logging.getLogger(__name__)
 
 #: Directory inside a unit's store directory that holds its fold savepoints.
 CHECKPOINT_DIR: Final[str] = "projections"
 
-#: The payload shape this build writes and is willing to read. A file carrying
-#: anything else was written by a build this one does not understand, and the
-#: answer is the cold fold rather than a guess at which fields still mean what
-#: they did.
-#:
-#: THE RULE: any change to what a fold's ``start`` or ``step`` STORES bumps this,
-#: including one that keeps the same keys. Shape is all this number and
-#: ``_state_matches_fold`` can check, so a counting fix that leaves the keys alone
-#: resumes the old build's state onto the new logic -- and the long sessions this
-#: module speeds up are the ones that then serve pre-fix numbers for the life of
-#: the unit. Bumping retires every savepoint to a cold fold, which costs one
-#: refold each and is the only in-product way to retire them, since the tree is
-#: fenced from the agent. ``test_changing_what_a_fold_stores_forces_the_savepoint_
-#: version_to_move`` pins each fold's stored state, so forgetting the bump fails
-#: CI rather than shipping.
-CHECKPOINT_VERSION: Final[int] = 3
+#: The payload shape this build writes and is willing to read, under the name this
+#: module's files and docs use. The NUMBER belongs to the folds, because it describes
+#: what their ``start`` and ``step`` store, so it is stated once in
+#: :data:`~kiro_crew.crew_log.projection.FOLD_STATE_VERSION` and the rule for moving
+#: it is recorded there. A file carrying anything else was written by a build this one
+#: does not understand, and the answer is the cold fold rather than a guess at which
+#: fields still mean what they did.
+CHECKPOINT_VERSION: Final[int] = FOLD_STATE_VERSION
 
-#: Largest savepoint file this module reads or writes. Every fold's state is
-#: already bounded by construction (``crew-log-projection.md`` section 2), so this
-#: is a BACKSTOP on those bounds rather than the bound itself: a fold that grew
-#: unbounded state loses its savepoint here instead of writing an unbounded file
-#: on every read. Exceeding it costs performance and nothing else.
-MAX_CHECKPOINT_BYTES: Final[int] = 2 * 1024 * 1024
+#: Largest savepoint file this package reads or writes, and the number the kernel
+#: store ENFORCES (:data:`~kiro_crew.projection.MAX_PAYLOAD_BYTES`). Every fold's
+#: state is already bounded by construction (``crew-log-projection.md`` section 2),
+#: so this is a BACKSTOP on those bounds rather than the bound itself: a fold that
+#: grew unbounded state loses its savepoint instead of writing an unbounded file on
+#: every read. Exceeding it costs performance and nothing else. Re-exported under
+#: this name because the session-tree store measures its own payloads against the
+#: same number.
+MAX_CHECKPOINT_BYTES: Final[int] = MAX_PAYLOAD_BYTES
 
 #: Entries a bundle must have advanced past its savepoint before another one is
 #: written. A savepoint is allowed to LAG -- resuming from an older one replays the
@@ -134,6 +148,102 @@ def checkpoint_dir(kind: str, unit_id: str) -> Path:
 def checkpoint_path(kind: str, unit_id: str, name: str) -> Path:
     """The savepoint file for one fold of one unit. Does not create it."""
     return checkpoint_dir(kind, unit_id) / f"{require_name(name)}.json"
+
+
+class _UnitStore(DirectoryCheckpointStore):
+    """The kernel's savepoint store, laid out FLAT inside one unit's directory.
+
+    The kernel names a file ``<root>/<store>/<key>.json`` because one root serves
+    many stores. Here the root already IS one unit's directory, so the store segment
+    would add a level naming the unit twice -- and the layout this package documents,
+    ``<store dir>/projections/<fold>.json``, is what :func:`checkpoint_path` answers
+    and what a reader looking for a fold's savepoint expects.
+
+    Keeping the path is also what makes a savepoint from before the kernel DISCARDED
+    rather than orphaned: it sits at exactly this name, so it is read, refused by the
+    kernel's own envelope check, and overwritten by the next write. A new path would
+    leave it on disk forever, since nothing else collects it.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__(directory)
+        self._directory = Path(directory)
+
+    def path_for(self, store: str, key: str) -> Path | None:
+        if not self._is_safe(key):
+            return None
+        return self._directory / f"{key}.json"
+
+
+def _identity_block(handle: CrewLog, origin: str, first_seq: int) -> dict[str, Any]:
+    """The facts a savepoint must MATCH to describe this log, compared verbatim.
+
+    All three are known before the fold and fixed afterwards, which is what makes
+    them equality rather than an ``admit`` condition. ``unit`` catches a payload that
+    moved or was copied from another unit's directory, ``origin`` a unit removed and
+    recreated under the same id, and ``first_seq`` a retention trim that took whole
+    segments off the front.
+    """
+    return {"unit": handle.id, "origin": origin, "first_seq": first_seq}
+
+
+def _admits(handle: CrewLog, first_seq: int) -> Admit:
+    """The conditions that read the LIVE log, judged against a savepoint's witness.
+
+    An EMPTY witness is refused, and that is what retires a payload written before
+    the witness existed: it carries no evidence about the bytes its state came from,
+    and this module's whole posture is that a savepoint it cannot check is worse than
+    none.
+
+    The digest is memoized per record count, because the folds of one read share a
+    boundary and hashing it once per fold would walk the same bytes five times.
+    """
+    digests: dict[int, tuple[str, int]] = {}
+
+    def admit(identity: Mapping[str, Any], witness: Mapping[str, Any]) -> bool:
+        seq = witness.get("seq")
+        sha = witness.get("prefix_sha")
+        records = witness.get("prefix_records")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            return False
+        if seq > handle.last_seq:
+            # The short-store answer: the log does not reach the savepoint, so
+            # resuming would fold nothing and serve state for entries the file no
+            # longer has. Most of its causes are equality above; it is checked on its
+            # own because a fold resumed past the end of a file is the one state no
+            # later read recovers from.
+            logger.debug(
+                "crew log savepoint is at seq %d past the log's %d; folding cold",
+                seq,
+                handle.last_seq,
+            )
+            return False
+        if (
+            not isinstance(sha, str)
+            or len(sha) != 64
+            or any(char not in "0123456789abcdef" for char in sha)
+            or not isinstance(records, int)
+            or isinstance(records, bool)
+            # A LOWER bound, not equality: the count is raw records, and a blank or
+            # unparseable interior line is a record the fold did not count as an
+            # entry, so the two can legitimately differ upward. Equality would force
+            # the entry span onto the digest and leave the trailing consumed records
+            # uncovered. A count too LARGE cannot pass either -- the walk then hashes
+            # fewer records than claimed and the comparison below refuses it.
+            or records < max(0, seq - first_seq + 1)
+        ):
+            return False
+        prefix = digests.get(records)
+        if prefix is None:
+            prefix = handle.raw_prefix_digest(records)
+            digests[records] = prefix
+        digest, records_hashed = prefix
+        if digest != sha or records_hashed != records:
+            logger.debug("crew log savepoint has a changed prefix; folding cold")
+            return False
+        return True
+
+    return admit
 
 
 def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
@@ -157,16 +267,18 @@ def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
     if identity is None:
         return None
     origin, first_seq = identity
-    resumed: dict[str, Checkpoint] = {}
-    prefix_digests: dict[int, tuple[str, int]] = {}
-    for name in wanted:
-        loaded = _load_one(
-            handle,
-            name,
-            origin=origin,
-            first_seq=first_seq,
-            prefix_digests=prefix_digests,
+    try:
+        store = _UnitStore(checkpoint_dir(handle.kind, handle.id))
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(
+            logger, logging.DEBUG, "crew log savepoint path refused for %s", handle.id
         )
+        return None
+    block = _identity_block(handle, origin, first_seq)
+    admit = _admits(handle, first_seq)
+    resumed: dict[str, Checkpoint] = {}
+    for name in wanted:
+        loaded = _resume_one(store, handle, name, block, admit)
         if loaded is not None:
             resumed[name] = loaded
     if not resumed:
@@ -183,6 +295,33 @@ def load(handle: CrewLog, names: Iterable[str]) -> SessionProjections | None:
         origin=origin,
         saved_seq=saved,
     )
+
+
+def discard(handle: CrewLog, names: Iterable[str]) -> None:
+    """Remove the savepoints for *names*, so the next read does not trip on them again.
+
+    For a payload that passed every admission condition and then could not be FOLDED:
+    the shape checks read a state's top level, so a malformed value nested below it is
+    admitted and raises inside the fold instead. Refusing it on the way in would take a
+    per-fold walk of every nested container, which is a schema this package does not
+    otherwise keep; discarding the file on the way out costs one cold fold and needs
+    no such walk.
+
+    Never raises. Failing to remove a file leaves the next read to fold cold again,
+    which is the same answer at the same cost.
+    """
+    try:
+        store = _UnitStore(checkpoint_dir(handle.kind, handle.id))
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(
+            logger, logging.DEBUG, "crew log savepoint path refused for %s", handle.id
+        )
+        return
+    for name in names:
+        try:
+            store.discard(handle.id, require_name(name))
+        except Exception:  # pragma: no cover - the kernel store swallows its own errors
+            log_exception_text(logger, logging.DEBUG, "crew log savepoint for %s not removed", name)
 
 
 def resumed_prefix_still_verifies(handle: CrewLog, resumed: SessionProjections) -> bool:
@@ -326,6 +465,17 @@ def save(
         directory = _ensure_dir(handle)
         if directory is None:
             return bundle
+        store = _UnitStore(directory)
+        block = _identity_block(handle, origin, first_seq)
+        # The digest the caller read before its pass, stored as the savepoint's
+        # witness: it is the evidence a later read re-checks against the live file,
+        # and it is the one thing equality cannot hold, since a reader cannot name a
+        # record count before opening the file that states it.
+        witness = {
+            "seq": prefix.seq,
+            "prefix_sha": prefix.sha,
+            "prefix_records": prefix.records,
+        }
         written = 0
         for checkpoint in bundle.checkpoints.values():
             if checkpoint.last_seq != prefix.seq:
@@ -336,15 +486,7 @@ def save(
                 # claiming nothing, which costs a cold fold rather than a digest that
                 # may describe bytes nothing folded.
                 continue
-            if _save_one(
-                directory,
-                checkpoint,
-                unit=handle.id,
-                origin=origin,
-                first_seq=first_seq,
-                prefix_sha=prefix.sha,
-                prefix_records=prefix.records,
-            ):
+            if _save_one(store, checkpoint, unit=handle.id, identity=block, witness=witness):
                 written += 1
         if _discard_if_unit_gone(handle, directory):
             return bundle
@@ -370,116 +512,83 @@ def save(
 # --------------------------------------------------------------------------- #
 
 
-def _load_one(
-    handle: CrewLog,
-    name: str,
+def _save_one(
+    store: _UnitStore,
+    checkpoint: Checkpoint,
     *,
-    origin: str,
-    first_seq: int,
-    prefix_digests: dict[int, tuple[str, int]],
-) -> Checkpoint | None:
-    """One fold's savepoint, or ``None`` for every reason not to resume from it."""
-    try:
-        path = checkpoint_path(handle.kind, handle.id, name)
-        size = path.stat().st_size
-    except OSError:
-        # Absent is the ordinary case: no session has a savepoint until one is
-        # written, and a cold fold is the answer.
-        return None
-    except Exception:  # pragma: no cover - a path refusal from the store's checks
-        log_exception_text(logger, logging.DEBUG, "crew log savepoint path refused for %s", name)
-        return None
-    if size > MAX_CHECKPOINT_BYTES:
-        logger.debug("crew log savepoint %s is over the size cap; folding cold", path)
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        # A file that cannot be read or parsed is not a savepoint. Each of these is
-        # the cold fold, which is why none is reported as an error.
-        #
-        # ``RecursionError`` has to be named because it is a ``RuntimeError`` rather
-        # than a ``ValueError``: a payload nested past the interpreter's stack limit
-        # raises it out of ``json.loads`` at a few tens of KB, far under the size cap
-        # checked above, so the cap does not stand in for this guard. It is also the
-        # only unusable payload that survives being read -- the file stays on disk --
-        # so an escape costs the session every later fold rather than one cold fold.
-        log_exception_text(
-            logger, logging.DEBUG, "crew log savepoint %s unusable; folding cold", path
-        )
-        return None
-    return _checkpoint_from(
-        raw,
-        name=name,
-        origin=origin,
-        first_seq=first_seq,
-        handle=handle,
-        prefix_digests=prefix_digests,
+    unit: str,
+    identity: Mapping[str, Any],
+    witness: Mapping[str, Any],
+) -> bool:
+    """Write one fold's savepoint. ``True`` when it reached the file.
+
+    The kernel store owns the serialization, the size cap and the atomic rename, and
+    it never raises: a fold whose state cannot be serialized, or whose state is over
+    the cap, loses its savepoint and nothing else -- which is not a reason to fail the
+    read it was folded for.
+    """
+    return store.save(
+        unit,
+        Savepoint(
+            key=checkpoint.name,
+            state_version=FOLD_STATE_VERSION,
+            watermark=checkpoint.last_seq,
+            state=checkpoint.state,
+            identity=identity,
+            witness=witness,
+        ),
     )
 
 
-def _checkpoint_from(
-    raw: Any,
-    *,
-    name: str,
-    origin: str,
-    first_seq: int,
+def _resume_one(
+    store: _UnitStore,
     handle: CrewLog,
-    prefix_digests: dict[int, tuple[str, int]],
+    name: str,
+    block: Mapping[str, Any],
+    admit: Admit,
 ) -> Checkpoint | None:
-    """*raw* as a checkpoint for *name*, or ``None`` when it does not describe this log."""
-    if not isinstance(raw, Mapping):
-        return None
-    if raw.get("v") != CHECKPOINT_VERSION:
-        return None
-    if raw.get("fold") != name or raw.get("unit") != handle.id:
-        # The file's own statement of what it is disagrees with where it was found:
-        # a directory copied from another unit, or a file renamed. Neither is a
-        # savepoint of this fold of this log.
-        return None
-    if raw.get("origin") != origin or raw.get("first_seq") != first_seq:
-        return None
-    seq = raw.get("seq")
-    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-        return None
-    if seq > handle.last_seq:
-        # The short-store fallback: the log does not reach the savepoint, so
-        # resuming would fold nothing and serve state for entries the file no
-        # longer has.
-        logger.debug(
-            "crew log savepoint for %s is at seq %d past the log's %d; folding cold",
+    """One fold's savepoint, or ``None`` for every reason not to resume from it.
+
+    The kernel decides the envelope, the fold name, the state shape's version and the
+    identity; :func:`_admits` decides the live-log conditions. What is left here is
+    the crew log's own two: the payload must not disagree with itself about the seq it
+    stands at, and the state must satisfy the fold surface's validation.
+    """
+    try:
+        savepoint = store.load(
+            handle.id,
             name,
-            seq,
-            handle.last_seq,
+            state_version=FOLD_STATE_VERSION,
+            identity=block,
+            admit=admit,
+        )
+    except RecursionError:
+        # ``RecursionError`` is a ``RuntimeError`` rather than a ``ValueError``, so a
+        # payload nested past the interpreter's stack limit raises straight through the
+        # kernel's own guard, at a few tens of KB and far under the size cap. It is
+        # also the only unusable payload that survives being read -- the file stays on
+        # disk -- so an escape costs the session every later fold rather than one cold
+        # fold, and this function promises never to raise.
+        log_exception_text(
+            logger, logging.DEBUG, "crew log savepoint for %s unusable; folding cold", name
         )
         return None
-    prefix_sha = raw.get("prefix_sha")
-    prefix_records = raw.get("prefix_records")
-    if (
-        not isinstance(prefix_sha, str)
-        or len(prefix_sha) != 64
-        or any(char not in "0123456789abcdef" for char in prefix_sha)
-        or not isinstance(prefix_records, int)
-        or isinstance(prefix_records, bool)
-        # A LOWER bound, not equality: the count is raw records, and a blank or
-        # unparseable interior line is a record the fold did not count as an entry,
-        # so the two can legitimately differ upward. Equality would force the entry
-        # span onto the digest and leave the trailing consumed records uncovered. A
-        # count too LARGE cannot pass either -- the walk then hashes fewer records
-        # than claimed and the comparison below refuses it.
-        or prefix_records < max(0, seq - first_seq + 1)
-    ):
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(logger, logging.DEBUG, "crew log savepoint refused for %s", name)
         return None
-    prefix = prefix_digests.get(prefix_records)
-    if prefix is None:
-        prefix = handle.raw_prefix_digest(prefix_records)
-        prefix_digests[prefix_records] = prefix
-    digest, records_hashed = prefix
-    if digest != prefix_sha or records_hashed != prefix_records:
-        logger.debug("crew log savepoint for %s has a changed prefix; folding cold", name)
+    if savepoint is None:
+        # Absent is the ordinary case: no session has a savepoint until one is
+        # written, and a cold fold is the answer.
+        return None
+    if savepoint.witness.get("seq") != savepoint.watermark:
+        # The witness certifies ONE boundary, and the state resumes at another. Nothing
+        # here can say which is right, so the file is not a savepoint of this fold.
+        logger.debug("crew log savepoint for %s disagrees about its own seq", name)
         return None
     try:
-        return Checkpoint.from_dict({"name": name, "last_seq": seq, "state": raw.get("state")})
+        return Checkpoint.from_dict(
+            {"name": name, "last_seq": savepoint.watermark, "state": savepoint.state}
+        )
     except Exception:
         # The fold surface's own validation refused the payload. Same answer as
         # every other unusable file.
@@ -487,65 +596,6 @@ def _checkpoint_from(
             logger, logging.DEBUG, "crew log savepoint for %s refused by the fold surface", name
         )
         return None
-
-
-def _save_one(
-    directory: Path,
-    checkpoint: Checkpoint,
-    *,
-    unit: str,
-    origin: str,
-    first_seq: int,
-    prefix_sha: str,
-    prefix_records: int,
-) -> bool:
-    """Write one fold's savepoint. ``True`` when it reached the file."""
-    payload = {
-        "v": CHECKPOINT_VERSION,
-        "unit": unit,
-        "origin": origin,
-        "first_seq": first_seq,
-        "fold": checkpoint.name,
-        "seq": checkpoint.last_seq,
-        "prefix_sha": prefix_sha,
-        "prefix_records": prefix_records,
-        "state": checkpoint.state,
-    }
-    try:
-        # ASCII-ONLY, and the encode is inside this guard. A crew log's own JSON
-        # admits a lone surrogate, so a fold can retain one in a label -- and with
-        # ``ensure_ascii=False`` that character survives into the payload and makes
-        # the UTF-8 encode raise ``UnicodeEncodeError``, out of a function that
-        # promises never to raise and into a read the caller asked to serve.
-        # Escaping every non-ASCII character makes the bytes unrepresentable-proof
-        # and round-trips the surrogate back through ``json.loads``; it is also what
-        # the store's own serializer does. The encode stays inside the guard anyway,
-        # because ``UnicodeEncodeError`` IS a ``ValueError`` and the contract should
-        # not depend on one argument staying as it is.
-        blob = json.dumps(payload, separators=(",", ":"))
-        encoded = blob.encode("utf-8")
-    except (TypeError, ValueError):
-        # A fold whose state cannot be serialized is a defect in that fold, and not
-        # a reason to fail the read it was folded for.
-        logger.debug("crew log fold %s has unwritable state", checkpoint.name, exc_info=True)
-        return False
-    if len(encoded) > MAX_CHECKPOINT_BYTES:
-        logger.debug(
-            "crew log fold %s state is %d bytes, over the savepoint cap; not written",
-            checkpoint.name,
-            len(encoded),
-        )
-        return False
-    try:
-        # No fsync. A savepoint a crash leaves unpersisted is an older savepoint or
-        # no savepoint, and both are answered by folding further -- so a flush per
-        # write would buy nothing the cold fold does not give for free. The rename
-        # is still atomic, which is what keeps a reader from seeing half a payload.
-        atomic_write(directory / f"{checkpoint.name}.json", blob, fsync=False, newline="")
-    except OSError:
-        logger.debug("crew log savepoint for %s not written", checkpoint.name, exc_info=True)
-        return False
-    return True
 
 
 # --------------------------------------------------------------------------- #

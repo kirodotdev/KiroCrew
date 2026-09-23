@@ -40,6 +40,12 @@ reports as the session's own.
 protocol verb, so it has exactly one owner rather than being pinned in two places
 that can disagree.
 
+``welcomeMessage`` IS projected, through the same
+:func:`kiro_crew.agent_discovery.spec_welcome_message` reading the dashboard
+renders. One reader, so the hint a KAS session registers and the hint Crew shows
+cannot disagree -- and the cap and whitespace rules that reading already applies
+to this user-writable field are not re-argued for a second path onto the wire.
+
 ``permissions`` IS projected, and is the one field that changes behaviour rather
 than just describing it. KAS's policy is keyed by its own capability vocabulary
 instead of by tool name, so it is not a rename of Crew's ``allowedTools`` — see
@@ -47,9 +53,12 @@ instead of by tool name, so it is not a rename of Crew's ``allowedTools`` — se
 cannot classify is left to prompt. Omitting the field is not the neutral choice
 it looks like: with no policy, KAS resolves every request to ``ask``, so a spec
 that auto-approves a dozen tools on kiro-cli would prompt for all of them here.
-It is derived from ``allowedTools`` and from nothing else: a ``permissions``
-block already in the spec is NOT relayed, because ``allowedTools`` is the only
-auto-approve input Crew's governance ceiling has filtered.
+The derived rules come from ``allowedTools`` and nothing else, and a
+``permissions`` block the spec's author wrote is then intersected with the same
+ceiling and appended -- see :func:`kiro_crew.acp.kas_permissions.merge_user_permissions`
+for the four rules. Dropping the author's block entirely would leave a pure-KAS
+agent -- ``permissions`` authored, no ``allowedTools`` -- reaching the backend with
+the field absent, which is the all-``ask`` case above.
 """
 
 from __future__ import annotations
@@ -59,11 +68,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.acp.kas_permissions import (
+    allowed_tools_to_permissions,
+    merge_user_permissions,
+)
 from kiro_crew.agent_discovery import (
     AmbiguousAgentSpecError,
     read_agent_spec_strict,
     spec_by_declared_name,
+    spec_welcome_message,
 )
 from kiro_crew.agent_spec_format import agent_spec_candidates
 from kiro_crew.mcp_cleanup import (
@@ -338,29 +351,63 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
             agent_id,
             names,
         )
-        # A withhold is a permission DECISION, and the other writers that reach
-        # this state — app-agent materialization, the host shared-MCP sync,
-        # doctor's auto-fix — all record it in the security event log. Projection
-        # is the fourth, and the only one whose input is a file it did not write,
-        # so a stale grant is likelier to be withheld HERE than anywhere else;
-        # leaving it at a log line would make the most likely case the one with no
-        # audit trail. Never fail the projection on an audit error: the withhold
-        # itself has already happened and is the safe direction.
-        try:
-            sel().log_api_access(
-                caller="system",
-                operation="mcp_auto_approve_withheld",
-                outcome="ok",
-                source="kas_agent_projection",
-                resources=(
-                    f"{names} projected without auto-approve "
-                    f"(governance ceiling) for agent {agent_id or '?'}; "
-                    "calls go through the approval gate"
-                ),
-            )
-        except Exception:  # noqa: BLE001 — audit must not break projection
-            logger.debug("SEL audit unavailable for KAS projection withhold", exc_info=True)
+        _audit_permission_decision(names, "withheld", "governance ceiling", agent_id)
     return permitted
+
+
+#: Per outcome, the security-event operation it is recorded under. A withhold keeps
+#: the name its three sibling writers already use, so the trail reads as one class of
+#: event however the decision was reached; a relay is its own operation, because it is
+#: the opposite decision and must never be counted as a withhold.
+_PERMISSION_DECISION_OPERATIONS = {
+    "withheld": "mcp_auto_approve_withheld",
+    "relayed": "kas_authored_permissions_relayed",
+}
+
+
+def _audit_permission_decision(refs: str, outcome: str, reason: str, agent_id: str) -> None:
+    """Record one projection-time auto-approve decision in the security event log.
+
+    A withhold is a permission DECISION, and the other writers that reach this
+    state — app-agent materialization, the host shared-MCP sync, doctor's auto-fix
+    — all record it. Projection is the fourth, and the only one whose input is a
+    file it did not write, so a stale grant is likelier to be withheld HERE than
+    anywhere else; leaving it at a log line would make the most likely case the one
+    with no audit trail.
+
+    Both projection inputs reach it: the ``allowedTools`` derivation and the
+    author's own ``permissions`` block, whose withheld ``allow`` is the same
+    decision about the same ceiling. One writer so the two cannot drift into
+    recording it differently, and it is passed to the merge rather than imported
+    there because :mod:`kiro_crew.acp.kas_permissions` is a leaf.
+
+    A RELAY is recorded as well as a withhold. The trail exists so a permission state
+    can be reconstructed from it, and "this grant was auto-approved because the author
+    asked for it and the ceiling allowed it" is the half a log of refusals alone cannot
+    answer.
+
+    Never fails the projection on an audit error: the decision itself has already
+    happened, and for a withhold that is the safe direction.
+    """
+    relayed = outcome == "relayed"
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation=_PERMISSION_DECISION_OPERATIONS.get(outcome, "mcp_auto_approve_withheld"),
+            outcome="ok",
+            source="kas_agent_projection",
+            resources=(
+                f"{refs} projected with auto-approve ({reason}) " f"for agent {agent_id or '?'}"
+                if relayed
+                else (
+                    f"{refs} projected without auto-approve "
+                    f"({reason}) for agent {agent_id or '?'}; "
+                    "calls go through the approval gate"
+                )
+            ),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break projection
+        logger.debug("SEL audit unavailable for KAS projection decision", exc_info=True)
 
 
 def _registry_governed() -> bool:
@@ -700,19 +747,30 @@ def to_client_custom_agent(
         merged.extend(g for g in _MEMBER_DASHBOARD_GRANTS if g not in merged)
         allowed_tools_input = merged
 
-    # Derived from `allowedTools` and from nothing else. A `permissions` block
-    # sitting in the spec is deliberately NOT forwarded, even though it is already
-    # in KAS's vocabulary and forwarding it would be one line: it has not passed
-    # Crew's governance ceiling, so projecting one would hand any editor of the
-    # file a grant the ceiling never saw — and an auto-approved call never reaches
-    # Crew's permission callback, so the deny-list and the audit trail are skipped
-    # with it. One governed input, one derivation.
-    #
-    # A hand-written block is not ignored, just not Crew's to relay: it lives in
-    # the profile on disk, which the backend reads itself when Crew is not
-    # injecting an agent over the wire.
+    # Two inputs, one of them governed twice. The derivation is `allowedTools`
+    # and nothing else; the spec's own `permissions` block is then folded in by
+    # `merge_user_permissions`, which intersects it with the same ceiling instead
+    # of adding to it — a user `deny`/`ask` travels as written, a user `allow`
+    # only where the ceiling permits that capability and that resource, and the
+    # shell and filesystem families never travel as an allow. Dropping the block
+    # instead is not the neutral choice it looks like: a spec that authors
+    # `permissions` and no `allowedTools` reaches KAS with the field absent, and
+    # absent resolves every request to `ask`, so the author's policy becomes a
+    # prompt for each of the calls it described.
     permissions = allowed_tools_to_permissions(
         _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
+    )
+    permissions = merge_user_permissions(
+        permissions,
+        spec.get("permissions"),
+        ceiling_permits=may_skip_gate_now,
+        audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
+            refs, outcome, reason, agent_id
+        ),
+        # The list's PRESENCE, not its content: an empty list is still the operator
+        # saying "auto-approve nothing", and a block must not answer that for them.
+        allowlist_present=isinstance(allowed_tools_input, list),
+        agent_id=agent_id,
     )
     if permissions:
         out["permissions"] = permissions
@@ -727,9 +785,37 @@ def to_client_custom_agent(
         if entries:
             out["excludedTools"] = entries
 
-    include_mcp = spec.get("includeMcpJson")
-    if isinstance(include_mcp, bool):
-        out["includeMcpJson"] = include_mcp
+    welcome = spec_welcome_message(spec)
+    if welcome:
+        out["welcomeMessage"] = welcome
+
+    # Both flags widen the agent's VISIBLE tool set; neither auto-approves
+    # anything, so they do not cross the governance ceiling that filters
+    # ``allowedTools``. A tool they reveal is still resolved by ``permissions``,
+    # and this projection derives that from ``allowedTools`` alone -- so a
+    # revealed tool with no rule resolves to ``ask``.
+    #
+    # Forwarded ONLY when the spec states a bool, and no default is synthesized
+    # for an absent one. That is a decision, not an omission, because "absent"
+    # does not mean the same thing on the two hosts Crew writes for: kiro-cli
+    # reads an absent ``includeMcpJson`` as TRUE (``agent_capabilities``
+    # ``spec.get("includeMcpJson", True)``), while KAS's own disk schema defaults
+    # it to FALSE (``services/custom-agents/types.ts``). Sending a default would
+    # therefore be Crew inventing one host's answer and shipping it to the other.
+    #
+    # Nothing is lost by staying silent: the wire schema has no default, and KAS's
+    # consumer resolves an absent flag to false itself (``tools/tool-filter.ts``
+    # destructures ``includeMcpJson = false, includePowers = false``), which is
+    # already KAS's disk default. An absent flag thus reaches the same outcome as
+    # the file would have on KAS, with no guess from this side.
+    #
+    # A non-bool is dropped rather than coerced: ``z.boolean()`` rejects it, and a
+    # client agent that fails the wire schema is dropped WHOLE, costing the
+    # session its injected agent.
+    for flag in ("includeMcpJson", "includePowers"):
+        value = spec.get(flag)
+        if isinstance(value, bool):
+            out[flag] = value
 
     resources = spec.get("resources")
     if isinstance(resources, list):

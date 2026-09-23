@@ -254,14 +254,29 @@ def register_instance(
     profile: str = "",
     region: str = "",
     remote_port: int = DEFAULT_REMOTE_DASHBOARD_PORT,
+    connection_method: str = "ssm",
+    provisioner_id: str = BUILTIN_PROVISIONER_ID,
 ) -> Optional[str]:
     """Register the box in the Instances registry for the /instances dashboard.
 
-    Registers with the **native SSM transport**: ``connection_method="ssm"`` and
-    the EC2 instance id as ``ssm_target`` (plus the launcher's ``profile`` /
-    ``region``). The dashboard then tunnels, refreshes tokens, and self-heals the
-    box over AWS SSM Session Manager — no SSH key, no inbound port, and no
-    hand-edited ``~/.ssh/config``.
+    Registers with an **SSM-transport method**: ``connection_method`` (``"ssm"``,
+    the default, or ``"fargate"``) and *instance_id* as ``ssm_target`` (plus the
+    launcher's ``profile`` / ``region``). The dashboard then tunnels, refreshes
+    tokens, and self-heals the box over AWS SSM Session Manager — no SSH key, no
+    inbound port, and no hand-edited ``~/.ssh/config``.
+
+    *instance_id* is whatever the chosen method addresses: an EC2 instance id for
+    ``"ssm"``, an ECS task target (``ecs:<cluster>_<task-id>_<runtime-id>``) for
+    ``"fargate"``. It is the registry's own ``ssm_target`` either way, which is
+    why one parameter carries both and why the idempotency below matches on it.
+
+    *provisioner_id* is the lane that created the box, stored on the record so the
+    dashboard resolves the right engine and lifecycle guidance for it. It is a
+    separate parameter from *connection_method* because the two answer different
+    questions -- who made this box, and how is it reached -- and the Fargate lane
+    is the case where they disagree with the defaults: an ECS task is reached over
+    an SSM transport but is not an EC2 instance, so a record that took the default
+    here would be labelled and acted on as one.
 
     Best-effort: returns the registered instance id, or None if the Instances
     feature isn't available. Idempotent per box: a re-launch updates the prior
@@ -285,22 +300,22 @@ def register_instance(
             if instance_id in (existing.ssm_target, existing.ssh_host):
                 reg.update(
                     existing.id,
-                    connection_method="ssm",
+                    connection_method=connection_method,
                     ssm_target=instance_id,
                     aws_profile=profile,
                     aws_region=region,
                     remote_port=remote_port,
-                    provisioner_id=BUILTIN_PROVISIONER_ID,
+                    provisioner_id=provisioner_id,
                 )
                 return existing.id
         inst = reg.add(
             name=name,
-            connection_method="ssm",
+            connection_method=connection_method,
             ssm_target=instance_id,
             aws_profile=profile,
             aws_region=region,
             remote_port=remote_port,
-            provisioner_id=BUILTIN_PROVISIONER_ID,
+            provisioner_id=provisioner_id,
         )
         return inst.id
     except Exception as exc:  # pragma: no cover - non-fatal
@@ -379,6 +394,75 @@ def unregister_instance(instance_id_or_name: str) -> bool:
     except Exception as exc:  # pragma: no cover
         logger.info("could not unregister instance: %s", exc)
     return False
+
+
+#: What :func:`unregister_ecs_task` did. A bool cannot carry this: "there was no
+#: row" and "the row could not be removed" are both a falsy answer, and a caller
+#: that reports a teardown as complete has to tell them apart -- the first means
+#: nothing is left behind, the second means something is and nobody knows it.
+UNREGISTER_REMOVED = "removed"
+UNREGISTER_ABSENT = "absent"
+UNREGISTER_FAILED = "failed"
+
+
+def unregister_ecs_task(cluster: str, task_id: str) -> str:
+    """Remove the Instances record for one ECS task, by cluster and task id.
+
+    Answers :data:`UNREGISTER_REMOVED`, :data:`UNREGISTER_ABSENT` or
+    :data:`UNREGISTER_FAILED`.
+
+    :func:`unregister_instance` matches a needle against a record's whole
+    ``ssm_target``, which the Fargate lane's caller cannot supply: that target is
+    ``ecs:<cluster>_<task-id>_<runtime-id>`` and a teardown holds the task ARN,
+    which carries the cluster and the id but never the runtime id. So the record
+    is found by reading each ECS target back through :func:`split_ecs_target` and
+    comparing the two parts that identify the task.
+
+    Splitting with the registry's own reader rather than matching a
+    ``f"ecs:{cluster}_{task_id}_"`` prefix matters, because a cluster name may
+    contain an underscore: a prefix test would let one cluster's task remove a
+    row belonging to a differently-named cluster whose target happens to start
+    with the same characters.
+
+    Never raises, like its neighbours, so a teardown unwinding a cancellation is
+    not itself interrupted -- but a failure is REPORTED rather than swallowed, so
+    the caller can withhold a confirmation it cannot stand behind.
+
+    EVERY matching row goes, not the first. Two rows can name one task under
+    distinct ids: the launcher's own writer cannot produce that pair -- it dedupes
+    on the exact target, the target embeds the crew container's fixed runtime id,
+    and a re-launch gets a new task id -- but a hand-added Remote crew row naming
+    the same task with a different runtime id can. Returning on the first match
+    would leave the other addressing a stopped task, with no sweep to prune it,
+    since a stopped task is not listed for teardown at all.
+    """
+    if not cluster or not task_id:
+        return UNREGISTER_ABSENT
+    try:
+        from kiro_crew.instances.registry import InstancesRegistry
+    except Exception:  # pragma: no cover - instances feature absent
+        return UNREGISTER_ABSENT
+    removed = False
+    failed = False
+    try:
+        reg = InstancesRegistry()
+        for inst in reg.list():
+            parts = split_ecs_target(inst.ssm_target or "")
+            if parts is None or parts[0] != cluster or parts[1] != task_id:
+                continue
+            if reg.remove(inst.id):
+                removed = True
+            else:
+                failed = True
+    except Exception as exc:
+        logger.info("could not unregister ECS task %s/%s: %s", cluster, task_id, exc)
+        failed = True
+    # A failure outranks a removal: the caller uses this to decide whether it may
+    # still claim nothing of ours remains, and one row left behind is enough that
+    # it may not.
+    if failed:
+        return UNREGISTER_FAILED
+    return UNREGISTER_REMOVED if removed else UNREGISTER_ABSENT
 
 
 def _safe_ttl(ttl: str) -> str:

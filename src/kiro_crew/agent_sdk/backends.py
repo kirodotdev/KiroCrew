@@ -875,6 +875,47 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # and ``AcpRuntime``'s create and resume paths, which codex and KAS take -- so the
 # operator's switch-off reaches a member session whichever one runs.
 #
+# goose is a member, and it holds the same two things opencode does:
+#
+#   * the per-session mount exists, on a RECORDED ROUND TRIP rather than on an
+#     advertisement -- ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``
+#     (goose 1.50.1) carries one ``session/new`` element shaped as
+#     ``acp.session_mcp`` emits, and the named child is asked ``initialize``,
+#     ``notifications/initialized``, ``tools/list`` and ``tools/call`` with the tool's
+#     own result coming back. So the element is MOUNTED and its tools are REACHABLE,
+#     not merely accepted. The harness reads no agent file of Crew's, so that array is
+#     the ONLY channel any tool set reaches it on;
+#   * the session is GATED -- its routing is ``VERIFIED_SEEDED_SETTINGS``, one of the
+#     three mechanisms in ``tool_gate.ENFORCED_ROUTINGS``. The asking mode is seeded on
+#     the environment and READ BACK off the ``session/new`` response before the first
+#     prompt, so a session that cannot establish the asking posture is REFUSED rather
+#     than run.
+#
+# H6 again: opencode's membership establishes nothing here, so both facts are held for
+# THIS harness. The mount asks for no owned permission file, and must not: the client's
+# fallback answers for an UNENFORCED routing alone (``tool_gate.is_enforced`` is true for
+# this one), and ``providers/mirrors/goose.py`` documents ``permission_surface_owned`` as
+# accepted-and-ignored for that same reason -- the flag stands in for a read-back this
+# harness performs, and no goose session owns a ``settings.local.json`` to satisfy it
+# with.
+#
+# One thing is goose's ALONE, and it is why this membership carries a test of its own:
+# goose is the only member of ``ACP_BACKENDS_META_IDENTITY``, so it is the only member
+# whose every tool approval runs ``AcpClient._refuse_identity_drift``. That refusal
+# judges a call's trusted server name against the names Crew PLACED on this session's
+# array plus the harness's own builtin extension -- and the dashboard server is neither
+# a builtin nor named by the agent template. It passes because both halves read the
+# SAME array: the mount is appended inside ``_resolve_session_mcp_servers``, whose
+# result is the cache ``_foreign_mcp_identity`` enumerates, so a server this session
+# mounted is a placed server by construction. The identity goose reports for it is the
+# element's own name (``_meta.goose.toolCall.extensionName``, the field the mount
+# fixture pins for ``crew-probe``), so a dispatch call arrives as a placed server
+# rather than as a drifted one.
+#
+# The per-tool rule binds here for opencode's reason: this harness's declared
+# ``registry.PerToolDeny`` is ``WHOLE_SERVER``, so narrowing a dashboard tool withholds
+# the whole mount and the thread runs as plain chat.
+#
 # pi is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: the array is
 # accepted and never forwarded to the agent, so a member dispatch mounted through it
 # would be inert.
@@ -913,6 +954,7 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
     }
 )
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 
@@ -144,8 +144,17 @@ class SlotProjection:
         resolve_effective_agent: Callable[[str, str | None], str],
         budget_source_links: Callable[[list[dict]], list[dict]],
         project_source_links: Callable[[list[dict], bool], list[dict]],
+        coordinator_pending: Sequence[dict] = (),
     ) -> dict:
-        """Serialize the ordered public slot summary without owning slot state."""
+        """Serialize the ordered public slot summary without owning slot state.
+
+        ``coordinator_pending`` is the list of live ``ApprovalCoordinator``
+        records whose ``slot`` is this slot -- a sub-agent spawn gate or a tool
+        approval raised inside a running sub-agent. Their futures live on the
+        state-level registry, not on ``slot._approval_futures``, so without this
+        input the slot reads as idle while its owner is parked on an approval.
+        Oldest first; the projection reads only the first one for the card.
+        """
         last_ts = slot.messages[-1].get("ts", "") if slot.messages else ""
         last_msg = ""
         has_options = False
@@ -186,7 +195,8 @@ class SlotProjection:
             if found_conv and last_msg and last_activity_ts:
                 break
 
-        pending_approval = any(not future.done() for future in slot._approval_futures.values())
+        slot_pending = any(not future.done() for future in slot._approval_futures.values())
+        pending_approval = slot_pending or bool(coordinator_pending)
         last_turn_ts = last_ts
         if slot.turn_running:
             prompt_ts = next(
@@ -213,7 +223,10 @@ class SlotProjection:
         interrupted = not slot.turn_running and is_turn_interrupted(slot.messages)
 
         pending_approval_info: dict[str, str] | None = None
-        if pending_approval:
+        if slot_pending:
+            # The transcript row is consulted only for a SLOT-registry future:
+            # a coordinator approval writes no row, and a stale unresolved row
+            # from an earlier turn must not describe it.
             for message in reversed(slot.messages):
                 if message.get("role") != "permission":
                     continue
@@ -227,6 +240,19 @@ class SlotProjection:
                     "request_id": redact(meta.get("approval_id", meta.get("request_id", ""))),
                 }
                 break
+        if pending_approval_info is None and coordinator_pending:
+            # No unresolved permission row supplied the card: the pending
+            # approval is a coordinator one, whose record never reaches the
+            # transcript. Its fields were redacted at registration; the redact
+            # here keeps this branch on the same wire contract as the row above.
+            record = coordinator_pending[0]
+            approval_id = str(record.get("id") or "")
+            pending_approval_info = {
+                "tool": redact(str(record.get("tool") or "")),
+                "tool_input": redact(str(record.get("tool_input") or "")),
+                "tool_kind": "spawn" if approval_id.startswith("spawn:") else "",
+                "request_id": redact(approval_id),
+            }
 
         return {
             "key": slot.key,

@@ -750,6 +750,7 @@
           "approve": "स्वीकृत करो",
           "approve_is_unavailable_because_this_base_branch_": "स्वीकृति उपलब्ध नहीं है: इस पुल रिक्वेस्ट की बेस ब्रांच नए कमिट आने पर स्वीकृतियाँ रद्द नहीं करती (या यहाँ से उसकी प्रोटेक्शन पढ़ी नहीं जा सकती)। इसके बिना स्वीकृति उस कमिट से ज़्यादा देर टिक सकती है जिसकी समीक्षा हुई थी। GitHub पर स्वीकृत करो।",
           "approve_is_unavailable_while_auto_merge_is_armed": "ऑटो-मर्ज चालू रहने तक स्वीकृति उपलब्ध नहीं है: स्वीकृति इस पुल रिक्वेस्ट को head जाँच द्वारा वापस लिए जाने से पहले ही मर्ज कर सकती है। ऑटो-मर्ज बंद करो, या GitHub पर स्वीकृत करो।",
+          "ask_agent_about_this_failure": "इस त्रुटि के बारे में एजेंट से पूछें",
           "cancel": "रद्द करें",
           "confirm_approve": "इस पुल रिक्वेस्ट को स्वीकृत करें?",
           "confirm_request_changes": "बदलाव का अनुरोध करते हुए यह समीक्षा प्रकाशित करें?",
@@ -5959,6 +5960,7 @@
       "approve_all": "सभी को मंज़ूरी दें",
       "approve_sub_agent": "सब-एजेंट को मंज़ूरी दो: {{name}}",
       "attach_files": "फ़ाइलें अटैच करें",
+      "cancel_upload": "अपलोड रद्द करो",
       "editor_unavailable_standard_input": "उन्नत संपादक लोड नहीं हो सका, इसलिए मानक इनपुट सक्रिय है। तुम्हारा ड्राफ़्ट अपरिवर्तित है।",
       "branch": "ब्रांच: {{branch}}",
       "click_again_to_force_stop": "ज़बरदस्ती रोकने के लिए फिर क्लिक करें",
@@ -7420,8 +7422,6 @@
       "no_commits_were_returned": "कोई कमिट नहीं लौटाया गया।",
       "no_description_was_provided": "कोई विवरण नहीं दिया गया।",
       "open_pull_request": "पुल रिक्वेस्ट खोलें",
-      "open_slack_settings": "Slack सेटिंग खोलें",
-      "owner_not_configured_guidance": "इस कार्रवाई के लिए एक कॉन्फ़िगर किया गया स्वामी आवश्यक है, जिसे {{productName}} Slack member ID से पहचानता है। Settings → चैट प्लेटफ़ॉर्म → Slack में \"Owner Slack member ID\" सेट करें, गेटवे रीस्टार्ट करें, फिर दोबारा साइन इन करें।",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}} के लिए प्रोवाइडर के नतीजे अधूरे हो सकते हैं। पूरी सूची के लिए मर्ज रिक्वेस्ट खोलें।",
       "provider_results_may_be_partial_pull_request": "{{sections}} के लिए प्रोवाइडर के नतीजे अधूरे हो सकते हैं। पूरी सूची के लिए पुल रिक्वेस्ट खोलें।",
@@ -8193,7 +8193,8 @@
       "time_to_live": "जीवनकाल (TTL)",
       "views": "व्यू",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "काल्पनिक ट्रैफ़िक परिदृश्य — आप केवल वास्तविक उपयोग का भुगतान करते हैं ·",
-      "will_provision": "प्रोविज़न किया जाएगा"
+      "will_provision": "प्रोविज़न किया जाएगा",
+      "deployment_available_under_feature_previews": "डिप्लॉयमेंट सेटिंग्स → डेवलपर → फ़ीचर प्रीव्यू में उपलब्ध है।"
     },
     "webPreviewPanel": {
       "back": "पीछे",
@@ -8240,7 +8241,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "गेटवे इस पेज के लिए ब्राउज़र नहीं खोल सका।",
       "the_server_at": "इस पते पर चल रहा सर्वर:",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "यह दृश्य गेटवे होस्ट के लूपबैक पते पर दिया जाता है, और यह ब्राउज़र उससे कनेक्ट नहीं हो सका। अगर तुम डैशबोर्ड तक SSH टनल से पहुँचते हो, तो नीचे दी गई सेटिंग से दृश्य का पोर्ट तय करो और उस पोर्ट को भी फ़ॉरवर्ड करो।",
-      "this_chat_s_browser_session": "इस चैट का ब्राउज़र",
+      "opened_from_this_chat": "इस चैट से खोला गया",
       "this_dashboard_is_served_over_https_so_the_brows": "यह डैशबोर्ड HTTPS पर सर्व होता है, इसलिए ब्राउज़र एम्बेड करने से रोक देता है — एक",
       "this_url_is_the_dashboard_s_own_server_which_ref": "यह URL डैशबोर्ड का ही सर्वर है, जो एम्बेड होने से इनकार करता है। इसके बजाय कोई dev-server URL डालें।",
       "web_preview": "वेब पूर्वावलोकन",
@@ -8723,6 +8724,18 @@
       "label": "बदलाव के लिए पुनः आरंभ ज़रूरी",
       "tooltip": "{{productName}} चलते समय यह सेटिंग बदली नहीं जा सकती। सहेजा गया मान बना रहता है और {{productName}} के अगले पुनः आरंभ पर लागू होगा (सेटिंग्स → परिचय, या वह टर्मिनल जहाँ से तुमने इसे चलाया)।",
       "schema_unavailable": "यह जाँच नहीं हो सकी कि इस सेटिंग के लिए पुनः आरंभ आवश्यक है या नहीं।"
+    },
+    "directDeploy": {
+      "deploy_via_agent": "एजेंट के ज़रिए डिप्लॉय करो",
+      "deploy_as_permanent": "स्थायी रूप से डिप्लॉय करो",
+      "ttl_permanent": "स्थायी (कोई समय-सीमा नहीं)",
+      "ttl_expires_in_hours": "{{hours}} घंटे में समाप्त",
+      "deploys_from_here_confirm_gated": "पुष्टि के बाद इसी कार्ड से डिप्लॉय होता है।",
+      "propagating_note": "पहली डिप्लॉय में हर जगह खुलने तक 5-15 मिनट लग सकते हैं।",
+      "deployed": "डिप्लॉय हो गया!",
+      "unexpected_response": "अनपेक्षित प्रतिक्रिया",
+      "deploy_failed": "डिप्लॉय विफल",
+      "stale_preview_retry": "जाँच के बाद ऐप बदल गया — फिर से कोशिश करें।"
     }
   },
   "hooks": {
@@ -9164,7 +9177,6 @@
       "deploy": "तैनात करें",
       "deploy_anyway": "फिर भी डिप्लॉय करें",
       "deploy_artifact": "{{name}} डिप्लॉय करें",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "तैनात करें, चुनी गई प्रोफ़ाइल के साथ artifact-deploy स्किल चलाने वाला एक नया चैट सेशन खोलता है।",
       "deploy_profile_for_slug": "{{slug}} के लिए तैनाती प्रोफ़ाइल",
       "deploy_recall_destroy_each_require_explicit_conf": "तैनात करें / वापस लें / नष्ट करें — हर एक के लिए स्पष्ट पुष्टि आवश्यक है\n              (कभी स्वतः स्वीकृत नहीं) और हर एक SEL ऑडिट इवेंट दर्ज करता है।",
       "deployments_count": "तैनातियाँ ({{count}})",
@@ -9278,7 +9290,16 @@
       "remove_profile_title": "प्रोफ़ाइल हटाएँ?",
       "remove_profile_button": "प्रोफ़ाइल हटाएँ",
       "retry": "फिर कोशिश करें",
-      "profile_errors_title": "कुछ प्रोफ़ाइल सूचीबद्ध नहीं हो सकीं"
+      "profile_errors_title": "कुछ प्रोफ़ाइल सूचीबद्ध नहीं हो सकीं",
+      "4_optional_install_auto_cleanup": "4. वैकल्पिक: ऑटो-क्लीनअप इंस्टॉल करो",
+      "auto_cleanup_explainer": "केवल उन डिप्लॉय के लिए ज़रूरी है जिन्हें स्वयं समाप्त होने देना है।",
+      "deploy_publishes_directly_from_this_page": "पुष्टि के बाद Deploy इसी पेज से प्रकाशित करता है।",
+      "deployments_read_live_from_tags": "यह सूची AWS रिसोर्स टैग से सीधे पढ़ी जाती है, इसलिए अभी की गई डिप्लॉय यहाँ दिखने में कुछ मिनट ले सकती है।",
+      "col_name": "नाम",
+      "col_status": "स्थिति",
+      "col_est_cost": "अनु. लागत",
+      "col_profile": "प्रोफ़ाइल",
+      "col_expiry": "समय-सीमा"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· रिमोट कॉपी में एक नया संस्करण उपलब्ध है",
@@ -11402,7 +11423,10 @@
         "decisions_api_key_remove": "की हटाओ",
         "decisions_api_key_remove_confirm": "की हटाना वापस नहीं लिया जा सकता — वॉल्ट कोई मान वापस नहीं देता, इसलिए तुम्हें नई चिपकानी पड़ेगी।",
         "decisions_api_key_remove_cancel": "रहने दो",
-        "decisions_api_key_delete": "की स्थायी रूप से मिटाओ"
+        "decisions_api_key_delete": "की स्थायी रूप से मिटाओ",
+        "artifact_deploy": "आर्टिफ़ैक्ट डिप्लॉय",
+        "artifact_deploy_desc": "किसी आर्टिफैक्ट को अपने ही AWS खाते में एक सार्वजनिक HTTPS URL पर प्रकाशित करें। डिफ़ॉल्ट रूप से बंद: हर डिप्लॉय से उस खाते में खर्च होता है और सामग्री खुले इंटरनेट पर परोसी जाती है।",
+        "open_artifact_deploy": "आर्टिफ़ैक्ट डिप्लॉय खोलो"
       },
       "kiroSignInCard": {
         "title": "Kiro साइन-इन",
@@ -12664,6 +12688,10 @@
         "cache_creation": "कैश निर्माण",
         "cache_read": "कैश रीड",
         "credits": "क्रेडिट",
+        "credits_used": "इस्तेमाल किए गए क्रेडिट",
+        "credits_used_compact": "इस्तेमाल किए गए क्रेडिट: {{credits}} · {{pct}}",
+        "credits_used_pct": "इस्तेमाल किए गए क्रेडिट (%)",
+        "credits_used_pct_title": "मौजूदा बिलिंग अवधि के प्लान भत्ते का हिस्सा। एक दिन 100% से ज़्यादा हो सकता है।",
         "daily_history": "दैनिक इतिहास",
         "daily_token_usage": "दैनिक टोकन उपयोग",
         "date": "दिनांक",

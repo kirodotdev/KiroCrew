@@ -24,6 +24,7 @@ from kiro_crew.crew_log import checkpoint as savepoints
 from kiro_crew.crew_log import lease
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import store
+from kiro_crew.projection import checkpoint as projection_checkpoint
 
 SESSION = "s-savepoint"
 GATEWAY = "gateway"
@@ -57,6 +58,33 @@ def _turn_items(turn: int) -> list[dict[str, Any]]:
                 "provider": "kiro",
                 "credits": 0.5,
                 "tokens": {"input": 100, "output": 20, "cache_read": 5, "cache_write": 1},
+            },
+        },
+    ]
+
+
+def _tool_pair(call_id: str, name: str = "fs_read") -> list[dict[str, Any]]:
+    """One tool call and its completion, so the ``tools`` fold gains a per-name row."""
+    return [
+        {
+            "type": "tool/called",
+            "data": {
+                "name": name,
+                "server": "builtin",
+                "kind": "read",
+                "call_id": call_id,
+                "turn": 3,
+            },
+        },
+        {
+            "type": "tool/completed",
+            "data": {
+                "name": name,
+                "server": "builtin",
+                "call_id": call_id,
+                "status": "ok",
+                "elapsed_ms": 7,
+                "turn": 3,
             },
         },
     ]
@@ -210,14 +238,67 @@ def _files(unit_id: str = SESSION) -> list[str]:
     return sorted(child.name for child in directory.iterdir()) if directory.is_dir() else []
 
 
+#: How this module's tests name a savepoint's fields, against where the kernel's
+#: envelope stores them. The envelope nests: the facts that must MATCH this log go in
+#: an ``identity`` block, the digest a later read re-checks goes in a ``witness``, and
+#: the seq the state stands at is the kernel's ``watermark``. ``v`` here is the FOLD's
+#: stored shape (``state_version``), which is what ``CHECKPOINT_VERSION`` names and
+#: what a build changing a fold has to move; the envelope's own ``v`` belongs to the
+#: kernel and no test here touches it.
+#:
+#: A field maps to SEVERAL routes when the envelope stores it more than once, and
+#: ``seq`` is the one that does: the watermark the state resumes at and the boundary
+#: the witness certifies are the same number, and a payload where they disagree is
+#: refused. A test setting ``seq`` means both, exactly as it did when there was one.
+_PAYLOAD_FIELDS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "v": (("state_version",),),
+    "fold": (("key",),),
+    "seq": (("watermark",), ("witness", "seq")),
+    "state": (("state",),),
+    "unit": (("identity", "unit"),),
+    "origin": (("identity", "origin"),),
+    "first_seq": (("identity", "first_seq"),),
+    "prefix_sha": (("witness", "prefix_sha"),),
+    "prefix_records": (("witness", "prefix_records"),),
+}
+
+
 def _payload(name: str, unit_id: str = SESSION) -> dict[str, Any]:
-    return json.loads(savepoints.checkpoint_path(lg.KIND_SESSION, unit_id, name).read_text())
+    """One savepoint's fields, named as :data:`_PAYLOAD_FIELDS` names them."""
+    raw = json.loads(savepoints.checkpoint_path(lg.KIND_SESSION, unit_id, name).read_text())
+    flat: dict[str, Any] = {}
+    for field, routes in _PAYLOAD_FIELDS.items():
+        cursor: Any = raw
+        for step in routes[0]:
+            if not isinstance(cursor, dict) or step not in cursor:
+                cursor = None
+                break
+            cursor = cursor[step]
+        else:
+            flat[field] = cursor
+    return flat
 
 
 def _write_payload(name: str, payload: dict[str, Any], unit_id: str = SESSION) -> None:
+    """*payload* written back into the envelope the kernel reads.
+
+    A field left OUT of *payload* is left out of the file, which is what lets a test
+    delete one and check that the savepoint is refused for want of it.
+    """
     path = savepoints.checkpoint_path(lg.KIND_SESSION, unit_id, name)
+    raw: dict[str, Any] = {"v": projection_checkpoint.PAYLOAD_VERSION}
+    for field, routes in _PAYLOAD_FIELDS.items():
+        if field not in payload:
+            continue
+        for route in routes:
+            cursor = raw
+            for step in route[:-1]:
+                cursor = cursor.setdefault(step, {})
+            cursor[route[-1]] = payload[field]
+    raw.setdefault("identity", {})
+    raw.setdefault("witness", {})
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps(raw), encoding="utf-8")
 
 
 def _cold_bundle(
@@ -419,6 +500,42 @@ def test_a_resumed_fold_equals_a_cold_fold(monkeypatch):
     assert seen == [saved_through + 1]
 
 
+def _canonical(projection: crew_log.Projection) -> str:
+    """One projection as canonical JSON, so two answers are compared as BYTES.
+
+    Comparing dicts lets an int and a float that are equal pass for each other, and a
+    resumed fold that turned a count into a float is exactly the kind of drift a
+    savepoint can introduce -- the state round-trips through JSON while a cold fold's
+    never leaves memory.
+    """
+    return json.dumps(projection.to_dict(), sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)
+def test_a_resumed_fold_is_byte_identical_to_a_cold_fold(name, monkeypatch):
+    """Per fold, one at a time: savepoint plus tail IS the whole-file answer.
+
+    :func:`test_a_resumed_fold_equals_a_cold_fold` asks this of the panel bundle
+    folded together. This asks it of each fold on its own, including ``class``, and
+    compares canonical JSON rather than dicts -- a fold whose state survives a JSON
+    round trip must come back as the same bytes, not merely as an equal value.
+
+    The read is asserted to have STARTED after the savepoint, because a cold fold
+    reaches the same value and would hide a savepoint that was silently rejected.
+    """
+    handle = _long_log()
+    crew_log.fold_session(SESSION, (name,))
+    saved_through = _payload(name)["seq"]
+    _grow(handle, 5, first=_LONG_TURNS + 1)
+
+    cold = _cold_bundle((name,))
+    seen = _spy_on_reads(monkeypatch)
+    resumed = crew_log.fold_session(SESSION, (name,))
+
+    assert _canonical(resumed.projection(name)) == _canonical(cold.projection(name))
+    assert seen == [saved_through + 1], "the read folded cold instead of resuming"
+
+
 def test_a_read_after_a_restart_resumes_from_disk(monkeypatch):
     """No bundle in hand is the case the in-memory cache cannot serve."""
     _long_log()
@@ -531,6 +648,131 @@ def test_a_savepoint_past_the_end_of_the_log_is_ignored():
 
     assert resumed.projection("status").value == cold.projection("status").value
     assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
+
+
+def test_a_savepoint_malformed_below_its_top_level_is_discarded_and_folded_cold():
+    """State the shape check admits and the FOLD cannot use retires itself.
+
+    ``_state_matches_fold`` reads a state's top level, so a nested tool row holding a
+    number where a list belongs is admitted: ``by_name`` is still a dict. The failure
+    lands inside the fold instead, on the first tool entry above the watermark, as a
+    ``TypeError`` -- and the projection routes answer only to ``CrewLogError``, so
+    without this the read raises and keeps raising, because the file that caused it is
+    still on disk.
+
+    Both halves are asserted, and the second is the one that matters: reaching the cold
+    answer once would be no fix at all if the next read tripped on the same file. The
+    file is not merely deleted -- the identity recheck sees it go, so the read retries
+    cold and writes a sound savepoint in its place, which is why the assertion is about
+    what the file now HOLDS rather than whether it exists.
+    """
+    handle = _long_log()
+    handle.append_many(_tool_pair("c-pre"), src=GATEWAY)
+    crew_log.fold_session(SESSION)
+    payload = _payload("tools")
+    row = payload["state"]["by_name"]["fs_read"]
+    assert isinstance(row["servers_over"], list), "the fixture's row is not the shape this breaks"
+    row["servers_over"] = 1
+    _write_payload("tools", payload)
+    # A tool entry ABOVE the savepoint, so the tail actually drives the tools fold.
+    handle.append_many(_tool_pair("c-post"), src=GATEWAY)
+
+    cold = _cold_bundle()
+    resumed = crew_log.fold_session(SESSION)
+
+    assert _rendered(resumed) == _rendered(cold)
+    # The malformed state is gone from disk, so the next read does not trip on it.
+    after = _payload("tools")["state"]["by_name"]["fs_read"]["servers_over"]
+    assert isinstance(after, list), f"the malformed row is still on disk: {after!r}"
+    assert _rendered(crew_log.fold_session(SESSION)) == _rendered(cold)
+
+
+def test_a_savepoint_carrying_no_witness_is_refused():
+    """No evidence about the bytes its state came from is worse than no savepoint.
+
+    Written against the raw envelope because that is what the rule is about: the
+    kernel loads a witness-less payload with an EMPTY one rather than refusing it,
+    which is what lets this module decide what an absent witness is worth. Here it is
+    worth a cold fold, and that decision is also why the envelope needed no version
+    of its own to retire the payloads written before the witness existed.
+
+    TWO checks refuse this payload independently -- :func:`_admits` finds no seq to
+    judge, and the seq it does not find cannot agree with the watermark -- so removing
+    either one alone leaves this test passing. That is deliberate depth rather than an
+    accident, and the test below pins the agreement check on its own.
+    """
+    _long_log()
+    crew_log.fold_session(SESSION)
+    path = savepoints.checkpoint_path(lg.KIND_SESSION, SESSION, "status")
+    raw = json.loads(path.read_text())
+    assert raw["witness"], "the fixture wrote no witness, so there is nothing to empty"
+    raw["witness"] = {}
+    raw["state"]["turns_completed"] = 99999
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    resumed = crew_log.fold_session(SESSION)
+
+    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
+
+
+def test_a_savepoint_that_disagrees_with_itself_about_its_seq_is_refused():
+    """The state resumes at one boundary and the witness certifies another.
+
+    Nothing here can say which is right, so the file is not a savepoint of this fold.
+    The witness seq is lowered rather than raised, and only it: every other condition
+    still holds -- the digest still matches the live prefix at the unchanged record
+    count, the log still reaches the watermark -- so the agreement check is the only
+    thing that can refuse it.
+    """
+    handle = _long_log()
+    crew_log.fold_session(SESSION)
+    path = savepoints.checkpoint_path(lg.KIND_SESSION, SESSION, "status")
+    raw = json.loads(path.read_text())
+    assert raw["witness"]["seq"] == raw["watermark"], "the fixture already disagrees"
+    raw["witness"]["seq"] = raw["watermark"] - 1
+    assert raw["witness"]["seq"] <= handle.last_seq, "the past-the-end guard must not refuse it"
+    raw["state"]["turns_completed"] = 99999
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    resumed = crew_log.fold_session(SESSION)
+
+    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
+
+
+def test_a_savepoint_from_before_the_kernel_is_discarded_rather_than_migrated():
+    """The old envelope is not read into the new one, and it does not linger either.
+
+    A payload written before the projection kernel owned this store states its fields
+    flat and carries no witness. It is refused -- migrating it would mean trusting
+    fields whose meaning this build never verified -- and because the file NAME is
+    unchanged, the cold fold's own write replaces it. A new path would have left it on
+    disk for a collector that does not exist.
+    """
+    handle = _long_log()
+    crew_log.fold_session(SESSION)
+    path = savepoints.checkpoint_path(lg.KIND_SESSION, SESSION, "status")
+    witness = savepoints.prefix_witness(handle, handle.last_seq)
+    assert witness is not None, "the fixture's own boundary did not resolve"
+    legacy = {
+        "v": savepoints.CHECKPOINT_VERSION,
+        "unit": SESSION,
+        "origin": crew_log.log_origin(handle),
+        "first_seq": 1,
+        "fold": "status",
+        "seq": handle.last_seq,
+        "prefix_sha": witness.sha,
+        "prefix_records": witness.records,
+        # Every other condition holds, so the envelope is the only thing that can
+        # reject it: a migration would serve this number.
+        "state": {**_payload("status")["state"], "turns_completed": 99999},
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    resumed = crew_log.fold_session(SESSION)
+
+    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
+    # Replaced in place, not orphaned beside a new name.
+    assert _payload("status")["state"]["turns_completed"] == _LONG_TURNS
 
 
 def test_a_savepoint_whose_front_moved_is_ignored():
@@ -1076,7 +1318,7 @@ def test_a_savepoint_that_exhausts_the_parser_stack_is_ignored_rather_than_raise
         def loads(*_args: Any, **_kwargs: Any) -> Any:
             raise RecursionError("maximum recursion depth exceeded while decoding")
 
-    monkeypatch.setattr(savepoints, "json", _ExhaustedParser)
+    monkeypatch.setattr(projection_checkpoint, "json", _ExhaustedParser)
 
     resumed = crew_log.fold_session(SESSION)
 
@@ -1114,7 +1356,7 @@ def test_malformed_object_fold_state_reaches_the_cold_answer():
 
 def test_a_fold_whose_state_is_over_the_cap_is_not_written(monkeypatch):
     _long_log()
-    monkeypatch.setattr(savepoints, "MAX_CHECKPOINT_BYTES", 64)
+    monkeypatch.setattr(projection_checkpoint, "MAX_PAYLOAD_BYTES", 64)
     bundle = crew_log.fold_session(SESSION)
 
     assert _files() == []

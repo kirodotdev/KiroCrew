@@ -240,21 +240,6 @@ describe('writing', () => {
     expect(await screen.findByText(/gh api said no/)).toBeTruthy()
   })
 
-  it('explains what to configure when resolve is refused for a missing owner', async () => {
-    // A standalone local install: reads pass, so the Resolve button renders live,
-    // and the backend refuses the mutation with the coded 403. The refusal must
-    // name the remedy and link the settings pane, not dead-end on "forbidden".
-    mockApi.resolvePullRequestThread.mockRejectedValue(Object.assign(
-      new Error('forbidden'),
-      { body: JSON.stringify({ error: 'forbidden', code: 'owner_not_configured' }) },
-    ))
-    mount(source([comment({ threadId: 'T1' })]))
-    await userEvent.click(screen.getByRole('button', { name: /Resolve/ }))
-    expect(await screen.findByText(/Set .Owner Slack member ID. in Settings/)).toBeTruthy()
-    const link = screen.getByRole('link', { name: /Slack settings/i })
-    expect(link.getAttribute('href')).toBe('/settings/channels/slack')
-  })
-
   it('keeps the draft when the post fails, so nothing typed is lost', async () => {
     mockApi.replyToPullRequestThread.mockRejectedValue(new Error('gh api said no'))
     mount(source([comment({ threadId: 'T1' })]))

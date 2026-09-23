@@ -1097,7 +1097,7 @@ class TestTheRouteAuthorizationMatrix:
                 assert b"diag_unavailable" in got.body, handler.__name__
 
     def test_a_diag_route_answers_rather_than_relaying_the_gap_once_its_module_lands(
-        self,
+        self, monkeypatch
     ) -> None:
         """The other half of the same contract: a present module is ANSWERED.
 
@@ -1107,22 +1107,54 @@ class TestTheRouteAuthorizationMatrix:
         """
         from kiro_crew.dashboard.handlers import debug as mod
 
+        def _stateless() -> dict[str, object]:
+            raise AssertionError(
+                "the processes route must read through scan_with_rates: bare scan keeps "
+                "no previous roster, so cpu_pct and runq_wait_pct can never be set"
+            )
+
+        class _Baseline:
+            """Stands in for procs.RateBaseline, which the route must own."""
+
+        handed: list[object] = []
+
+        def _rated(baseline: object) -> dict[str, object]:
+            handed.append(baseline)
+            return {"rows": [], "rated": True}
+
         procs = type(
             "Procs",
             (),
             {
-                "scan": staticmethod(lambda: {"rows": []}),
+                "scan": staticmethod(_stateless),
+                "RateBaseline": _Baseline,
+                "scan_with_rates": staticmethod(_rated),
                 "tree": staticmethod(lambda scanned, fmt, **kw: {"format": fmt, **scanned}),
             },
         )()
+        # The route caches its baseline in a module global; start from unbuilt so
+        # this test neither inherits another's instance nor leaks its own.
+        monkeypatch.setattr(mod, "_RATE_BASELINE", None)
         with patch.object(mod, "_diag_module", return_value=procs):
             got = self._run(
+                mod.api_debug_processes,
+                self._request("/api/debug/processes", self._state(self._slot())),
+            )
+            again = self._run(
                 mod.api_debug_processes,
                 self._request("/api/debug/processes", self._state(self._slot())),
             )
         assert got.status == 200, got.body
         assert b"diag_unavailable" not in got.body
         assert json.loads(got.body)["format"] == "tree"
+        assert json.loads(got.body)["rated"] is True
+        assert again.status == 200, again.body
+
+        # Two reads, one baseline. A fresh instance per read would leave every
+        # read a cold start, which is the defect this wiring exists to remove.
+        assert len(handed) == 2
+        assert isinstance(handed[0], _Baseline)
+        assert handed[0] is handed[1], "the route must reuse one baseline across reads"
 
     def test_a_dump_that_vanished_between_two_reads_is_a_404(self, monkeypatch) -> None:
         """A listing and a read are two moments, and retention runs between them.

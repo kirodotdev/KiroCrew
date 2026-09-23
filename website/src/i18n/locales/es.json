@@ -761,6 +761,7 @@
           "approve": "Aprobar",
           "approve_is_unavailable_because_this_base_branch_": "Aprobar no está disponible porque la rama base de este pull request no descarta las aprobaciones cuando se suben nuevos commits (o su protección no es legible desde aquí). Sin eso, una aprobación podría sobrevivir al commit que revisó. Aprueba en GitHub.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Aprobar no está disponible mientras la fusión automática está activada: una aprobación podría fusionar este pull request antes de que una comprobación del head pudiera retirarla. Desactiva la fusión automática o aprueba en GitHub.",
+          "ask_agent_about_this_failure": "Preguntar al agente sobre este error",
           "cancel": "Cancelar",
           "confirm_approve": "¿Aprobar esta solicitud de incorporación de cambios?",
           "confirm_request_changes": "¿Publicar esta revisión solicitando cambios?",
@@ -6053,6 +6054,7 @@
       "approve_all": "Aprobar todo",
       "approve_sub_agent": "Aprobar el subagente: {{name}}",
       "attach_files": "Adjuntar archivos",
+      "cancel_upload": "Cancelar la subida",
       "editor_unavailable_standard_input": "El editor mejorado no se pudo cargar, así que la entrada estándar está activa. Tu borrador no ha cambiado.",
       "branch": "Rama: {{branch}}",
       "click_again_to_force_stop": "Haz clic de nuevo para forzar la detención",
@@ -7529,8 +7531,6 @@
       "no_commits_were_returned": "No se devolvió ningún commit.",
       "no_description_was_provided": "No se proporcionó ninguna descripción.",
       "open_pull_request": "Abrir la pull request",
-      "open_slack_settings": "Abrir ajustes de Slack",
-      "owner_not_configured_guidance": "Esta acción necesita un propietario configurado, que {{productName}} identifica por el ID de miembro de Slack. Establece \"Owner Slack member ID\" en Ajustes → Plataformas de chat → Slack, reinicia el gateway y vuelve a iniciar sesión.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Los resultados del proveedor pueden estar incompletos en {{sections}}. Abre la merge request para ver el conjunto completo.",
       "provider_results_may_be_partial_pull_request": "Los resultados del proveedor pueden estar incompletos en {{sections}}. Abre la pull request para ver el conjunto completo.",
@@ -8306,7 +8306,8 @@
       "time_to_live": "Tiempo de vida",
       "views": "visitas",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "Escenarios hipotéticos de tráfico: solo pagas por el uso real ·",
-      "will_provision": "Se aprovisionará"
+      "will_provision": "Se aprovisionará",
+      "deployment_available_under_feature_previews": "El despliegue está disponible en Ajustes → Desarrollador → Vistas previas de funciones."
     },
     "webPreviewPanel": {
       "back": "Atrás",
@@ -8353,7 +8354,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "La pasarela no pudo abrir un navegador para esta página.",
       "the_server_at": "El servidor en",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vista se sirve en la dirección de bucle local del host de la pasarela, y este navegador no pudo conectarse a ella. Si llegas al panel a través de un túnel SSH, fija el puerto de la vista con el ajuste de abajo y reenvía también ese puerto.",
-      "this_chat_s_browser_session": "Navegador de este chat",
+      "opened_from_this_chat": "Abierto desde este chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Este panel se sirve por HTTPS, por lo que el navegador bloquea incrustar una página",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL es el propio servidor del panel, que no permite ser incrustado. Introduce en su lugar la URL de un servidor de desarrollo.",
       "web_preview": "Vista previa web",
@@ -8840,6 +8841,18 @@
       "label": "los cambios requieren reinicio",
       "tooltip": "Este ajuste no puede cambiar mientras {{productName}} se está ejecutando. El valor guardado se conserva y se aplica la próxima vez que {{productName}} se reinicie (Ajustes → Acerca de, o la terminal desde la que lo iniciaste).",
       "schema_unavailable": "No se pudo comprobar si este ajuste requiere reiniciar."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Implementar con el agente",
+      "deploy_as_permanent": "Implementar como permanente",
+      "ttl_permanent": "Permanente (sin caducidad)",
+      "ttl_expires_in_hours": "Caduca en {{hours}} horas",
+      "deploys_from_here_confirm_gated": "se implementa desde aquí: primero confirmas",
+      "propagating_note": "Un primer despliegue puede tardar 5-15 minutos en abrirse en todas partes.",
+      "deployed": "¡Desplegado!",
+      "unexpected_response": "Respuesta inesperada",
+      "deploy_failed": "Error al desplegar",
+      "stale_preview_retry": "La aplicación cambió desde la comprobación — inténtalo de nuevo."
     }
   },
   "hooks": {
@@ -9290,7 +9303,6 @@
       "deploy": "Desplegar",
       "deploy_anyway": "Desplegar de todos modos",
       "deploy_artifact": "Desplegar {{name}}",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "Desplegar abre una nueva sesión de chat que ejecuta la habilidad artifact-deploy con el perfil elegido.",
       "deploy_profile_for_slug": "Perfil de despliegue para {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Desplegar / Retirar / Destruir requieren cada uno una confirmación explícita\n              (nunca se aprueban automáticamente) y emiten un evento de auditoría SEL.",
       "deployments_count": "Despliegues ({{count}})",
@@ -9406,7 +9418,16 @@
       "remove_profile_title": "¿Quitar el perfil?",
       "remove_profile_button": "Quitar el perfil",
       "retry": "Reintentar",
-      "profile_errors_title": "No se pudieron listar algunos perfiles"
+      "profile_errors_title": "No se pudieron listar algunos perfiles",
+      "4_optional_install_auto_cleanup": "4. Opcional: instalar la limpieza automática",
+      "auto_cleanup_explainer": "Solo es necesaria para implementaciones que quieras que caduquen solas.",
+      "deploy_publishes_directly_from_this_page": "Deploy publica desde esta página tras tu confirmación.",
+      "deployments_read_live_from_tags": "Esta lista se lee en vivo de las etiquetas de recursos de AWS, asi que un despliegue recien hecho puede tardar un par de minutos en aparecer aqui.",
+      "col_name": "Nombre",
+      "col_status": "Estado",
+      "col_est_cost": "Coste est.",
+      "col_profile": "Perfil",
+      "col_expiry": "Caducidad"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· hay una versión más reciente en la copia remota",
@@ -11562,7 +11583,10 @@
         "decisions_api_key_remove": "Quitar la clave",
         "decisions_api_key_remove_confirm": "Quitar la clave no se puede deshacer: la bóveda no devuelve ningún valor, así que tendrías que pegar una nueva.",
         "decisions_api_key_remove_cancel": "Conservarla",
-        "decisions_api_key_delete": "Eliminar la clave"
+        "decisions_api_key_delete": "Eliminar la clave",
+        "artifact_deploy": "Despliegue de artefactos",
+        "artifact_deploy_desc": "Publica un artefacto en una URL HTTPS publica de tu propia cuenta de AWS. Desactivado por defecto: cada despliegue gasta dinero en tu cuenta y sirve el contenido en la internet abierta.",
+        "open_artifact_deploy": "Abrir Despliegue de artefactos"
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",
@@ -12837,6 +12861,10 @@
         "cache_creation": "Creación de caché",
         "cache_read": "Lectura de caché",
         "credits": "Créditos",
+        "credits_used": "Créditos usados",
+        "credits_used_compact": "Créditos usados: {{credits}} · {{pct}}",
+        "credits_used_pct": "Créditos usados (%)",
+        "credits_used_pct_title": "Parte de la asignación del plan del período de facturación actual. Un día puede superar el 100 %.",
         "daily_history": "Historial diario",
         "daily_token_usage": "Uso diario de tokens",
         "date": "Fecha",

@@ -760,11 +760,17 @@ def _request(
 ):
     """A request shaped like a real dashboard call, for the owner predicate.
 
-    ``_is_dashboard_owner`` requires ``request["app"]`` present-and-EMPTY and
-    the caller to equal ``state.owner_id``, so a bare ``MagicMock`` (whose
-    ``get`` returns truthy stubs) is refused rather than admitted -- the stub has
-    to answer those two keys precisely or the test lands on the gate instead of
-    its subject.
+    ``_is_dashboard_owner`` requires the ``app`` claim present-and-EMPTY and the
+    caller to equal ``state.owner_id``, so a bare ``MagicMock`` (whose ``get``
+    returns truthy stubs) is refused rather than admitted -- the stub has to
+    answer those two keys precisely or the test lands on the gate instead of its
+    subject.
+
+    A real ``web.Request`` is a mapping, so it answers a claim through ``get``,
+    ``in`` and ``[]`` alike; this stub answers all three from one dict for the
+    same reason. Stubbing only one spelling would make the gate's behaviour a
+    function of how it happens to be WRITTEN, so the next reader who swaps an
+    equivalent form fails a test that has nothing to say about their change.
 
     ``json_body`` is what ``await request.json()`` answers. Left unset, it raises
     the way aiohttp does for a body that is absent or not JSON -- so a case has to
@@ -774,6 +780,8 @@ def _request(
     req.path = "/api/acp-backends"
     store = {"app": app, "user": user}
     req.get = lambda key, default=None: store.get(key, default)
+    req.__contains__ = lambda _self, key: key in store
+    req.__getitem__ = lambda _self, key: store[key]
     state = MagicMock()
     state.owner_id = owner
     req.app = {"state": state}

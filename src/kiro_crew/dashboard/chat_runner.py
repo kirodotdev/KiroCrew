@@ -255,6 +255,7 @@ from kiro_crew.llm_helpers import (
     probe_fallback_restore,
     provider_active_model,
     provider_advertised_ids,
+    provider_fallback_active,
     provider_raw_model,
     record_interaction_event,
     resolve_substitute_set_model,
@@ -4308,6 +4309,69 @@ def _jev_preview_on(session_key: str) -> bool:
         return False
 
 
+_JEV_ROUTE_BASELINE_ATTR = "_jev_route_baseline"
+
+
+def _active_fallback(slot: Any, client: Any) -> tuple[bool, str]:
+    """``(a substitution serves this session, the model it substituted for)``.
+
+    Refusal record first -- it already folds a throttle primary in, so it names the
+    owner's model even under both -- then the SHARED throttle marker, which is the
+    only half a sibling alias can see, then that alias's own sticky copy.
+    """
+    refusal_primary = str(getattr(slot, "_refusal_fallback_primary", "") or "")
+    if refusal_primary:
+        return True, refusal_primary
+    if provider_fallback_active(client):
+        marker = getattr(client, TURN_FALLBACK_ATTR, None)
+        primary = str((marker or ("",))[0] or "")
+        return True, primary or str(getattr(slot, "_fallback_primary_model", "") or "")
+    if getattr(slot, "_active_fallback_model", ""):
+        return True, str(getattr(slot, "_fallback_primary_model", "") or "")
+    return False, ""
+
+
+def _jev_route_baseline(slot: Any, client: Any) -> tuple[str, str, int]:
+    """``(live model, pre-route baseline, pick epoch)`` for this turn's routing.
+
+    The BASELINE is the model the session runs with routing off, latched on the
+    epoch HOST (the wire session, which several slot aliases share) because the live
+    value is the previous turn's tier from the second routed turn on.
+
+    The record is ``(session id, model, pick epoch)`` and one equality invalidates
+    it: a moved epoch is an explicit pick (read with the restore probe's own default
+    of ``0``, so a first pick counts), a different id is a pooled host serving a new
+    session, no record is the first turn. While a substitution serves the session
+    the latch takes what it substituted FOR (:func:`_active_fallback`), and takes
+    nothing at all when that is unnameable. ``""`` is a real latch: the backend
+    named no model, so there is nothing to go back to.
+    """
+    host = pick_epoch_host(client)
+    epoch = getattr(host, "_explicit_pick_epoch", 0)
+    epoch = epoch if isinstance(epoch, int) else 0
+    sid = str(getattr(host, "_session_id", "") or getattr(host, "session_id", "") or "")
+    _sync_served_model(slot, client)
+    live_model = _crew_log_model(slot)
+    # A degraded model is not what this session runs when nothing has moved it.
+    _fallback_on, _fallback_primary = _active_fallback(slot, client)
+    latched = getattr(host, _JEV_ROUTE_BASELINE_ATTR, None)
+    if (
+        isinstance(latched, tuple)
+        and len(latched) == 3
+        and latched[0] == sid
+        and latched[2] == epoch
+    ):
+        return live_model, str(latched[1] or ""), epoch
+    baseline = _fallback_primary or live_model
+    if _fallback_on and not _fallback_primary:
+        # A fallback serves the session and nothing names what it left, so there is
+        # no record to take: latching the substitute is the defect this branch
+        # exists to avoid, and the next turn latches once the ladder is done.
+        return live_model, baseline, epoch
+    setattr(host, _JEV_ROUTE_BASELINE_ATTR, (sid, baseline, epoch))
+    return live_model, baseline, epoch
+
+
 async def _route_model_for_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4328,15 +4392,31 @@ async def _route_model_for_turn(
     An UNPINNED tier is not a refusal and is the shipped state: every tier of
     ``decisions.model_route`` is ``""`` until an owner pins one, because no model id
     may be hardcoded as a default. The answer is then recorded and published --
-    the strip reads "complex -> (unpinned)" -- and no switch is attempted, so an
-    owner can see which tier their turns land in before pinning anything.
+    the strip reads "complex -> (unpinned)" -- and the tier applies nothing.
 
-    The BASELINE recorded on the row is the model this turn would have used, i.e.
-    whatever the session is on as the turn starts. A routed turn is not reverted
-    afterwards -- the point runs again next turn and answers again -- so on a
-    session that has already been routed the baseline is the previous turn's
-    tier, not the pin. That is the honest reading of "what would this turn have
-    run on", and it is what a refusal keeps.
+    What it does NOT do is leave the session wherever an earlier turn's tier put
+    it, nor wherever a model substitution left it -- a throttle or refusal fallback
+    is undone by its own restore, so :func:`_active_fallback` decides what the
+    baseline names and whether a restore is attempted at all. A tier map is PARTIALLY pinned on the way to a full one -- every install
+    starts with all three unpinned -- so leaving the model alone lets the first
+    answered pinned tier capture the session for the rest of its life: a one-line
+    rename answered ``simple`` moves it to the cheap pin, and a redesign answered
+    ``complex`` is unpinned, so the owner's own model would never be reached again.
+    So an unpinned tier switches BACK to the model the session ran on before
+    routing first moved it (:func:`_jev_route_baseline`), which is what this turn
+    would have run on with routing off. The receipt still says the tier applied
+    nothing, because it did: ``model_chosen`` stays ``UNPINNED`` and the restore is
+    not Jev's pick. ``applied`` and ``model_used`` describe the switch the turn
+    ASKED FOR, so on such a row they describe the restore -- a restore that does not
+    take leaves the turn on the previous tier's model, and a row that omitted them
+    would be read as a turn that needed no switch.
+
+    The BASELINE recorded on the row is that same pre-route model, for every turn
+    of the session rather than only the first, and for every slot alias driving that
+    session rather than each alias for itself: "what would this turn have used" is a
+    question about the owner's configuration, and answering it with the previous
+    turn's tier puts the cheapest model on the dearest turn's receipt as its own
+    default. It is what a refusal keeps.
 
     The switch is taken under the SAME two locks the fallback swap and the restore
     probe hold (session lock, then pick lock, in that order), because it is the
@@ -4361,11 +4441,20 @@ async def _route_model_for_turn(
         # identity at the picker, and ``decide`` re-checks both switches anyway.
         if not await asyncio.to_thread(_jev_preview_on, session_key):
             return
+    # Read BEFORE the round trip and kept apart: ``_live_model`` is the session's
+    # model right now, which is what the re-pick guard below compares against, and
+    # ``_baseline`` is the model it ran on before routing, which is what the receipt
+    # records and what an unpinned tier goes back to. They are the same value on the
+    # first routed turn of a session and diverge from the second one on. Both come
+    # from one call because a sibling alias driving the same session makes this
+    # slot's own cache the older fact, and then neither value may be read from it.
+    # ``_epoch`` is that call's pick-epoch reading, re-read inside the locks below.
     try:
+        _live_model, _baseline, _epoch = _jev_route_baseline(slot, client)
         routed = await model_route.routed_model(
             message,
             session_key=session_key,
-            current_model=_crew_log_model(slot),
+            current_model=_baseline,
             advertised=provider_advertised_ids(client),
             history_source=_route_history_source(state, session_key),
         )
@@ -4376,14 +4465,36 @@ async def _route_model_for_turn(
         return
     if not routed:
         return
-    if not routed.get("model_chosen"):
-        # The answered tier is unpinned: nothing to switch, and the decision is
-        # still the owner's evidence for what to pin. Recorded and published on the
-        # same terms as an applied one, so the strip and the log describe the turn.
+    _chosen = str(routed.get("model_chosen") or "")
+    # The model this turn switches to: the tier's pin, or -- for an unpinned tier --
+    # the pre-route baseline the session has since drifted off. ``""`` is nothing to
+    # do: the tier is unpinned and the session is already on its own baseline, or
+    # the backend never named that baseline so there is no id to ask for. The
+    # decision is still the owner's evidence for what to pin, so it is recorded and
+    # published on the same terms as an applied one either way.
+    _restore_to = _baseline if _baseline and _baseline != _live_model else ""
+    if _active_fallback(slot, client)[0]:
+        # The model-fallback ladder holds this session, and the baseline is the
+        # primary it walked away from: switching onto it here would put the turn
+        # back on the model that had just failed. Putting the primary back is the
+        # restore probe's decision, taken when it has evidence the primary serves
+        # again. A PIN still applies -- an answered tier is the owner's instruction
+        # either way, which is what a routed turn over an active fallback already
+        # does.
+        _restore_to = ""
+    _target = _chosen or _restore_to
+    if not _target:
         await asyncio.to_thread(model_route.record_outcome, session_key, routed)
         return
     set_model_fn = resolve_substitute_set_model(client)
     if set_model_fn is None:
+        if not _chosen:
+            # Nothing was asked of the provider anyway: the tier applied nothing, and
+            # a restore that cannot be expressed is the same no-op a refusal is. So
+            # this is the unpinned outcome row above, not a finding about a dropped
+            # tier -- there was no tier model to drop.
+            await asyncio.to_thread(model_route.record_outcome, session_key, routed)
+            return
         # No seam to switch through: the tier was answered and cannot be applied,
         # which is a finding rather than a quiet no-op -- the owner picked
         # Auto (Jev) and every turn would keep the same model with nothing said.
@@ -4405,11 +4516,20 @@ async def _route_model_for_turn(
             # the network round trip invalidates, and a pick made by hand is the
             # newer instruction. So both halves of the premise are re-read HERE,
             # inside the locks, where an in-flight pick has already completed: the
-            # flag any manual pick clears, and the model the answer's baseline names.
-            # Either having moved drops the answer -- re-asking would spend again on
-            # a turn whose model the owner just chose.
-            if not _jev_route_armed(slot) or _crew_log_model(slot) != str(
-                routed.get("baseline_model") or ""
+            # flag any manual pick clears, the model the turn STARTED on, and the
+            # shared pick epoch. The model is the live value rather than the
+            # receipt's pre-route baseline -- those differ from the second routed
+            # turn on, and comparing the baseline would drop every turn after the
+            # first as a phantom re-pick. The epoch is what a pick through ANOTHER
+            # alias moves: it leaves this slot's own cache untouched, so without it
+            # a cross-alias pick landing inside the await is overwritten here. Any
+            # of the three having moved drops the answer -- re-asking would spend
+            # again on a turn whose model the owner just chose.
+            _epoch_now = getattr(pick_epoch_host(client), "_explicit_pick_epoch", 0)
+            if (
+                not _jev_route_armed(slot)
+                or _crew_log_model(slot) != _live_model
+                or (isinstance(_epoch_now, int) and _epoch_now != _epoch)
             ):
                 logger.debug(
                     "model.route: dropping the routed model for slot %s, the slot was "
@@ -4417,7 +4537,7 @@ async def _route_model_for_turn(
                     slot.key,
                 )
                 return
-            await set_model_fn(str(routed["model_chosen"]))
+            await set_model_fn(_target)
             _sync_served_model(slot, client)
             # A returning ``set_model`` is not proof of a switch: on a backend that
             # judges the model VALUE, the candidate ladder can be exhausted and the
@@ -4426,22 +4546,36 @@ async def _route_model_for_turn(
             # rather than assumed, and it records the model the turn RAN on.
             _used = _crew_log_model(slot)
             routed["model_used"] = _used
-            # Two ways a switch counts. The session reports the chosen id, or it
-            # reports something other than where the turn started -- the ladder's
-            # own fallback spelling, which is the pin under a name this build serves.
-            # Only staying put, on a model that was not the ask, is a failed switch.
-            routed["applied"] = _used == str(routed["model_chosen"]) or _used != str(
-                routed.get("baseline_model") or ""
-            )
+            # Two ways a switch counts. The session reports the id that was asked
+            # for, or it reports something other than where the turn started -- the
+            # ladder's own fallback spelling, which is the ask under a name this
+            # build serves. Only staying put, on a model that was not the ask, is a
+            # failed switch. Read against ``_target``, the model THIS turn asked
+            # for, so the pair describes a restore on the same terms as a pin: a
+            # restore that does not take leaves the turn on the previous tier's
+            # model, and a reader takes an absent ``applied`` as applied, so a row
+            # silent about it would report that turn as healthy.
+            routed["applied"] = _used == _target or _used != _live_model
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.warning(
             "model.route: set_model(%r) failed for slot %s (%s); keeping the current model",
-            routed.get("model_chosen"),
+            _target,
             slot.key,
             type(exc).__name__,
         )
+        if not _chosen:
+            # A failed RESTORE, not a failed apply: the tier is unpinned, so an error
+            # row would name a tier that was never switched to and the strip would
+            # report a dropped answer. It is still a switch that did not take, and
+            # the row says which model the turn ran on instead -- an absent
+            # ``applied`` reads as applied, so staying silent here would publish a
+            # healthy receipt for a turn left on the previous tier's model.
+            routed["model_used"] = _crew_log_model(slot)
+            routed["applied"] = False
+            await asyncio.to_thread(model_route.record_outcome, session_key, routed)
+            return
         await asyncio.to_thread(
             model_route.record_error,
             session_key,

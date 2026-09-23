@@ -475,6 +475,7 @@
           "approve": "Approve",
           "approve_is_unavailable_because_this_base_branch_": "Approve is unavailable because this pull request's base branch does not dismiss approvals when new commits are pushed (or its protection is not readable from here). Without that, an approval could outlive the commit it reviewed. Approve on GitHub instead.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Approve is unavailable while auto-merge is armed: an approval could merge this pull request before a stale-head check could take it back. Disarm auto-merge, or approve on GitHub.",
+          "ask_agent_about_this_failure": "Ask the agent about this failure",
           "cancel": "Cancel",
           "confirm_approve": "Approve this pull request?",
           "confirm_request_changes": "Publish this review requesting changes?",
@@ -5373,7 +5374,8 @@
       "time_to_live": "Time to live",
       "views": "views",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "What-if traffic scenarios — you pay only for actual usage ·",
-      "will_provision": "Will provision"
+      "will_provision": "Will provision",
+      "deployment_available_under_feature_previews": "Deployment is available under Settings → Developer → Feature Previews."
     },
     "webPreviewPanel": {
       "annotate": "Annotate",
@@ -5590,6 +5592,14 @@
       "confirm_discard": "Discard drawing",
       "already_attached": "Attached — edit the canvas to sketch again",
       "load_failed": "Couldn't load the sketch pad — check your connection and reload the page"
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Deploy via agent",
+      "deploy_as_permanent": "Deploy as permanent",
+      "ttl_permanent": "Permanent (no expiry)",
+      "ttl_expires_in_hours": "Expires in {{hours}} hours",
+      "deploys_from_here_confirm_gated": "Deploys from this card after you confirm.",
+      "propagating_note": "A first deploy can take 5-15 minutes before it opens everywhere."
     }
   },
   "hooks": {
@@ -5800,7 +5810,6 @@
       "copy_boundary_policy": "Copy boundary policy",
       "copy_policy": "Copy policy",
       "deploy": "Deploy",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "Deploy opens a new chat session that runs the artifact-deploy skill with the chosen profile.",
       "deploy_profile_for_slug": "Deploy profile for {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Deploy / Recall / Destroy each require explicit confirmation\n              (never auto-approved) and emit a SEL audit event.",
       "destroy": "Destroy",
@@ -5883,7 +5892,11 @@
       "your_credentials_never_touch_kirocrew": "Your credentials never touch {{productName}}.",
       "your_host_not_your_laptop_artifact_deploy_shells": "(your host), not your laptop — Artifact Deploy shells to",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "4_optional_install_auto_cleanup": "4. Optional: install auto-cleanup",
+      "auto_cleanup_explainer": "Only needed for deploys you want to expire on their own.",
+      "deploy_publishes_directly_from_this_page": "Deploy publishes from this page after you confirm.",
+      "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
@@ -6804,7 +6817,10 @@
         "open_webhooks": "Open Webhooks",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "Remote crew sessions",
-        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
+        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished.",
+        "artifact_deploy": "Artifact Deploy",
+        "artifact_deploy_desc": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
+        "open_artifact_deploy": "Open Artifact Deploy"
       }
     },
     "developerPage": {
@@ -7646,6 +7662,10 @@
         "billing": "Billing",
         "cache_creation": "Cache creation",
         "cache_read": "Cache read",
+        "credits_used": "Credits used",
+        "credits_used_compact": "Credits used: {{credits}} · {{pct}}",
+        "credits_used_pct": "Credits used (%)",
+        "credits_used_pct_title": "Share of the current billing period's plan allowance. A day can exceed 100%.",
         "daily_history": "Daily History",
         "daily_token_usage": "Daily Token Usage",
         "date": "Date",

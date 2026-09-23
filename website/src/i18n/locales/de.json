@@ -750,6 +750,7 @@
           "approve": "Genehmigen",
           "approve_is_unavailable_because_this_base_branch_": "Genehmigen ist nicht verfügbar, weil der Ziel-Branch dieses Pull Requests Genehmigungen bei neuen Commits nicht zurücknimmt (oder sein Schutz von hier nicht lesbar ist). Andernfalls könnte eine Genehmigung den geprüften Commit überdauern. Genehmigen Sie stattdessen auf GitHub.",
           "approve_is_unavailable_while_auto_merge_is_armed": "Genehmigen ist nicht verfügbar, solange Auto-Merge aktiv ist: Eine Genehmigung könnte diesen Pull Request zusammenführen, bevor eine Head-Prüfung sie zurücknehmen kann. Deaktivieren Sie Auto-Merge oder genehmigen Sie auf GitHub.",
+          "ask_agent_about_this_failure": "Den Agenten zu diesem Fehler fragen",
           "cancel": "Abbrechen",
           "confirm_approve": "Diesen Pull Request genehmigen?",
           "confirm_request_changes": "Diese Überprüfung mit Änderungswunsch veröffentlichen?",
@@ -5959,6 +5960,7 @@
       "approve_all": "Alle genehmigen",
       "approve_sub_agent": "Subagent genehmigen: {{name}}",
       "attach_files": "Dateien anhängen",
+      "cancel_upload": "Upload abbrechen",
       "editor_unavailable_standard_input": "Der erweiterte Editor konnte nicht geladen werden, daher ist die Standardeingabe aktiv. Ihr Entwurf bleibt unverändert.",
       "branch": "Branch: {{branch}}",
       "click_again_to_force_stop": "Erneut klicken, um das Stoppen zu erzwingen",
@@ -7420,8 +7422,6 @@
       "no_commits_were_returned": "Es wurden keine Commits zurückgegeben.",
       "no_description_was_provided": "Es wurde keine Beschreibung angegeben.",
       "open_pull_request": "Pull Request öffnen",
-      "open_slack_settings": "Slack-Einstellungen öffnen",
-      "owner_not_configured_guidance": "Diese Aktion erfordert einen konfigurierten Besitzer, den {{productName}} über die Slack-Mitglieds-ID identifiziert. Legen Sie \"Owner Slack member ID\" unter Einstellungen → Chat-Plattformen → Slack fest, starten Sie das Gateway neu und melden Sie sich dann erneut an.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Die Anbieterergebnisse können für {{sections}} unvollständig sein. Öffne den Merge Request für den vollständigen Satz.",
       "provider_results_may_be_partial_pull_request": "Die Anbieterergebnisse können für {{sections}} unvollständig sein. Öffne den Pull Request für den vollständigen Satz.",
@@ -8193,7 +8193,8 @@
       "time_to_live": "Lebensdauer",
       "views": "Aufrufe",
       "what_if_traffic_scenarios_you_pay_only_for_actua": "Was-wäre-wenn-Verkehrsszenarien — Sie zahlen nur für die tatsächliche Nutzung ·",
-      "will_provision": "Wird bereitstellen"
+      "will_provision": "Wird bereitstellen",
+      "deployment_available_under_feature_previews": "Die Bereitstellung ist unter Einstellungen → Entwickler → Funktionsvorschauen verfügbar."
     },
     "webPreviewPanel": {
       "back": "Zurück",
@@ -8240,7 +8241,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Das Gateway konnte für diese Seite keinen Browser öffnen.",
       "the_server_at": "Der Server unter",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "Die Ansicht wird auf der Loopback-Adresse des Gateway-Hosts bereitgestellt, und dieser Browser konnte sich nicht mit ihr verbinden. Wenn du das Dashboard über einen SSH-Tunnel erreichst, lege den Port der Ansicht mit der Einstellung unten fest und leite auch diesen Port weiter.",
-      "this_chat_s_browser_session": "Browser dieses Chats",
+      "opened_from_this_chat": "Aus diesem Chat geöffnet",
       "this_dashboard_is_served_over_https_so_the_brows": "Dieses Dashboard wird über HTTPS bereitgestellt, daher blockiert der Browser das Einbetten eines",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Diese URL ist der Server des Dashboards selbst, der das Einbetten ablehnt. Geben Sie stattdessen die URL eines Dev-Servers ein.",
       "web_preview": "Web-Vorschau",
@@ -8723,6 +8724,18 @@
       "label": "Änderungen erfordern Neustart",
       "tooltip": "Diese Einstellung kann sich nicht ändern, während {{productName}} läuft. Der gespeicherte Wert bleibt erhalten und gilt beim nächsten Neustart von {{productName}} (Einstellungen → Über, oder das Terminal, aus dem du es gestartet hast).",
       "schema_unavailable": "Es konnte nicht geprüft werden, ob diese Einstellung einen Neustart braucht."
+    },
+    "directDeploy": {
+      "deploy_via_agent": "Über Agent bereitstellen",
+      "deploy_as_permanent": "Dauerhaft bereitstellen",
+      "ttl_permanent": "Dauerhaft (kein Ablauf)",
+      "ttl_expires_in_hours": "Läuft in {{hours}} Stunden ab",
+      "deploys_from_here_confirm_gated": "wird von hier bereitgestellt — du bestätigst zuerst",
+      "propagating_note": "Eine erste Bereitstellung kann 5-15 Minuten brauchen, bis er uberall offnet.",
+      "deployed": "Bereitgestellt!",
+      "unexpected_response": "Unerwartete Antwort",
+      "deploy_failed": "Bereitstellung fehlgeschlagen",
+      "stale_preview_retry": "Die App hat sich seit der Prüfung geändert — versuche es erneut."
     }
   },
   "hooks": {
@@ -9164,7 +9177,6 @@
       "deploy": "Bereitstellen",
       "deploy_anyway": "Trotzdem bereitstellen",
       "deploy_artifact": "{{name}} bereitstellen",
-      "deploy_opens_a_new_chat_session_that_runs_the_ar": "„Bereitstellen“ öffnet eine neue Chat-Sitzung, die den Skill „artifact-deploy“ mit dem gewählten Profil ausführt.",
       "deploy_profile_for_slug": "Bereitstellungsprofil für {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Bereitstellen / Zurückziehen / Zerstören erfordern jeweils eine ausdrückliche Bestätigung\n              (niemals automatisch genehmigt) und lösen ein SEL-Audit-Ereignis aus.",
       "deployments_count": "Bereitstellungen ({{count}})",
@@ -9278,7 +9290,16 @@
       "remove_profile_title": "Profil entfernen?",
       "remove_profile_button": "Profil entfernen",
       "retry": "Wiederholen",
-      "profile_errors_title": "Einige Profile konnten nicht aufgelistet werden"
+      "profile_errors_title": "Einige Profile konnten nicht aufgelistet werden",
+      "4_optional_install_auto_cleanup": "4. Optional: Auto-Aufräumen installieren",
+      "auto_cleanup_explainer": "Nur nötig für Bereitstellungen, die von selbst ablaufen sollen.",
+      "deploy_publishes_directly_from_this_page": "Deploy veröffentlicht nach deiner Bestätigung direkt von dieser Seite.",
+      "deployments_read_live_from_tags": "Diese Liste wird live aus AWS-Ressourcen-Tags gelesen, daher kann eine gerade erstellte Bereitstellung einige Minuten brauchen, bis sie hier erscheint.",
+      "col_name": "Name",
+      "col_status": "Status",
+      "col_est_cost": "Gesch. Kosten",
+      "col_profile": "Profil",
+      "col_expiry": "Ablauf"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· eine neuere Version ist in der Remote-Kopie verfügbar",
@@ -11402,7 +11423,10 @@
         "decisions_api_key_remove": "Schlüssel entfernen",
         "decisions_api_key_remove_confirm": "Das Entfernen lässt sich nicht rückgängig machen — der Tresor gibt keinen Wert zurück, du müsstest also einen neuen einfügen.",
         "decisions_api_key_remove_cancel": "Behalten",
-        "decisions_api_key_delete": "Schlüssel löschen"
+        "decisions_api_key_delete": "Schlüssel löschen",
+        "artifact_deploy": "Artifact Deploy",
+        "artifact_deploy_desc": "Veröffentlicht ein Artefakt unter einer öffentlichen HTTPS-URL in deinem eigenen AWS-Konto. Standardmäßig aus: jede Bereitstellung kostet Geld in deinem Konto und stellt die Inhalte im offenen Internet bereit.",
+        "open_artifact_deploy": "Artifact Deploy öffnen"
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",
@@ -12664,6 +12688,10 @@
         "cache_creation": "Cache-Erstellung",
         "cache_read": "Cache-Lesevorgang",
         "credits": "Credits",
+        "credits_used": "Verbrauchte Credits",
+        "credits_used_compact": "Verbrauchte Credits: {{credits}} · {{pct}}",
+        "credits_used_pct": "Verbrauchte Credits (%)",
+        "credits_used_pct_title": "Anteil am Plan-Kontingent des aktuellen Abrechnungszeitraums. Ein Tag kann 100 % überschreiten.",
         "daily_history": "Täglicher Verlauf",
         "daily_token_usage": "Täglicher Token-Verbrauch",
         "date": "Datum",

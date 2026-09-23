@@ -434,9 +434,15 @@ def _rebind_unbound_channel_slot(
     transcript's own metadata line, so an agent able to write that file can hand
     a lookalike the marker and the restore would arrive already claiming it. The
     rebind therefore also requires the runtime record that THIS process surfaced
-    the slot from a channel session it observed. Nothing is lost for a genuine
-    survivor of a restart: ``get_or_create_slot`` resolves a channel-named slot
-    against the session map as it rehydrates it.
+    the slot from a channel session it observed.
+
+    That scopes the heal to the observing process. A restored survivor is bound
+    by ``get_or_create_slot``'s own resolve as it rehydrates, but only when the
+    session map can answer for the stem right then; a slot rehydrated while it
+    still cannot carries no runtime record, so it stays one-way for the rest of
+    the process even once the stem resolves, and the next start retries that
+    resolve. The window is the deliberate price of provenance that a writable
+    marker cannot supply.
     """
     if not slot.channel_origin or slot.linked_session_key:
         return False

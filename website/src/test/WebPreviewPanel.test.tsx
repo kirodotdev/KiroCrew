@@ -1493,9 +1493,10 @@ describe('WebPreviewPanel — address bar launcher (non-native transport)', () =
     const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
     expect(frame.src).toBe('http://127.0.0.1:45613/')
     expect(screen.queryByText('Preview server not reachable')).toBeNull()
-    // The header names THIS chat's browser by the session name the framed sidebar
-    // lists (visible label, not a tooltip), and one line says how the next page is opened.
-    expect(screen.getByText("This chat's browser")).toBeInTheDocument()
+    // The header names what THIS chat launched, by the session name the framed
+    // sidebar lists (visible label, not a tooltip), and one line says how the next
+    // page is opened.
+    expect(screen.getByText('Opened from this chat')).toBeInTheDocument()
     expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
     // Narrow widths (320px): the label group is the row's only flexible item and
     // truncates, so the header's controls — the way back to the preview bar —
@@ -1504,8 +1505,29 @@ describe('WebPreviewPanel — address bar launcher (non-native transport)', () =
     expect(group.className).toMatch(/\bmin-w-0\b/)
     expect(group.className).toMatch(/\bflex-1\b/)
     expect(group.className).not.toMatch(/\bshrink-0\b/)
-    expect(screen.getByText("This chat's browser").className).toMatch(/\btruncate\b/)
+    expect(screen.getByText('Opened from this chat').className).toMatch(/\btruncate\b/)
     expect(screen.getByText(/^Click the padlock above the page/)).toBeInTheDocument()
+  })
+
+  it('states what this chat launched, never which session the frame is showing', async () => {
+    // #5940. The reveal that points the framed dashboard's one viewport at a
+    // session is machine-wide, so an agent or CLI launch for another chat's
+    // session -- or a second dashboard tab -- moves the frame with no signal this
+    // panel can see. The header therefore states a launch FACT and withdraws the
+    // ownership claim: "this chat's browser" described a page the reader was
+    // often not looking at, and nothing here can substantiate a stronger reading.
+    // Asserted as the absence of the old wording as well as the presence of the
+    // new one, because a header that regained the claim would still satisfy the
+    // presence half on its own.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('google.com')
+    await screen.findByTitle('Live browser session')
+    const label = screen.getByTestId('web-preview-session-label')
+    expect(label).toHaveTextContent('Opened from this chat')
+    expect(label).toHaveTextContent('panel-1234abcd')
+    expect(label.textContent).not.toMatch(/this chat's browser/i)
+    // Nor anywhere else in the panel: the claim must not survive by moving.
+    expect(document.body.textContent).not.toMatch(/this chat's browser/i)
   })
 
   it('the padlock hint is one sentence and stays dismissed in this browser once dismissed', async () => {

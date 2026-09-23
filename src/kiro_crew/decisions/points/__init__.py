@@ -22,6 +22,12 @@ projected. A second copy of that walk in the second adapter would be a second
 place for the budget to be spent differently, which is the one property the
 keystone ceiling exists to make checkable.
 
+:func:`as_text` is here for the same reason at a smaller scale: every function in
+this package that coerces an UNTYPED payload before a redactor can scan it --
+today ``compaction_keep.redacted``, ``memory_recall.scrubbed`` and
+``tool_risk.scrubbed`` -- calls it, and a second spelling of that coercion would
+be a second answer to what ``None`` sends.
+
 Nothing here imports an adapter: the shared helpers are below the points, so a
 broken adapter cannot make another one unimportable.
 """
@@ -51,6 +57,30 @@ MAX_HISTORY_MESSAGES = 20
 #: not sent: it is the largest and least selective text in a transcript, and it
 #: routinely quotes files the message itself never mentioned.
 HISTORY_ROLES = frozenset({"user", "assistant"})
+
+
+def as_text(text: object) -> str:
+    """*text* as a string, with ``None`` reading as empty rather than ``"None"``.
+
+    Every function in this package that hands an UNTYPED payload to a redactor
+    calls this -- today ``compaction_keep.redacted``, ``memory_recall.scrubbed``
+    and ``tool_risk.scrubbed``, each annotating its text ``object`` because a
+    provider payload or a tool argument is whatever the caller had. A bare
+    ``str()`` would turn an absent field into the four characters ``None`` and put
+    them on the wire.
+
+    ``message_steer.redacted`` cleans text the same way and is deliberately NOT a
+    caller: it annotates ``str``, because its own walk drops a row whose content
+    is not a string before any of it reaches a redactor.
+
+    A ``str`` is returned unchanged rather than re-stringified, so a ``str``
+    subclass survives the call as itself.
+    """
+    if isinstance(text, str):
+        return text
+    if text is None:
+        return ""
+    return str(text)
 
 
 def history_budget() -> int:

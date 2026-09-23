@@ -42,18 +42,21 @@ else, and it is omitted altogether unless a caller asks for it. Command lines go
 through the canonical credential redactor before they leave this module.
 
 The module is deliberately PURE: it imports no recorder and holds no background
-state. :func:`roster_diff` is the history hook the recorder drives; the caller
-owns the ring, the cadence and the storage.
+state. :func:`roster_diff` is the history hook the recorder drives and
+:class:`RateBaseline` is the rate equivalent; the caller owns the ring, the
+cadence and the storage.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from kiro_crew import session_pid
 from kiro_crew.platform import context as platform_context
@@ -761,6 +764,170 @@ def scan(
         unreachable_orphan_fn=unreachable_orphan_fn,
         clk_tck=clk_tck,
     )
+
+
+# -- rate cadence ------------------------------------------------------------
+# Rates are deltas, so something has to hold the previous scan's counters.
+#
+# The diagnostic recorder owns the other periodic host sampling and its timer
+# would give the delta a fixed cadence, but it cannot afford this one: a scan of
+# 584 nodes measures ~1.6 s on the host this is built against, against that
+# recorder's 20 ms sample budget, and three samples over 200 ms pin its cadence
+# at 60 s for the rest of the run. A family scan registered there would report
+# its own cost as the host's and back the recorder off permanently -- trading
+# this gap for a worse one. A standing sampler of its own would instead spend a
+# large fraction of a core forever for a view that may never be opened.
+#
+# So the read path holds the state. That makes the cadence whatever the reader's
+# own calls happen to be, which is only meaningful inside bounds, and the two
+# below are those bounds.
+
+#: Widest gap between two reads that still yields a rate. A wider one stays
+#: arithmetically true and becomes practically misleading: it averages the whole
+#: gap, so a process pinned for the last ten seconds of an hour reads near zero
+#: -- the same "this host is idle" answer that a null already gives wrongly.
+MAX_RATE_GAP_SECS = 300.0
+
+#: Narrowest gap between two reads that still yields a rate. CPU is counted in
+#: clock ticks, 100 a second on a typical host, and one tick is
+#: ``100 / clk_tck / dt`` percent of a core: about 1% across a 1s gap, about 10%
+#: across 0.1s. The floor is what keeps that granularity down around a percent,
+#: so a figure reports load rather than where the tick boundary fell.
+MIN_RATE_GAP_SECS = 1.0
+
+
+def _rates_possible(platform: str) -> bool:
+    """Whether *platform*'s scan can produce rates at all.
+
+    Windows reads no counters and the macOS ``ps`` snapshot carries none, so on
+    both the rates are null for a reason no second read changes. Inviting a
+    reader to read again there would promise what the platform cannot deliver.
+    """
+    return not platform.startswith("win") and platform != "darwin"
+
+
+class _RateDecision(NamedTuple):
+    """What one read may difference against, and what it may leave behind.
+
+    ``hold`` is the part that is not obvious. A read refused for arriving too
+    soon must NOT replace the stored baseline: doing so restarts the window it
+    was too early for, so readers arriving faster than the floor would keep
+    resetting each other and never see a rate at all -- the very starvation the
+    rates exist to end. Every other outcome replaces the baseline, including the
+    too-old one, which must be replaced or nothing could recover from it.
+    """
+
+    prev: Roster | None
+    declined: str | None
+    hold: bool
+
+
+class RateBaseline:
+    """The cumulative counters from the previous scan, and the window they hold.
+
+    Caller-owned: an instance belongs to whoever reads rates, and this module
+    keeps none of its own, so a test drives its own gaps and its own cold start
+    with nothing process-wide involved.
+
+    Only the counters are retained, never the nodes: a roster's nodes carry argv
+    and environment strings for every process on the host, and a delta needs
+    none of them. The three retained dicts are keyed by pid and replaced whole
+    on each read, so the store is bounded by the same :data:`MAX_NODES` cap that
+    bounds a roster.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._prev: Roster | None = None
+
+    def take(self, now: float) -> _RateDecision:
+        """What *now*'s read may difference against, and the reason when nothing.
+
+        The gap is measured between the two scans' STARTS, since that is the
+        instant a roster stamps, so the advice returned on a cold start names
+        that instant rather than the moment a reader receives the answer -- a
+        whole-host scan takes seconds, and a reader waiting the full window from
+        when the response arrived would land outside it.
+
+        The reason is returned rather than logged because it is the answer to
+        the reader's question. A bare null says "no rate" and reads exactly like
+        "no load"; a null plus "first read" says which one it is.
+        """
+        with self._lock:
+            prev = self._prev
+        if prev is None:
+            return _RateDecision(
+                None,
+                (
+                    "cpu_pct and runq_wait_pct need two reads; this is the first, "
+                    f"so a second read between {MIN_RATE_GAP_SECS:.0f}s and "
+                    f"{MAX_RATE_GAP_SECS:.0f}s after this one STARTED carries rates"
+                ),
+                False,
+            )
+        gap = now - prev.monotonic
+        if gap < MIN_RATE_GAP_SECS:
+            return _RateDecision(
+                None,
+                (
+                    f"reads {gap:.1f}s apart: rates need at least "
+                    f"{MIN_RATE_GAP_SECS:.0f}s, below which clock-tick "
+                    "granularity dominates the figure"
+                ),
+                True,
+            )
+        if gap > MAX_RATE_GAP_SECS:
+            return _RateDecision(
+                None,
+                (
+                    f"previous read {gap:.0f}s old: past {MAX_RATE_GAP_SECS:.0f}s a "
+                    "rate averages the whole gap and hides a current spike"
+                ),
+                False,
+            )
+        return _RateDecision(prev, None, False)
+
+    def remember(self, roster: Roster) -> None:
+        """Keep *roster*'s counters as the baseline for the next read."""
+        with self._lock:
+            if self._prev is not None and roster.monotonic <= self._prev.monotonic:
+                # Concurrent reads finish out of order. Keeping the newer
+                # baseline stops a later read from differencing against a
+                # roster younger than itself, whose negative elapsed time
+                # declines every rate anyway.
+                return
+            self._prev = Roster(
+                ts=roster.ts,
+                monotonic=roster.monotonic,
+                platform=roster.platform,
+                cpu_ticks=dict(roster.cpu_ticks),
+                runq_ns=dict(roster.runq_ns),
+                starts=dict(roster.starts),
+            )
+
+
+def scan_with_rates(baseline: RateBaseline, **kwargs: Any) -> Roster:
+    """:func:`scan`, differenced against *baseline* so rates are real.
+
+    :func:`scan` is pure and retains nothing, so ``cpu_pct`` and
+    ``runq_wait_pct`` are ``None`` unless a caller supplies the previous roster.
+    *baseline* is where that roster lives, and it is the CALLER's: this module
+    keeps no copy of it, so the read path that wants rates is the thing that
+    holds the state, and its own call cadence is what the delta measures.
+
+    Rates arrive from the second read onward; a read that cannot produce them
+    appends the reason to ``degraded``.
+
+    ``gil_saturated_hint`` rides along, since it is gated on ``cpu_pct`` and is
+    therefore false whenever the rate is missing, however loaded the host is.
+    """
+    decision = baseline.take(time.monotonic())
+    roster = scan(decision.prev, **kwargs)
+    if not decision.hold:
+        baseline.remember(roster)
+    if decision.declined is not None and _rates_possible(roster.platform):
+        roster.degraded.append(decision.declined)
+    return roster
 
 
 def _resolve_owner(

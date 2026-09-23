@@ -542,9 +542,10 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
     """GET /api/cloud/launch/{id}/task — the task a launch started, read from ECS now.
 
     The cloud panel's read for a Fargate launch. The EC2 lane's "is it still
-    there" is answered by the Instances registry, which a teardown updates; the
-    Fargate lane registers nothing, so for it the only source that can answer is
-    ECS itself, and this route is the panel's one path to it. It is read-only
+    there" is answered by the Instances registry, which a teardown updates. A
+    Fargate crew's record addresses ONE task, so it names the task a launch
+    started and cannot report that task's current state; ECS itself is the only
+    source that can, and this route is the panel's one path to it. It is read-only
     and shells to ``aws ecs describe-tasks`` for exactly the ARN the job recorded,
     so it is POSIX-gated like every other route here that runs the AWS CLI.
 

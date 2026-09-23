@@ -4,8 +4,8 @@ The load-bearing groups here are :class:`TestEveryRefusalKeepsTheShippedPath` --
 the reason this point is safe on the path that accepts a message into a busy slot
 -- and :class:`TestTheRunningTurnIsSpentOutOfTheConsentedCeiling`, which pins that
 the one new kind of egress this point wants (what the agent is doing right now) is
-capped by the same keystone budget prior turns are, so the shipped default of 0
-sends the new message alone.
+capped by the same keystone budget prior turns are, so an install with no
+consented ceiling sends the new message alone.
 
 The handler wiring -- which path a ``steer: "auto"`` send actually takes -- is
 ``test_decisions_message_steer_apply.py``.

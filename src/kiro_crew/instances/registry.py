@@ -25,8 +25,11 @@ Security notes (standard practices):
   rename) so a crash mid-write can't corrupt the registry.
 
 The registry reads-then-writes the file on every mutation rather than caching an
-in-memory copy, so a live gateway and an out-of-band ``kirocrew`` CLI edit don't
-clobber each other's changes between operations.
+in-memory copy, and holds a lock keyed by the registry's path across that pair,
+so two registry objects in one gateway don't clobber each other's changes. An
+out-of-band ``kirocrew`` CLI edit is a separate process and so is outside that
+lock: it always reads a complete file, but a mutation it interleaves with the
+gateway's can still be lost.
 """
 
 from __future__ import annotations
@@ -410,6 +413,37 @@ class _RegistryDoc:
     last_active_id: str = ""
 
 
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    """Return the one lock every registry object over *path* shares.
+
+    A lock owned by a registry object serialises only that object's own callers.
+    Callers build a registry per request -- :mod:`kiro_crew.cloud.connect`, the
+    instances handlers and the dashboard server each construct their own -- so
+    two objects over the same file would interleave a read with the other's
+    write and drop a record. Keying by resolved path gives them one lock, which
+    is what makes the read-modify-write in each mutation atomic.
+
+    Locks are kept for the life of the process and never evicted: a lock is the
+    thing a writer may be holding right now, so dropping one would hand the next
+    caller a fresh lock and reopen the window. The table holds one entry per
+    distinct registry file, which is one in a gateway.
+    """
+    try:
+        key = str(path.resolve())
+    except OSError:
+        key = str(path.absolute())
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
+
+
 def _find(doc: _RegistryDoc, instance_id: str) -> Instance | None:
     """Return the record in *doc* with *instance_id*, or ``None`` if absent.
 
@@ -423,11 +457,18 @@ def _find(doc: _RegistryDoc, instance_id: str) -> Instance | None:
 
 
 class InstancesRegistry:
-    """CRUD over ``instances.json`` with atomic writes and a process lock.
+    """CRUD over ``instances.json`` with atomic writes and a per-file lock.
 
     Every mutation re-reads the file, applies the change, validates, and writes
-    atomically, so concurrent writers (a live gateway autosave and a CLI edit)
-    never silently clobber one another between a read and a write.
+    atomically while holding the lock shared by all registry objects over that
+    file, so threads in one process -- a launch registering its instance, a
+    dashboard edit, the server's own reads -- cannot interleave a read with a
+    write and drop one another's records.
+
+    That lock spans threads, not processes. A separate process writing the same
+    file serialises only on :func:`atomic_write`'s rename, which keeps the file
+    readable at all times but leaves a read-modify-write pair non-atomic across
+    processes.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -436,7 +477,7 @@ class InstancesRegistry:
         else:
             base = _DEFAULT_DIR if _DEFAULT_DIR is not None else config_dir()
             self._path = base / _FILENAME
-        self._lock = threading.RLock()
+        self._lock = _lock_for(self._path)
 
     @property
     def path(self) -> Path:

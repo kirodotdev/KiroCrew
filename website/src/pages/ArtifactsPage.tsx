@@ -32,6 +32,8 @@ import { useDndSensors } from '../hooks/useDndSensors'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { compareText } from '../i18n/format'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { markJustCreatedBlank } from '../lib/blankHandoff'
 import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
@@ -841,6 +843,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // deployment — otherwise the option is visible and only explains itself after
   // a click.
   const cloudDeployEnabled = useCloudDeploymentEnabled()
+  // Artifact Deploy is a Feature Preview: the route stays reachable, but the
+  // product does not offer it until the operator opts in, because every door
+  // leads to spending in a real AWS account and to content on the open internet.
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const [filter, setFilter] = useState('')
   const isMobile = useIsMobile()
   const [tagFilter, setTagFilter] = useState('')
@@ -1790,7 +1796,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                     * behind a tap without costing anything: keeping it visible
                     * is what forced the filter row to wrap and left a lone
                     * right-floated button on a line of its own. */}
-                  {isMobile && cloudDeployEnabled && (
+                  {isMobile && cloudDeployEnabled && deployPreview && (
                     <>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onSelect={() => navigate('/deploy')}>
@@ -1868,7 +1874,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 />
               </div>
             </div>
-            {cloudDeployEnabled && !isMobile && (
+            {cloudDeployEnabled && !isMobile && deployPreview && (
               <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
                 <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
               </Btn>

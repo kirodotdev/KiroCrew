@@ -39,6 +39,7 @@ from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -56,13 +57,91 @@ from kiro_crew.providers.acp import AcpProvider
 MEMBER_KEY = "dashboard_member-autofix"
 
 
+@pytest.fixture
+def goose_agents_dir(tmp_path, monkeypatch):
+    """A goose agent spec on disk, declaring the control plane AND the dashboard server.
+
+    The documented seam for driving a mirror over a spec: materialization would
+    otherwise rebuild the managed default and overwrite the spec under test. Module
+    level rather than on a class, because both goose classes below need the same tree
+    and a fixture defined on one class is not reachable from another.
+
+    The spec DECLARING ``kirocrew-dashboard`` is load-bearing: the projection withholds
+    a spec-described control-plane server (``mirrors.identity``), so whatever appears
+    in the array is the entry the member mount placed.
+    """
+    import kiro_crew.agent as agent_mod
+    from kiro_crew.acp import session_mcp
+
+    d = tmp_path / "agents"
+    d.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
+    monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
+    managed = {
+        "kirocrew-core": {"command": "/opt/kirocrew", "args": ["mcp-core"]},
+        MEMBER_DISPATCH_SERVER: {"command": "/opt/kirocrew", "args": ["mcp-dashboard"]},
+    }
+    monkeypatch.setattr(
+        session_mcp,
+        "managed_mcp_spec_entry",
+        lambda name: dict(managed[name]) if name in managed else None,
+    )
+    monkeypatch.setattr(session_mcp, "_mcp_registry_mode", lambda: False)
+    (d / "kirocrew.json").write_text(
+        json.dumps(
+            {
+                "name": "kirocrew",
+                "mcpServers": {
+                    "kirocrew-core": {"command": "/opt/kirocrew", "args": ["mcp-core"]},
+                    MEMBER_DISPATCH_SERVER: {
+                        "command": "/opt/kirocrew",
+                        "args": ["mcp-dashboard"],
+                    },
+                },
+                "tools": ["@kirocrew-core", "@" + MEMBER_DISPATCH_SERVER],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return d
+
+
+def _goose_client(tmp_path: Path, session_key: str):
+    """A minimally constructed ``AcpClient`` on the goose backend.
+
+    Only the attributes ``_resolve_session_mcp_servers`` and the identity check read.
+    Driving a real goose session would activate the harness, which needs a provider
+    this test host does not have.
+    """
+    from kiro_crew.acp.client import AcpClient as _C
+
+    client = object.__new__(_C)
+    # ``backend`` is a read-only property over this attribute on the real class.
+    client._acp_backend = ACP_BACKEND_GOOSE
+    client._mcp_gateway_overlay = None  # shared gateway off: no broker stubs
+    client._agent = "kirocrew"
+    client._work_dir = tmp_path / "work"
+    client._session_key = session_key
+    client._channel_id = "dashboard"
+    client._stub_session_token = "9" * 64
+    client._claude_settings_authored = False
+    return client
+
+
 class TestCapabilitySet:
     def test_exactly_the_wire_capable_backends(self):
         """kiro v2 reads its template from disk and exposes no per-session
         channel, so it must never be in the set: a member session on it runs as
         plain chat rather than mounted-and-refused."""
         assert ACP_BACKENDS_MEMBER_DISPATCH == frozenset(
-            {ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+            {
+                ACP_BACKEND_CLAUDE,
+                ACP_BACKEND_KAS,
+                ACP_BACKEND_CODEX,
+                ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_GOOSE,
+            }
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MEMBER_DISPATCH
 
@@ -90,6 +169,7 @@ class TestCapabilitySet:
         assert acp_tool_gate.is_enforced(ACP_BACKEND_CLAUDE) is False
         assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is True
         assert acp_tool_gate.is_enforced(ACP_BACKEND_CODEX) is True
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_GOOSE) is True
 
     def test_opencode_holds_both_things_membership_needs(self):
         """The mount it rides, and the gate that makes the mount safe.
@@ -101,6 +181,34 @@ class TestCapabilitySet:
         assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_MEMBER_DISPATCH
         assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_SESSION_MCP_ARRAY
         assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is True
+
+    def test_goose_holds_both_things_membership_needs(self):
+        """The mount it rides, and the gate that makes the mount safe.
+
+        Its mount is recorded as a ROUND TRIP rather than advertised, and its routing
+        is ``VERIFIED_SEEDED_SETTINGS`` rather than codex's ``SESSION_CONFIG``. H6
+        means neither other member's membership establishes anything here, so both
+        facts are asserted for THIS harness.
+        """
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_MEMBER_DISPATCH
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_SESSION_MCP_ARRAY
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_GOOSE) is True
+
+    def test_the_round_trip_the_goose_rationale_names_is_committed(self):
+        """The evidence is a file in the tree, so a rename cannot leave the membership
+        resting on something gone. The frames carry the ``tools/call`` that reached the
+        named child and the identity field a dispatch call arrives on.
+        """
+        corpus = (
+            Path(__file__).parent
+            / "fixtures"
+            / "acp_frames"
+            / "goose"
+            / "mcp-stdio-mount-live.jsonl"
+        )
+        body = corpus.read_text(encoding="utf-8")
+        assert "tools/call" in body
+        assert '"extensionName"' in body
 
 
 class TestMemberDispatchSessionServer:
@@ -583,8 +691,9 @@ class TestRestrictedServerIsNotReAdded:
         stub._claude_settings_authored = True  # so claude reaches the second check
         return AcpClient._append_member_dispatch_server(stub, _base_servers(), restricted)
 
-    def test_opencode_withholds(self):
-        out = self._run(ACP_BACKEND_OPENCODE, frozenset({MEMBER_DISPATCH_SERVER}))
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE])
+    def test_a_whole_server_deny_backend_withholds(self, backend):
+        out = self._run(backend, frozenset({MEMBER_DISPATCH_SERVER}))
         assert out == _base_servers()
 
     def test_opencode_still_mounts_when_another_server_is_the_restricted_one(self):
@@ -604,6 +713,7 @@ class TestRestrictedServerIsNotReAdded:
         from kiro_crew.providers.mirrors import PerToolDeny, projection_for
 
         assert projection_for(ACP_BACKEND_OPENCODE).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        assert projection_for(ACP_BACKEND_GOOSE).per_tool_deny is PerToolDeny.WHOLE_SERVER
         assert projection_for(ACP_BACKEND_CODEX).per_tool_deny is PerToolDeny.PER_CALL
         assert projection_for(ACP_BACKEND_CLAUDE).per_tool_deny is PerToolDeny.SETTINGS_FILE
 
@@ -639,13 +749,15 @@ class TestDisabledServerIsNeverMounted:
         )
 
     @pytest.mark.parametrize(
-        "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE]
+        "backend",
+        [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE],
     )
     def test_every_dispatch_backend_withholds(self, backend):
         assert self._run(backend, frozenset({MEMBER_DISPATCH_SERVER})) == _base_servers()
 
     @pytest.mark.parametrize(
-        "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE]
+        "backend",
+        [ACP_BACKEND_OPENCODE, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE],
     )
     def test_another_disabled_server_does_not_withhold_this_one(self, backend):
         out = self._run(backend, frozenset({"some-third-party"}))
@@ -857,3 +969,188 @@ class TestSessionHistoryWriteProtected:
         from kiro_crew.security import sensitive_home_dirs
 
         assert not any(p.endswith("/sessions") for p in sensitive_home_dirs())
+
+
+class TestGooseMemberAppend:
+    """A goose member session mounts without owning any permission file.
+
+    Same precondition shape as opencode's, asserted for this harness because H6 lets
+    neither stand in for the other. The mutation these carry is the precondition
+    itself: read claude's flag on this backend and the first test withholds the entry.
+    """
+
+    @staticmethod
+    def _goose_stub(**over):
+        stub = _ClientStub()
+        stub.backend = ACP_BACKEND_GOOSE
+        # goose writes no ``settings.local.json`` and claude's writer is the only thing
+        # that sets this flag, so a stub leaving it True models a client that cannot
+        # exist on this backend.
+        stub._claude_settings_authored = False
+        for name, value in over.items():
+            setattr(stub, name, value)
+        return stub
+
+    def _run(self, stub) -> list[dict]:
+        return AcpClient._append_member_dispatch_server(stub, _base_servers())
+
+    def test_member_session_gains_the_entry(self):
+        out = self._run(self._goose_stub())
+        assert [e["name"] for e in out] == ["kirocrew-core", MEMBER_DISPATCH_SERVER]
+        env = out[-1]["env"]
+        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in env
+        token = {"name": STUB_SESSION_TOKEN_ENV, "value": _ClientStub._stub_session_token}
+        assert token in env
+
+    def test_non_member_session_is_untouched(self):
+        """The mount is SESSION-scoped, which is why it is not in the agent template:
+        an ordinary goose session on the same agent gains nothing."""
+        stub = self._goose_stub(_session_key="dashboard_abc123")
+        assert self._run(stub) == _base_servers()
+
+    def test_an_empty_session_key_is_untouched(self):
+        """A pooled child claimed later has no key yet, and a mount with no identity
+        would answer ``identity_unattested`` to every verb."""
+        stub = self._goose_stub(_session_key="")
+        assert self._run(stub) == _base_servers()
+
+
+class TestGooseSessionArray:
+    """The whole array a goose ``session/new`` would carry, not just the append.
+
+    The claim membership makes is about the ARRAY: a member DM thread on this harness
+    holds the session-control tools. So these drive
+    ``AcpClient._resolve_session_mcp_servers`` with the REAL goose mirror over a real
+    agent spec and read the elements that come out. Nothing here asserts set
+    membership -- that would be the claim proving itself.
+
+    goose reads no ``~/.kiro/agents/<name>.json``, so this array is the only channel
+    any tool set reaches the session on.
+    """
+
+    def test_a_member_session_carries_the_dashboard_element_last(self, goose_agents_dir, tmp_path):
+        client = _goose_client(tmp_path, MEMBER_KEY)
+        out = client._resolve_session_mcp_servers()
+        names = [e["name"] for e in out]
+        assert names[-1] == MEMBER_DISPATCH_SERVER, names
+        assert names.count(MEMBER_DISPATCH_SERVER) == 1, names
+        assert "kirocrew-core" in names, names
+        env = {p["name"]: p["value"] for p in out[-1]["env"]}
+        assert env["KIROCREW_SESSION_KEY"] == MEMBER_KEY
+        assert env[STUB_SESSION_TOKEN_ENV] == client._stub_session_token
+
+    def test_an_ordinary_session_carries_no_dashboard_element(self, goose_agents_dir, tmp_path):
+        """And the spec DECLARED it, which is the point: the projection withholds a
+        spec-described control-plane server, so an ordinary session on this very
+        template cannot reach session control."""
+        client = _goose_client(tmp_path, "dashboard_abc123")
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+    def test_a_disabled_dashboard_server_withholds_the_mount(self, goose_agents_dir, tmp_path):
+        """``disabled`` is the stronger switch and binds on every backend: it has no
+        per-call form, so nothing downstream can refuse a call to a server it was
+        handed, and the ``tools`` allowlist does not reach an appended element."""
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps({"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabled": True}}}),
+            encoding="utf-8",
+        )
+        client = _goose_client(tmp_path, MEMBER_KEY)
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+    def test_a_switched_off_dashboard_tool_withholds_the_whole_mount(
+        self, goose_agents_dir, tmp_path
+    ):
+        """goose's declared per-tool deny is ``WHOLE_SERVER``, so withholding the
+        narrowed server IS the enforcement; re-adding it for a member would put a tool
+        the operator switched off back within reach."""
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabledTools": ["session_stop"]}}}
+            ),
+            encoding="utf-8",
+        )
+        client = _goose_client(tmp_path, MEMBER_KEY)
+        names = [e["name"] for e in client._resolve_session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER not in names, names
+        assert "kirocrew-core" in names, names
+
+
+class TestGooseIdentityDrift:
+    """The server this session mounted must not be refused as a DRIFTED one.
+
+    goose is the only member of ``ACP_BACKENDS_META_IDENTITY``, so it is the only
+    member of the dispatch set whose every tool approval runs
+    ``AcpClient._refuse_identity_drift``. That refusal rejects a trusted identity
+    naming a server Crew never placed on the array, and ``kirocrew-dashboard`` is
+    neither the harness's builtin extension (``developer``) nor a server the template
+    supplies -- the projection withholds the spec-described copy. So a mount that
+    landed in one array while the identity check read another would refuse EVERY
+    dispatch call instead of degrading to plain chat, which is strictly worse than not
+    mounting at all.
+
+    These drive the real chain rather than a stubbed array: the elements come from
+    ``_resolve_session_mcp_servers``, the cache the check enumerates is that same
+    list, and the identity is the one goose publishes for a mounted element -- the
+    element's own name in ``_meta.goose.toolCall.extensionName``, the field
+    ``mcp-stdio-mount-live.jsonl`` pins for ``crew-probe``.
+    """
+
+    @staticmethod
+    def _event(server: str, tool: str):
+        from kiro_crew.acp.types import AcpEvent
+
+        return AcpEvent(
+            kind="permission_request",
+            request_id="p",
+            mcp_server_name=server,
+            tool_name=tool,
+            mcp_identity_trusted=True,
+        )
+
+    @staticmethod
+    def _mounted_client(tmp_path, session_key=MEMBER_KEY):
+        client = _goose_client(tmp_path, session_key)
+        # The cache the permission path reads, filled from the array the session/new
+        # path composes -- the two halves the refusal requires to agree.
+        client._session_mcp_cache = client._resolve_session_mcp_servers()
+        return client
+
+    def test_a_dispatch_call_is_not_foreign(self, goose_agents_dir, tmp_path):
+        client = self._mounted_client(tmp_path)
+        placed = [e["name"] for e in client._session_mcp_servers()]
+        assert MEMBER_DISPATCH_SERVER in placed, placed
+        event = self._event(MEMBER_DISPATCH_SERVER, "session_stop")
+        assert client._foreign_mcp_identity(event) is False
+
+    def test_the_check_still_refuses_a_drifted_server(self, goose_agents_dir, tmp_path):
+        """The control: the mount widens the placed set by exactly one name, so a
+        renamed builtin is still refused on the very session that carries the mount."""
+        client = self._mounted_client(tmp_path)
+        assert client._foreign_mcp_identity(self._event("dev", "shell")) is True
+
+    def test_an_unmounted_session_would_refuse_that_same_identity(self, goose_agents_dir, tmp_path):
+        """Why the two halves must read ONE array, as a fact rather than a docstring:
+        on a session that did not mount it, this identity IS foreign."""
+        client = self._mounted_client(tmp_path, session_key="dashboard_abc123")
+        event = self._event(MEMBER_DISPATCH_SERVER, "session_stop")
+        assert client._foreign_mcp_identity(event) is True
+
+    def test_the_whole_refusal_leaves_a_dispatch_approval_alone(self, goose_agents_dir, tmp_path):
+        """Through ``_refuse_identity_drift`` itself rather than only its predicate:
+        the unclassified-call check runs first and must not catch this either."""
+        import asyncio
+
+        client = self._mounted_client(tmp_path)
+        client._session_id = "goose-session-1"
+        client._tool_call_unclassified = {}
+
+        async def _never(_request_id: str) -> None:  # pragma: no cover - must not run
+            raise AssertionError("a mounted dispatch server must not be refused")
+
+        client.reject_tool = _never  # type: ignore[method-assign]
+        event = self._event(MEMBER_DISPATCH_SERVER, "session_stop")
+        assert asyncio.run(client._refuse_identity_drift(event)) is False

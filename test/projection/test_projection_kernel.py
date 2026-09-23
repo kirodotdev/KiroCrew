@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.projection import ProjectionRegistry, attribute_seq
+from kiro_crew.projection import EMPTY_WATERMARK, ProjectionRegistry, attribute_seq
 
 
 def _ev(seq: int, touches: bool = True) -> dict:
@@ -181,3 +181,68 @@ class TestTheKernelReadsSeqThroughTheClientsReader:
         reg.drive("s", _Entry(seq=4))
 
         assert reg.snapshot("s")["asOfSeq"] == 4
+
+
+class TestCellsReportsStateAndWatermarkPerUnit:
+    """The read a client needs to carry a fold's position in a record of its own."""
+
+    def test_each_registered_unit_reports_its_state_and_watermark(self):
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+        reg.drive("s", _ev(1))
+        reg.drive("s", _ev(2))
+
+        assert reg.cells("s") == {"counting": ({"n": 2}, 2)}
+
+    def test_a_unit_with_no_cell_reports_what_it_would_fold_from(self):
+        # Absent and empty are the same answer, so a caller never tells them apart.
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+
+        assert reg.cells("never-driven") == {"counting": ({"n": 0}, EMPTY_WATERMARK)}
+
+    def test_an_ignored_event_still_moves_the_watermark(self):
+        # The watermark is what the unit has OBSERVED, not what changed it: a fold
+        # that ignored an event has still consumed it and must not be handed it again.
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+        reg.drive("s", _ev(1, touches=False))
+
+        assert reg.cells("s") == {"counting": ({"n": 0}, 1)}
+
+    def test_a_unit_the_registry_has_not_folded_keeps_its_own_watermark(self):
+        # Two units at DIFFERENT positions is the case a single floor cannot express,
+        # and the reason a client reads per unit rather than reading the floor.
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+        reg.drive("s", _ev(1))
+        reg.register(_FreshEqual())
+
+        cells = reg.cells("s")
+
+        assert cells["counting"] == ({"n": 1}, 1)
+        assert cells["fresh_equal"] == ({"n": 0}, EMPTY_WATERMARK)
+
+    def test_state_comes_back_as_held_and_a_later_drive_does_not_move_it(self):
+        # What makes handing out the registry's own object safe: ``apply`` returns a
+        # new one, so a drive replaces the cell's state rather than mutating what a
+        # caller kept.
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+        reg.drive("s", _ev(1))
+        held, watermark = reg.cells("s")["counting"]
+
+        reg.drive("s", _ev(2))
+
+        assert (held, watermark) == ({"n": 1}, 1)
+        assert reg.cells("s")["counting"] == ({"n": 2}, 2)
+
+    def test_the_cells_of_one_store_are_not_anothers(self):
+        reg = ProjectionRegistry()
+        reg.register(_Counting())
+        reg.drive("a", _ev(1))
+        reg.drive("b", _ev(1))
+        reg.drive("b", _ev(2))
+
+        assert reg.cells("a")["counting"] == ({"n": 1}, 1)
+        assert reg.cells("b")["counting"] == ({"n": 2}, 2)

@@ -19,8 +19,7 @@ import { api } from '../api/client'
 import MarkdownRenderer from './MarkdownRenderer'
 import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
-import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../utils/pullRequestErrors'
-import { SettingsLink } from './SettingsLink'
+import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
 import { sourceProviderCapabilities } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
@@ -147,13 +146,11 @@ function ThreadComment(
  *  submit would throw away what the user typed the moment the provider refused,
  *  and leave the error with nowhere to appear. */
 function ReplyBox({
-  onSubmit, pending, error, errorAction, label = 'Reply',
+  onSubmit, pending, error, label = 'Reply',
 }: {
   onSubmit: (body: string) => Promise<unknown>
   pending: boolean
   error: string | null
-  /** Recovery affordance rendered beside the error (e.g. a settings link). */
-  errorAction?: React.ReactNode
   label?: string
 }) {
   const ime = useImeGuard()
@@ -232,20 +229,10 @@ function ReplyBox({
           <span className="inline-flex items-center gap-1 text-[12px]">
             {/* No hand-off: the reply/comment textarea draft above is unsaved. */}
             <ErrorNotice variant="inline" testId="comment-reply-error" message={error} />
-            {errorAction && <> {errorAction}</>}
           </span>
         )}
       </div>
     </div>
-  )
-}
-
-/** The owner-not-configured recovery link, shared by every refusal surface here. */
-function OwnerSettingsLink() {
-  return (
-    <SettingsLink {...OWNER_SETTINGS_TARGET}>
-      {i18nT('components.pullRequestPanel.open_slack_settings')}
-    </SettingsLink>
   )
 }
 
@@ -392,7 +379,6 @@ export default function CommentThreads(
                         message={resolveErr.message
                           || i18nT('components.commentThreads.could_not_change_the_thread_s_state')}
                       />
-                      {resolveErr.ownerNotConfigured && <> <OwnerSettingsLink /></>}
                     </span>
                   )
                 })()}
@@ -414,10 +400,6 @@ export default function CommentThreads(
                   error={reply.isError && reply.variables?.threadId === t.threadId
                     ? pullRequestErrorDetails(reply.error).message || null
                     : null}
-                  errorAction={reply.isError && reply.variables?.threadId === t.threadId
-                    && pullRequestErrorDetails(reply.error).ownerNotConfigured
-                    ? <OwnerSettingsLink />
-                    : undefined}
                 />
               )}
             </div>
@@ -433,9 +415,6 @@ export default function CommentThreads(
             onSubmit={(body) => comment.mutateAsync(body)}
             pending={comment.isPending}
             error={comment.isError ? pullRequestErrorDetails(comment.error).message || null : null}
-            errorAction={comment.isError && pullRequestErrorDetails(comment.error).ownerNotConfigured
-              ? <OwnerSettingsLink />
-              : undefined}
           />
         </div>
       )}

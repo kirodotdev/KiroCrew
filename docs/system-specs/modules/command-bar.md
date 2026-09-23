@@ -338,10 +338,16 @@ stays where this repository counts it. Assembling the name at runtime to keep th
 scanner from seeing it was tried first and is worse: it opens a third suppression
 channel nothing counts.
 
-The leaf name is clamped to the 100 characters the server stores, because a manifest
-title may be 120. Without the clamp the create is silently shortened, the next run's
-lookup for the full title misses, and every run makes another folder — the one failure
-mode here that compounds rather than staying cosmetic. When two rows currently offered
+Both folders are resolved through the shared `ensureChatFolder` helper
+(`website/src/utils/ensureChatFolder.ts`), which matches by name under an exact parent and
+asks the server only for names it will store unchanged. A leaf name is cut to fit the 100
+code points the server keeps, because a manifest title may be 120: an over-long title
+keeps its first 65 code points and ends in ` (<32-hex fingerprint of the whole title>)` —
+the first 128 bits of its SHA-256, so two different titles cannot be made to share one.
+Without the cut the create is silently shortened, the next run's lookup for the full
+title misses, and every run makes another folder — the one failure mode here that
+compounds rather than staying cosmetic; and the fingerprint keeps two different long
+titles that agree on their first 100 code points in two leaves. When two rows currently offered
 carry the SAME title, a discriminator is appended to both — the contributing app's label
 between two apps, and the row's own id when the collision is inside ONE app, where the
 label separates nothing. A leaf keyed on the title alone would interleave two commands

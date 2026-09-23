@@ -260,6 +260,7 @@ Set a registered value with, for example,
 | `slack.command` | Slash-command name | `"kirocrew"` |
 | `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
 | `slack.reactions_enabled` | Show phase reactions on Slack messages | `true` |
+| `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message | `false` |
 
 Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists

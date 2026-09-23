@@ -265,6 +265,34 @@ class ProjectionRegistry:
                 on_change(store, key, view, fired_seq)
 
     # ---- observed ---------------------------------------------------------
+    def cells(self, store: str) -> dict[str, tuple[Any, int]]:
+        """``{key: (state, watermark)}`` for every registered unit of *store*.
+
+        The read a client needs to carry a fold's POSITION in a record of its own --
+        a savepoint it writes itself, a cached bundle it hands to its next call.
+        Neither of the other readers answers it: :meth:`snapshot` renders, so the
+        bookkeeping a fold needs to continue is gone from what it returns, and
+        :meth:`savepoints` is built for a write, so it skips a unit that has folded
+        nothing and wraps the rest in an identity a read has no use for.
+
+        A unit with no cell reports ``init()`` at :data:`EMPTY_WATERMARK`, which is
+        what it would fold from, so a caller never has to tell absent from empty.
+
+        State comes back AS HELD, not copied. It is the registry's object, and the
+        same-reference rule is what makes that safe to hand out: ``apply`` returns a
+        new object rather than modifying this one, so a later :meth:`drive` replaces
+        the cell's state instead of mutating what a caller kept.
+        """
+        with self._lock:
+            out: dict[str, tuple[Any, int]] = {}
+            for key, defn in self._defns.items():
+                cell = self._cells.get((key, store))
+                if cell is None:
+                    out[key] = (defn.init(), EMPTY_WATERMARK)
+                else:
+                    out[key] = (cell.state, cell.observed_seq)
+            return out
+
     def observed_floor(self, store: str) -> int:
         """The lowest seq EVERY registered unit has already folded for *store*.
 

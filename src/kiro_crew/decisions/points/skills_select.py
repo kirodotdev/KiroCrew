@@ -182,9 +182,10 @@ def selected_skills(
         rows = screen_candidates(candidates)
         if not rows:
             return None
-        # The budget FIRST: at its shipped default of 0 there is nothing for a
-        # transcript read to contribute, and reading 20 messages to discard all of
-        # them is a cost every sampled turn would otherwise pay for nothing.
+        # The budget FIRST: at 0 -- which is every install with no consented
+        # ceiling -- there is nothing for a transcript read to contribute, and
+        # reading 20 messages to discard all of them is a cost every sampled turn
+        # would otherwise pay for nothing.
         history_budget = _history_budget()
         history = _prior_turns(history_source) if history_budget > 0 else []
         wait = _wait_budget()

@@ -9,6 +9,7 @@ batch implementation would be free to break.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import replace
@@ -85,8 +86,8 @@ def _tool(
 # --- writing a fixture that has to be LONG --------------------------------- #
 #
 # A bound in this module is a bound on retained state, so reaching one costs as
-# many entries as the bound itself, and ``FOLD_CHUNK_ENTRIES`` is 1024 -- 2049
-# entries to cross it twice. One ``append`` per entry is one cross-process lock,
+# many entries as the bound itself, and the largest fixture here runs past 2048
+# entries. One ``append`` per entry is one cross-process lock,
 # one tail scan and one ``os.fsync`` EACH, which measures 76-90 ms per entry on
 # the Windows CI runner: that puts a 2049-entry fixture at 156-185 s against a
 # 180 s per-test cap. A breach there does not fail one test. Windows has no
@@ -268,6 +269,82 @@ def test_incremental_matches_from_scratch_at_every_split(name):
         resumed = crew_log.advance(first, entries[cut:])
         assert crew_log.projection_of(resumed).value == whole, f"{name} disagrees at cut {cut}"
         assert resumed.last_seq == (entries[-1].seq if entries else 0)
+
+
+@pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)
+def test_the_kernel_definition_folds_to_what_advance_folds(name):
+    """The wrapper the kernel drives and the ``advance`` surface reach one value.
+
+    ``advance`` deep-copies once and steps the whole span; the kernel drives one entry
+    at a time through a copy the fold declared. Two ways of arriving at the same fold,
+    so they are pinned against each other -- a copier or an ``affects`` set that was
+    wrong would show up here as a different number.
+    """
+    entries = _entries(_busy_log())
+    definition = crew_log._SessionFold(crew_log._FOLDS[name])
+    state = definition.init()
+    for entry in entries:
+        state = definition.apply(state, entry)
+
+    assert definition.view(state) == crew_log.fold(name, entries)
+    assert definition.state_version == crew_log.FOLD_STATE_VERSION
+
+
+@pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)
+def test_a_fold_never_reaches_into_the_state_it_was_handed(name):
+    """MUTATION-SENSITIVE: ``apply`` copies before it steps, so its input is intact.
+
+    This is what keeps each fold's declared ``copy_state`` honest. A copier that misses
+    a nested container still produces the RIGHT value -- the step edits the object it
+    meant to edit -- but it edits the caller's state along with it, and a caller holding
+    an earlier bundle would then watch its value move underneath it. Nothing raises
+    either way, so this test is the only thing that catches the miss.
+
+    Checked at every position, because the container a copier misses often does not
+    exist until the fold has something in it: ``tools`` has no per-name row to share
+    until a tool has been called.
+    """
+    entries = _entries(_busy_log())
+    definition = crew_log._SessionFold(crew_log._FOLDS[name])
+    state = definition.init()
+    for entry in entries:
+        before = copy.deepcopy(state)
+        grown = definition.apply(state, entry)
+        assert state == before, f"{name} edited the state it was handed at seq {entry.seq}"
+        state = grown
+
+
+@pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)
+def test_an_entry_a_fold_declares_untouched_really_moves_nothing(name):
+    """MUTATION-SENSITIVE: ``affects`` may be wider than the truth, never narrower.
+
+    Returning the state unchanged is how ``apply`` tells the kernel this entry moved
+    nothing, and the kernel believes it: a type wrongly left out of ``affects`` drops a
+    real change and serves a stale value for as long as the fold sits there. So for
+    every entry the wrapper skipped, the step is run on a copy to prove it would indeed
+    have changed nothing.
+
+    The opposite error is not a bug and is not asserted against: a type wrongly
+    INCLUDED costs a copy, and a spurious frame to a client watching the change feed.
+    """
+    entries = _entries(_busy_log())
+    fold_spec = crew_log._FOLDS[name]
+    definition = crew_log._SessionFold(fold_spec)
+    state = definition.init()
+    skipped = 0
+    for entry in entries:
+        grown = definition.apply(state, entry)
+        if grown is state:
+            skipped += 1
+            probe = fold_spec.copied(state)
+            fold_spec.step(probe, entry)
+            assert probe == state, (
+                f"{name} treats {entry.type} as untouched, but its step moves the "
+                f"state at seq {entry.seq}"
+            )
+        state = grown
+    if fold_spec.affects is not None:
+        assert skipped > 0, f"{name} declares a type set but skipped nothing to prove it"
 
 
 @pytest.mark.parametrize("name", crew_log.PROJECTION_NAMES)
@@ -1360,39 +1437,61 @@ def test_a_log_recreated_under_a_held_handle_is_folded_again_rather_than_spliced
 # --------------------------------------------------------------------------- #
 
 
-def test_a_cold_fold_crossing_the_chunk_boundary_matches_the_whole_file(monkeypatch):
-    """Folding a span in chunks is the same value as folding it whole.
+def test_a_cold_fold_streams_the_log_rather_than_holding_it(monkeypatch):
+    """A long cold fold holds ONE entry at a time, and the value is unaffected.
 
-    ``fold_session`` reads the log one bounded chunk at a time so a cold fold of a
-    long log does not hold the whole thing in memory. That is only safe if the
-    chunk boundary is invisible in the result, so this drives a log well past
-    ``FOLD_CHUNK_ENTRIES``, compares against the from-scratch fold, AND counts the
-    passes -- otherwise the test would still pass if the chunking were removed.
+    ``fold_session`` hands the projection kernel the log as a stream and the kernel
+    folds each entry through every unit as it arrives, so what a cold fold of a long
+    log holds is one entry rather than the file. That is only safe if consuming it
+    piecemeal is invisible in the result, so this drives a log past two thousand
+    entries, compares against the from-scratch fold, AND checks the interleaving --
+    otherwise the test would still pass if the whole log were materialized first.
+
+    The interleaving is the part worth pinning: at the moment of the Nth fold step,
+    exactly N entries have come out of the reader. A pass that read the file into a
+    list would have every entry out before the first step.
     """
     handle = _log()
     _opened(handle)
-    # Two entries per tool, so this clears the chunk boundary several times over.
+    # Two entries per tool, so this clears two thousand entries several hundred over.
     items: list[dict[str, Any]] = []
-    for index in range(crew_log.FOLD_CHUNK_ENTRIES):
+    for index in range(1024):
         items.extend(_tool_items(1, f"c{index}", "fs_read"))
     _append_grouped(handle, items)
-    assert handle.last_seq > crew_log.FOLD_CHUNK_ENTRIES
+    assert handle.last_seq > 2048
 
-    passes = []
-    real_advance_all = crew_log._advance_all
-
-    def counting(checkpoints, chunk):
-        passes.append(len(chunk))
-        return real_advance_all(checkpoints, chunk)
-
-    monkeypatch.setattr(crew_log, "_advance_all", counting)
-    chunked = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value
+    # Folded before the instruments go in, so its own read is not counted.
     whole = crew_log.fold_tools(_entries(handle))
-    assert chunked == whole
-    assert chunked["calls"] == crew_log.FOLD_CHUNK_ENTRIES
-    # More than one pass, and no pass bigger than the chunk bound.
-    assert len(passes) > 1
-    assert max(passes) <= crew_log.FOLD_CHUNK_ENTRIES
+
+    yielded = [0]
+    real_iter_from = CrewLog.iter_from
+
+    def counted_iter_from(self, from_seq, **kwargs):
+        for entry in real_iter_from(self, from_seq, **kwargs):
+            yielded[0] += 1
+            yield entry
+
+    interleaving: list[tuple[int, int]] = []
+    real_apply = crew_log._SessionFold.apply
+
+    def counted_apply(self, state, entry):
+        interleaving.append((yielded[0], len(interleaving) + 1))
+        return real_apply(self, state, entry)
+
+    monkeypatch.setattr(CrewLog, "iter_from", counted_iter_from)
+    monkeypatch.setattr(crew_log._SessionFold, "apply", counted_apply)
+
+    streamed = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value
+
+    assert streamed == whole
+    assert streamed["calls"] == 1024
+    assert len(interleaving) > 2048, "the whole log was folded"
+    assert [out for out, _ in interleaving] == [
+        step for _, step in interleaving
+    ], "the reader ran ahead of the fold, so entries were held rather than streamed"
+    assert [out for out, _ in interleaving] == [
+        step for _, step in interleaving
+    ], "the reader ran ahead of the fold, so entries were held rather than streamed"
 
 
 def test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes(monkeypatch):

@@ -28,6 +28,7 @@ import { useAppDispatch } from '../../../store'
 import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
+import { ensureChatFolder } from '../../../utils/ensureChatFolder'
 import { settleSeedReceipt } from '../../../utils/seedReceipt'
 import { isMissingSlotError } from '../../../utils/thunkError'
 import { issueRadarApi, type InvestigationRecord, type ItemKind, RepoRef } from '../api'
@@ -43,14 +44,17 @@ export function truncate(s: string, max: number = TITLE_MAX): string {
 }
 
 /** Resolve the "Issue Radar - <repo>" chat folder id, creating it on first use.
- * Matches by name — folders have no upsert. */
+ * Matches by name — folders have no upsert. A rejected list or create propagates
+ * untouched; a create that answers without an id throws, so the `Promise<string>`
+ * contract holds without a silent `undefined` folder id. */
 async function resolveFolderId(repo: string): Promise<string> {
-  const name = `${FOLDER_PREFIX}${repo}`
-  const folders = (await api.chatFolders()) as Array<{ id: string; name: string }>
-  const existing = Array.isArray(folders) ? folders.find((f) => f.name === name) : undefined
-  if (existing?.id) return existing.id
-  const created = (await api.createChatFolder(name)) as { id: string }
-  return created.id
+  const id = await ensureChatFolder({
+    list: () => api.chatFolders(),
+    create: (name) => api.createChatFolder(name),
+    name: `${FOLDER_PREFIX}${repo}`,
+  })
+  if (!id) throw new Error('Chat folder create returned no id')
+  return id
 }
 
 /** Identity of one investigable item, for state that must not follow the user to

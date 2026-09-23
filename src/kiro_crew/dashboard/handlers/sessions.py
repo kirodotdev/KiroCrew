@@ -71,7 +71,7 @@ from kiro_crew.history import (
 )
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
-from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.link import _in_namespace, canonical_key
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
@@ -1147,6 +1147,63 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     return keys
 
 
+#: Session namespaces whose transcripts are a machine run rather than a conversation
+#: anyone addressed. This membership is a PRESENTATION judgement for one pane, not a
+#: shared roster: two other modules carry similar-looking tuples that answer different
+#: questions, and none of the three agree.
+#:
+#: * ``handlers/_shared.py`` — colon-only, wf-family only, to dispatch a memory-mode
+#:   lookup. Includes ``wf-scope``.
+#: * ``handlers/cron.py`` — colon-only, wf-family plus ``subagent``, to answer whether a
+#:   session is live and shared. Omits ``wf-scope``; suspected pre-existing gap in that
+#:   predicate rather than a deliberate exclusion.
+#: * this one — matches PERSISTED folded keys via ``_in_namespace``, adds ``secretary``
+#:   and ``channel``, and deliberately excludes ``cron``, ``side`` and ``taskrunner``
+#:   because each of those holds conversations a reader started.
+#:
+#: So do not hoist the three into one constant: it would force a shared meaning none of
+#: them has, and the next namespace would have to be correct for all three at once.
+#:
+#: It is spelled literally rather than derived from
+#: ``messaging.link._TELEMETRY_LOCAL_PREFIXES`` because that registry exists to bound
+#: telemetry label cardinality, and ``wf-unpooled``, ``wf-worker`` and ``wf-scope`` are
+#: all live session keys absent from it — a derived filter cannot see them.
+#:
+#: Absent on purpose:
+#:
+#: * ``dashboard`` and the channel namespaces (``slack``, ``discord``, …) — the
+#:   reader's own conversations.
+#: * ``cron`` — a job without ``hide_in_chat`` backs a real chat slot, and the key
+#:   does not record which kind wrote it.
+#: * ``side`` — the slot's own side panel, which the reader typed into; ``sel.py``
+#:   attributes ``side:`` to the ``dashboard`` surface for that reason.
+#: * ``taskrunner`` — ``POST /api/taskrunner/{id}/to-chat`` opens a real chat slot on
+#:   ``taskrunner:<task_id>:chat:<token>`` and titles it ``Plan: <task_id>``, so the
+#:   namespace holds conversations as well as runs and the key cannot reliably tell
+#:   them apart. Listing a plain ``taskrunner_`` run is the declared residual, and it
+#:   is the safe one: showing a machine row costs less than hiding a conversation.
+#:
+#: Anything not named here stays listed, which is the direction every residual in
+#: this filter points.
+_MACHINE_NAMESPACES: tuple[str, ...] = (
+    # fmt: off
+    "subagent", "secretary", "channel",
+    "wf", "wf-pool", "wf-unpooled", "wf-worker", "wf-author", "wf-scope"
+    # fmt: on
+)
+
+
+def _is_machine_only_session(key: str) -> bool:
+    """True when *key* sits in a namespace no user ever addressed directly.
+
+    Matched through ``_in_namespace`` because this reads a PERSISTED name:
+    ``history._safe_key`` folds ``subagent:<id>`` to the stem ``subagent_<id>``, so
+    the colon spelling every other subagent guard in the tree uses can never match
+    here. That fold is the whole defect this filter repairs.
+    """
+    return any(_in_namespace(key, ns) for ns in _MACHINE_NAMESPACES)
+
+
 async def api_sessions(request: web.Request) -> web.Response:
     """GET /api/sessions — list conversation session files.
 
@@ -1162,6 +1219,13 @@ async def api_sessions(request: web.Request) -> web.Response:
         both would silently skip the user's active conversations if this
         endpoint decided on their behalf. Only the caller rendering the
         complement of the open tabs asks for it.
+      - ``user_only``: when truthy, drop sessions whose key is in a machine-only
+        namespace (see :data:`_MACHINE_NAMESPACES`). Opt-in for the same reason as
+        ``exclude_open``: a subagent or workflow transcript is still a session the
+        memory-consolidation and recents callers must see. Only the sidebar's
+        Older-sessions pane asks, because it is the surface that presents these
+        rows as a LIST OF CONVERSATIONS — and a machine transcript carries no
+        title, so it renders its own storage key as the row label there.
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
@@ -1178,6 +1242,7 @@ async def api_sessions(request: web.Request) -> web.Response:
         offset = 0
     want_preview = (request.query.get("preview") or "").lower() in ("1", "true", "yes")
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
+    user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
     # list_sessions() globs, stats, and reads the first line of EVERY session file
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
@@ -1197,6 +1262,8 @@ async def api_sessions(request: web.Request) -> web.Response:
             for s in all_sessions
             if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
         ]
+    if user_only:
+        all_sessions = [s for s in all_sessions if not _is_machine_only_session(s.get("key", ""))]
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
     # one list. The client advances its offset by the number of rows it received,
     # so filtering on its side instead would skip or repeat rows across pages.

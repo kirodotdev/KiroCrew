@@ -170,13 +170,16 @@ class TestF3IdentityWiring:
         src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
         text = src.read_text(encoding="utf-8")
         assert 'event_type="edited"' in text
-        assert "_persist_dist_id" in text
+        # Renamed from _persist_dist_id: the same best-effort writeback now also
+        # persists public_url/profile/region/lifecycle, so a dashboard deploy
+        # flips its own card instead of relying on the agent to do it.
+        assert "_persist_deployment" in text
 
     def test_writeback_flows_result_distribution_id(self):
         from pathlib import Path
         src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
         text = src.read_text(encoding="utf-8")
-        idx = text.index("_persist_dist_id")
+        idx = text.index("_persist_deployment")
         window = text[idx - 500: idx + 900]
         assert 'result.get("distribution_id")' in window or \
                'result.get("distribution_id", "")' in window

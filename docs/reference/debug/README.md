@@ -29,7 +29,7 @@ tool listed in core would spend context in every request of every session foreve
 | "User denied tool execution" on a call nobody cancelled | `debug_refusals` | The real class. `unverifiable_path` means retry; `sensitive_path_match` means stop |
 | Calls are refused at random, several per hour | `debug_refusals` | The `by_class` histogram. A pile of `unverifiable_path` is resolver contention, not policy |
 | Everything is slow and nothing is obviously wrong | `debug_threads` mode=`now` | Run-queue wait against GIL wait. High run-queue wait is a busy host; low run-queue wait beside high GIL wait is GIL contention |
-| One process is eating the box | `debug_processes` | cpu %, rss, thread states, and `gil_saturated_hint` for a process pinned near one core with threads in futex wait |
+| One process is holding a lot of memory | `debug_processes` | rss, thread states, fds and cwd per node. No CPU rate: those columns are deltas between two rosters and this read keeps none, so take contention to `debug_threads` |
 | Sessions closed but processes are still alive | `debug_processes` `orphan_only=true` | The reaper's own orphan verdict, computed by the same function the reaper uses |
 | The loop stalled and a dump was written | `debug_threads` mode=`dumps` | Lists the watchdog's faulthandler dumps; `read=<name>` returns one, scrubbed |
 | A file changed at a timestamp and nobody knows why | `debug_snapshots` `around=<ts> radius=5m` | The recorded series and event rows around that second |
@@ -96,16 +96,17 @@ as metadata and never as bytes; faulthandler dumps are written by C code and can
 be redacted at write time, so they stay in the fenced directory and are scrubbed on
 read-back. Output is capped at 64 KB with a cursor.
 
-## Not yet answered
+## What these tools do not answer
 
-`debug_threads`, `debug_processes` and `debug_snapshots` need `kiro_crew.diag`,
-which lands in two sibling changes. Until then the routes answer HTTP 501 with
-`{"error": "diag not available in this build"}` and the tools relay it verbatim —
-you can tell "this build cannot answer yet" from "the answer is nothing".
+Live path-gate counters (probes, cache hits, budget timeouts, current TTL) are not
+exposed: there is no `path_gate_stats()` accessor for the recorder to register as a
+source, so `debug_refusals` classifies budget timeouts after the fact from the
+security event log and reports `live.available: false`. That block becomes real when
+the accessor exists.
 
-Live path-gate counters (probes, cache hits, budget timeouts, current TTL) are
-deferred: `security/paths.py` is being changed by concurrent TTL and positive-cache
-work, so an accessor added now would count the wrong thing. `debug_refusals`
-classifies budget timeouts after the fact from the security event log and reports
-`live.available: false` meanwhile. A follow-up change adds `path_gate_stats()`, the
-recorder registers it as a source, and that block becomes real.
+A build that does not carry `kiro_crew.diag` cannot answer `debug_threads`,
+`debug_processes` or `debug_snapshots` at all. Those routes answer HTTP 501 with
+`{"error": "diag not available in this build"}` and the tools relay it verbatim, so
+"this build cannot answer" stays distinguishable from "the answer is nothing".
+`debug_gateway` reports the same absence in its `recorder` block, and it and
+`debug_refusals` answer on every build.

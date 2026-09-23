@@ -146,7 +146,7 @@ Module responsibilities:
 
 | Module | Responsibility |
 |--------|----------------|
-| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; the `fargate` arm requires an ECS task target and the `ssm` arm refuses one (§16); every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
+| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; the `fargate` arm requires an ECS task target and the `ssm` arm refuses one (§16); every mutation re-reads the file and writes atomically while holding a lock keyed by the registry's path and shared by every registry object over it, so two objects in one gateway cannot clobber each other; a separate CLI process is outside that lock and always reads a whole file, but a mutation it interleaves can still be lost. |
 | `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). A port counts as free only when it is free on **every** loopback address (`127.0.0.1` and `::1`), since the forward binds one family and a foreign listener on the other leaves `localhost:<port>` ambiguous; an address the host cannot assign at all (`EADDRNOTAVAIL`/`EAFNOSUPPORT`/`EPROTONOSUPPORT`, e.g. IPv6 disabled) reads as free rather than occupied, while a probe that could not be *run* (`EMFILE` and friends) propagates rather than being coerced to either answer. A single-address primitive (`_is_addr_free(port, host)`) answers the narrower "did *this* forward's own address come free" question that orphan reclaim asks. The probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use". |
 | `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. |
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
@@ -647,7 +647,12 @@ Every configured row carries separate source and transport badges from the
 instance record. `connection_method="ssm"` shows **SSM**; every other transport
 shows **SSH**. A record whose persisted `provisioner_id` is `aws_ec2` also shows
 **EC2**, independently of launch-job history. `provisioner_id` is stamped by
-`register_instance` on each EC2 registration and relaunch; a record created
+`register_instance` on each launch registration and relaunch, and carries the
+lane that created the box: `aws_ec2` for the EC2 lane, which is the parameter's
+default, and `aws_fargate` for a Fargate task. The two are separate from
+`connection_method` because a Fargate task is reached over the SSM transport
+without being an EC2 instance, so the pair `connection_method="fargate"` with
+`provisioner_id="aws_fargate"` is the ordinary Fargate row. A record created
 before the field existed carries `""` until its next relaunch, and until then
 the launch-job correlation supplies the EC2 badge and posture. A hand-added
 record with no known provisioner shows only its transport rather than being
@@ -2187,7 +2192,85 @@ be the defect the field replaces.
 
 ### 16.6 Seam
 
-`FargateEngine.register()` (`src/kiro_crew/cloud/fargate_engine.py`) is a
-deliberate no-op: a launched task is not added to this registry, so a `fargate`
-record is created by hand (Settings, the API or the CLI) with the task's ECS
-target. Tracked in #12511.
+`FargateLaunchEngine.register()` (`src/kiro_crew/cloud/fargate_engine.py`) adds a
+launched task to this registry, so a `fargate` record is normally created by the
+launch rather than by hand; Settings, the API and the CLI remain the way to add one
+for a task launched some other way, or to repair a launch whose registration did
+not complete.
+
+The launcher holds a task ARN, which this registry does not address, so `register`
+resolves a target before it writes one: it polls `ecs:DescribeTasks` for the crew
+container's `runtimeId` (`REGISTER_TARGET_POLL_SECONDS`, up to
+`REGISTER_TARGET_TIMEOUT_SECONDS` of ELAPSED time on a monotonic clock, with the
+last sleep cut to the remaining budget so the ceiling is the documented number and
+not that number plus one round trip per poll, returning on the first read that
+carries one), composes `ecs:<cluster>_<task-id>_<runtime-id>` from the task's own
+coordinates, and reads it back through `split_ecs_target` before handing it to
+`connect.register_instance(connection_method="fargate", remote_port=FRONT_PORT,
+provisioner_id="aws_fargate")`. The port is passed explicitly because
+`register_instance` defaults to the stock dashboard port, which nothing in the task
+listens on (§16's field notes). The provisioner id is passed explicitly for a
+different reason: it is persisted source metadata, not a dispatch key. The engine
+driving a launch is resolved from the launch job's own provisioner id and never from
+a registry record, so this stamp selects nothing; what reads it is the dashboard's
+crew list, which captions a row by it and picks the lifecycle guidance and Remove
+warning it shows. A Fargate task left with the EC2 default is therefore presented as
+an EC2 instance and its owner pointed at the wrong console.
+
+An absence is not a death until the task has been seen. `RunTask` and
+`ecs:DescribeTasks` are eventually consistent, so a task accepted moments ago is
+legitimately missing from the first read; the poll waits through an absence that
+precedes any sighting and treats only a DISAPPEARANCE -- an absence after a sighting
+-- as terminal. Calling the first case gone would fail the launch of a task that
+goes on to start and bill, and because the failed step is CONNECT rather than
+PROVISION the provision rollback does not run, so nothing would stop it.
+
+`FargateLaunchEngine.teardown()` removes each stopped task's record, after ECS
+accepts the stop. `register` is this lane's last launch step, so a cancel observed
+just after it unwinds through teardown with the row already present, and a stopped
+task that keeps its row leaves a crew list entry whose target resolves to nothing.
+The removal is `connect.unregister_ecs_task(cluster, task_id)`, which finds the row
+by reading each ECS target back through `split_ecs_target` and comparing cluster and
+task id: a teardown holds the task ARN and never the runtime id, so it cannot match a
+whole target, and a `ecs:<cluster>_<task-id>_` prefix test would let cluster `crews`
+remove a row belonging to cluster `crews_eu`. This is the Fargate counterpart of the
+EC2 lane's `cloud destroy` unregistration, which matches on the whole `ssm_target`
+because for that lane the target IS the instance id.
+
+A target is composed only from a task that is actually serving, and every state
+after `RUNNING` is refused before that point. ECS runs a task through
+`PROVISIONING`, `PENDING`, `ACTIVATING`, `RUNNING`, `DEACTIVATING`, `STOPPING`,
+`DEPROVISIONING`, `STOPPED`; the three after `RUNNING` are billable while nothing is
+listening, because the ENI is being torn down, and the container keeps its
+`runtimeId` through all of them. So neither the presence of a runtime id nor
+`TaskSighting.is_running` can decide this: that property answers a BILLING question
+and admits every state but `STOPPED`, which is right for the teardown warning it
+serves and wrong here. `TaskSighting.is_serving` answers the reachability one, and
+`is_past_running` separates "not serving yet" from "never serving again" so a
+`PENDING` task is polled while a `STOPPING` one is refused. `desiredStatus` counts
+too: a task ECS has been told to stop is on that path even while `lastStatus` still
+says `RUNNING`.
+
+Idempotency is `register_instance`'s own: it matches an existing record by
+`ssm_target`, so registering the same task twice updates that record in place and
+preserves its id, allocated local port, TTL and `was_connected`.
+
+Which failures are fatal follows the task, not the lane. A task that is gone or past
+running -- any of the four states from `DEACTIVATING` on, or one ECS no longer lists
+-- raises `RuntimeError` and fails the launch: there is no running crew behind it to
+add by hand and none to tear down, so reporting the launch as done would leave the job
+green for something unreachable. Every other failure raises
+`launch_job.RegistrationUnavailable`, which the launcher records on the connect step
+while still reporting the task as launched -- a denied `ecs:DescribeTasks`, a
+container still starting at the budget, coordinates that form no target, and a
+registry write that declined. The task may be running and billing in those, so the
+remedy is to add it here by hand or tear it down, and a launch reported as failed
+would describe the one thing that did work as the thing that broke. A failed read
+counts as may-be-running, so a missing permission never reports a live crew as dead.
+
+That non-fatal path writes the failed connect step and the terminal status in ONE
+save. A failed connect step beside a non-terminal status is the combination
+`reap_orphans` reads as an interrupted launch, and it rewrites the status to `FAILED`
+-- so persisting the step on its own would leave a window where a restart turns the
+intended `DONE` into a red card over a running crew, which is the outcome this whole
+path exists to avoid.

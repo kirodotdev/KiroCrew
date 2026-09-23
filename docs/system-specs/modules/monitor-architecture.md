@@ -869,11 +869,12 @@ lifecycle stages, in different shapes:
 | `GET /api/session-tool-policy` | on request | the raw persisted rule | deliberately raw, so an operator can see a stale spelling and re-key it |
 | a hand-written block in an on-disk profile | the backend reads the file itself | unknown to this repo | **no** |
 
-The last row is what settles it. `acp/kas_agents.py` states the boundary: a
-hand-written block "is not ignored, just not Crew's to relay: it lives in the profile
-on disk, which the backend reads itself when Crew is not injecting an agent over the
-wire." No code here composes that file, so no migration can expand a retired name in
-it and nothing can warn the operator holding one.
+The last row is what settles it. `acp/kas_agents.py` projects an on-disk
+`permissions` block onto the wire through `kas_permissions.merge_user_permissions`,
+which relays the author's rules verbatim or not at all -- it intersects them with the
+governance ceiling and never rewrites one. No code here composes that file either, so
+no migration can expand a retired name in it and nothing can warn the operator holding
+one.
 
 So the best achievable end state for renaming a published tool is a known silent
 fail-open that cannot be closed -- not a step on the way to a complete job, but the

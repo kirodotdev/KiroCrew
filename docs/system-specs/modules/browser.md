@@ -785,11 +785,24 @@ host still goes to the native view. While the gateway is launching, the panel
 shows an opening state; on success the CLI view takes the panel, and the framed
 dashboard's own URL bar, tab bar and remote input carry navigation from there —
 the panel adds no second address bar beside a surface that already has one. The
-view header names this chat's browser by its `panel-…` session; one sentence
-under it says how the next site is opened (the padlock above the page unlocks
-the frame's own address bar; the monitor button brings the preview bar back)
-and is dismissed once per browser; and when the answer says the reveal did not
-attach (`attached: false`), one line names the session to pick in the frame's
+view header names the session THIS CHAT LAUNCHED into, by its `panel-…` name,
+and states that as a launch fact ("Opened from this chat") rather than as
+ownership of what the frame is showing (#5940). The distinction is load-bearing
+because the reveal above is one machine-wide switch: an agent or the CLI opening
+a page for another chat's session, or a second dashboard tab, moves the single
+viewport with no signal this panel can observe. A header reading "this chat's
+browser" therefore described, routinely, a page the reader was not looking at.
+Naming the session the frame is ACTUALLY on would need the view status to carry
+it — `/api/browser/view` answers `status`, `url`, `port` and `reason`, and the
+frame is cross-origin, so the panel has no other source — and that field does not
+exist yet; the open half of #5940 owns it. A window event between mounted panels
+is NOT a substitute: the dashboard mounts one panel per browsing context (every
+`SidePanel` is passed the single active slot), so it would reach no listener, and
+none of the supersedings above is a mounted panel. One sentence
+under the header says how the next site is opened (the padlock above the page
+unlocks the frame's own address bar; the monitor button brings the preview bar
+back) and is dismissed once per browser; and when the answer says the reveal did
+not attach (`attached: false`), one line names the session to pick in the frame's
 sidebar — said only in that case. On
 failure the panel hands back to the preview body and renders the gateway's text
 through `ErrorNotice` (dismiss on the notice, one retry action). A URL with a

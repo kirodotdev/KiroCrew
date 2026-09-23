@@ -141,16 +141,14 @@ already counted. `names_omitted`, `models_omitted` and each tool row's
 labels that exist, and `names_omitted_saturated`, `models_omitted_saturated` and
 `servers_omitted_saturated` say the figure has become a floor rather than a total.
 
-**A cold fold holds a chunk, not the file.** Five folds consume the same entries,
-so a single generator would be exhausted by the first of them and the span has to
-be materialized. Materializing the WHOLE span is what a cold fold does most often
--- with no reusable bundle the range starts at seq 1, which is the ordinary first
-read for any session -- so the pass is taken `FOLD_CHUNK_ENTRIES` at a time: one
-pass over the file, with what is held bounded. Folding a span in pieces is the
-same value as folding it whole, because `advance` is seq-anchored and each chunk
-is strictly after the last, and each checkpoint takes only the part of a chunk it
-has not already consumed -- which is what lets one chunk serve every fold sitting
-at different seqs.
+**A cold fold holds one entry, not the file.** A cold fold is the ordinary first
+read for any session -- with no reusable bundle the range starts at seq 1 -- so what
+that pass holds is what bounds the read. The projection kernel takes the tail as a
+STREAM and folds each entry through every registered fold as it arrives, so one pass
+over the file serves all of them and nothing is materialized. Folding the entries one
+at a time is the same value as folding the span whole, because each fold drops an
+entry at or below its own watermark inside the kernel's fold step -- which is what
+lets one pass serve folds sitting at different seqs.
 
 ## 3. The projections
 
@@ -833,8 +831,26 @@ already names:
 
 ```
 <store dir>/projections/<fold>.json
-{"v", "unit", "origin", "first_seq", "fold", "seq", "prefix_sha", "prefix_records", "state"}
+{"v", "key", "state_version", "watermark",
+ "identity": {"unit", "origin", "first_seq"},
+ "witness": {"seq", "prefix_sha", "prefix_records"},
+ "state"}
 ```
+
+The envelope is the projection kernel's (`kiro_crew.projection.checkpoint`), and this
+package supplies the two blocks inside it. The `identity` block holds the facts a
+savepoint must MATCH to describe this log, compared verbatim by the kernel and never
+interpreted by it. The `witness` holds the evidence a LIVE check needs, which cannot
+be equality: a reader cannot state a record count before opening the file that states
+it, so a digest placed in the identity block would refuse every savepoint carrying
+one. The kernel hands the witness to the adapter's `admit` once every equality check
+has passed. `v` is the kernel's envelope version; `state_version` is the folds' own
+`FOLD_STATE_VERSION`, which `CHECKPOINT_VERSION` names.
+
+A savepoint written before the witness existed carries none, `admit` refuses an empty
+one, and the payload is DISCARDED and cold-folded rather than migrated -- and since
+the file name did not change, the cold fold's own write replaces it instead of leaving
+it for a collector that does not exist.
 
 One file per fold rather than one for all five, so a payload this build cannot
 read costs that fold its savepoint instead of costing all of them, and so a caller
@@ -854,14 +870,15 @@ each rejection as "the fold still lands on the cold answer".
 **An append-only prefix never invalidates one.** The entries a savepoint consumed
 cannot change, so folding what came after reaches what a cold fold reaches -- the
 section 2 equality, now with a file behind it. Four things break it, and each is
-checked before a file is used:
+checked before a file is used. The first two are equality on the identity block; the
+last two read the live log against the witness:
 
-| check | what it catches |
-|---|---|
-| `origin` | a unit removed and recreated under the same id. Its seqs start again, so once the new file grows past the stored seq a seq check alone passes. It is the same value `SessionProjections.origin` compares, spelled once in `log_origin`, because two spellings of "same log" could disagree and the lenient one would fold a retired file's state onto a live file's bytes. |
-| `first_seq` | the log lost its FRONT. Retention deletes whole segments off the oldest end, so a cold fold now folds a window while the savepoint still counts entries that are gone. The savepoint's answer is the one no reader can reproduce, so it is the one that is retired. |
-| `seq` vs the log's end | a store SHORTER than the savepoint. Mostly caught by the two above, and checked on its own because a fold resumed past the end of a file is the one state no later read recovers from. |
-| `prefix_sha` | an entry BELOW the savepoint's seq that changed after it was folded. The three checks above read the log's identity, its front and its length, and none of them reads the consumed prefix -- so without this one a savepoint and a cold fold disagree in exactly one case, and the savepoint is the answer that looks clean. `store._iter_entries` documents that a damaged interior line is SKIPPED on purpose, so a cold fold silently omits that entry while the savepoint keeps the value it folded. The digest is over the RAW RECORD BYTES of the consumed prefix, so it catches a rewritten line, a newly damaged one, and a newly readable one alike. It is checked TWICE on a read that resumes: once before the pass, and again after it, because the pass consumes entries above the prefix and damage landing in between would otherwise leave the served state carrying a record the file no longer yields. The second check is the same one -- `checkpoint.resumed_prefix_still_verifies` re-runs the load rather than re-implementing the comparison -- and a mismatch retries cold through the same path an identity change uses. |
+| check | where | what it catches |
+|---|---|---|
+| `origin` | identity | a unit removed and recreated under the same id. Its seqs start again, so once the new file grows past the stored seq a seq check alone passes. It is the same value `SessionProjections.origin` compares, spelled once in `log_origin`, because two spellings of "same log" could disagree and the lenient one would fold a retired file's state onto a live file's bytes. |
+| `first_seq` | identity | the log lost its FRONT. Retention deletes whole segments off the oldest end, so a cold fold now folds a window while the savepoint still counts entries that are gone. The savepoint's answer is the one no reader can reproduce, so it is the one that is retired. |
+| `seq` vs the log's end | witness | a store SHORTER than the savepoint. Mostly caught by the two above, and checked on its own because a fold resumed past the end of a file is the one state no later read recovers from. The witness seq must also equal the `watermark` the state resumes at: a payload that disagrees with itself about its own boundary cannot say which is right. |
+| `prefix_sha` | witness | an entry BELOW the savepoint's seq that changed after it was folded. The three checks above read the log's identity, its front and its length, and none of them reads the consumed prefix -- so without this one a savepoint and a cold fold disagree in exactly one case, and the savepoint is the answer that looks clean. `store._iter_entries` documents that a damaged interior line is SKIPPED on purpose, so a cold fold silently omits that entry while the savepoint keeps the value it folded. The digest is over the RAW RECORD BYTES of the consumed prefix, so it catches a rewritten line, a newly damaged one, and a newly readable one alike. It is checked TWICE on a read that resumes: once before the pass, and again after it, because the pass consumes entries above the prefix and damage landing in between would otherwise leave the served state carrying a record the file no longer yields. The second check is the same one -- `checkpoint.resumed_prefix_still_verifies` re-runs the load rather than re-implementing the comparison -- and a mismatch retries cold through the same path an identity change uses. |
 
 **The identity is also read AFTER the pass, and a change discards the fold.**
 `iter_from` opens the log by NAME, so a unit removed and recreated between the
@@ -1008,14 +1025,17 @@ The size cap is a BACKSTOP on section 2's bounds, not a bound itself: a fold tha
 grew unbounded state loses its savepoint instead of writing an unbounded file on
 every read.
 
-**Changing what a fold stores bumps `CHECKPOINT_VERSION`, and a test enforces
-it.** `CHECKPOINT_VERSION` and `_state_matches_fold` both check the payload's
+**Changing what a fold stores moves `FOLD_STATE_VERSION`, and a test enforces
+it.** The number lives in `projection.py`, beside the folds whose stored shape it
+describes, and the projection kernel reads it off each definition;
+`checkpoint.py` re-exports it as `CHECKPOINT_VERSION`, the name its files use. It
+and `_state_matches_fold` both check the payload's
 SHAPE, so the case neither sees is a fold whose MEANING changes while its keys do
 not -- a counting fix in `usage` or `status` being the likely one. The old build's
 savepoint then resumes onto the new logic, and the long sessions this exists to
 speed up are the ones that keep serving pre-fix numbers for the life of the unit,
 with no in-product way to retire the file because the tree is fenced from the
-agent. So the rule is: any change to what a fold's `start` or `step` stores bumps
+agent. So the rule is: any change to what a fold's `start` or `step` stores moves
 the version, which retires every savepoint to a cold fold at one refold each. The
 rule is not left as this paragraph --
 `test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move` digests

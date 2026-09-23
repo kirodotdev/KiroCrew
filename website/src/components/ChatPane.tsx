@@ -84,6 +84,10 @@ import { i18nT } from '../i18n/t'
  * s.dashboard.slots. Server reads/writes go through React Query + the api client.
  */
 
+/** Variables of the composer upload mutation: the files, the slot they were
+ *  picked in, and the AbortController that can end the request. */
+type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
+
 export default function ChatPane({
   slotKey,
   focused,
@@ -646,8 +650,15 @@ export default function ChatPane({
   // must follow the files' slot, not the screen: paths stage into that slot's
   // live or parked composer, failures into that slot's banner (or, after
   // unmount, its transcript) — see stagePendingFiles / reportUploadFailure.
+  //
+  // The variables also carry the request's own AbortController, so the
+  // composer's cancel control can abort it. The set holds EVERY live one: the
+  // disabled attach button is not the only entry point, since paste, a drop
+  // and a Sketch insert all reach `uploadFiles` ungated, so two requests can be
+  // in flight at once.
+  const uploadAbortsRef = useRef(new Set<AbortController>())
   const uploadMutation = useMutation({
-    mutationFn: ({ files }: { files: File[]; forSlot: string }) => api.uploadFiles(files),
+    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal),
     // api.uploadFiles does NOT throw on a server refusal (unsupported type,
     // signature mismatch, over-cap): it resolves with { paths: [], error }.
     // So a refusal lands here in onSuccess, not onError — surface res.error
@@ -662,13 +673,22 @@ export default function ChatPane({
     // reading "Failed to fetch", which is not user-facing copy, so that case
     // gets the pane's shared connectivity string instead.
     onError: (err: unknown, { forSlot }) => {
+      // A cancel the user asked for is not a failure: it raises no banner.
+      if ((err as Error | undefined)?.name === 'AbortError') return
       const message = (err as Error)?.message
       const reason = (!message || err instanceof TypeError)
         ? i18nT('pages.chatPage.connection_error')
         : message
       reportUploadFailure(i18nT('pages.chatPage.upload_failed_error', { error: reason }), forSlot)
     },
+    onSettled: (_data, _err, { controller }: UploadVars) => {
+      uploadAbortsRef.current.delete(controller)
+    },
   })
+  /** Abort every composer upload in flight. */
+  const cancelUpload = useCallback(() => {
+    uploadAbortsRef.current.forEach(controller => controller.abort())
+  }, [])
   const uploadFiles = useCallback((files: File[]) => {
     if (!files.length) return
     // Clear FIRST, so a refusal from the previous attempt cannot stay on
@@ -683,7 +703,9 @@ export default function ChatPane({
     // already takes, and the one this change just wired to the banner.
     const big = files.find((f) => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
-    uploadMutation.mutate({ files, forSlot: slotKeyRef.current })
+    const controller = new AbortController()
+    uploadAbortsRef.current.add(controller)
+    uploadMutation.mutate({ files, forSlot: slotKeyRef.current, controller })
   }, [uploadMutation, setUploadError])
 
   // Classify BEFORE acting (issue #743): a dropped folder inserts its path
@@ -1702,6 +1724,7 @@ export default function ChatPane({
           }}
           project={paneSlot?.project ?? ''}
           onUploadFiles={uploadFiles}
+          onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}

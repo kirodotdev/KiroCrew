@@ -18,7 +18,7 @@ For each item, use the appropriate tool:
 
 | Kind | How to check |
 |------|------|
-| url | `web_fetch({ url: "<target>" })` |
+| url | Try `web_fetch({ url: "<target>" })` first. A **401**, or a **403** that points at signing in (a login form, a sign-in redirect, a `WWW-Authenticate` header), means an anonymous reader was refused and retrying the same tool will never work: look through the tools you actually have for one that reads a web page with the user's own signed-in session, and re-check with that. Names vary between servers — find the one that reads a page, do not guess at a name. If no such tool is mounted, record the failure reason as `needs-auth`. A **403** that says nothing about signing in is a bot, rate or region block: record `access-denied`, and do not claim a login would fix it. |
 | custom | Decide based on the target description — `web_fetch`, or whatever available tool fits best |
 | slack-channel | Read the channel's recent messages since `lastChecked`, then summarize key topics. Use whichever Slack tool you actually have; do not guess at a name. |
 | slack-topic | Search Slack for `<target>`, newest first, and keep results newer than `lastChecked`. Same rule about tool names. |
@@ -142,7 +142,12 @@ Use `perform_pet_action({ action: "notify", summary: "...", pushToChat: true, wa
 ⚠️ **CRITICAL: When marking an item as done or failed, you MUST call perform_pet_action with pushToChat: true and watchItemId AFTER update_watchlist (with notified: true). The user needs to know WHY it was marked done. Never silently mark done without notifying.**
 
 **Proactive suggestions** (only when meaningful, via perform_pet_action notify with watchItemId):
-- A watched URL has returned an error for 3+ consecutive checks → `perform_pet_action({ action: "notify", summary: "<label> has been failing to load — the target may be down", pushToChat: true, watchItemId: "<id>", mood: "scared" })` — **only once**. After notifying, add `"nudged": true` to the item's notes via update_watchlist. Do NOT nudge again if notes already has `"nudged": true`.
+- A watched URL has returned an error for 3+ consecutive checks → nudge **only once**, and take the wording from the failure reason; the causes need opposite advice. `summary` is the speech bubble and is capped at 100 chars, so the sentence that explains what to do goes in `chatMessage`, which has no limit:
+  - `needs-auth` → `perform_pet_action({ action: "notify", summary: "<label> needs a login", chatMessage: "<label> is up, but this check has no tool that can read it signed in. Grant a page reader that carries your session, or watch a public page instead.", pushToChat: true, watchItemId: "<id>", mood: "curious" })`. Do NOT say it may be down — it answered, it just refused an anonymous reader.
+  - `access-denied` → `perform_pet_action({ action: "notify", summary: "<label> is up but blocking this check", chatMessage: "<label> answered and then refused the check — a bot, rate or region block. A login will not help. Watch a different page if it keeps refusing.", pushToChat: true, watchItemId: "<id>", mood: "curious" })`.
+  - Any other reason (timeout, 5xx, DNS, empty page) → `perform_pet_action({ action: "notify", summary: "<label> has been failing to load — the target may be down", pushToChat: true, watchItemId: "<id>", mood: "scared" })`.
+
+  After notifying, add `"nudged": true` to the item's notes via update_watchlist. Do NOT nudge again if notes already has `"nudged": true`.
 - 3+ checks no change → Do NOT notify. The user already knows it's being watched. Silence is fine.
 
 **⚠️ DEDUP RULE: Never push the same or substantially similar notification to chat twice. Before calling perform_pet_action with pushToChat, ask yourself: "Did I already tell the user this exact thing?" If the status hasn't changed since the last notification (check `lastResult` vs new result), do NOT notify again. Only notify on NEW information the user hasn't seen.**
@@ -158,7 +163,9 @@ Allowed tools:
 - `perform_pet_action` — notify the user (only when something changed)
 - `read_mochi_file` — the activity log, for the dedup rule above
 - `web_fetch` — fetch any public URL to check its status
+- A page reader that carries the user's session, if the user has connected a server that provides one. Same rule about names: find the one that reads a web page, from the tools you actually have. This is the fallback for an auth refusal above.
 - Slack READ tools, if the user has connected a Slack server. Names vary between servers: find the one that reads a channel, the one that reads a thread, and the one that searches, from the tools you actually have.
 
 ⛔ Slack write tools are forbidden — Mochi must NEVER send messages or modify anything on Slack.
+⛔ Read-only on every server, not just Slack: when you pick a tool by description, pick one that only reads. Never call anything that sends, posts, writes, or changes state — a check looks, it does not act.
 ⛔ Do NOT read DM channel content — skip DM channels entirely.

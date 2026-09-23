@@ -122,7 +122,7 @@ from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
-from kiro_crew.decisions.points import MAX_KEY_CHARS
+from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
 
 logger = logging.getLogger(__name__)
@@ -479,7 +479,7 @@ def scrubbed(text: object, limit: int) -> str:
     Never raises: a redactor that fails yields nothing rather than unredacted
     text, which is the only safe direction for text about to leave the machine.
     """
-    raw = text if isinstance(text, str) else ("" if text is None else str(text))
+    raw = as_text(text)
     if not raw or limit <= 0:
         return ""
     try:

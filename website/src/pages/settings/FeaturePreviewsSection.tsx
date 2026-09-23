@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { DecisionsCard } from './DecisionsCard'
 import { i18nT } from '../../i18n/t'
 
@@ -128,6 +128,7 @@ function crewIntro(): FeaturePreviewIntro {
 export const FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR = 'feature-previews-section'
 export function FeaturePreviewsSection() {
   const navigate = useNavigate()
+  const artifactDeploy = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
   const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
@@ -150,6 +151,31 @@ export function FeaturePreviewsSection() {
       <p className="text-[13px] text-muted mb-2">
         {i18nT('pages.settings.developerPanel.feature_previews_desc')}
       </p>
+      {/* Artifact Deploy ships without a "See what it looks like" intro: the
+          capture pipeline shoots a running pod, and the deploy surface's own
+          screens need a registered AWS profile to show anything real. A card with
+          a toggle and an ingress link is honest; a capture of an empty console
+          would not be worth the media it costs. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.artifact_deploy')}
+          description={i18nT('pages.developer.featurePreviewsTab.artifact_deploy_desc')}
+          checked={artifactDeploy}
+          onChange={v => setPreviewFlag(PREVIEW_ARTIFACT_DEPLOY, v)}
+        />
+        <div className="flex flex-wrap items-center gap-x-4 pt-1">
+          {artifactDeploy && (
+            <button
+              type="button"
+              onClick={() => navigate('/deploy')}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 hover:underline"
+            >
+              {i18nT('pages.developer.featurePreviewsTab.open_artifact_deploy')}
+              <ArrowRight size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </SettingsCard>
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.webhooks')}

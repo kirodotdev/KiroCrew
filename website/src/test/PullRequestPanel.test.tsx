@@ -71,28 +71,6 @@ describe('source read retry policy', () => {
   })
 })
 
-describe('owner-not-configured mutation refusal', () => {
-  it('recognizes the code and swaps in the localized guidance', () => {
-    const denied = apiError({
-      error: 'this action needs a configured owner; set the Owner ID in Settings → Messaging Channels → Slack, then sign in again',
-      code: 'owner_not_configured',
-    })
-    const details = pullRequestErrorDetails(denied)
-    expect(details.ownerNotConfigured).toBe(true)
-    // The localized guidance replaces the server's English prose: the code,
-    // not the prose, is the contract.
-    expect(details.message).toContain('Owner Slack member ID')
-    expect(details.message).toContain('Slack')
-  })
-
-  it('leaves a generic forbidden untouched', () => {
-    const generic = apiError({ error: 'forbidden' })
-    const details = pullRequestErrorDetails(generic)
-    expect(details.ownerNotConfigured).toBe(false)
-    expect(details.message).toBe('forbidden')
-  })
-})
-
 const github: PullRequestSource = {
   provider: 'github',
   url: 'https://github.com/acme/widgets/pull/12',

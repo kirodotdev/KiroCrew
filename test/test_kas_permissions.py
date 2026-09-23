@@ -28,8 +28,13 @@ import pytest
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
     CAPABILITY_BY_TOOL,
+    CEILING_REFS_BY_CAPABILITY,
+    KAS_CAPABILITIES,
+    META_CAPABILITY_EXPANSION,
+    WITHHELD_CAPABILITIES,
     WITHHELD_FROM_AUTO_APPROVE,
     allowed_tools_to_permissions,
+    merge_user_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION, spec_permissions_supported
@@ -366,12 +371,13 @@ class TestTheDiskWriter:
         _seed_kas_permissions(config)
         assert config["permissions"] == existing
 
-    def test_a_stale_block_is_the_accepted_cost_and_the_wire_covers_it(self):
+    def test_a_stale_block_cannot_put_back_a_grant_the_allowlist_dropped(self):
         """Seeding-not-refreshing means the file can lag ``allowedTools``.
 
-        Bounded on purpose: the wire projection derives afresh every session and
-        outranks the file, so the block on disk is what applies when Crew is not
-        injecting an agent at all.
+        Which is why the LIST owns a grant it can express itself: the wire derives
+        from it afresh every session, and a block rule of a shape the derivation
+        could have emitted does not travel beside it. The stale ``web_fetch`` here is
+        exactly what a seeder wrote before the list changed.
         """
         config = self._config(
             allowedTools=["@srv"],
@@ -382,6 +388,23 @@ class TestTheDiskWriter:
         assert to_client_custom_agent("kirocrew", {**config, "prompt": "p"}, "p")[
             "permissions"
         ] == {"rules": [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}]}
+
+    def test_a_stale_block_cannot_outlive_the_ceiling_that_now_withholds_it(self):
+        """The half of "bounded" that matters: the ceiling is re-asked at
+        projection time for the block exactly as it is for the derivation."""
+        config = self._config(
+            allowedTools=["@srv"],
+            permissions={"rules": [{"capability": "web_fetch", "effect": "allow"}]},
+        )
+        _seed_kas_permissions(config)
+        import kiro_crew.acp.kas_agents as kas_agents
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(kas_agents, "may_skip_gate_now", lambda ref: ref == "@srv")
+            out = to_client_custom_agent("kirocrew", {**config, "prompt": "p"}, "p")
+        assert out["permissions"]["rules"] == [
+            {"capability": "mcp", "match": ["srv/*"], "effect": "allow"}
+        ]
 
     def test_the_cli_only_key_is_kept_so_kiro_cli_still_works(self):
         """The spec has to serve both runtimes: KAS ignores what it does not use."""
@@ -562,3 +585,569 @@ class TestTheVersionProbeItself:
             kiro_cli.subprocess, "run", lambda *a, **k: pytest.fail("spawned without a pin")
         )
         assert kiro_cli.installed_kiro_cli_version() is None
+
+
+#: A ceiling that permits everything, and one that permits nothing. Injected
+#: rather than monkeypatched: ``merge_user_permissions`` takes the predicate as an
+#: argument precisely so a test can state the ceiling it means in one place.
+_UNGOVERNED = lambda ref: True  # noqa: E731
+_WITHHOLDS_EVERYTHING = lambda ref: False  # noqa: E731
+
+#: A derived policy to merge into, so every assertion below also shows that the
+#: derivation survives whatever the author's block does.
+_DERIVED = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+
+def _merge(block, ceiling=_UNGOVERNED, derived=None, agent_id="a", allowlist_present=False):
+    """A merge with no ``allowedTools`` list by default -- the pure-KAS shape.
+
+    ``allowlist_present`` is the caller's answer to "does this spec carry an
+    ``allowedTools`` list", and it decides which channel owns a grant both could
+    express (see ``TestTheAllowlistOwnsAGrantItCanExpress``). Most assertions here
+    are about a block with no list beside it, so that is the default; the ones that
+    are about the interaction say so.
+    """
+    return merge_user_permissions(
+        derived,
+        block,
+        ceiling_permits=ceiling,
+        allowlist_present=allowlist_present,
+        agent_id=agent_id,
+    )
+
+
+def _user_rules(policy):
+    """The rules a merge added beside :data:`_DERIVED`, which they precede."""
+    return policy["rules"][: -len(_DERIVED["rules"])]
+
+
+class TestThePureKasAgentIsNoLongerAllAsk:
+    """The defect this merge exists for.
+
+    A spec that authors ``permissions`` and no ``allowedTools`` has nothing to
+    derive from, so the field reached the backend absent -- and absent is not
+    neutral: KAS resolves every unmatched request to ``ask``. The author wrote a
+    policy and got a prompt for each of the calls it covered.
+    """
+
+    def test_an_authored_block_alone_still_produces_a_policy(self):
+        block = {"rules": [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}]}
+        assert _merge(block) == {
+            "rules": [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}]
+        }
+
+    def test_a_block_of_only_denies_travels_with_no_allowlist_at_all(self):
+        block = {"rules": [{"capability": "shell", "match": ["rm *"], "effect": "deny"}]}
+        assert _merge(block)["rules"] == [
+            {"capability": "shell", "match": ["rm *"], "effect": "deny"}
+        ]
+
+    def test_no_block_and_no_allowlist_is_still_no_policy(self):
+        """Absent says "this spec never described auto-approval", which is true."""
+        assert _merge(None) is None
+
+    def test_an_empty_rules_array_adds_nothing(self):
+        assert _merge({"rules": []}, derived=_DERIVED) == _DERIVED
+
+
+class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
+    """Reject, do not repair: a half-accepted block is a policy nobody wrote.
+
+    The half that survives a salvage is the half with no ``deny`` in it, and KAS
+    is stricter still in the same direction -- a profile policy it cannot parse
+    fail-closes its engine to deny-all -- so refusing to forward is also what
+    keeps a malformed block from taking the session with it.
+    """
+
+    @pytest.mark.parametrize("bad", ["", [], 0, ["rules"], True])
+    def test_a_block_that_is_not_an_object_is_refused(self, bad):
+        assert _merge(bad, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("bad", [None, {}, "all", [{"capability": "mcp"}, None]])
+    def test_rules_must_be_an_array(self, bad):
+        assert _merge({"rules": bad}, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "web_fetch",
+            ["web_fetch"],
+            {"capability": "web_fetch"},
+            {"effect": "allow"},
+            {"capability": "web_fetch", "effect": "maybe"},
+            {"capability": "web_fetch", "effect": "ALLOW"},
+            {"capability": "web_fetch", "effect": ["allow"]},
+            {"capability": "web_fetch", "effect": {"allow": True}},
+            {"capability": "web_fetch", "effect": None},
+            {"capability": "typo", "effect": "allow"},
+            {"capability": 7, "effect": "allow"},
+            {"capability": "web_fetch", "effect": "allow", "scope": "session"},
+            {"capability": "web_fetch", "effect": "allow", "match": "srv/*"},
+            {"capability": "web_fetch", "effect": "allow", "match": ["", " "]},
+            {"capability": "web_fetch", "effect": "allow", "match": [1]},
+            {"capability": "web_fetch", "effect": "allow", "exclude": "x"},
+        ],
+    )
+    def test_a_rule_that_does_not_fit_refuses_the_whole_block(self, rule):
+        block = {"rules": [rule, {"capability": "web_search", "effect": "deny"}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("effect", [["allow"], {"allow": True}, {"allow"}])
+    def test_an_unhashable_effect_refuses_the_block_rather_than_raising(self, effect):
+        """The membership test is against a ``frozenset``, so an unhashable value
+        raises ``TypeError`` -- and nothing between here and session creation
+        catches one, so the whole session would abort on a hand-authoring slip. The
+        shape is ordinary: ``match`` and ``exclude`` beside it ARE arrays."""
+        block = {"rules": [{"capability": "web_fetch", "effect": effect}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("policies", ["", 0, False, "dev-shell", {"dev-shell": True}])
+    def test_a_policies_value_that_is_not_an_array_refuses_the_block(self, policies):
+        """``""`` and ``0`` are falsey, so a truth test alone reads a malformed value
+        as "no bundles" and forwards the rules beside it."""
+        block = {
+            "rules": [{"capability": "web_search", "effect": "allow"}],
+            "policies": policies,
+        }
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_an_unknown_key_on_the_block_refuses_it(self):
+        block = {"rules": [{"capability": "web_search", "effect": "deny"}], "mode": "allow"}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_an_unknown_key_is_refused_because_it_may_be_the_narrowing_half(self):
+        """``exclude`` is the shape of the risk: a key this module cannot read may
+        be the part of the rule that makes the grant safe, and relaying the rest
+        without it widens what the author wrote."""
+        narrowed = {"capability": "web_fetch", "effect": "allow", "exclude": ["*.internal"]}
+        assert _user_rules(_merge({"rules": [narrowed]}, derived=_DERIVED)) == [narrowed]
+        future = dict(narrowed, excludeHosts=["*.internal"])
+        assert _merge({"rules": [future]}, derived=_DERIVED) == _DERIVED
+
+    def test_a_policy_bundle_reference_refuses_the_block(self):
+        """``policies`` is well formed, and that is the problem: KAS expands a named
+        bundle inline into allow rules held on the backend, so the grant is not in
+        this block and there is nothing here to intersect with the ceiling. The
+        shipped ``dev-shell`` bundle alone carries shell allows."""
+        block = {
+            "rules": [{"capability": "web_search", "effect": "allow"}],
+            "policies": ["dev-shell"],
+        }
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_an_empty_policies_array_references_nothing_and_is_not_a_refusal(self):
+        block = {"rules": [{"capability": "web_search", "effect": "allow"}], "policies": []}
+        assert _user_rules(_merge(block, derived=_DERIVED)) == [
+            {"capability": "web_search", "effect": "allow"}
+        ]
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"rules": [{"capability": "web_search", "effect": "deny"}] * 201},
+            {"rules": [{"capability": "shell", "match": ["x"] * 65, "effect": "deny"}]},
+            {"rules": [{"capability": "shell", "exclude": ["x"] * 65, "effect": "deny"}]},
+            {"rules": [{"capability": "shell", "match": ["x" * 1025], "effect": "deny"}]},
+        ],
+    )
+    def test_an_oversized_block_is_refused(self, block):
+        """KAS's own compiler records that a condition tree past roughly 114 patterns
+        overflows cedar-wasm's stack, and ``exclude`` patterns are ANDed onto every
+        statement rather than split -- a crash there is a failed session, not a
+        refused rule, so the bound belongs on this side."""
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_a_block_at_the_bounds_still_travels(self):
+        block = {"rules": [{"capability": "shell", "match": ["x"] * 64, "effect": "deny"}] * 200}
+        assert len(_user_rules(_merge(block, derived=_DERIVED))) == 200
+
+    def test_the_refusal_is_reported_at_warning_with_its_reason(self, caplog):
+        """WARNING, not debug: it is the author's own file being declined, and the
+        reason is the only way to find out which rule did it."""
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            _merge({"rules": [{"capability": "web_fetch", "effect": "maybe"}]}, agent_id="kirocrew")
+        assert "refusing its whole `permissions` block" in caplog.text
+        assert "rule 0" in caplog.text
+
+    def test_every_capability_kas_accepts_is_accepted_here(self):
+        """Pinned against KAS's own ``VALID_CAPABILITIES``, so a capability added
+        there is a table edit here rather than a silently refused block."""
+        for capability in KAS_CAPABILITIES:
+            block = {"rules": [{"capability": capability, "effect": "deny"}]}
+            assert _user_rules(_merge(block, derived=_DERIVED)) == [
+                {"capability": capability, "effect": "deny"}
+            ]
+
+
+class TestRule2NarrowingTravelsUnconditionally:
+    """A user who writes ``deny`` is entitled to be obeyed.
+
+    Neither effect can widen anything -- KAS resolves an unmatched request to
+    ``ask`` already -- so there is no ceiling question to ask about them.
+    """
+
+    @pytest.mark.parametrize("effect", ["deny", "ask"])
+    def test_it_travels_even_when_the_ceiling_withholds_everything(self, effect):
+        block = {"rules": [{"capability": "mcp", "match": ["srv/*"], "effect": effect}]}
+        assert _user_rules(_merge(block, _WITHHOLDS_EVERYTHING, derived=_DERIVED)) == [
+            {"capability": "mcp", "match": ["srv/*"], "effect": effect}
+        ]
+
+    @pytest.mark.parametrize("capability", sorted(WITHHELD_CAPABILITIES) + ["all", "filesystem"])
+    def test_it_travels_for_the_families_an_allow_cannot_have(self, capability):
+        """Rule 4 refuses the ALLOW, not the capability: a ``deny`` on ``shell`` is
+        the author making the backend stricter, which is the safe direction."""
+        block = {"rules": [{"capability": capability, "effect": "deny"}]}
+        assert _user_rules(_merge(block, derived=_DERIVED)) == [
+            {"capability": capability, "effect": "deny"}
+        ]
+
+    def test_it_travels_verbatim_with_its_own_match_and_exclude(self):
+        rule = {
+            "capability": "shell",
+            "match": ["git *", "rm *"],
+            "exclude": ["git status"],
+            "effect": "deny",
+        }
+        assert _user_rules(_merge({"rules": [rule]}, derived=_DERIVED)) == [rule]
+
+    def test_a_user_deny_overrides_a_derived_allow_for_the_same_capability(self):
+        """Position carries no meaning in KAS's evaluator -- rules compile to Cedar
+        permit/forbid and the decision is the most restrictive match, deny over ask
+        over allow -- so the derived allow staying in the array is not a leak."""
+        block = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+        merged = _merge(block, derived=_DERIVED)
+        assert merged["rules"] == [
+            {"capability": "web_fetch", "effect": "deny"},
+            {"capability": "web_fetch", "effect": "allow"},
+        ]
+
+    def test_the_authored_rules_come_first_so_the_array_is_safe_either_way(self):
+        """Every derived rule is an ``allow``, so authored-first is also the safe
+        order under a first-match-wins evaluator -- one order correct under both
+        readings beats a proof that only one reading is live."""
+        block = {"rules": [{"capability": "web_search", "effect": "deny"}]}
+        assert _merge(block, derived=_DERIVED)["rules"][0] == {
+            "capability": "web_search",
+            "effect": "deny",
+        }
+
+
+class TestRule3AnAllowTravelsOnlyWhereTheCeilingAlreadyPermitted:
+    """Intersected with the ceiling-derived result, never added to it.
+
+    Both halves of the question -- the capability and the resource -- are asked,
+    and for ``mcp`` they are one question: the resource IS a server, and the
+    ceiling predicate for a server already reads its per-tool rules.
+    """
+
+    def test_an_mcp_allow_travels_when_the_ceiling_permits_that_server(self):
+        block = {"rules": [{"capability": "mcp", "match": ["srv/one"], "effect": "allow"}]}
+        assert _user_rules(_merge(block, derived=_DERIVED)) == [
+            {"capability": "mcp", "match": ["srv/one"], "effect": "allow"}
+        ]
+
+    def test_the_ceiling_is_asked_about_the_server_the_match_names(self):
+        asked: list[str] = []
+
+        def ceiling(ref):
+            asked.append(ref)
+            return True
+
+        block = {"rules": [{"capability": "mcp", "match": ["a/one", "b/*"], "effect": "allow"}]}
+        _merge(block, ceiling)
+        assert asked == ["@a", "@b"]
+
+    def test_one_withheld_server_drops_the_whole_rule(self):
+        """Not rewritten down to its permitted patterns: a rule narrowed by Crew
+        and then relayed is a grant the author did not write."""
+        block = {
+            "rules": [{"capability": "mcp", "match": ["ok/one", "denied/one"], "effect": "allow"}]
+        }
+        assert _merge(block, lambda ref: ref != "@denied", derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("match", [None, [], ["*"], ["**"], ["*/one"], ["sr?/one"]])
+    def test_an_allow_the_ceiling_cannot_be_asked_about_does_not_travel(self, match):
+        """No ``match`` and an empty one both mean every resource to KAS, and a glob
+        in the server part names servers that do not exist yet. There is no server
+        to put to the ceiling, and rule 3 travels only on an affirmative answer."""
+        rule = {"capability": "mcp", "effect": "allow"}
+        if match is not None:
+            rule["match"] = match
+        assert _merge({"rules": [rule]}, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("capability,refs", sorted(CEILING_REFS_BY_CAPABILITY.items()))
+    def test_a_builtin_capability_is_asked_about_every_tool_it_grants(self, capability, refs):
+        asked: list[str] = []
+        block = {"rules": [{"capability": capability, "effect": "allow"}]}
+        _merge(block, lambda r: asked.append(r) or True)
+        assert sorted(asked) == sorted(refs)
+
+    @pytest.mark.parametrize("capability", sorted(CEILING_REFS_BY_CAPABILITY))
+    def test_a_builtin_capability_the_ceiling_withholds_does_not_travel(self, capability):
+        block = {"rules": [{"capability": capability, "effect": "allow"}]}
+        assert _merge(block, _WITHHOLDS_EVERYTHING, derived=_DERIVED) == _DERIVED
+
+    def test_one_withheld_tool_of_a_capability_drops_the_rule(self, monkeypatch):
+        """A capability grants every tool mapped to it, so the ceiling has to clear
+        every one of them -- an inversion keeping a single ref per capability would
+        ask about one and grant the rest."""
+        import kiro_crew.acp.kas_permissions as module
+
+        monkeypatch.setitem(module.CEILING_REFS_BY_CAPABILITY, "web_fetch", ("web_fetch", "fetch2"))
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert _merge(block, lambda ref: ref != "fetch2", derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("capability", ["power", "context", "diagnostics", "sandbox_network"])
+    def test_a_capability_with_no_tool_ref_cannot_be_cleared_so_it_stays_ask(self, capability):
+        """The ceiling speaks in refs. A capability with none has no question to
+        ask, and silence is the fail-closed direction: no rule means prompt."""
+        block = {"rules": [{"capability": capability, "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_the_ref_table_keeps_every_tool_of_a_many_to_one_capability(self):
+        """Two hand-kept tables would answer differently the first time one is
+        extended, so this one is derived -- and it holds a TUPLE, because the source
+        map is many-to-one and an inversion keeping one ref would drop the others."""
+        for tool, capability in CAPABILITY_BY_TOOL.items():
+            assert tool in CEILING_REFS_BY_CAPABILITY[capability]
+        assert sum(len(v) for v in CEILING_REFS_BY_CAPABILITY.values()) == len(CAPABILITY_BY_TOOL)
+
+    def test_a_withheld_allow_is_reported_so_a_missing_grant_is_explainable(self, caplog):
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_permissions"):
+            _merge(block, _WITHHOLDS_EVERYTHING, agent_id="kirocrew")
+        assert "withholds auto-approval for web_fetch" in caplog.text
+
+
+class TestAWithheldAuthoredAllowIsAudited:
+    """A withhold is a permission decision, and this is the ordinary case.
+
+    An authored block is the input the merge exists to read, and a governed host
+    withholding a server is routine -- so the trail the sibling derived path emits
+    deliberately has to cover this path too. Injected rather than imported, for the
+    same reason the ceiling predicate is.
+    """
+
+    def _events(self, block, ceiling, allowlist_present=False):
+        seen: list[tuple[str, str, str]] = []
+        merge_user_permissions(
+            None,
+            block,
+            ceiling_permits=ceiling,
+            audit_decision=lambda refs, outcome, reason: seen.append((refs, outcome, reason)),
+            allowlist_present=allowlist_present,
+            agent_id="kirocrew",
+        )
+        return seen
+
+    def _withholds(self, block, ceiling, allowlist_present=False):
+        return [
+            (refs, reason)
+            for refs, outcome, reason in self._events(block, ceiling, allowlist_present)
+            if outcome == "withheld"
+        ]
+
+    def test_a_withheld_mcp_server_is_reported_with_its_ref(self):
+        block = {"rules": [{"capability": "mcp", "match": ["denied/one"], "effect": "allow"}]}
+        assert self._withholds(block, _WITHHOLDS_EVERYTHING) == [("@denied", "governance ceiling")]
+
+    def test_a_withheld_builtin_capability_is_reported_with_its_tool_ref(self):
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert self._withholds(block, _WITHHOLDS_EVERYTHING) == [
+            ("web_fetch", "governance ceiling")
+        ]
+
+    def test_only_the_servers_the_ceiling_refused_are_named(self):
+        block = {
+            "rules": [{"capability": "mcp", "match": ["ok/one", "denied/one"], "effect": "allow"}]
+        }
+        assert self._withholds(block, lambda ref: ref != "@denied") == [
+            ("@denied", "governance ceiling")
+        ]
+
+    def test_an_unaskable_allow_is_reported_rather_than_dropped_in_silence(self):
+        """Two withholds have no ceiling answer to report: an ``mcp`` allow whose
+        ``match`` bounds no server, and a capability with no tool ref. Both are
+        ordinary authored shapes, so neither may be the one drop with no trail."""
+        unbounded = {"rules": [{"capability": "mcp", "effect": "allow"}]}
+        assert self._withholds(unbounded, _UNGOVERNED) == [
+            ("mcp", "unbounded `match`, ceiling unaskable")
+        ]
+        no_ref = {"rules": [{"capability": "power", "effect": "allow"}]}
+        assert self._withholds(no_ref, _UNGOVERNED) == [("power", "no tool ref, ceiling unaskable")]
+
+    def test_what_travels_is_recorded_too_not_only_what_is_refused(self):
+        """A log of refusals alone cannot answer "why was this call not prompted
+        for", which is the question the trail exists to answer."""
+        block = {
+            "rules": [
+                {"capability": "mcp", "match": ["ok/one"], "effect": "allow"},
+                {"capability": "shell", "match": ["rm *"], "effect": "deny"},
+            ]
+        }
+        assert self._events(block, _UNGOVERNED) == [
+            ("mcp:allow, shell:deny", "relayed", "authored `permissions`, ceiling cleared")
+        ]
+
+    def test_nothing_is_recorded_when_nothing_survives(self):
+        block = {"rules": [{"capability": "shell", "effect": "allow"}]}
+        assert [o for _, o, _ in self._events(block, _UNGOVERNED)] == ["withheld"]
+
+    def test_rule_4_is_reported_under_its_own_reason_not_the_ceilings(self):
+        """Crew's own standing refusal for those families holds with no ceiling
+        installed at all, so it is a different decision from a ceiling withhold and
+        the trail has to say which one happened."""
+        block = {"rules": [{"capability": "shell", "effect": "allow"}]}
+        assert self._withholds(block, _UNGOVERNED) == [
+            ("shell", "shell/filesystem family, Crew policy")
+        ]
+
+    def test_a_refused_block_is_reported_because_it_withholds_every_grant_in_it(self):
+        block = {"rules": [{"capability": "web_fetch", "effect": "maybe"}]}
+        events = self._withholds(block, _UNGOVERNED)
+        assert len(events) == 1
+        refs, reason = events[0]
+        assert refs == "the authored `permissions` block"
+        assert reason.startswith("refused: ")
+
+    def test_a_grant_the_allowlist_could_express_is_reported_as_withheld(self):
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert self._withholds(block, _UNGOVERNED, allowlist_present=True) == [
+            ("web_fetch", "derivable from `allowedTools`")
+        ]
+
+    def test_the_callback_is_optional_so_a_translation_only_caller_still_works(self):
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert merge_user_permissions(None, block, ceiling_permits=_WITHHOLDS_EVERYTHING) is None
+
+
+class TestTheAllowlistOwnsAGrantItCanExpress:
+    """A block must not add a grant the ``allowedTools`` list does not carry.
+
+    Crew's own seeder writes a derived block into the specs it manages and then
+    PRESERVES it (``agent._seed_kas_permissions``), so a block on disk can lag the
+    list it came from. Content cannot tell that block apart from an authored one --
+    which is why the answer is the CHANNEL: where a list exists it is the governed
+    input, re-derived on every projection, and a rule the derivation could have
+    emitted itself does not travel from the block. Where no list exists there is no
+    derivation to be authoritative, and the rule is the author's own.
+    """
+
+    def test_a_derivable_allow_does_not_travel_beside_an_allowlist(self):
+        """The revoked-grant case: the list drops ``web_fetch``, the block still
+        names it, and a fresh derivation is what decides."""
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED, allowlist_present=True) == _DERIVED
+
+    def test_a_derivable_mcp_allow_does_not_travel_beside_an_allowlist(self):
+        block = {"rules": [{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED, allowlist_present=True) == _DERIVED
+
+    def test_an_empty_allowlist_still_counts_as_present(self):
+        """An empty list is the operator saying "auto-approve nothing", and a block
+        must not answer that for them."""
+        block = {"rules": [{"capability": "web_search", "effect": "allow"}]}
+        assert _merge(block, allowlist_present=True) is None
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"capability": "web_search", "effect": "deny"},
+            {"capability": "web_search", "effect": "ask"},
+            {"capability": "web_search", "match": ["example.com/*"], "effect": "allow"},
+            {"capability": "web_search", "exclude": ["*.internal"], "effect": "allow"},
+            {"capability": "mcp", "match": ["srv/*"], "exclude": ["srv/drop"], "effect": "allow"},
+        ],
+    )
+    def test_a_rule_the_allowlist_cannot_express_travels_either_way(self, rule):
+        """A tool-name allowlist carries no effect but ``allow`` and no resource
+        pattern at all, so none of these can have come from one."""
+        assert _user_rules(_merge({"rules": [rule]}, derived=_DERIVED, allowlist_present=True)) == [
+            rule
+        ]
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"capability": "web_search", "effect": "allow", "exclude": []},
+            {"capability": "web_search", "effect": "allow", "match": []},
+            {"capability": "web_search", "effect": "allow", "match": [], "exclude": []},
+        ],
+    )
+    def test_an_empty_match_or_exclude_does_not_buy_a_rule_past_the_list(self, rule):
+        """``exclude: []`` excludes nothing and ``match: []`` matches every resource,
+        so both mean what the bare form means -- a key-presence test would read them
+        as narrowed and hand the grant back to the block."""
+        assert _merge({"rules": [rule]}, derived=_DERIVED, allowlist_present=True) == _DERIVED
+
+    def test_with_no_allowlist_a_derivable_allow_is_the_authors_own(self):
+        """The pure-KAS agent: no list, so no derivation to be authoritative."""
+        block = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+        assert _merge(block)["rules"] == [{"capability": "web_fetch", "effect": "allow"}]
+
+
+class TestRule4TheShellAndFilesystemFamiliesNeverTravelAsAnAllow:
+    """The one place the merge is deliberately not symmetric with kiro-cli.
+
+    Auto-approval is the absence of a permission request, and Crew's deny floor
+    and sensitive-path check run ON that request. A dropped rule leaves the
+    capability unmatched, and unmatched is ``ask`` -- so the gate runs.
+    """
+
+    @pytest.mark.parametrize("capability", sorted(WITHHELD_CAPABILITIES))
+    def test_a_named_family_allow_is_dropped_on_an_ungoverned_host(self, capability):
+        block = {"rules": [{"capability": capability, "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    @pytest.mark.parametrize("capability", ["all", "builtin", "filesystem"])
+    def test_a_meta_capability_carrying_the_family_is_dropped_too(self, capability):
+        """The sharp case. ``{"capability": "all"}`` is four words that carry
+        ``shell`` and both filesystem capabilities inside them, so a rule read at
+        face value hands over exactly what the named form is refused."""
+        block = {"rules": [{"capability": capability, "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_a_scoped_family_allow_is_dropped_as_well(self):
+        """A ``match`` does not buy it through: the refusal is about the missing
+        permission request, which a narrower pattern does not restore."""
+        block = {"rules": [{"capability": "shell", "match": ["git status"], "effect": "allow"}]}
+        assert _merge(block, derived=_DERIVED) == _DERIVED
+
+    def test_it_does_not_suppress_the_rules_beside_it(self):
+        block = {
+            "rules": [
+                {"capability": "shell", "effect": "allow"},
+                {"capability": "web_search", "effect": "allow"},
+            ]
+        }
+        assert _user_rules(_merge(block, derived=_DERIVED)) == [
+            {"capability": "web_search", "effect": "allow"}
+        ]
+
+    def test_the_refusal_is_reported_because_it_reverses_the_spec(self, caplog):
+        block = {"rules": [{"capability": "all", "effect": "allow"}]}
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_permissions"):
+            _merge(block, agent_id="kirocrew")
+        assert "fs_read, fs_write, shell" in caplog.text
+
+    def test_the_capability_form_covers_every_withheld_tool(self):
+        """The two tables are the same refusal in two currencies, so a tool added
+        to one must have its capability in the other."""
+        assert WITHHELD_CAPABILITIES == {"shell", "fs_read", "fs_write"}
+        assert not WITHHELD_CAPABILITIES & set(CEILING_REFS_BY_CAPABILITY)
+        for tool in WITHHELD_FROM_AUTO_APPROVE:
+            assert tool not in CAPABILITY_BY_TOOL
+
+    def test_the_expansion_table_matches_kas(self):
+        """Read off ``policy/capabilities.ts``: ``all`` is every builtin plus
+        ``mcp``, ``builtin`` excludes ``mcp``, ``filesystem`` is the two concrete
+        filesystem capabilities. Each expansion must stay inside KAS's vocabulary."""
+        assert META_CAPABILITY_EXPANSION["filesystem"] == ("fs_read", "fs_write")
+        assert set(META_CAPABILITY_EXPANSION["all"]) == set(
+            META_CAPABILITY_EXPANSION["builtin"]
+        ) | {"mcp"}
+        assert "mcp" not in META_CAPABILITY_EXPANSION["builtin"]
+        for expansion in META_CAPABILITY_EXPANSION.values():
+            assert set(expansion) <= KAS_CAPABILITIES
+            assert not set(expansion) & set(META_CAPABILITY_EXPANSION)

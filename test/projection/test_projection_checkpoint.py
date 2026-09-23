@@ -252,16 +252,112 @@ class TestAnIdentityMismatchForcesAColdRebuild:
 
         seen: list[dict] = []
 
-        def refuse(stored):
+        def refuse(stored, witness):
             seen.append(dict(stored))
             return False
 
         assert store.load("a", "summing", state_version=3, identity=IDENTITY, admit=refuse) is None
         assert seen == [IDENTITY], "admit is called with the STORED block"
         assert (
-            store.load("a", "summing", state_version=3, identity=IDENTITY, admit=lambda _: True)
+            store.load("a", "summing", state_version=3, identity=IDENTITY, admit=lambda *_: True)
             is not None
         )
+
+
+class TestTheWitnessCarriesWhatEqualityCannotHold:
+    """A value the caller cannot state before loading, so it is stored, not compared."""
+
+    WITNESS = {"prefix_sha": "a" * 64, "prefix_records": 9}
+
+    def _saved(self, tmp_path, witness) -> DirectoryCheckpointStore:
+        store = DirectoryCheckpointStore(tmp_path)
+        assert (
+            store.save(
+                "a",
+                Savepoint("summing", 3, 9, {"total": 9, "count": 9}, IDENTITY, witness),
+            )
+            is True
+        )
+        return store
+
+    def test_a_stored_witness_comes_back_on_the_savepoint(self, tmp_path):
+        store = self._saved(tmp_path, self.WITNESS)
+
+        back = store.load("a", "summing", state_version=3, identity=IDENTITY)
+
+        assert back is not None
+        assert back.witness == self.WITNESS
+
+    def test_the_witness_is_left_out_of_the_equality_compare(self, tmp_path):
+        # The whole reason it is a separate mapping: a caller cannot name the digest
+        # before reading the file that holds it, so comparing it would refuse every
+        # savepoint that carried one.
+        store = self._saved(tmp_path, self.WITNESS)
+
+        assert store.load("a", "summing", state_version=3, identity=IDENTITY) is not None
+
+    def test_admit_is_handed_the_stored_witness_beside_the_identity(self, tmp_path):
+        store = self._saved(tmp_path, self.WITNESS)
+        seen: list[tuple[dict, dict]] = []
+
+        def accept(identity, witness):
+            seen.append((dict(identity), dict(witness)))
+            return True
+
+        assert (
+            store.load("a", "summing", state_version=3, identity=IDENTITY, admit=accept) is not None
+        )
+        assert seen == [(IDENTITY, self.WITNESS)]
+
+    def test_a_witness_refused_by_admit_discards_the_savepoint(self, tmp_path):
+        store = self._saved(tmp_path, self.WITNESS)
+
+        def refuse(_identity, witness):
+            return witness.get("prefix_sha") == "b" * 64
+
+        assert store.load("a", "summing", state_version=3, identity=IDENTITY, admit=refuse) is None
+
+    def test_a_payload_carrying_no_witness_loads_with_an_empty_one(self, tmp_path):
+        # What a payload written before this field says: no evidence. A client whose
+        # condition needs evidence refuses on the empty mapping, which is why absent
+        # does not have to retire the envelope version.
+        store = DirectoryCheckpointStore(tmp_path)
+        store.save("a", Savepoint("summing", 3, 9, {"total": 9, "count": 9}, IDENTITY))
+        path = store.path_for("a", "summing")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        del raw["witness"]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        seen: list[dict] = []
+
+        def watch(_identity, witness):
+            seen.append(dict(witness))
+            return True
+
+        back = store.load("a", "summing", state_version=3, identity=IDENTITY, admit=watch)
+
+        assert back is not None
+        assert back.witness == {}
+        assert seen == [{}]
+
+    def test_a_witness_that_is_not_a_mapping_is_refused(self, tmp_path):
+        # ``admit`` is written against a mapping, so handing it another shape would
+        # push this module's own parsing failure into the client's predicate.
+        store = self._saved(tmp_path, self.WITNESS)
+        path = store.path_for("a", "summing")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["witness"] = ["a" * 64, 9]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        assert store.load("a", "summing", state_version=3, identity=IDENTITY) is None
+
+    def test_a_registry_savepoint_carries_an_empty_witness_until_a_client_fills_it(self):
+        # The registry builds savepoints from its cells and knows nothing about a
+        # client's evidence, so attaching one is the client's own step.
+        reg, _ = _registry()
+        reg.drive("a", _ev(1))
+
+        assert reg.savepoints("a", IDENTITY)[0].witness == {}
 
 
 class TestAReDeliveredEventAtOrBelowTheWatermarkIsANoOp:

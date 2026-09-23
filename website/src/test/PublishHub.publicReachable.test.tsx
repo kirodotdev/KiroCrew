@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -82,6 +83,10 @@ function publishPosts(fetchSpy: ReturnType<typeof vi.spyOn>) {
     c => String(c[0]).includes('/publish') && (c[1] as RequestInit | undefined)?.method === 'POST',
   )
 }
+
+// The public-web deploy destination sits behind the Artifact Deploy Feature
+// Preview, so tests that publish through it opt in.
+beforeEach(() => { localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1') })
 
 describe('buildProviderList carries public_reachable', () => {
   it('only an explicit false turns the gate off; omitted and true keep it on', () => {
