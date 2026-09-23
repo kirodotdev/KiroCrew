@@ -29,6 +29,7 @@
  */
 
 import { safeSetSessionItem } from './safeStorage'
+import { errMessage } from './thunkError'
 
 /** Where the error was observed. */
 export type ErrorSource =
@@ -277,6 +278,46 @@ export function findReport(message: string | null | undefined): ErrorReport | un
   const needle = redactSecrets(message).trim()
   if (!needle) return undefined
   return _journal.find(r => r.message.trim() === needle)
+}
+
+/** Where {@link attachReport} pins the report on its error. A string key, not a symbol, so the
+ *  entry is visible on the rejection in devtools; defined NON-enumerable so a spread or JSON copy
+ *  of the error's fields does not carry the report's route and detail along with them. */
+const ATTACHED_REPORT = 'errorReport'
+
+/**
+ * Pin a journal entry to the rejection it describes.
+ *
+ * {@link findReport} resolves by EXACT MESSAGE over a newest-first journal, which is the right
+ * precision for the `setError(e.message)` sites it was built for -- but the client's bounded reads
+ * all reject with the same contract message (`deadline exceeded`), so two of them failing in
+ * sequence both resolve to whichever journaled LAST, and one notice hands the agent the other
+ * read's endpoint. The transport holds the report at the moment it rethrows, so it pins it here;
+ * {@link reportForError} reads that first and falls back to the message match only for a
+ * rejection nothing pinned to.
+ */
+export function attachReport<E extends object>(error: E, report: ErrorReport): E {
+  Object.defineProperty(error, ATTACHED_REPORT, { value: report, enumerable: false, configurable: true })
+  return error
+}
+
+/** The report {@link attachReport} pinned to this rejection, if any. Shape-checked rather than
+ *  trusted, because the error is `unknown` and the key is an ordinary property. */
+function attachedReport(error: unknown): ErrorReport | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const pinned = (error as Record<string, unknown>)[ATTACHED_REPORT]
+  if (typeof pinned !== 'object' || pinned === null) return undefined
+  const r = pinned as Partial<ErrorReport>
+  return typeof r.id === 'string' && typeof r.message === 'string' ? (r as ErrorReport) : undefined
+}
+
+/**
+ * The structured report behind a caught error: its own pinned entry when the transport attached
+ * one, else the newest journal entry with the same message. The read every notice that renders a
+ * bounded read's failure should use, for the reason {@link attachReport} gives.
+ */
+export function reportForError(error: unknown): ErrorReport | undefined {
+  return attachedReport(error) ?? findReport(errMessage(error))
 }
 
 /** Subscribe to journal changes. Returns an unsubscribe. */

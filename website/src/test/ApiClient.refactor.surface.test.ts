@@ -253,6 +253,9 @@ const ARGS: Record<string, unknown[]> = {
   sttTranscribe: [new Blob(['wav'], { type: 'audio/wav' })],
   // Takes only an AbortSignal; its deadline helper throws on a string before it fetches.
   slashCommands: [],
+  // Same deadline helper: the second / third argument is an AbortSignal, not a string.
+  browseFiles: ['sw-1'],
+  fileSearch: ['sw-1', 'sw-2'],
 }
 
 function okJson(): Response {

@@ -24,9 +24,10 @@ import {
 } from './staleOwnerSignal'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
+import { withDeadline } from '../lib/withDeadline'
 import { installApiTransport } from './apiTransport'
-import { queryClient, invalidateAcrossQueryClients } from './queryClient'
-import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
+import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './queryClient'
+import { recordError, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import type { ClientTransport } from './client/transport'
 import { createSystemEndpoints } from './client/system'
@@ -176,6 +177,7 @@ export type {
 } from './client/hooks'
 export type { SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
+export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
 export type {
   ConnectionMintState,
   ConnectionStatus,
@@ -808,8 +810,9 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
     && !authRequired
     && !staleOwnerSession
     && !edgeAuthExpired
-  if (!expectedBenign) {
-    recordError({
+  const report = expectedBenign
+    ? undefined
+    : recordError({
       source: 'api',
       message,
       status: r.status,
@@ -817,13 +820,20 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
       endpoint: requestPath(r.url),
       detail: errText,
     })
-  }
+  // A stale-owner denial is authRequired in the sense call sites care about:
   // no retry can succeed until the user signs in again.
-  return new ApiError(
+  //
+  // The journal entry rides on the error itself (`attachReport`): the journal is
+  // resolved by exact message, newest first, so two reads refused with the same
+  // server line ("Access denied") would otherwise both resolve to whichever failed
+  // LAST and hand the agent the wrong endpoint. `reportForError` reads this first.
+  // A benign denial is not journaled, so it has no report to pin.
+  const error = new ApiError(
     r.status, message, errText,
     authRequired || staleOwnerSession || edgeAuthExpired,
     edgeAuthExpired,
   )
+  return report ? attachReport(error, report) : error
 }
 
 /**
@@ -922,6 +932,34 @@ const INSTANCES_DISABLED: BenignDenial = { status: 403, code: 'instances_disable
  * calls diverge.
  */
 const jInstancesDisabled = (r: Response) => parseJson(r, INSTANCES_DISABLED)
+
+/** Add transport failures that have no HTTP Response to the same journal as apiFailure.
+ *
+ *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
+ *  rejects with the one contract message, so a notice resolving its report by message alone
+ *  (`findReport`) lands on whichever bounded read timed out LAST -- and hands the agent another
+ *  read's endpoint. The notice reads the pinned report first (`reportForError`). */
+function withJournaledDeadline<T>(
+  ms: number,
+  outer: AbortSignal | undefined,
+  endpoint: string,
+  attempt: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return withDeadline(ms, outer, attempt).catch((error: unknown) => {
+    if (isDeadlineError(error)) {
+      const report = recordError({
+        source: 'api',
+        message: error instanceof Error ? error.message : String(error),
+        code: 'timeout',
+        endpoint,
+      })
+      // `isDeadlineError` has already established this is a non-null object.
+      attachReport(error as object, report)
+    }
+    throw error
+  })
+}
+
 // X-Session-Key ensures the server-side ephemeral gate always runs.
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
@@ -1080,6 +1118,7 @@ const transport: ClientTransport = {
   checkSessionExpired,
   removeAuthBanner,
   sendResponseAuthRecovery,
+  withJournaledDeadline,
 }
 
 const system = createSystemEndpoints(transport)

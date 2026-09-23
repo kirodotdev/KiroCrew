@@ -53,7 +53,8 @@ vi.mock('../pierre/tree', () => ({
   ),
 }))
 
-import FileBrowserRail, { useTreeAvailable } from '../pages/chat/FileBrowserRail'
+import FileBrowserRail, { useTreeState } from '../pages/chat/FileBrowserRail'
+import { ApiError } from '../api/apiError'
 
 const RAIL_W_KEY = 'mc-files-rail-w'
 const DIR = '/repo'
@@ -288,6 +289,60 @@ describe('FileBrowserRail file opens', () => {
 })
 
 describe('FileBrowserRail refresh', () => {
+  it('hands the agent the journaled server report, not the translated sentence', async () => {
+    // The notice shows a composed line ("Couldn't load the file tree — Refresh to retry"), which is
+    // NOT the journal key. The API layer journals the failure under the error's own message with
+    // the endpoint, status and backend code; the hand-off has to carry those, or the agent starts
+    // from a sentence that names nothing. Pinned on the PAYLOAD rather than on which lookup ran:
+    // the notice now reads the error's own pinned report first and the journal second, and either
+    // route has to land here.
+    recordError({
+      source: 'api',
+      message: 'boom',
+      status: 500,
+      code: 'tree_walk_failed',
+      endpoint: '/api/project/tree',
+    })
+    H.api.projectTree.mockRejectedValue(new ApiError(500, 'boom'))
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    const prompt = consumeChatHandoff()
+    expect(prompt).toContain('/api/project/tree')
+    expect(prompt).toContain('500')
+    expect(prompt).toContain('tree_walk_failed')
+    expect(prompt).not.toContain("Couldn't load the file tree")
+  })
+
+  it('leaves the tree notice to the header Refresh, with no adjacent button', async () => {
+    // The rail Retry only ever called the header Refresh above it, which stays mounted and
+    // enabled beside the notice, so it was one action spelled twice.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    H.api.projectTree.mockRejectedValue(timeout)
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+    expect(await screen.findByText("Couldn't load the file tree — Refresh to retry")).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Retry/ })).not.toBeInTheDocument()
+
+    const refresh = screen.getByLabelText('Refresh')
+    expect(refresh).toBeEnabled()
+    const spy = vi.spyOn(qc, 'refetchQueries')
+    fireEvent.click(refresh)
+    expect(spy.mock.calls.map(c => (c[0] as { queryKey: unknown[] }).queryKey)).toEqual([
+      ['project-tree', DIR],
+      ['git-status', DIR],
+      // Content results are cached, so the escape hatch has to reach them too:
+      // a refresh that left a stale hit list beside a fresh tree would present
+      // two different answers to one query.
+      ['file-grep', DIR],
+    ])
+  })
+
   it('refetches both polling queries and locks the button until they land', async () => {
     const { qc } = mount()
     const releases: Array<() => void> = []
@@ -307,12 +362,75 @@ describe('FileBrowserRail refresh', () => {
       // two different answers to one query.
       ['file-grep', DIR],
     ])
-    await waitFor(() => expect(btn).toBeDisabled())
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
     expect(btn.querySelector('svg')?.getAttribute('class')).toContain('animate-spin')
 
     releases.forEach(r => r())
-    await waitFor(() => expect(btn).not.toBeDisabled())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
     expect(btn.querySelector('svg')?.getAttribute('class')).not.toContain('animate-spin')
+  })
+
+  it('keeps Refresh in the tab order while its refresh is in flight', async () => {
+    // The tree notice names this button as the remedy for a failing read, so a keyboard user
+    // presses it exactly when the wait is longest. `disabled` leaves the tab order mid-press
+    // and drops focus to <body> for the whole bounded wait; inertness is `aria-disabled` plus
+    // the in-handler guard, the way FolderPanel's header Refresh and WorkspacePicker's Retry
+    // already spell it.
+    const { qc } = mount()
+    const releases: Array<() => void> = []
+    vi.spyOn(qc, 'refetchQueries').mockImplementation((() =>
+      new Promise<void>(res => { releases.push(res) })) as typeof qc.refetchQueries)
+
+    const btn = screen.getByLabelText('Refresh')
+    btn.focus()
+    expect(btn).toHaveFocus()
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+    expect(btn).not.toBeDisabled()
+    expect(btn).toHaveFocus()
+    // Still a tab stop: tabbing away and back mid-flight lands on it again, which a
+    // `disabled` control refuses.
+    btn.blur()
+    expect(btn).not.toHaveFocus()
+    btn.focus()
+    expect(btn).toHaveFocus()
+
+    releases.forEach(r => r())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
+    expect(btn).not.toBeDisabled()
+    expect(btn).toHaveFocus()
+  })
+
+  it('ignores a second press while a refresh is in flight, and takes the next one after it lands', async () => {
+    // Without `disabled` the press reaches the handler, so the handler has to refuse it: a
+    // restart would cancel the round trip under way and let the first press's `finally`
+    // clear the flag under the second's work. The guard is on the press's own bracket, so
+    // it lifts with the settle -- a press after that starts a fresh round.
+    const { qc } = mount()
+    const releases: Array<() => void> = []
+    const spy = vi
+      .spyOn(qc, 'refetchQueries')
+      .mockImplementation((() =>
+        new Promise<void>(res => { releases.push(res) })) as typeof qc.refetchQueries)
+
+    const btn = screen.getByLabelText('Refresh')
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+    expect(spy).toHaveBeenCalledTimes(3)
+
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    await new Promise(r => setTimeout(r, 20))
+    expect(spy).toHaveBeenCalledTimes(3)
+
+    releases.splice(0).forEach(r => r())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
+
+    fireEvent.click(btn)
+    expect(spy).toHaveBeenCalledTimes(6)
+    releases.splice(0).forEach(r => r())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
   })
 })
 
@@ -366,30 +484,178 @@ describe('FileBrowserRail resize grip', () => {
   })
 })
 
-describe('useTreeAvailable', () => {
+  it.each([
+    ['a deadline', 'TimeoutError'],
+    ['any other failure', 'Error'],
+  ])('names the TREE, and Refresh as its remedy, when the bounded tree read fails with %s', async (_label, name) => {
+    // Without this the rejected read painted an empty tree, which a reader takes as
+    // "this project has no files" rather than as a gateway that never answered.
+    H.api.projectTree.mockReset().mockRejectedValue(
+      Object.assign(new Error('boom'), { name }))
+    mount()
+
+    // One failed ['project-tree'] read, named the same way on every surface that shows it --
+    // INCLUDING the remedy: the rail only mounts while the failure is recoverable, and its
+    // header Refresh refetches this key, so the suffix FolderPanel's sibling arm carries is
+    // as truthful here. Without it the icon-only Refresh above was the undiscoverable fix.
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    expect(alert).not.toHaveTextContent(/Folder listing/)
+  })
+
+describe('FileBrowserRail tree notice by mode', () => {
+  const TREE_NOTICE = "Couldn't load the file tree — Refresh to retry"
+  const treeFailed = (qc: QueryClient) =>
+    waitFor(() => expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+  it('stays silent in Changed mode, whose list the status read populates, and returns with All', async () => {
+    // Changed mode lists ['git-status'], not ['project-tree'] (PierreWorkspaceTreeImpl:
+    // `ready = mode === 'changed' ? status != null : tree != null`), so a failed tree
+    // read there painted a persistent failure banner above a fully populated list --
+    // the same mismatch the status notice above it is already gated against.
+    H.api.projectTree.mockRejectedValue(Object.assign(new Error('boom'), { name: 'TimeoutError' }))
+    H.api.projectGitStatus.mockResolvedValue({
+      repo: true,
+      files: [{ path: 'a.ts', status: 'M', staged: false }, { path: 'b.ts', status: 'M', staged: false }],
+    })
+    const { qc } = mount()
+    fireEvent.click(screen.getByLabelText('Changed'))
+    await treeFailed(qc)
+    // The Changed list has its payload: the badge counts it.
+    expect(await screen.findByTestId('file-browser-rail-changed-count')).toHaveTextContent('2')
+    expect(tree()).toHaveAttribute('data-mode', 'changed')
+    expect(screen.queryByText(TREE_NOTICE)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // Back in the tree-backed mode the same failure IS the body's failure, so it shows.
+    fireEvent.click(screen.getByLabelText('All files'))
+    expect(await screen.findByText(TREE_NOTICE)).toBeInTheDocument()
+  })
+
+  it('stays silent in Content mode, whose body is the grep results, not the tree', async () => {
+    H.api.projectTree.mockRejectedValue(Object.assign(new Error('boom'), { name: 'TimeoutError' }))
+    const { qc } = mount()
+    await treeFailed(qc)
+    expect(await screen.findByText(TREE_NOTICE)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Search file contents'))
+    await waitFor(() => expect(screen.queryByText(TREE_NOTICE)).toBeNull())
+    fireEvent.click(screen.getByLabelText('Search file names'))
+    expect(await screen.findByText(TREE_NOTICE)).toBeInTheDocument()
+  })
+
+  it('shows the Refresh label while the notice names it, and only then', async () => {
+    // The notice says "Refresh to retry"; the control it names was a bare icon, so the
+    // reader scanned for a word that was not rendered. Same reveal FolderPanel's header
+    // Refresh makes while its notices name it.
+    H.api.projectTree.mockRejectedValue(Object.assign(new Error('boom'), { name: 'TimeoutError' }))
+    const { qc } = mount()
+    await treeFailed(qc)
+    await screen.findByText(TREE_NOTICE)
+    const refresh = screen.getByLabelText('Refresh')
+    expect(within(refresh).getByText('Refresh')).toBeInTheDocument()
+
+    // Where the notice is not shown, nothing names the control, so the label goes too.
+    fireEvent.click(screen.getByLabelText('Changed'))
+    await waitFor(() => expect(screen.queryByText(TREE_NOTICE)).toBeNull())
+    expect(within(screen.getByLabelText('Refresh')).queryByText('Refresh')).toBeNull()
+  })
+
+  it('keeps the header Refresh a bare icon while the tree read succeeds', async () => {
+    const { qc } = mount()
+    await waitFor(() => expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('success'))
+    expect(within(screen.getByLabelText('Refresh')).queryByText('Refresh')).toBeNull()
+  })
+
+  it('renders no tree body under the notice, and brings it back once the read recovers', async () => {
+    // The tree's own loading skeleton kept shimmering under a notice that said the read
+    // had failed: two claims about one read. While the notice speaks for the body, the
+    // body is empty; the header Refresh refetches the same key, and a success restores it.
+    H.api.projectTree.mockRejectedValue(Object.assign(new Error('boom'), { name: 'TimeoutError' }))
+    const { qc } = mount()
+    await treeFailed(qc)
+    expect(await screen.findByText(TREE_NOTICE)).toBeInTheDocument()
+    expect(screen.queryByTestId('tree')).toBeNull()
+
+    H.api.projectTree.mockResolvedValue({ root: DIR, paths: ['a.ts'], repo: true })
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('success'))
+    expect(screen.queryByText(TREE_NOTICE)).toBeNull()
+    expect(tree()).toHaveAttribute('data-mode', 'all')
+  })
+
+  it('keeps the loaded tree under the notice when a later refetch fails', async () => {
+    // react-query keeps the last listing through a failed refetch (a poll, a window focus,
+    // the header Refresh), so `isError && data` is a real state of this rail. Dropping the
+    // body there swapped the list the user was browsing for nothing on ONE failed poll,
+    // until a Refresh succeeded; the rows stay usable under the notice instead, the way the
+    // folder tab's search keeps its last rows on the same failure.
+    const { qc } = mount()
+    await waitFor(() => expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('success'))
+    expect(tree()).toHaveAttribute('data-mode', 'all')
+    expect(screen.queryByText(TREE_NOTICE)).toBeNull()
+
+    H.api.projectTree.mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+    await qc.refetchQueries({ queryKey: ['project-tree', DIR] })
+    await treeFailed(qc)
+    // The failed refetch left the earlier listing in place -- that is the state under test.
+    expect(qc.getQueryData(['project-tree', DIR])).toEqual({ root: DIR, paths: [], repo: true })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(TREE_NOTICE)
+    expect(tree()).toHaveAttribute('data-mode', 'all')
+    // The notice sits above the rows it speaks for, not in place of them.
+    expect(alert.compareDocumentPosition(tree()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(screen.getByLabelText('Refresh')).getByText('Refresh')).toBeInTheDocument()
+
+    // A Refresh that recovers clears the notice and leaves the tree where it was.
+    H.api.projectTree.mockResolvedValue({ root: DIR, paths: ['a.ts'], repo: true })
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('success'))
+    expect(screen.queryByText(TREE_NOTICE)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(tree()).toHaveAttribute('data-mode', 'all')
+    expect(within(screen.getByLabelText('Refresh')).queryByText('Refresh')).toBeNull()
+  })
+})
+
+describe('FileBrowserRail tree notice by cause', () => {
   const wrapper = (qc: QueryClient) => ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   )
 
-  it('reports available while the tree endpoint answers', async () => {
-    const qc = newClient()
-    const { result } = renderHook(() => useTreeAvailable(DIR), { wrapper: wrapper(qc) })
-    await waitFor(() =>
-      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('success'))
-    expect(result.current).toBe(true)
-    expect(H.api.projectTree).toHaveBeenCalledWith(DIR)
-  })
-
-  it('reports unavailable once the tree endpoint errors', async () => {
-    H.api.projectTree.mockRejectedValue(new Error('not a directory'))
-    const { result } = renderHook(() => useTreeAvailable(DIR), { wrapper: wrapper(newClient()) })
-    await waitFor(() => expect(result.current).toBe(false))
-  })
-
-  it('never probes without a project directory', () => {
-    const { result } = renderHook(() => useTreeAvailable(null), { wrapper: wrapper(newClient()) })
-    expect(result.current).toBe(false)
+  it('reports no-dir without probing when there is no project directory', () => {
+    const { result } = renderHook(() => useTreeState(null), { wrapper: wrapper(newClient()) })
+    expect(result.current).toBe('no-dir')
     expect(H.api.projectTree).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a deadline', Object.assign(new Error('slow'), { name: 'TimeoutError' }),
+      "Couldn't load the file tree", true],
+    ['a codeless failure', new Error('boom'), "Couldn't load the file tree", true],
+    ['a refusal', new ApiError(403, 'no', JSON.stringify({ code: 'access_denied' })),
+      'No access to this folder', false],
+    ['a missing root', new ApiError(403, 'no', JSON.stringify({ code: 'unknown_project_dir' })),
+      'Folder not found', false],
+  ])('renders %s in the rail with only its truthful remedy', async (_label, err, copy, retryable) => {
+    H.api.projectTree.mockRejectedValue(err)
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(copy)
+    const refresh = screen.getByLabelText('Refresh')
+    if (retryable) {
+      expect(alert).toHaveTextContent(`${copy} — Refresh to retry`)
+      expect(within(refresh).getByText('Refresh')).toBeInTheDocument()
+    } else {
+      expect(alert).not.toHaveTextContent('Refresh to retry')
+      expect(within(refresh).queryByText('Refresh')).toBeNull()
+    }
+    // With no earlier data, the notice speaks for the failed body; no loading
+    // skeleton or empty tree renders beneath it.
+    expect(screen.queryByTestId('tree')).toBeNull()
   })
 })
 

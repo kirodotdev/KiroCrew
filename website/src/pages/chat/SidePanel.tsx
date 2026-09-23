@@ -15,7 +15,7 @@ import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/Markdo
 import ArtifactPanel from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FilesHomePanel from './FilesHomePanel'
-import FileBrowserRail, { useTreeAvailable } from './FileBrowserRail'
+import FileBrowserRail from './FileBrowserRail'
 import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
@@ -1193,8 +1193,9 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * Every file-open path — chat file chips, a diff tab's title, the pinned
  * Files tab's tree, another file tab's tree — lands in a tab rendering this.
  *
- * Rail visibility is a single app-wide preference; the rail only renders at
- * all when the chat has a project dir whose tree the backend serves.
+ * Rail visibility is a single app-wide preference; with a project directory
+ * and file-open host it stays mounted through tree-read failures so its notice,
+ * toggle, and Refresh escape hatch remain reachable.
  */
 function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onAddToContext, onClose, onSubmitComments, connected = true, onRevealConsumed }: {
   tab: PanelTab
@@ -1220,8 +1221,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   onRevealConsumed: () => void
 }) {
   const [railOpen, setRailOpen] = usePersistedBool('mc-files-rail-open', false)
-  const treeAvailable = useTreeAvailable(projectDir)
-  const railUsable = treeAvailable && !!projectDir && !!onFileOpen
+  const railUsable = !!projectDir && !!onFileOpen
   // The rail re-targets this tab in place, so the panel's own dirty guard has to
   // approve the navigation the way it approves a close.
   const panelRef = useRef<MarkdownPanelHandle>(null)

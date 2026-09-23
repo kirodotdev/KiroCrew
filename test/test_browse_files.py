@@ -147,6 +147,23 @@ class TestBrowseFiles:
                 assert resp.status == 403
 
     @pytest.mark.asyncio
+    async def test_sensitive_base_path_403_names_its_cause(self, tmp_path, mock_sel):
+        # `access_denied` is the code the shared classifier already reads, so without it a
+        # refusal degraded to the generic retryable copy — the defect on the listing arm.
+        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/browse-files?path={tmp_path}")
+                assert (await resp.json())["code"] == "access_denied"
+
+    @pytest.mark.asyncio
+    async def test_invalid_path_400_names_its_cause(self, mock_sel):
+        # The panel keys its notice on `code`, never on the status or the human string, so a
+        # refusal that names no cause renders as a RETRYABLE failure and offers a dead Refresh.
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/browse-files?path=/nonexistent_xyz_browse_files")
+            assert (await resp.json())["code"] == "not_a_directory"
+
+    @pytest.mark.asyncio
     @requires_symlinks
     async def test_symlink_to_sensitive_path_filtered(self, tmp_path, mock_sel):
         """Symlink in a benign dir pointing at ~/.aws must not leak through.

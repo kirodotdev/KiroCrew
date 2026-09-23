@@ -26,7 +26,6 @@ vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 vi.mock('../pages/chat/FileBrowserRail', () => ({
   default: () => null,
-  useTreeAvailable: () => true,
   useTreeState: () => 'ready',
 }))
 vi.mock('../components/MarkdownPanel', async () => {

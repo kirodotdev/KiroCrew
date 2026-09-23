@@ -7,7 +7,9 @@ import ErrorNotice from '../../components/ErrorNotice'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
-import FileBrowserRail, { useTreeState } from './FileBrowserRail'
+import FileBrowserRail, { useTreeState, useTreeQuery } from './FileBrowserRail'
+import { searchErrorCause, TREE_FAILURE_KEYS } from '../../lib/searchErrorCause'
+import { reportForError } from '../../utils/errorReport'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
@@ -57,6 +59,15 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
   const treeState = useTreeState(projectDir)
+  // Every failed read lands in this panel's own error arm below, whichever of `useTreeState`'s
+  // two failure states names it. The `recoverable` split exists for FolderPanel, which names the
+  // tree over its one-level listing, and re-reads it on Refresh, only when another read can answer
+  // differently; this surface states every failure itself and carries its own labelled Refresh.
+  const treeFailed = treeState === 'error' || treeState === 'recoverable'
+  // The failed read's own error, for the notice's copy: the verdict above says only that it
+  // failed, and a refused or missing root must not read as an outage. Same key as the verdict's
+  // query, so this is a second observer on the one request, not a second request.
+  const { error: treeErr } = useTreeQuery(projectDir)
   const treeAvailable = treeState === 'ready'
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
@@ -127,14 +138,24 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />
-          {treeState === 'error' ? (
+          {treeFailed ? (
             <>
               {/* A failed fetch is not a missing setting: the directory is set
                   (the header is naming it), the tree endpoint just would not
                   serve it. Retrying is the remedy, so the affordance sits with
                   the message instead of only as a header icon. The Files tab
-                  holds no draft → hand-off on, beside the retry. */}
-              <ErrorNotice message={t('pages.chat.filesHome.tree_error')} askAgent />
+                  holds no draft → hand-off on, beside the retry. The copy is
+                  cause-keyed through the map the rail and the folder panel
+                  share, so a refused or missing root says so here as well
+                  rather than wearing the generic "couldn't load" line. */}
+              <ErrorNotice
+                message={t(TREE_FAILURE_KEYS[searchErrorCause(treeErr)])}
+                // The read's own report, as the rail and the folder tab pass it: the
+                // translated line is not a journal key, so without this the hand-off
+                // carried a sentence naming no endpoint, status or code.
+                report={reportForError(treeErr)}
+                askAgent
+              />
               <button
                 onClick={refresh}
                 className="text-[12px] px-2.5 h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border border-border"

@@ -15,8 +15,9 @@
  * refuse with 403.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { recordError, recentErrors, consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 
 const H = vi.hoisted(() => ({ OPENED: '/repo/src/a.ts' }))
 
@@ -42,7 +43,7 @@ vi.mock('../pierre/tree', () => ({
 }))
 
 import FolderPanel from '../pages/chat/FolderPanel'
-import { api } from '../api/client'
+import { api, ApiError, BROWSE_FILES_TIMEOUT_MS, FILE_SEARCH_TIMEOUT_MS } from '../api/client'
 
 const ROOT = '/repo'
 
@@ -155,6 +156,238 @@ describe('FolderPanel — project-root workspace tree', () => {
     expect(api.browseFiles).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByLabelText('Refresh'))
     await waitFor(() => expect(api.browseFiles).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes the tree read as well while a RECOVERABLE tree failure holds', async () => {
+    // A recoverable failure leaves tree mode (it needs 'ready'), so Refresh took the listing
+    // branch and never re-read the tree — the one button offered could not restore it.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    const tree = vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    const before = tree.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(tree.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('stays busy until the recoverable tree read a Refresh press started has settled', async () => {
+    // The listing arm's press awaits the tree read too, and that read carries its own deadline
+    // -- so a busy state keyed on the one-level listing alone went idle over a tree read still
+    // in flight, the same way it did over the search walk (FolderPanel.search.test.tsx).
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    let release: (() => void) | undefined
+    const treeRead = vi.spyOn(api, 'projectTree')
+      .mockRejectedValueOnce(timeout as never)
+      .mockImplementation(() => new Promise(resolve => {
+        release = () => resolve({ root: ROOT, paths: ['README.md'], repo: true } as never)
+      }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['kiro-prerequisite'], { platform: 'linux' })
+    render(
+      <QueryClientProvider client={client}>
+        <FolderPanel onClose={() => {}} path={ROOT} projectDir={ROOT} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    await screen.findByRole('alert')
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    const icon = () => refresh.querySelector('svg')
+    expect(icon()).not.toHaveClass('animate-spin')
+
+    fireEvent.click(refresh)
+    await waitFor(() => expect(treeRead).toHaveBeenCalledTimes(2))
+    // The listing has LANDED; the tree read pressed with it is still out.
+    await waitFor(() => expect(client.getQueryState(['browse-files', ROOT])?.fetchStatus).toBe('idle'))
+    expect(client.getQueryState(['project-tree', ROOT])?.fetchStatus).toBe('fetching')
+    expect(icon()).toHaveClass('animate-spin')
+    expect(refresh).toHaveAttribute('aria-disabled', 'true')
+
+    release!()
+    // The recovered read hands the body to the tree; the header control goes idle with it.
+    await waitFor(() => expect(tree()).toBeTruthy())
+    await waitFor(() => expect(icon()).not.toHaveClass('animate-spin'))
+    expect(refresh).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  it('names Refresh on the tree-timeout notice, since Refresh re-reads the tree in that arm', async () => {
+    // The search and listing notices already point at the header Refresh; the tree notice was
+    // the one recoverable arm that stated the cause without the remedy, while the button beside
+    // it stayed an unlabelled icon.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    const label = screen.getByRole('button', { name: 'Refresh' }).querySelector('span')
+    expect(label).not.toBeNull()
+    expect(label).not.toHaveClass('invisible')
+  })
+
+  it('hands the agent the tree read\'s journaled report, not the composed notice line', async () => {
+    // The notice's text is composed client-side ("Couldn't load the file tree — Refresh to
+    // retry"), which is NOT the journal key: the API layer journals the failure under the
+    // error's own message with the endpoint, status and backend code. The hand-off has to
+    // carry those -- as the rail's tree notice and the listing arm two rows down already do --
+    // or the agent starts from a sentence that names nothing.
+    __resetErrorJournalForTests()
+    recordError({
+      source: 'api',
+      message: 'tree walk failed',
+      status: 500,
+      code: 'tree_walk_failed',
+      endpoint: '/api/project/tree',
+    })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(new Error('tree walk failed') as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent("Couldn't load the file tree")
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    const prompt = consumeChatHandoff()
+    expect(prompt).toContain('/api/project/tree')
+    expect(prompt).toContain('500')
+    expect(prompt).toContain('tree_walk_failed')
+  })
+
+  it('withholds the Refresh hint when the tree endpoint REFUSES the root', async () => {
+    // Control: a refusal is not recoverable, so it renders no tree notice at all and the header
+    // control stays compact — the hint above must be keyed on the recoverable arm, not on any error.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveClass('w-[26px]')
+  })
+
+  it('does not stack "Empty folder" under the tree-timeout notice', async () => {
+    // The listing that loaded is a FALLBACK for the tree that did not; with both on screen the
+    // panel made two claims about one directory, and the second read as the reason for the
+    // first.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    // The listing HAS settled (its parent row is up), so the absence is the gate, not a pending read.
+    await screen.findByText('Parent folder')
+    expect(screen.queryByText('Empty folder')).toBeNull()
+  })
+
+  it('reports ONE failure when a wedged gateway fails the tree and the listing together', async () => {
+    // At the project root both reads hit the same outage, so the tree notice sat above the
+    // listing's and one problem read as two. The listing's is kept: it names its own cause.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    expect(await screen.findByText(/^Folder listing timed out/)).toBeInTheDocument()
+    // Regex, not an exact string: the tree notice carries a remedy clause, so an exact-text
+    // query would find nothing whether it rendered or not and the assertion would be vacuous.
+    expect(screen.queryByText(/Couldn't load the file tree/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('still says "Empty folder" when no tree notice is up', async () => {
+    // Control: the same empty listing under a REFUSED tree renders no tree notice, so the line
+    // must come back -- the suppression above is keyed on the notice, not on being at the root.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByText('Empty folder')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  /**
+   * A gateway that never answers: each request settles only when its own signal aborts, which is
+   * exactly what the client's deadline does. Real `api.*` binding, real deadline, real journal --
+   * so what is pinned below is the transport's hand-off, not a stand-in for it.
+   */
+  function wedgeFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal
+        if (!signal) return reject(new Error('wedged request had no signal'))
+        if (signal.aborted) return reject(signal.reason)
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }))
+  }
+
+  it('hands the listing notice ITS OWN deadline report when the tree timed out after it', async () => {
+    // Every bounded read journals the one contract line, `deadline exceeded`, and the journal is
+    // resolved by exact message, newest first. At the project root the tree's 15s deadline
+    // outlives the listing's 10s one, so the listing notice resolved to the TREE's entry and
+    // handed the agent /api/project/tree for a /api/browse-files failure. The transport pins
+    // each report to its own rejection; the notice reads that before it consults the journal.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    __resetErrorJournalForTests()
+    vi.mocked(api.browseFiles).mockRestore()
+    vi.mocked(api.projectTree).mockRestore()
+    const fetchMock = wedgeFetch()
+    try {
+      renderPanel({ path: ROOT, projectDir: ROOT })
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+      await vi.advanceTimersByTimeAsync(BROWSE_FILES_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS - BROWSE_FILES_TIMEOUT_MS)
+      // Both reads journaled, the tree's LAST: the newest `deadline exceeded` is not the listing's.
+      await waitFor(() => expect(recentErrors().map(r => r.endpoint))
+        .toEqual(['/api/project/tree', '/api/browse-files']))
+      // One notice for the one outage, and it is the listing's.
+      const notice = await screen.findByRole('alert')
+      expect(notice).toHaveTextContent('Folder listing timed out')
+
+      fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('/api/browse-files')
+      expect(prompt).not.toContain('/api/project/tree')
+    } finally {
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('hands the tree notice ITS OWN deadline report, not a later read\'s under the same message', async () => {
+    // The mirror case: the tree timed out and its notice is up when ANOTHER bounded read (the
+    // composer's @-menu search shares this journal) times out after it. A message match would
+    // resolve the tree notice to that newer entry; its own pinned report keeps it on its endpoint.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    __resetErrorJournalForTests()
+    vi.mocked(api.projectTree).mockRestore()
+    const fetchMock = wedgeFetch()
+    try {
+      renderPanel({ path: ROOT, projectDir: ROOT })
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS)
+      const notice = await screen.findByRole('alert')
+      expect(notice).toHaveTextContent("Couldn't load the file tree")
+      expect(recentErrors().map(r => r.endpoint)).toEqual(['/api/project/tree'])
+
+      recordError({ source: 'api', message: 'deadline exceeded', code: 'timeout', endpoint: '/api/file-search' })
+      expect(recentErrors()[0].endpoint).toBe('/api/file-search')
+      // A re-render after the newer entry landed, as any keystroke causes: the notice's report is
+      // read at render time, so without one a stale-but-right prop would mask a wrong lookup.
+      // One character stays under the search floor, so this dispatches no request.
+      fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'x' } })
+
+      fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: /ask the agent/i }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('/api/project/tree')
+      expect(prompt).not.toContain('/api/file-search')
+    } finally {
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('opens a file through the normal file tab without re-targeting the folder tab', async () => {
